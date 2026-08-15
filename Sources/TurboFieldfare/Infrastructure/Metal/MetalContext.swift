@@ -105,6 +105,19 @@ public final class MetalContext: @unchecked Sendable {
                                  subdirectory: subdirectory)
     }
 
+    /// Highest Metal Shading Language version the running OS accepts.
+    /// MSL 4.0 exists only on macOS 26 and carries the MPP tensor operations
+    /// used by the prefill fast paths. On macOS 15 the shaders still compile:
+    /// every tensor kernel is guarded by `__HAVE_TENSOR__`, which the MSL 3.2
+    /// compiler leaves undefined, so those kernels drop out of the library and
+    /// the callers fall back to their non-tensor pipelines.
+    static var shaderLanguageVersion: MTLLanguageVersion {
+        if #available(macOS 26.0, iOS 26.0, *) {
+            return .version4_0
+        }
+        return .version3_2
+    }
+
     private static func compileShaderLibrary(device: MTLDevice) throws -> MTLLibrary {
         var combined = ""
         for name in shaderModules {
@@ -117,7 +130,7 @@ public final class MetalContext: @unchecked Sendable {
         do {
             let opts = MTLCompileOptions()
             // The MPP prefill path requires MSL 4.0 tensor operations.
-            opts.languageVersion = .version4_0
+            opts.languageVersion = shaderLanguageVersion
             return try device.makeLibrary(source: combined, options: opts)
         } catch {
             throw MetalError.libraryCompileFailed("\(error)")
@@ -131,7 +144,7 @@ public final class MetalContext: @unchecked Sendable {
         }
         let src = try String(contentsOf: url, encoding: .utf8)
         let opts = MTLCompileOptions()
-        opts.languageVersion = .version4_0
+        opts.languageVersion = shaderLanguageVersion
         do {
             return try device.makeLibrary(source: src, options: opts)
         } catch {
