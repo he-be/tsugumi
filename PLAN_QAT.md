@@ -824,3 +824,35 @@ footer 全文 / プロトコルからの逸脱すべて) を残す。スイー�
   (受入後の切り替えは §0-1 のとおりランタイムを壊さないので、独立に判断する)
 - 最適化作業 (MoE カーネル改善など) — 本 PLAN は「載せる」まで。性能は測定のみ
 - **group 64 対応の削除。**受入後も残す (§0-1 の判断)
+
+## 9. 他エントリポイントの動作確認 (**実測**、2026-08-16)
+
+§5 の受入プロトコルは CLI (`bench.sh` 経由) でしか測っていなかった。
+`TurboFieldfareServer` (OpenAI 互換) と `TurboFieldfareApp` (Mac GUI) は
+Phase A-D を通じて一度も動かしていなかったため、優先度の高い Server から
+動作確認した。
+
+```bash
+.build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo --port 8091 &
+curl http://localhost:8091/v1/chat/completions -H "Content-Type: application/json" \
+  -d '{"model":"gemma-4-26b-a4b-it","messages":[{"role":"user","content":"日本語で一言挨拶して"}],"max_tokens":30,"temperature":0}'
+# → {"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"こんにちは！"}, ...
+```
+
+**結果: 正常応答。**§3-1-b のとおり Server も `MetalContext()` → `Model.load` →
+`RealForwardRunner` の順で初期化しており (`ServerInference.swift:403-411`)、
+CLI と同じ経路で group size / bf16 ルーターが解決されるため、コード変更なしで動いた。
+
+**ただし以下は未検証のまま:**
+
+- Server 固有の `--prompt-cache-mode single-prefix` (プロンプト KV 再利用) が
+  group 32 の decode パスと組み合わさったときの数値的な正しさ・性能
+  (§5-A のハーネスは単発のカーネル呼び出ししか見ていない)
+- 複数リクエストのキューイング下での挙動
+- `TurboFieldfareApp` (Mac GUI) — ビルド・起動とも今回未実施。
+  `RealInferenceClient.swift:194` も同じ3入口の1つ (§3-1-b) なので理屈上は
+  動くはずだが、実機確認はしていない
+
+§5-2 の品質・性能ゲート自体は CLI 実測のままで変更なし。本節は
+「他エントリポイントが壊れていないか」の追加確認であり、受入判定を
+やり直すものではない。
