@@ -297,7 +297,7 @@ public enum OpenAIRequestValidator {
                           "parallel_tool_calls", "unsupported_value")
         }
 
-        let temperature = request.temperature ?? 0.2
+        let temperature = request.temperature ?? 1.0
         guard temperature >= 0, temperature <= 2 else {
             throw invalid("temperature must be between 0 and 2",
                           "temperature", "invalid_value")

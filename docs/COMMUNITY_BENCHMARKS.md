@@ -11,7 +11,7 @@ Submitted measurements are listed under
 
 The frozen prompts are in
 [`benchmark-prompts/real-generation-v1/`](benchmark-prompts/real-generation-v1).
-Runs use the app sampling defaults with fixed seeds: temperature `0.2`, Top-K
+Runs use the app sampling defaults with fixed seeds: temperature `1.0`, Top-K
 `64`, Top-P `0.95`, a 4,096-token context, and up to 1,024 generated tokens.
 
 ## Prepare the Mac
@@ -70,7 +70,7 @@ for case_seed in \
     --messages-file "docs/benchmark-prompts/real-generation-v1/${case_id}.json" \
     --max-new 1024 \
     --max-context 4096 \
-    --temperature 0.2 \
+    --temperature 1.0 \
     --top-k 64 \
     --top-p 0.95 \
     --seed "$seed" \
@@ -93,7 +93,7 @@ for case_seed in \
     --messages-file "docs/benchmark-prompts/real-generation-v1/${case_id}.json" \
     --max-new 1024 \
     --max-context 4096 \
-    --temperature 0.2 \
+    --temperature 1.0 \
     --top-k 64 \
     --top-p 0.95 \
     --seed "$seed" \

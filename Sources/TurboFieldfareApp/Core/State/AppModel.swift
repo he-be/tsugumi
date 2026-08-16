@@ -18,7 +18,7 @@ public final class AppModel {
     public var runtimeOptions = AppRuntimeOptions()
     public var maxNewTokensOverride: Int?
     public var maxContextTokens: Int = 4096
-    public var temperature: Double = 0.2
+    public var temperature: Double = 1.0
     public var topKEnabled: Bool = true
     public var topK: Int = 64
     public var topPEnabled: Bool = true

@@ -120,9 +120,11 @@ The Mac app treats what you type as an instruction and handles Gemma's chat
 formatting automatically. Just describe the task and include any context the
 model needs.
 
-Generation defaults to temperature `0.2`, Top-K `64`, and Top-P `0.95`. Set
-temperature to `0` for deterministic greedy output. The model can still repeat
-itself or give incorrect answers, so check important results.
+Generation defaults to temperature `1.0`, Top-K `64`, and Top-P `0.95`, which
+are the values Gemma 4 recommends. Set temperature to `0` for deterministic
+greedy output, but expect repetition: below the recommended temperature this
+model can fall into a loop and never finish an answer. The model can still
+repeat itself or give incorrect answers, so check important results.
 
 TurboFieldfare is text-only. The app and CLI support user and model messages
 plus optional system guidance; they do not expose or execute tools. The

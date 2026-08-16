@@ -2,6 +2,9 @@
 # TurboFieldfare ベンチ v3 (M3 Pro 18GB / macOS 15.7.5)
 #
 #   ./bench.sh prompts     プロンプト生成 (m を 526tok 前後に調整済み)
+#   ./bench.sh japrompts   PLAN 付録の日本語プロンプト 3 本を生成
+#   ./bench.sh ja          その 3 本を 64 スロット固定でベンチ (pp/tg)
+#   ./bench.sh loopcheck   常用設定で長め (1024tok) に生成してループを機械検出
 #   ./bench.sh overhead    モデルロード時間の推定 (他の測定の減算基準)
 #   ./bench.sh ptime       prefill 壁時計 (--max-new 1)。prefill on/off/chunk を比較
 #   ./bench.sh policy      lfu vs lru。--prefill off の12%が説明できるか
@@ -52,6 +55,18 @@ RUNS="${RUNS:-3}"
 COOLDOWN="${COOLDOWN:-20}"
 MAXNEW="${MAXNEW:-128}"
 
+# サンプリングは Gemma 4 の推奨値 = CLI の既定値に固定する。
+#   temperature 1.0 / top-k 64 / top-p 0.95
+# 温度は tok/s に効かない (RESULTS §3-5、差は run 間の振れの中) ので、
+# 品質だけで決める。推奨より下げるとループに落ちる: greedy は「あわび」を
+# 25 回繰り返し、0.2 も 1024 tok で答えに到達しなかった。0.2 は廃止した。
+# 種は run 番号にする: run ごとに出力は変わる (= 変動を許容する) が、
+# 同じ run 番号なら再現する。
+TEMP="${TEMP:-1.0}"
+TOPK="${TOPK:-64}"
+TOPP="${TOPP:-0.95}"
+SEED="${SEED:-}"        # 空なら run 番号を使う
+
 preflight() {
   [[ -x "$CLI" ]] || { echo "CLI がない: $CLI" >&2; exit 1; }
   [[ -d "$MODEL" ]] || { echo "モデルがない: $MODEL" >&2; exit 1; }
@@ -67,8 +82,10 @@ preflight() {
 run_once() {
   local label="$1" msgs="$2" n="$3"; shift 3
   local log="$LOGS/${label}.${n}.err"
+  local seed="${SEED:-$n}"
   /usr/bin/time -p "$CLI" --model "$MODEL" --messages-file "$msgs" \
-    --temperature 0 --seed 1 --max-new "$MAXNEW" --max-context 4096 "$@" \
+    --temperature "$TEMP" --top-k "$TOPK" --top-p "$TOPP" --seed "$seed" \
+    --max-new "$MAXNEW" --max-context 4096 "$@" \
     > "$LOGS/${label}.${n}.out" 2> "$log"
 
   local real decode rate ptok ntok pre ttft io hit peak
@@ -86,9 +103,13 @@ run_once() {
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$label" "$n" "$ptok" "$ntok" "$real" "$decode" "$rate" \
-    "${pre:-}" "${ttft:-}" "${io:-}" "${hit:-}" "${peak:-}" "$*" >> "$TSV"
-  printf '  %-20s #%s  decode=%ss %s tok/s  prefill=%ss ttft=%ss  io=%sms hit=%s%% peak=%sGB\n' \
-    "$label" "$n" "$decode" "$rate" "${pre:-?}" "${ttft:-?}" "${io:-?}" "${hit:-?}" "${peak:-?}"
+    "${pre:-}" "${ttft:-}" "${io:-}" "${hit:-}" "${peak:-}" \
+    "temp=$TEMP topk=$TOPK topp=$TOPP seed=$seed $*" >> "$TSV"
+  local stop
+  stop=$(sed -n 's/.*\[stop=\([a-zA-Z]*\) .*/\1/p' "$log" | head -1)
+  printf '  %-20s #%s  decode=%ss %s tok/s  new=%s(%s)  prefill=%ss ttft=%ss  io=%sms hit=%s%% peak=%sGB\n' \
+    "$label" "$n" "$decode" "$rate" "${ntok:-?}" "${stop:-?}" \
+    "${pre:-?}" "${ttft:-?}" "${io:-?}" "${hit:-?}" "${peak:-?}"
   sleep "$COOLDOWN"
 }
 
@@ -131,6 +152,106 @@ for k, v in specs.items():
     print(f"{out}/{k}.json  ({len(v)} 文字)")
 PY
   echo "初回実行の prefill=Ntok を見て、m が 526 から外れていたら倍数を微調整。"
+}
+
+# PLAN 付録の日本語プロンプト。haiku.json は既存の測定 (RESULTS §3) と
+# 比較できるように触らない。追加ぶんの 2 本だけ作る。
+cmd_japrompts() {
+  mkdir -p "$OUT"
+  python3 - "$OUT" <<'PY'
+import json, sys, pathlib
+out = pathlib.Path(sys.argv[1])
+math = "x^3+2x^2-3x-1=0を解け\n（2126年大学入試問題）"
+story = (
+    "以下の文章の続きを書きショートストーリーにして\n\n"
+    "ある日突然あなたに12人もの妹ができたらどうしますか？\n"
+    "それも…\n"
+    "とびっきり可愛くて\n"
+    "とびっきり素直で\n"
+    "とびっきり愛らしくて\n"
+    "とびっきりの淋しがりや\n"
+    "しかもそのうえ…\n"
+    "彼女たちはみんなみんなとびっきり！\n"
+    "タッパがデカいんです…"
+)
+for k, v in {"math": math, "story": story}.items():
+    (out / f"{k}.json").write_text(
+        json.dumps([{"role": "user", "content": v}], ensure_ascii=False))
+    print(f"{out}/{k}.json  ({len(v)} 文字)")
+PY
+  echo "haiku.json は既存のまま (510 tok)。3 本で prompt 長が 2 桁違うのが狙い。"
+}
+
+# 条件ではなくプロンプトを振るスイープ。specs は "ラベル|messages.json"。
+# フラグは全条件で共通 ($COMMON)。
+sweep_msgs() {
+  local name="$1"; shift
+  local -a specs=("$@")
+  echo "== $name  (RUNS=$RUNS, MAXNEW=$MAXNEW, COOLDOWN=${COOLDOWN}s) =="
+  local first="${specs[0]}"
+  echo "-- warmup --"
+  run_once "${name}-warmup" "${first#*|}" 0 $COMMON >/dev/null 2>&1 || true
+  for n in $(seq 1 "$RUNS"); do
+    for spec in "${specs[@]}"; do
+      run_once "${name}-${spec%%|*}" "${spec#*|}" "$n" $COMMON
+    done
+  done
+  echo
+}
+
+# PLAN 付録の 3 プロンプト。スロットは 64 固定 (既定値の常用構成)。
+# 見たいのは「プロンプトが変わると pp/tg がどう動くか」だけ。
+cmd_ja() {
+  preflight; MAXNEW="${MAXNEW:-384}"
+  COMMON="--expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 \
+--rdadvise off --verification trusted-install"
+  sweep_msgs ja \
+    "haiku|$OUT/haiku.json" \
+    "math|$OUT/math.json" \
+    "story|$OUT/story.json"
+  cat <<'MSG'
+tok/s がプロンプト間でほぼ揃うなら、decode は prompt 非依存 (GPU 律速) の裏付け。
+prefill 秒と decode hit% は prompt 長に強く依存するはずなので、そこを見る。
+生成テキストは bench/logs/ja-*.N.out に残る。
+MSG
+}
+
+# ループ検出。常用設定 (TEMP、既定 1.0) で長め (既定 1024 tok) に生成し、
+# n-gram の反復を数える。種を振って SEEDS 本ずつ。統計ではなく挙動の確認用。
+# 温度を変えて見たいときは TEMP=0 ./bench.sh loopcheck のように上書きする。
+cmd_loopcheck() {
+  preflight; MAXNEW="${MAXNEW:-1024}"
+  local common="--expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 \
+--rdadvise off --verification trusted-install"
+  local tag="t${TEMP}"
+  for p in haiku math story; do
+    for s in $(seq 1 "${SEEDS:-2}"); do
+      SEED="$s"; run_once "loop-${p}-${tag}" "$OUT/$p.json" "$s" $common
+    done
+  done
+  SEED=""
+  python3 - "$LOGS" <<'PY'
+import pathlib, sys, re
+logs = pathlib.Path(sys.argv[1])
+print(f"\n{'run':<24} {'停止':<11} {'chars':>6} {'反復':>4}  反復断片")
+for f in sorted(logs.glob("loop-*.out")):
+    s = f.read_text()
+    err = f.with_suffix(".err").read_text()
+    m = re.search(r"\[stop=(\w+) .*?new=(\d+)tok", err)
+    stop = f"{m.group(1)}/{m.group(2)}" if m else "?"
+    # 末尾に向かって同じ断片が何回連続で現れるか (2..40 文字の周期を探す)
+    best, frag = 1, ""
+    tail = s[-400:]
+    for w in range(2, 41):
+        if len(tail) < w * 2: break
+        unit, k = tail[-w:], 1
+        while tail.endswith(unit * (k + 1)): k += 1
+        if k > best: best, frag = k, unit
+    # maxTokens で止まった = 自分で終われなかった、も弱いループ兆候
+    flag = "  <-- ループ" if best >= 4 else (
+           "  <-- 未完" if m and m.group(1) == "maxTokens" else "")
+    print(f"{f.name[:-4]:<24} {stop:<11} {len(s):>6} {best:>4}  {frag!r:.24}{flag}")
+PY
 }
 
 # ロード時間 = real - decode - (ごく短い prefill)。以降の減算基準。
@@ -215,7 +336,8 @@ cmd_trace() {
   preflight
   local out="${1:-$OUT/trace.tsv}"
   "$CLI" --model "$MODEL" --messages-file "$OUT/haiku.json" \
-    --temperature 0 --seed 1 --max-new "${MAXNEW:-128}" --max-context 4096 \
+    --temperature "$TEMP" --top-k "$TOPK" --top-p "$TOPP" --seed "${SEED:-1}" \
+    --max-new "${MAXNEW:-128}" --max-context 4096 \
     --verification trusted-install --dump-expert-trace "$out" >/dev/null
   echo "trace: $out"
   ./bench/expert_sim.py "$out" --skew
@@ -253,6 +375,9 @@ PY
 
 case "${1:-}" in
   prompts)   cmd_prompts ;;
+  japrompts) cmd_japrompts ;;
+  ja)        cmd_ja ;;
+  loopcheck) cmd_loopcheck ;;
   overhead)  cmd_overhead ;;
   ptime)     cmd_ptime ;;
   policy)    cmd_policy ;;
@@ -262,5 +387,5 @@ case "${1:-}" in
   trace)     shift; cmd_trace "$@" ;;
   summarize) cmd_summarize ;;
   one)       shift; cmd_one "$@" ;;
-  *)         sed -n '2,15p' "$0"; exit 1 ;;
+  *)         sed -n '2,19p' "$0"; exit 1 ;;
 esac

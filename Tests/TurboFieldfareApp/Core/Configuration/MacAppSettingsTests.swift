@@ -131,7 +131,7 @@ import Testing
           "version": 1,
           "contextTokens": 4096,
           "expertCacheSlots": 16,
-          "temperature": 0.2,
+          "temperature": 1.0,
           "topKEnabled": true,
           "topK": 64,
           "topPEnabled": true,
