@@ -43,6 +43,8 @@ Model/
 benchmark-results/
 scratch/
 tmp/
+bench/logs/
+bench/trace*.tsv
 
 # Python
 __pycache__/
