@@ -41,6 +41,13 @@ struct PrefillAttentionParams: Sendable, Equatable {
 
 
 final class PrefillAttention {
+    /// Queries one simdgroup of `attention_prefill_causal_qblock_d256` owns, and
+    /// the head dimension it is specialised for. Both are compiled into the
+    /// kernel, so a shape that does not match falls back to the tiled kernel.
+    private static let qBlockQueriesPerSimdgroup = 4
+    private static let qBlockHeadDim: UInt32 = 256
+    private static let qBlockThreads = 256
+
     private let context: MetalContext
     private let psoCausalTiled: MTLComputePipelineState
     private let psoFullTensorOps2DValidityV2: MTLComputePipelineState?
@@ -75,23 +82,33 @@ final class PrefillAttention {
             && params.numKVHeads == 2
             && params.scale == 1.0
         let tensorOpsPipeline = tensorOpsShape ? psoFullTensorOps2DValidityV2 : nil
-        let useTensorOps = tensorOpsPipeline != nil
+        enum Variant { case tensorOps, qBlock, tiled }
+        let variant: Variant
         let pipeline: MTLComputePipelineState
         if let tensorOpsPipeline {
+            variant = .tensorOps
             pipeline = tensorOpsPipeline
         } else if tensorOpsShape && path == .fullTensorOps2DValidityV2 {
             preconditionFailure(
                 "TensorOps 2D prefill attention requires Apple10 MPP tensor support")
+        } else if params.headDim == Self.qBlockHeadDim {
+            // The sliding-window layers, which is where the window re-reads are.
+            variant = .qBlock
+            pipeline = qBlockPipeline(kvRingCapacity: kvRingCapacity)
         } else {
             // Explicit mode also falls back for incompatible shapes. Benchmark
             // fixtures must use 512/16/2 to prove that TensorOps ran.
+            variant = .tiled
             pipeline = causalTiledPipeline(kvRingCapacity: kvRingCapacity)
         }
         let headDim = Int(params.headDim)
         let threadWidth = max(1, pipeline.threadExecutionWidth)
-        let threadCount = useTensorOps
-            ? 128
-            : roundUp(max(threadWidth, headDim), toMultipleOf: threadWidth)
+        let threadCount: Int
+        switch variant {
+        case .tensorOps: threadCount = 128
+        case .qBlock: threadCount = Self.qBlockThreads
+        case .tiled: threadCount = roundUp(max(threadWidth, headDim), toMultipleOf: threadWidth)
+        }
         precondition(threadCount <= pipeline.maxTotalThreadsPerThreadgroup,
                      "tiled prefill attention requires headDim <= maxTotalThreadsPerThreadgroup")
 
@@ -103,13 +120,25 @@ final class PrefillAttention {
         enc.setBuffer(out, offset: outOffset, index: 3)
         var p = params
         enc.setBytes(&p, length: MemoryLayout<PrefillAttentionParams>.stride, index: 4)
-        let groups = useTensorOps
-            ? MTLSize(width: Int(params.queryCount),
-                      height: Int(params.numQHeads) / 8,
-                      depth: 1)
-            : MTLSize(width: Int(params.queryCount),
-                      height: Int(params.numQHeads),
-                      depth: 1)
+        let groups: MTLSize
+        switch variant {
+        case .tensorOps:
+            groups = MTLSize(width: Int(params.queryCount),
+                             height: Int(params.numQHeads) / 8,
+                             depth: 1)
+        case .qBlock:
+            // One simdgroup per `qBlockQueriesPerSimdgroup` queries, and the
+            // kernel derives the same figure from `simdgroups_per_threadgroup`.
+            let queriesPerGroup = Self.qBlockQueriesPerSimdgroup * (threadCount / threadWidth)
+            groups = MTLSize(
+                width: (Int(params.queryCount) + queriesPerGroup - 1) / queriesPerGroup,
+                height: Int(params.numQHeads),
+                depth: 1)
+        case .tiled:
+            groups = MTLSize(width: Int(params.queryCount),
+                             height: Int(params.numQHeads),
+                             depth: 1)
+        }
         enc.dispatchThreadgroups(
             groups,
             threadsPerThreadgroup: MTLSize(width: threadCount, height: 1, depth: 1))
@@ -147,6 +176,18 @@ final class PrefillAttention {
                 constants: [MetalFunctionConstant(index: 76, value: .uint32(kvRingCapacity))])
         } catch {
             preconditionFailure("failed to build FP16 KV ring prefill attention pipeline: \(error)")
+        }
+    }
+
+    private func qBlockPipeline(kvRingCapacity: UInt32) -> MTLComputePipelineState {
+        let constants = kvRingCapacity > 0
+            ? [MetalFunctionConstant(index: 76, value: .uint32(kvRingCapacity))]
+            : []
+        do {
+            return try context.pipeline("attention_prefill_causal_qblock_d256",
+                                        constants: constants)
+        } catch {
+            preconditionFailure("failed to build query-blocked prefill attention pipeline: \(error)")
         }
     }
 }

@@ -21,18 +21,40 @@ import Metal
         #expect(layout.routePartialElements == 32 * 8 * 2816)
         #expect(layout.routeIDElements == 32 * 8)
         #expect(layout.routeWeightElements == 32 * 8)
-        #expect(layout.sharedExpertScratchElements == 2112)
+        // The shared MLP stages the whole chunk, not one row.
+        #expect(layout.sharedExpertScratchElements == 32 * 2112)
         #expect(layout.routedPairMicrobatchRows == 32)
         #expect(layout.routedGateUpActElements == 3 * 32 * 704)
         #expect(layout.routedDownOutputElements == 32 * 2816)
 
-        let worksheetT32UpperBound = Int(4.5 * 1_048_576.0)
+        // The Task 7 worksheet put this at 4.5 MiB with a single-row shared-MLP
+        // staging buffer; batching that projection over the chunk adds
+        // 3 x 32 x 2112 FP16 (about 0.4 MiB at T32).
+        let worksheetT32UpperBound = Int(5.0 * 1_048_576.0)
         #expect(layout.totalPersistentBytes <= worksheetT32UpperBound)
     }
 
     @Test func layoutClampsChunkSizeToRuntimeBounds() {
         #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 0).chunkTokens == 1)
-        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 512).chunkTokens == 128)
+        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 512).chunkTokens == 512)
+        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 2048).chunkTokens == 2048)
+        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 4096).chunkTokens
+                == PrefillRuntimeConfig.maxChunkTokens)
+    }
+
+    /// The widest chunk is what the expert-cache budget has to leave room for,
+    /// so its scratch cost is pinned: `routePartials` alone is
+    /// `2048 x 8 x 2816` FP16 = 92 MB, and the whole layout stays under 300 MB.
+    @Test func widestChunkScratchStaysWithinBudgetedBound() {
+        let layout = PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 2048)
+
+        #expect(layout.routePartialElements == 2048 * 8 * 2816)
+        #expect(layout.sharedExpertScratchElements == 2048 * 2112)
+        #expect(layout.totalPersistentBytes > 250 * 1_048_576)
+        #expect(layout.totalPersistentBytes <= 300 * 1_048_576)
+
+        let defaultLayout = PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 128)
+        #expect(defaultLayout.totalPersistentBytes <= 20 * 1_048_576)
     }
 
     @Test func allocationUsesPrivateScratchAndSharedRouteMetadata() throws {

@@ -2,7 +2,7 @@ import Testing
 @testable import TurboFieldfare
 
 @Suite struct PrefillRuntimeConfigTests {
-    @Test(arguments: [32, 64, 128])
+    @Test(arguments: RuntimeConfiguration.allowedPrefillChunkTokens)
     func productionUsesCompleteChunkedPath(_ chunkTokens: Int) throws {
         let config = PrefillRuntimeConfig.production(chunkTokens: chunkTokens)
         #expect(config.mode == .chunked)

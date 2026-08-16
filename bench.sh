@@ -7,6 +7,7 @@
 #   ./bench.sh loopcheck   常用設定で長め (1024tok) に生成してループを機械検出
 #   ./bench.sh overhead    モデルロード時間の推定 (他の測定の減算基準)
 #   ./bench.sh ptime       prefill 壁時計 (--max-new 1)。prefill on/off/chunk を比較
+#   ./bench.sh pp          pp tok/s 専用。チャンク幅 x スロット数 + disk0 実転送量
 #   ./bench.sh policy      lfu vs lru。--prefill off の12%が説明できるか
 #   ./bench.sh rdadvise    off/default/bounded/adaptive
 #   ./bench.sh total       prefill on/off のトータル時間 (prefill+decode の損得)
@@ -38,7 +39,9 @@
 #                          1 スロット約 100MB。載らない設定は起動時に拒否される
 #   --expert-cache-policy  lfu|lru      (既定lfu)
 #   --prefill              on|off       (既定on、on は16スロット以上必須)
-#   --prefill-chunk-tokens 32|64|128    (既定128、上限128)
+#   --prefill-chunk-tokens 32|64|...|2048 (既定2048)
+#                          幅を上げるほど expert の再利用が効いて SSD 転送が減る。
+#                          KV リングは slidingWindow+幅 行になる
 #   --rdadvise             off|default|bounded|adaptive (既定off)
 #   --verification         full-sha256|trusted-install (既定full-sha256)
 #   --dump-expert-trace    <path>  bench/expert_sim.py に食わせる
@@ -284,6 +287,85 @@ real-decode-ロード時間 が prefill の実時間。アプリの 10.85s と�
 MSG
 }
 
+# pp (prefill tok/s) 専用。ptime が見ていた壁時計ではなく、footer の
+# prefill 秒とトークン数から pp を直接出し、expert io / prefill ヒット率 /
+# peak / disk0 の実転送量を 1 行にまとめる。
+# disk0 は iostat を並走させて MB/s 列を積分したもの。ページキャッシュを
+# 通らない実 I/O が見えるので、「チャンク幅 x トークンあたり expert バイト」の
+# 支配方程式 (docs/investigations/PREFILL_THROUGHPUT.md §2) の検算に使う。
+# 他プロセスの I/O も混ざるので、preflight を通した静かな机でだけ意味がある。
+pp_run_once() {
+  local label="$1" msgs="$2" n="$3"; shift 3
+  local base="$LOGS/pp-${label}.${n}"
+  local iolog="$base.iostat"
+  iostat -d -w 1 disk0 > "$iolog" 2>/dev/null &
+  local iostat_pid=$!
+  "$CLI" --model "$MODEL" --messages-file "$msgs" \
+    --temperature 0.0 --seed 1 --max-new 1 --max-context "${MAXCTX:-4096}" \
+    --verification trusted-install "$@" > "$base.out" 2> "$base.err"
+  kill "$iostat_pid" 2>/dev/null; wait "$iostat_pid" 2>/dev/null || true
+
+  python3 - "$base" "$label" "$n" "$PPTSV" "$*" <<'PY'
+import pathlib, re, sys
+base, label, n, tsv, flags = sys.argv[1:6]
+err = pathlib.Path(base + ".err").read_text(errors="replace")
+def grab(pattern, cast=str, default=None):
+    m = re.search(pattern, err)
+    return cast(m.group(1)) if m else default
+ptok = grab(r"prefill=(\d+)tok", int, 0)
+secs = grab(r"prefill=([\d.]+)s ttft", float, 0.0)
+io   = grab(r"prefill hit=[\d.]+% \d+/\d+ io=([\d.]+)s", float, 0.0)
+hit  = grab(r"prefill hit=([\d.]+)%", float, 0.0)
+peak = grab(r"peak=([\d.]+)GB", float, 0.0)
+pp   = ptok / secs if secs else 0.0
+# iostat: "KB/t tps MB/s" が 1 秒ごとに 1 行。1 行目 2 行目はヘッダ。
+mb = 0.0
+for line in pathlib.Path(base + ".iostat").read_text(errors="replace").splitlines():
+    parts = line.split()
+    if len(parts) == 3:
+        try:
+            mb += float(parts[2])
+        except ValueError:
+            pass
+row = [label, n, str(ptok), f"{secs:.2f}", f"{pp:.1f}", f"{io:.2f}",
+       f"{hit:.1f}", f"{peak:.2f}", f"{mb / 1000:.1f}", flags]
+with open(tsv, "a") as f:
+    f.write("\t".join(row) + "\n")
+print(f"  {label:<16} #{n}  {ptok}tok prefill={secs:.2f}s  pp={pp:.1f} tok/s  "
+      f"io={io:.2f}s hit={hit:.1f}%  peak={peak:.2f}GB  disk0={mb/1000:.1f}GB")
+PY
+  sleep "$COOLDOWN"
+}
+
+cmd_pp() {
+  preflight
+  local msgs="${PPMSGS:-$OUT/l.json}"
+  [[ -f "$msgs" ]] || { echo "プロンプトがない: $msgs (先に ./bench.sh prompts)" >&2; exit 1; }
+  PPTSV="$OUT/results-pp.tsv"
+  [[ -f "$PPTSV" ]] || printf 'label\tn\tptok\tprefill_s\tpp\tio_s\thit_pct\tpeak_gb\tdisk0_gb\tflags\n' > "$PPTSV"
+  local -a specs=(
+    "s48c128|--expert-cache-slots 48 --prefill-chunk-tokens 128"
+    "s16c512|--expert-cache-slots 16 --prefill-chunk-tokens 512"
+    "s16c2048|--expert-cache-slots 16 --prefill-chunk-tokens 2048"
+    "s80c2048|--expert-cache-slots 80 --prefill-chunk-tokens 2048"
+  )
+  echo "== pp  (RUNS=$RUNS, COOLDOWN=${COOLDOWN}s, msgs=$(basename "$msgs")) =="
+  echo "-- warmup --"
+  pp_run_once warmup "$msgs" 0 ${specs[0]#*|} >/dev/null 2>&1 || true
+  for n in $(seq 1 "$RUNS"); do
+    for spec in "${specs[@]}"; do
+      pp_run_once "${spec%%|*}" "$msgs" "$n" ${spec#*|}
+    done
+  done
+  cat <<'MSG'
+
+読み方 (Gate 1 の合否、docs/investigations/PREFILL_THROUGHPUT.md §6):
+  s16c2048 が s48c128 の 1.5 倍以上   -> チャンク幅の支配方程式どおり
+  s16c2048 と s80c2048 の差が 3% 以内 -> expert キャッシュはもう効いていない
+  disk0 が 128 で 3 桁 GB、2048 で 十数 GB -> 実 I/O が 9 分の 1 に落ちている
+MSG
+}
+
 # --prefill off の decode +12% が LFU 汚染で説明できるかの検証。
 cmd_policy() {
   preflight; MAXNEW=128
@@ -387,6 +469,7 @@ case "${1:-}" in
   loopcheck) cmd_loopcheck ;;
   overhead)  cmd_overhead ;;
   ptime)     cmd_ptime ;;
+  pp)        cmd_pp ;;
   policy)    cmd_policy ;;
   rdadvise)  cmd_rdadvise ;;
   total)     cmd_total ;;

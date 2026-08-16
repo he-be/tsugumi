@@ -168,7 +168,12 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
         case chunked
     }
 
-    public static let maxChunkTokens = 128
+    /// Widest chunk the scratch layout and the chunk planner will honour. This
+    /// is a ceiling, not the sizing input: the KV ring and the expert-cache
+    /// budget are computed from the *configured* width
+    /// (`RuntimeConfiguration.prefillChunkTokens`), so raising this does not
+    /// cost a default-configured run anything.
+    public static let maxChunkTokens = 2048
 
     public let mode: Mode
     public let chunkTokens: Int
@@ -185,7 +190,7 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
     }
 
     public static var defaultChunked: PrefillRuntimeConfig {
-        production(chunkTokens: 128)
+        production(chunkTokens: 2048)
     }
 
     public static func production(chunkTokens: Int) -> PrefillRuntimeConfig {

@@ -26,7 +26,15 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     /// gemma-4-26b-a4b), and `ExpertCacheBudget` rejects a configuration that
     /// would push past the Metal device's recommended working set.
     public static let allowedExpertCacheSlots = [8, 16, 24, 32, 48, 64, 80, 96, 112]
-    public static let allowedPrefillChunkTokens = [32, 64, 128]
+    /// Chunk widths the front ends will accept. The width sets how many unique
+    /// routed experts one layer touches per chunk, and therefore how many expert
+    /// bytes the SSD has to move per token: 128 tokens costs about 62 MB/token,
+    /// 2048 tokens about 6 MB/token (`docs/investigations/PREFILL_THROUGHPUT.md`
+    /// §2). Wide chunks trade that I/O for KV ring rows
+    /// (`slidingWindow + chunkTokens`) and prefill scratch, both of which
+    /// `ExpertCacheBudget` accounts for at the configured width — not at this
+    /// list's maximum.
+    public static let allowedPrefillChunkTokens = [32, 64, 128, 256, 512, 1024, 2048]
     public static let minimumExpertCacheSlotsForChunkedPrefill = 16
 
     public let expertCacheSlots: Int
@@ -62,7 +70,7 @@ public struct RuntimeConfiguration: Sendable, Equatable {
                 expertCachePolicy: RuntimeExpertCachePolicy = .lfu,
                 rdadvisePolicy: RDAdvicePolicyMode = .off,
                 prefillEnabled: Bool = true,
-                prefillChunkTokens: Int = 128,
+                prefillChunkTokens: Int = 2048,
                 prefillAttentionPath: RuntimePrefillAttentionPath = .fullTensorOps2DPreferred,
                 forceLogitsHead: Bool = false) {
         precondition(Self.allowedExpertCacheSlots.contains(expertCacheSlots),

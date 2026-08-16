@@ -1,8 +1,12 @@
 # 調査: prefill (pp) はどこまで行けるか — SSD か実装か
 
 作成: 2026-08-16
-スコープ: 調査。計測用の計装とプロトタイプは**すべて元に戻してある** (`git status` クリーン)。
+更新: 2026-08-16 (Gate 1 と Gate 2 の一部を実装、§7)
 目標: **300 pp tok/s**。表記は PLAN.md に合わせる: **実測** / **導出** / **未確認**
+
+**現在地: 1973 トークンで 78.5 pp (出荷既定)。調査開始時は 37.2。**
+何をしたかは §7。以下 §1-§6 は調査時点の記録で、数字はそのとき (チャンク上限 128、
+カーネル変更前) のもの。
 
 ---
 
@@ -278,137 +282,85 @@ greedy 出力が chunk 128 と一致。**
 
 ---
 
-## 7. 中断メモ (2026-08-16) — 再開する人へ
 
-### 7-1. いまのツリーの状態
+## 7. 実装した結果 (2026-08-16)
 
-**ソースは 1 行も変わっていない。**`git status` の差分は
-このファイルを含む未追跡ドキュメントだけ。
+Gate 0 / Gate 1 は通過。Gate 2 は「クエリブロック化」を入れたが**予測を外した** (§7-3)。
+Gate 4 の一部だった共有 MLP のバッチ化はここに前倒しした。
 
-本調査で入れた計装とプロトタイプは**全部 `git checkout -- Sources/` で捨てた**。
-測定値だけがこのドキュメントに残っている形なので、
-**再開時はまず §7-2 のパッチを当て直すところから始める。**
-当て直せば §3 / §4 の数字はそのまま再現する (何度か往復して確認済み)。
+### 7-1. 1973 トークンでの推移 (**実測**、2 回インターリーブ、`--max-context 4096`)
 
-### 7-2. 捨てたプロトタイプ (再現手順)
+| 段階 | prefill | **pp** | expert io | disk0 | peak |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 調査開始時の出荷既定 (48 スロット / chunk 128) | 51.6 s | **37.2** | 23.0 s | 105.5 GB | 6.0 GB |
+| + カーネル 2 本 (同じ 48/128 設定) | 46.6 s | 42.3 | 24.2 s | — | 6.1 GB |
+| + chunk 2048 (16 スロット) | 24.8 s | **79.6** | 2.06 s | 12.6 GB | **3.1 GB** |
+| **新しい出荷既定** (48 スロット / chunk 2048) | 25.1 s | **78.5** | 2.08 s | — | 6.7 GB |
 
-#### (a) チャンク上限の撤廃 — 定数 3 か所
+**2.1 倍。**予測 (§6 Gate 1 = 62 ± 4 tok/s) はカーネル変更前の実測 62.1 tok/s で的中し、
+そこにカーネル 2 本が乗って 78.5 になった。
 
-| ファイル | 変更前 | 変更後 |
-| --- | --- | --- |
-| `Runtime/Configuration/RuntimeConfiguration.swift:29` | `allowedPrefillChunkTokens = [32, 64, 128]` | `[32, 64, 128, 256, 512, 1024, 2048]` |
-| `Runtime/Prefill/PrefillRuntimeConfig.swift:171` | `maxChunkTokens = 128` | `2048` |
-| `Runtime/Prefill/PrefillChunkScratch.swift:16` | `min(chunkTokens, 128)` | `min(chunkTokens, 2048)` |
+チャンク幅 2048 では **16 / 48 / 80 スロットが 1% 以内で同速**のまま (§3 の再現)。
+スロットは prefill には効かない。48 を既定に残したのは decode のため。
 
-これだけで動く。KV リング容量とスクラッチは自動で追随した。
-**ただし `--max-context 8192` 以上 + 96 スロットは `ExpertCacheBudget` に弾かれる**
-(§6 Gate 1 の宿題)。今回の測定は `--max-context 4096` で取った。
+### 7-2. 入れたもの
 
-#### (b) 共有エキスパート MLP のバッチ化
+1. **チャンク上限の撤廃** — `allowedPrefillChunkTokens` に 256/512/1024/2048 を追加、
+   `maxChunkTokens` を 2048 に。**既定も 2048 に変更した。**
+   - KV リングと prefill スクラッチは**設定値**で計算する (以前は全体の上限定数を使っていた)。
+     `ExpertCacheBudget` はスクラッチも数えるようになり、エラーに内訳が出る。
+   - 既定 48 スロットなら 4K-64K の全コンテキストで通る (**実測**)。
+     96 スロット以上は 8K 以上で弾かれるが、これは主にスロット側の 10.7 GB が理由
+     (chunk 2048 の追加ぶんは KV 0.4 GB + スクラッチ 0.26 GB)。
+2. **SWA attention のクエリブロック化** — `attention_prefill_causal_qblock_d256`。
+   1 simdgroup が 4 クエリ × 1 ヘッドを持ち、K/V 行をレジスタに 1 回読んで使い回す。
+   threadgroup 同期は 1 回もない。headDim 256 = SWA 25 層にだけ当たる。
+3. **共有 MLP のバッチ化** — チャンク全行を 1 QMM で通す (`PrefillSharedExpert`)。
+   調査時のプロトタイプをそのまま恒久化。GPU 6.49 s → 3.31 s (**−49%**、予測どおり)。
+4. **GPU 時間の計装** — `TF_PREFILL_GPU_PROFILE=1` で stderr に 1 行出る。
+   `bench.sh pp` から使える。§4 の内訳が導出でなく実測になった。
 
-1. `Runtime/Prefill/PrefillChunkScratch.swift:46`
-   `var sharedExpertScratchElements: Int { sharedIntermediate }`
-   → `{ chunkTokens * sharedIntermediate }`
-2. `Kernels/Prefill/MoE/PrefillSharedExpert.swift` に
-   `PrefillInt4QMM` と `context.pipeline("gelu_mul_fp16")` を持たせ、
-   `encodeBlock` の `for row in 0..<queryCount` ループの**手前**に
-   バッチ経路を足して `return` する (weightBits == 4 のときだけ):
+数値の同一性: greedy (temp 0.0 / seed 1) で
+**tiled 対 qblock / per-token 対 batched / chunk 128 対 256/512/1024/2048** の
+すべてが完全一致 (**実測**、40 トークンおよび 24 トークン)。
 
-   ```
-   qmm(gate) -> scratchGate[t,F]
-   qmm(up)   -> scratchUp[t,F]
-   gelu_mul_fp16(count = t * F)   // 既存カーネルがそのまま使える。要素単位なので [t,F] で成立
-   qmm(down) -> y[t,D]
-   ```
+### 7-3. Gate 2 の予測は外れた
 
-   `PrefillInt4QMM.encode(t:n:k:)` に渡すのは
-   gate/up が `(t, intermediate, d)`、down が `(t, d, intermediate)`。
-   `xStrideElements == d && yStrideElements == d` のときだけ有効にすること
-   (それ以外は既存の per-token ループに落とす)。
+予測は「attention 本体 11 s → 1.0 ± 0.5 s、pp 140-160」。実際は:
 
-**効果**: 共有 MLP の GPU 時間 −49% (405 トークンで 1.362 s → 0.690 s)。
-greedy 出力は `--temperature 0.0 --seed 1` で完全一致を確認済み。
-
-#### (c) GPU 時間の計装
-
-`RealForwardRunner` に `waitProfiled(_ key:_ cb:)` を足し、
-`waitForCompletion` の代わりに使って `cb.gpuEndTime - cb.gpuStartTime` を種別に積算する。
-差し替えた 4 か所は `executePrefillChunk` 内の
-
-- ルータまでのコマンドバッファ (`cb.commit()` 直後) → `"attn"`
-- `sharedCB` → `"shared"`
-- `drainOldestPendingTile` の中 → `"moe"`
-- `tailCB` → `"tail"`
-
-で、`prefillChunked` の span ループ末尾で stderr にダンプする。
-**§4 の表はこれで取った。恒久化するなら `bench.sh` から使える形にすること**
-(§6 Gate 0)。
-
-### 7-3. 計測フィクスチャの作り方
-
-プロンプトはスクラッチ領域に置いたので**消えている**。同じものは次で作れる:
-
-```python
-import json
-base = ("チャンク化した prefill が time to first token を短くしつつ、"
-        "メモリ使用量を上限内に抑えられる理由を、KV キャッシュの確保タイミングと"
-        "ルーティングされたエキスパートのフェッチ回数の観点から説明してください。")
-# 反復回数 -> プロンプトトークン数:  8 -> 405,  16 -> 797,  40 -> 1973
-json.dump([{"role": "user", "content": base * 40}], open("p4k.json", "w"), ensure_ascii=False)
+```
+attn   13.9s (58%)   ← 射影 + rope + KV + router 込み。変更前は 17.1s
+shared  3.3s (14%)
+moe     6.8s (28%)
+       GPU 合計 24.1s / 壁時計 25.1s = 96%
 ```
 
-主な測定コマンド:
+クエリブロック化で attention 系は **17.1 s → 13.9 s (−3.2 s)** しか下がっていない。
+帯域だけの問題ではなかった、ということ。新カーネルはキー 1 本ごとに
+`simd_sum` を 4 回 (クエリ 4 本ぶん) 回すので、有効な FMA 8 個に対して
+シャッフル縮約が十数命令付く。**縮約がクリティカルパスに残っている。**
 
-```bash
-# pp と expert io と peak
-.build/release/TurboFieldfareCLI --model scratch/gemma4-qat.gturbo \
-  --messages-file p4k.json --max-new 1 --max-context 4096 \
-  --verification trusted-install --expert-cache-slots 16 --prefill-chunk-tokens 2048
+次に効くのは、この縮約自体を消すこと =
+`simdgroup_matrix` (8×8 タイル) で QK^T と PV を回す構成。
+full 層用の `attention_prefill_full_tensorops_2d_validity_v2` が既にその形なので、
+それを headDim 256 + リング + スライディング窓に一般化するのが素直。
 
-# disk0 の実転送量 (別ターミナルで並走させて MB/s 列を積分する)
-iostat -d -w 1 disk0
+### 7-4. 次の的 (GPU 24.1 s の内訳から)
 
-# ユニーク expert 数の再構成: chunk 32 でトレースを取り、連続ステップを層ごとに union
-.build/release/TurboFieldfareCLI ... --prefill-chunk-tokens 32 --dump-expert-trace trace32.tsv
-```
+| 的 | 現状 | 手段 |
+| --- | ---: | --- |
+| attention (射影込み) | 13.9 s | `simdgroup_matrix` 化。射影の分離計測がまだ |
+| routed MoE | 6.8 s | expert 単位 GEMM (§6 Gate 3、手つかず) |
+| 共有 MLP | 3.3 s | `MPPPrefillInt4QMM` の group-32 対応 (§6 Gate 4) |
 
-SSD 帯域 (§1) は `fcntl(fd, F_NOCACHE=48, 1)` を立てた `os.pread` で測った。
-`packed_experts/layer_NN.bin` に対する 3,719,168 B のランダム読みを 300 回。
-
-### 7-4. 次にやること
-
-**Gate 1 (§6) から。**チャンク上限の撤廃は定数 3 か所で、効果は実測済み
-(39 → 70 tok/s、メモリ 6.4 → 3.1 GB)。作業の本体は定数ではなく:
-
-1. `ExpertCacheBudget` の再計算 — chunk 2048 で KV リングが
-   `slidingWindow + chunkTokens` = 3072 行になる。**16K コンテキストで通るか未確認**
-2. chunk 256/512/1024/2048 での数値検証を `TurboFieldfareValidation` に追加
-3. greedy 出力一致を回帰テストに落とす (今は手動で 2 プロンプト確認しただけ)
-4. 既定値は**まだ変えない**。`--prefill-chunk-tokens` で選べるようにするだけ
-
-そのうえで §6 Gate 1 の合否 (**16 → 80 スロットで pp が 3% 以内**) を取り直す。
-ここが崩れなければ、Gate 2 (SWA attention) が次の一撃になる。
-
-### 7-5. 引き継ぐべき判断
-
-- **expert キャッシュのスロット数チューニングはもうやらない。**§3 で無意味と実測された。
-  既定 48 は chunk を上げた後に**下げる**方向で再評価する
-- **300 tok/s のボトルネックは attention であって MoE ではない。**
-  §4 の内訳が直感に反するので、着手前に必ずここを読み直すこと
-- `RESULTS.md` §3-3 の「スロットを増やすと prefill 自体は遅くなる」と
-  `PLAN_VISION.md` §4-5 の「チャンク上限 128 が画像スパンを分割する」は、
-  **どちらも本調査と同じ根 (チャンク幅)**。Gate 1 が通れば両方片付く
+300 tok/s は 1973 トークンを 6.58 s。まだ 3.8 倍ある。
 
 ---
 
 ## 8. 未確認
 
-- `U(2048) ≈ 110` は chunk 1024 (97.9) からの外挿。トレースは 797 トークンぶんしかなく、
-  2048 トークンの単一チャンクを直接 union していない
-- §4 の内訳 (attention 本体 11 s、射影 6 s) は 797 トークン chunk 512 の
-  分割計測からの外挿。1973 トークンで直接分割していない
-- SWA attention の読み出し 790 GB は導出。実測していない (Gate 2 の前提条件)
-- chunk 2048 + `--max-context 16384` が `ExpertCacheBudget` を通るか
+- attention 13.9 s のうち、attention 本体と q/k/v/o 射影の比率 (分離計測していない)
+- `U(2048) ≈ 110` は chunk 1024 (97.9) からの外挿
 - chunk 512 で 1 回だけ観測した 30.6 s の外れ値 (peak 11.4 GB、スワップの疑い)
 - 現行 `prefill_dequant_int4_qmm_f16_block` が per-token GEMV とほぼ同速だった理由
-  (バッチ Q は GPU 時間 −3% だった。帯域律速か 8×8 threadgroup の占有率か)
+- クエリブロック幅 4 が最適か (8 にするとレジスタが溢れる見込み、未測定)

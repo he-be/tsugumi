@@ -9,7 +9,7 @@ import TurboFieldfare
         #expect(options.expertCacheSlots == 48)
         #expect(options.expertCachePolicy == .lfu)
         #expect(options.prefillEnabled)
-        #expect(options.prefillChunkTokens == 128)
+        #expect(options.prefillChunkTokens == 2048)
         #expect(options.rdadvisePolicy == .off)
         #expect(options.modelVerification == .fullSha256)
 

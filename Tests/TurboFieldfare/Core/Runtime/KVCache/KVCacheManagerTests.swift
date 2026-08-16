@@ -11,6 +11,7 @@ import Metal
 
     private func makeManager(maxContext: Int,
                              fp16RingEnabled: Bool = false,
+                             maxPrefillChunkTokens: Int = 128,
                              fp16RingCapacityOverride: Int? = nil) throws -> (MetalContext, KVCacheManager) {
         let ctx = try MetalContext()
         let kv = try KVCacheManager(device: ctx.device,
@@ -18,7 +19,7 @@ import Metal
                                     maxContext: maxContext,
                                     fp16RingEnabled: fp16RingEnabled,
                                     slidingWindow: config.slidingWindow,
-                                    maxPrefillChunkTokens: 128,
+                                    maxPrefillChunkTokens: maxPrefillChunkTokens,
                                     fp16RingCapacityOverride: fp16RingCapacityOverride)
         return (ctx, kv)
     }
@@ -83,6 +84,23 @@ import Metal
         #expect(kv.capacity(layer: 5) == 4096)
         #expect(kv.ringCapacity(layer: 5) == 0)
         #expect(kv.keyBuffer(layer: 5, validTokenCount: 0).length == 4096 * 2048)
+    }
+
+    /// A wide prefill chunk has to fit inside the ring alongside the sliding
+    /// window, so the ring grows with it — 2048-token chunks cost 3072 rows per
+    /// SWA layer instead of 1152, which is the memory the chunk width buys its
+    /// expert-I/O savings with.
+    @Test func fp16Ring_widensWithThePrefillChunk() throws {
+        let (_, kv) = try makeManager(maxContext: 4096,
+                                      fp16RingEnabled: true,
+                                      maxPrefillChunkTokens: 2048)
+
+        #expect(kv.capacity(layer: 0) == 3072)
+        #expect(kv.ringCapacity(layer: 0) == 3072)
+        #expect(kv.keyBuffer(layer: 0, validTokenCount: 0).length == 3072 * 4096)
+        // Full-attention layers are linear either way: the chunk width does not
+        // touch them.
+        #expect(kv.capacity(layer: 5) == 4096)
     }
 
     @Test func fp16Ring_shortSessionCapsSWAToMaxContext() throws {

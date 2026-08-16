@@ -198,6 +198,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private let greedyTokenBuf: MTLBuffer // 4 B UInt32 fused-head output
     private var prefillChunkState = PrefillChunkCommitState()
     private var prefillScratch: PrefillChunkScratchBuffers?
+    private var prefillGPUProfile = PrefillGPUProfile()
 
     private static let rdadviseBoundedMissCap = 12
     private static let rdadviseBoundedMaxCallNanos: UInt64 = 250_000
@@ -241,9 +242,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // Reject a cache that would not stay resident before allocating any of
         // it: overshooting the working set trades SSD reads for OS compression,
         // which is the opposite of what a large cache is for.
+        let prefillConfig = runtimeConfiguration.prefillConfig
         let budget = model.expertCacheBudget(
             slotCount: runtimeConfiguration.expertCacheSlots,
-            maxContext: maxContext)
+            maxContext: maxContext,
+            prefillConfig: prefillConfig)
         guard budget.fitsRecommendedWorkingSet else {
             throw ExpertCacheBudgetError.exceedsRecommendedWorkingSet(budget)
         }
@@ -263,7 +266,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                      maxContext: maxContext,
                                      fp16RingEnabled: useFP16Ring,
                                      slidingWindow: cfg.slidingWindow,
-                                     maxPrefillChunkTokens: PrefillRuntimeConfig.maxChunkTokens)
+                                     maxPrefillChunkTokens: prefillConfig.chunkTokens)
 
         self.embedInt4 = try EmbedLookupInt4(context: context)
         self.rms       = try RMSNorm(context: context)
@@ -551,6 +554,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                 config: config,
                 writeFinalHead: spanIndex == spans.count - 1)
             onProgress(span.completedCount)
+        }
+        if PrefillGPUProfile.isEnabled {
+            FileHandle.standardError.write(Data((prefillGPUProfile.summary + "\n").utf8))
+            prefillGPUProfile.reset()
         }
         if outputMode == .greedyIfAvailable, useFusedGreedyHead {
             return PrefillResult(newPosition: startPosition + tokens.count,
@@ -981,7 +988,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             }
 
                     cb.commit()
-                    try waitForCompletion(cb)
+                    try waitProfiled(.attention, cb)
 
                     let routeCount = t * cfg.topKExperts
                     let idPtr = scratch.routeIDs.contents()
@@ -1046,7 +1053,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                            d: UInt32(D),
                                            eps: eps)
                     sharedCB.commit()
-                    try waitForCompletion(sharedCB)
+                    try waitProfiled(.shared, sharedCB)
 
                     let metadata = try prefillGroupedMoE.makeStreamedMetadataBuffers(
                         device: ctx.device,
@@ -1064,7 +1071,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         guard !pendingTiles.isEmpty else { return }
                         let pending = pendingTiles.removeFirst()
                         try withExtendedLifetime((pending.fetch, pending.argumentBuffer)) {
-                            try waitForCompletion(pending.commandBuffer)
+                            try waitProfiled(.moe, pending.commandBuffer)
                         }
                         if !pending.fetch.plannedMissSlots.isEmpty {
                             try tileLifetime.complete(tileIndex: pending.tileIndex)
@@ -1215,7 +1222,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                             layerScalar: Quantization.bf16ToFloat(scalarBits))
                     tailCB.commit()
                     try withExtendedLifetime(metadata) {
-                        try waitForCompletion(tailCB)
+                        try waitProfiled(.tail, tailCB)
                     }
                     if L + 1 < cfg.numLayers {
                         guard let nextCB = ctx.queue.makeCommandBuffer() else {
@@ -1268,7 +1275,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                                  rmsEps: eps)
             }
             finalCB.commit()
-            try waitForCompletion(finalCB)
+            try waitProfiled(.head, finalCB)
             if outputMode == .greedyIfAvailable, useFusedGreedyHead {
                 lastGreedyToken = greedyTokenBuf.contents().load(as: UInt32.self)
             }
@@ -1807,6 +1814,15 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private nonisolated func waitForCompletion(_ cb: MTLCommandBuffer) throws {
         waitUntilCompleted(cb)
         try checkCommandBufferError(cb.error)
+    }
+
+    /// `waitForCompletion` plus the command buffer's own GPU span, bucketed by
+    /// stage. Off unless `TF_PREFILL_GPU_PROFILE=1`, and the accounting is
+    /// GPU-side, so a stage that overlaps expert I/O shows only its GPU cost.
+    private func waitProfiled(_ stage: PrefillGPUProfile.Stage,
+                              _ cb: MTLCommandBuffer) throws {
+        try waitForCompletion(cb)
+        prefillGPUProfile.record(stage, cb)
     }
 
     private nonisolated func waitUntilCompleted(_ cb: MTLCommandBuffer) {

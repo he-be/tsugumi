@@ -10,7 +10,7 @@ import Testing
         #expect(runtime.rdadvisePolicy == .off)
         #expect(!runtime.rdadviseEnabled)
         #expect(runtime.prefillPolicy == .chunked)
-        #expect(runtime.prefillChunkTokens == 128)
+        #expect(runtime.prefillChunkTokens == 2048)
         #expect(runtime.prefillAttentionPath == .fullTensorOps2DPreferred)
         #expect(runtime.headPath == .fusedRows)
     }
@@ -32,7 +32,7 @@ import Testing
         #expect(runtime.headPath == .logits)
     }
 
-    @Test(arguments: [32, 64, 128])
+    @Test(arguments: RuntimeConfiguration.allowedPrefillChunkTokens)
     func productionPrefillSupportsPublicChunkSizes(_ chunkTokens: Int) {
         let runtime = RuntimeConfiguration(prefillChunkTokens: chunkTokens)
         #expect(runtime.prefillConfig.mode == .chunked)

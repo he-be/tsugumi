@@ -130,6 +130,57 @@ import TurboFieldfareValidationSupport
         }
     }
 
+    /// headDim 256 dispatches `attention_prefill_causal_qblock_d256`, where one
+    /// simdgroup carries four queries and a threadgroup carries 32. The chunk
+    /// sizes here straddle those two boundaries so a query block that is only
+    /// partly filled, and a chunk that needs more than one threadgroup, both
+    /// have to come out right.
+    @Test(arguments: [1, 3, 4, 5, 31, 32, 33, 67])
+    func qBlockSlidingWindowMatchesReferenceAcrossBlockBoundaries(_ chunk: Int) throws {
+        let fixture = Self.makeFixture(start: 1_021,
+                                       chunk: chunk,
+                                       window: 1_024,
+                                       seed: 0xA950 + UInt64(chunk),
+                                       headDim: 256,
+                                       qHeads: 16,
+                                       kvHeads: 8)
+        try Self.runAndCompare(fixture, label: "qblock-chunk-\(chunk)")
+    }
+
+    /// The same kernel again, this time reading a wrapped FP16 ring: the
+    /// sliding-window layers are the ones that run on a ring in production, and
+    /// the ring modulus is a function constant, so it is a separate pipeline.
+    @Test func qBlockRingCapacityMatchesLinearReference() throws {
+        let fixture = Self.makeFixture(start: 300,
+                                       chunk: 36,
+                                       window: 128,
+                                       seed: 0xA960,
+                                       headDim: 256,
+                                       qHeads: 16,
+                                       kvHeads: 8)
+        let ringCapacity = 192
+        var kRing = [Float](repeating: 0, count: ringCapacity * fixture.kvStride)
+        var vRing = [Float](repeating: 0, count: ringCapacity * fixture.kvStride)
+        for p in 0..<fixture.kvValid {
+            let dst = (p % ringCapacity) * fixture.kvStride
+            let src = p * fixture.kvStride
+            kRing.replaceSubrange(dst..<(dst + fixture.kvStride),
+                                  with: fixture.k[src..<(src + fixture.kvStride)])
+            vRing.replaceSubrange(dst..<(dst + fixture.kvStride),
+                                  with: fixture.v[src..<(src + fixture.kvStride)])
+        }
+
+        var ringFixture = fixture
+        ringFixture.k = kRing
+        ringFixture.v = vRing
+        let actual = try Self.runKernel(ringFixture, kvRingCapacity: UInt32(ringCapacity))
+        let reference = Self.reference(fixture)
+        let maxAbs = RelError.maxAbsDiff(actual, reference)
+        let rel = RelError.compute(actual: actual, reference: reference)
+        #expect(maxAbs <= 2e-2, "qblock ring maxAbs=\(maxAbs) rel=\(rel)")
+        #expect(rel <= 2e-2, "qblock ring rel=\(rel) maxAbs=\(maxAbs)")
+    }
+
     @Test(arguments: [
         1,
         63, 64, 65,

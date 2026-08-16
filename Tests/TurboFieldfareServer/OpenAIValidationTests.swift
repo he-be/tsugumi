@@ -567,7 +567,7 @@ struct ServerArgumentTests {
         #expect(arguments.expertCacheSlots == 48)
         #expect(arguments.expertCachePolicy == .lfu)
         #expect(arguments.prefillPolicy == .chunked)
-        #expect(arguments.prefillChunkTokens == 128)
+        #expect(arguments.prefillChunkTokens == 2048)
         #expect(arguments.rdadvisePolicy == .off)
     }
 
@@ -639,7 +639,8 @@ struct ServerArgumentTests {
         ["--expert-cache-slots", "12"],
         ["--expert-cache-policy", "mru"],
         ["--prefill", "maybe"],
-        ["--prefill-chunk-tokens", "256"],
+        ["--prefill-chunk-tokens", "96"],
+        ["--prefill-chunk-tokens", "4096"],
         ["--rdadvise", "eager"],
     ])
     func rejectsUnsupportedRuntimeValues(flag: [String]) throws {

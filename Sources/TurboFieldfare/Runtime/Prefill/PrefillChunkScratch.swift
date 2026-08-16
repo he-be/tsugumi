@@ -13,7 +13,7 @@ struct PrefillChunkScratchLayout: Sendable, Equatable {
     init(config: ArchConfig,
                 chunkTokens: Int,
                 routedPairMicrobatchRows: Int = 32) {
-        self.chunkTokens = max(1, min(chunkTokens, 128))
+        self.chunkTokens = max(1, min(chunkTokens, PrefillRuntimeConfig.maxChunkTokens))
         self.hiddenSize = config.hiddenSize
         self.maxQElementsPerToken = config.numHeads * max(config.headDim, config.fullHeadDim)
         self.maxKVElementsPerToken = max(config.numKVHeads * config.headDim,
@@ -43,7 +43,9 @@ struct PrefillChunkScratchLayout: Sendable, Equatable {
     var routePartialElements: Int { chunkTokens * topK * hiddenSize }
     var routeIDElements: Int { chunkTokens * topK }
     var routeWeightElements: Int { routeIDElements }
-    var sharedExpertScratchElements: Int { sharedIntermediate }
+    /// The shared MLP runs the whole chunk in one QMM per projection, so its
+    /// gate/up/activation staging is `[chunkTokens, F]` rather than one row.
+    var sharedExpertScratchElements: Int { chunkTokens * sharedIntermediate }
     var routedGateUpActElements: Int { 3 * routedPairMicrobatchRows * routedIntermediate }
     var routedDownOutputElements: Int { routedPairMicrobatchRows * hiddenSize }
 

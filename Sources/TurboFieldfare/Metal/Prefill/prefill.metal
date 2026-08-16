@@ -958,6 +958,145 @@ kernel void attention_prefill_causal_tiled(
     }
 }
 
+// Query-blocked sliding-window attention.
+//
+// `attention_prefill_causal_tiled` above gives every (query, head) pair its own
+// threadgroup and walks the window one key at a time, reducing across the whole
+// threadgroup per key. Nothing is shared between queries, so each sliding-window
+// layer re-reads its whole K/V window once per query: at headDim 256 and a
+// 1024-row window that is 1 MB of K plus V per query, which is where a long
+// prompt's prefill time goes.
+//
+// Here one simdgroup owns `kQBlock` consecutive queries of one head. Each key
+// row is read into registers once and reused by all of them, and the per-key
+// reduction is a `simd_sum` rather than a threadgroup barrier, so the kernel
+// never synchronises. Device K/V traffic drops by `kQBlock`.
+//
+// Lane `l` owns head-dim elements `l, l + 32, l + 64, ...` so that the 32 lanes
+// of a load cover 32 consecutive halfs. `kElemsPerLane * 32` must equal
+// `p.headDim`; the host picks the specialisation that matches and falls back to
+// the tiled kernel for every other shape.
+template <uint kElemsPerLane, uint kQBlock>
+static inline void attention_prefill_causal_qblock_impl(
+    device const half* Q,
+    device const half* K,
+    device const half* V,
+    device half* O,
+    constant PrefillAttentionParams& p,
+    uint3 tg,
+    uint lane,
+    uint simd_group,
+    uint simdgroups
+) {
+    const uint head_dim = kElemsPerLane * 32u;
+    const uint qh = tg.y;
+    if (qh >= p.numQHeads) return;
+
+    const uint queries_per_group = kQBlock * simdgroups;
+    const uint q_first = tg.x * queries_per_group + simd_group * kQBlock;
+    if (q_first >= p.queryCount) return;
+    // Uniform across the simdgroup, so every branch on it below keeps the
+    // simdgroup converged and `simd_sum` stays well defined.
+    const uint q_count = min(kQBlock, p.queryCount - q_first);
+
+    const uint q_per_kv = p.numQHeads / p.numKVHeads;
+    const uint kv_head_offset = (qh / q_per_kv) * head_dim;
+
+    float q_reg[kQBlock][kElemsPerLane];
+    float acc[kQBlock][kElemsPerLane];
+    float row_max[kQBlock];
+    float row_sum[kQBlock];
+    uint window_first[kQBlock];
+    uint window_last[kQBlock];
+
+    uint block_first = 0xFFFFFFFFu;
+    uint block_last = 0u;
+
+    for (uint j = 0u; j < kQBlock; ++j) {
+        const bool active = j < q_count;
+        const uint t = active ? (q_first + j) : q_first;
+        device const half* q_row = Q + t * p.qTokenStrideElements + qh * head_dim;
+        for (uint i = 0u; i < kElemsPerLane; ++i) {
+            q_reg[j][i] = active ? float(q_row[lane + i * 32u]) : 0.0f;
+            acc[j][i] = 0.0f;
+        }
+        row_max[j] = -INFINITY;
+        row_sum[j] = 0.0f;
+
+        const uint abs_q = p.startPosition + t;
+        uint first = 0u;
+        if (p.slidingWindow != 0u && abs_q + 1u > p.slidingWindow) {
+            first = abs_q + 1u - p.slidingWindow;
+        }
+        window_first[j] = first;
+        window_last[j] = active ? min(p.kvValidCount, abs_q + 1u) : 0u;
+        if (active) {
+            block_first = min(block_first, first);
+            block_last = max(block_last, window_last[j]);
+        }
+    }
+
+    for (uint key = block_first; key < block_last; ++key) {
+        const uint phys_key = prefill_kv_slot(key);
+        device const half* k_row = K + phys_key * p.kvTokenStrideElements + kv_head_offset;
+        device const half* v_row = V + phys_key * p.kvTokenStrideElements + kv_head_offset;
+
+        float k_reg[kElemsPerLane];
+        float v_reg[kElemsPerLane];
+        for (uint i = 0u; i < kElemsPerLane; ++i) {
+            k_reg[i] = float(k_row[lane + i * 32u]);
+            v_reg[i] = float(v_row[lane + i * 32u]);
+        }
+
+        for (uint j = 0u; j < kQBlock; ++j) {
+            if (key < window_first[j] || key >= window_last[j]) {
+                continue;
+            }
+            float partial = 0.0f;
+            for (uint i = 0u; i < kElemsPerLane; ++i) {
+                partial = fma(q_reg[j][i], k_reg[i], partial);
+            }
+            const float score = simd_sum(partial) * p.scale;
+
+            const float new_max = max(row_max[j], score);
+            const float old_scale = row_sum[j] > 0.0f ? fast::exp(row_max[j] - new_max) : 0.0f;
+            const float new_scale = fast::exp(score - new_max);
+            for (uint i = 0u; i < kElemsPerLane; ++i) {
+                acc[j][i] = fma(new_scale, v_reg[i], acc[j][i] * old_scale);
+            }
+            row_sum[j] = row_sum[j] * old_scale + new_scale;
+            row_max[j] = new_max;
+        }
+    }
+
+    for (uint j = 0u; j < kQBlock; ++j) {
+        if (j >= q_count) {
+            continue;
+        }
+        device half* out_row = O + (q_first + j) * p.oTokenStrideElements + qh * head_dim;
+        const float inv = row_sum[j] > 0.0f ? 1.0f / row_sum[j] : 0.0f;
+        for (uint i = 0u; i < kElemsPerLane; ++i) {
+            out_row[lane + i * 32u] = half(acc[j][i] * inv);
+        }
+    }
+}
+
+[[kernel, max_total_threads_per_threadgroup(256)]]
+kernel void attention_prefill_causal_qblock_d256(
+    device const half* Q [[buffer(0)]],
+    device const half* K [[buffer(1)]],
+    device const half* V [[buffer(2)]],
+    device half* O [[buffer(3)]],
+    constant PrefillAttentionParams& p [[buffer(4)]],
+    uint3 tg [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]],
+    uint simdgroups [[simdgroups_per_threadgroup]]
+) {
+    attention_prefill_causal_qblock_impl<8u, 4u>(
+        Q, K, V, O, p, tg, lane, simd_group, simdgroups);
+}
+
 #if defined(__HAVE_TENSOR__)
 
 constant constexpr int kPrefillTensorOpsOutputs = 8;

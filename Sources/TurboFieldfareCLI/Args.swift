@@ -117,7 +117,12 @@ extension Args {
       --expert-cache-policy <s>  Expert-cache policy: lfu or lru (default lfu).
       --prefill on|off           Enable or disable chunked prompt prefill (default on).
                                  Chunked prefill requires 16 or more cache slots.
-      --prefill-chunk-tokens <n> Prefill chunk size: 32, 64, or 128 (default 128).
+      --prefill-chunk-tokens <n> Prefill chunk size: 32, 64, 128, 256, 512, 1024, or 2048
+                                 (default 2048). Wider chunks reuse each routed expert
+                                 across more tokens, so the SSD moves far fewer bytes
+                                 per token; they cost KV ring rows and prefill scratch,
+                                 and a width the device cannot keep resident is
+                                 rejected at load.
       --rdadvise <s>             Read-advice policy: off, default, bounded, or adaptive (default off).
       --verification <s>         Model integrity: full-sha256 or trusted-install
                                  (default full-sha256). trusted-install checks sizes

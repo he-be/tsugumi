@@ -15,12 +15,17 @@ public struct ExpertCacheBudget: Sendable, Equatable {
     public let expertCacheBytes: UInt64
     /// K and V buffers as `KVCacheManager` allocates them.
     public let kvCacheBytes: UInt64
+    /// Chunked-prefill scratch as `PrefillChunkScratchBuffers.allocate` sizes
+    /// it. Negligible at the default 128-token chunk (about 17 MB) and no longer
+    /// negligible at 2048 (about 270 MB, most of it `routePartials`), so it is
+    /// counted rather than assumed away.
+    public let prefillScratchBytes: UInt64
     /// What Metal reports this device can keep resident comfortably.
     public let recommendedWorkingSetBytes: UInt64
     public let slotCount: Int
 
     public var totalBytes: UInt64 {
-        residentBytes &+ expertCacheBytes &+ kvCacheBytes
+        residentBytes &+ expertCacheBytes &+ kvCacheBytes &+ prefillScratchBytes
     }
 
     public var fitsRecommendedWorkingSet: Bool {
@@ -31,7 +36,8 @@ public struct ExpertCacheBudget: Sendable, Equatable {
         func gb(_ bytes: UInt64) -> String { String(format: "%.2f GB", Double(bytes) / 1e9) }
         return """
             resident \(gb(residentBytes)) + experts \(gb(expertCacheBytes)) \
-            (\(slotCount) slots) + kv \(gb(kvCacheBytes)) = \(gb(totalBytes)); \
+            (\(slotCount) slots) + kv \(gb(kvCacheBytes)) \
+            + prefill scratch \(gb(prefillScratchBytes)) = \(gb(totalBytes)); \
             device recommends at most \(gb(recommendedWorkingSetBytes))
             """
     }
@@ -43,7 +49,8 @@ extension Model {
     /// capacity, so long contexts only cost the full-attention layers.
     public func kvCacheByteEstimate(maxContext: Int,
                                     fp16RingEnabled: Bool = true,
-                                    maxPrefillChunkTokens: Int = PrefillRuntimeConfig.maxChunkTokens)
+                                    maxPrefillChunkTokens: Int =
+                                        PrefillRuntimeConfig.defaultChunked.chunkTokens)
         -> UInt64 {
         let fp16Size = 2
         let swaStride = config.numKVHeads * config.headDim * fp16Size
@@ -61,13 +68,29 @@ extension Model {
         return total
     }
 
-    public func expertCacheBudget(slotCount: Int, maxContext: Int) -> ExpertCacheBudget {
-        ExpertCacheBudget(
+    /// `prefillConfig` must be the one the runner will actually use: a wide
+    /// chunk grows the sliding-window ring to `slidingWindow + chunkTokens` rows
+    /// — at chunk 2048 that is 2.7x the default ring — and grows the prefill
+    /// scratch with it. Sizing the guard from the widest *allowed* chunk instead
+    /// would reject configurations that fit.
+    public func expertCacheBudget(
+        slotCount: Int,
+        maxContext: Int,
+        prefillConfig: PrefillRuntimeConfig = .defaultChunked
+    ) -> ExpertCacheBudget {
+        let scratchBytes: UInt64 = prefillConfig.enabled
+            ? UInt64(PrefillChunkScratchLayout(config: config,
+                                               runtime: prefillConfig).totalPersistentBytes)
+            : 0
+        return ExpertCacheBudget(
             residentBytes: residentIndex.header.residentSize,
             expertCacheBytes: UInt64(packedExpertsLayout.numLayers)
                 &* UInt64(slotCount)
                 &* packedExpertsLayout.expertStride,
-            kvCacheBytes: kvCacheByteEstimate(maxContext: maxContext),
+            kvCacheBytes: kvCacheByteEstimate(
+                maxContext: maxContext,
+                maxPrefillChunkTokens: prefillConfig.chunkTokens),
+            prefillScratchBytes: scratchBytes,
             recommendedWorkingSetBytes: UInt64(device.recommendedMaxWorkingSetSize),
             slotCount: slotCount)
     }
