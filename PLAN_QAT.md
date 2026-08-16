@@ -1,6 +1,6 @@
 # PLAN_QAT — lattice-aligned QAT チェックポイント (`qat-q4_0-mlx-aligned`) の導入
 
-作成: 2026-08-17 / 更新: 2026-08-16 (設計レビュー反映)
+作成: 2026-08-17 / 更新: 2026-08-16 (Phase A+B 完了、実測を反映)
 M3 Pro 18GB / macOS 15.7.5 / `macos15-support` ブランチ
 入力: `docs/investigations/QAT_MTP_CHECKPOINT_ANALYSIS.md` (Candidate 2 の分析)、
 `PLAN.md` / `RESULTS.md` (Phase 0-2 の実測)、リモートリポジトリの直接確認、
@@ -14,6 +14,7 @@ M3 Pro 18GB / macOS 15.7.5 / `macos15-support` ブランチ
 | # | 当初の記述 | 訂正 |
 | --- | --- | --- |
 | 1 | §3-1「カーネル本体のロジックは 1 行も変わらない / 定数置換のみ」 | **誤り。**decode の 4 箇所がブロック分割を直書きしており、定数置換だけでは OOB + スケール不整合を起こす。§3-1-a |
+| 6 | §3-1-a「対象は 4 箇所」 | **過少。実際は 7 箇所。**INT8 ルーター (§3-1-a-2) と INT8 の GEMV / shared expert (§3-1-a-3) が漏れていた。後者 2 つは**現行ピンが毎トークン通る**経路 |
 | 2 | §3-1 function constant の却下理由「PSO 二重管理が必要」 | **現状と不一致。**PSO キャッシュは既に定数をキーにしている。§3-1-c |
 | 3 | §2 resident ≈ 1.2 GB (「shared 4bit 化とスケール増が相殺」) | **実測 1.51 GB。**相殺していない。結論 (64 スロット可) は不変 |
 | 4 | §5 の検証は旧モデル回帰 + 実機の目視 | **group 32 のバグを検出できない。**§5-A の数値検証を Phase A の出口条件に追加 |
@@ -25,30 +26,26 @@ M3 Pro 18GB / macOS 15.7.5 / `macos15-support` ブランチ
 
 | Phase | 状態 | 結果 |
 | --- | --- | --- |
-| A0 数値検証ハーネス | **完了** | `TurboFieldfareKernelCheck`。group 64/32 とも 6/6 PASS |
-| A カーネルの group パラメータ化 | **完了** | §3-1-a の 4 箇所を修正。group 64 の数値は修正前と同値 |
-| A 既存モデル回帰 (§5-0) | **未確定** | 128 tok では回ったが**比較対象がない**。`MAXNEW=384 ./bench.sh ja` が必要 (下記) |
-| B bf16 ルーター | 未着手 | 次はここ |
-| C repacker のローカル入力 | 未着手 | |
+| A0 数値検証ハーネス | **完了** | `TurboFieldfareKernelCheck`。commit `4cd8c69` |
+| A カーネルの group パラメータ化 | **完了** | §3-1-a の 4 箇所を修正。group 64 の数値は修正前と同値。commit `4cd8c69` |
+| A 既存モデル回帰 (§5-0) | **完了・合格** | 3 本とも ±1% 以内 (下記 §5-0 の実測) |
+| B bf16 ルーター | **完了** | ハーネスは 20/20 PASS。§3-1-a-2 / §3-1-a-3 で group 幾何のバグを計 3 箇所追加で発見・修正。既存モデルの実機出力は文字単位で不変 |
+| C repacker のローカル入力 | 未着手 | 次はここ |
 | D インストールと受入 | 未着手 | |
 
-**変更は 25 ファイル / +315 −94 行。すべて未コミット** (`macos15-support` ブランチの
-作業ツリーにあるだけ)。
+### 次にやること
 
-### 中断時点で残っている作業
-
-1. **§5-0 の ±4% 判定が未確定。** `./bench.sh ja` を回したが、`bench.sh` の既存
-   バグ (下記) で 128 tok で走ってしまい、RESULTS §3-4 の 384 tok ベースラインと
-   比較できない。**再開したらまず `MAXNEW=384 ./bench.sh ja` を回すこと。**
-   合格ラインは haiku 30.84 / story 31.31 / math 28.42 tok/s の ±4%。
-2. Phase B (bf16 ルーター) 以降。
+1. Phase C: `--source-snapshot` とマニフェストの router スロット (§3-3)。
+   writer 側は `GTurboJSON.encodeManifest` が scheme/scaleType/biasType を
+   全スロット一律で書いているので、router だけ `bf16`/`none`/`none` に
+   分岐させる必要がある (**実測**、`GTurboJSON.swift:66-73`)。
+2. Phase D: インストールと §5-2 の受入。
 
 ### 再開手順
 
 ```bash
 swift build -c release
-./.build/release/TurboFieldfareKernelCheck          # 12/12 PASS を確認
-MAXNEW=384 ./bench.sh ja                            # §5-0 の判定 (約 12 分)
+./.build/release/TurboFieldfareKernelCheck          # 20/20 PASS を確認
 ```
 
 ### 副産物: `bench.sh` の既存バグを修正した (**実測**)
@@ -62,6 +59,14 @@ MAXNEW=384 ./bench.sh ja                            # §5-0 の判定 (約 12 �
 参考: 128 tok で回った回帰値 (3 回中央値、比較対象なし)。
 haiku 27.82 / math 24.85 / story 28.09 tok/s、peak 6.93-7.10 GB、
 decode hit 96.1-98.5%。ヒット率と peak は §3-4 の 384 tok 版と整合する。
+
+### もう 1 つの落とし穴: ベースラインは greedy で測られている (**実測**)
+
+RESULTS §3-4 の 30.84 / 31.31 / 28.42 tok/s は `--temperature 0` の表
+(§3-4 冒頭の注記)。一方 `bench.sh` の既定は §3-6 以降 **temp 1.0**。
+±4% の判定幅は「温度差は run 間の振れの中」という §3-4 の但し書きと同じ大きさ
+なので、**温度をベースラインに合わせないと判定が交絡する**。
+§5-0 は `TEMP=0 MAXNEW=384 ./bench.sh ja` で測った。
 
 ---
 
@@ -302,6 +307,64 @@ GS=64 を代入すると現行コードと完全に同一に戻るので、**既
 `503-525` は純粋なスカラーループで `kPrefillGroupSize` のみに依存している
 (**実測**)。「定数置換のみ」は prefill には当てはまり、decode には当てはまらない。
 
+#### 3-1-a-2. 5 箇所目が Phase B で見つかった (**実測**、2026-08-16)
+
+上の 4 箇所を数えたとき、**decode の INT8 ルーター
+(`moe.metal` `router_gemv_gemma4_body`) を見落としていた**。同じ病気で、
+
+```metal
+const uint idx = g * kMoEGroupSize + lane * 2u;   // 32 lane × 2 = 「1 群 = 64 要素」前提
+```
+
+group 32 では 1 反復で 64 要素読むのに群は 32 要素しかなく、隣の群を
+**前の群のスケールで**読んだうえ最終群で行末を 1 行ぶん飛び越す。
+
+見落とした理由も、見つかった理由も同じ: **QAT モデルはルーターが bf16 なので
+このカーネルを通らない**。§5-A の 6 ケースは int4 経路しか見ておらず、
+Phase B でルーターのケースを足して初めて露出した。修正は §3-1-a と同じ形:
+
+```
+groups_per_step = 64 / GS     // 64→1, 32→2
+lanes_per_group = 32 / groups_per_step
+g = st * groups_per_step + lane / lanes_per_group
+```
+
+GS=64 を入れると `g == st` で元のコードに戻る。実測でも group 64 の相対誤差は
+修正前後で `3.320e-04` の同値、group 32 は修正前 FAIL / 修正後 PASS。
+
+**教訓:** 「新モデルが通らない経路」は棚卸しから落ちる。group パラメータ化を
+入れた以上、**group 32 で動きうるカーネルは全部**ハーネスに載せる。
+なお prefill 側の INT8 ルーター (`prefill_router_gemma4_block`) はスカラー
+ループなので健全 (**実測**)。
+
+#### 3-1-a-3. 棚卸しの結果: さらに 2 箇所 (**実測**、2026-08-16)
+
+上の教訓を受けて `TURBO_AFFINE_GROUP_SIZE` を参照する 6 ファイルを全走査した。
+**同じ「1 群 = 64 要素」を仮定していたのはあと 2 つ**、どちらも
+`dequant_int8.metal`:
+
+| カーネル | 用途 | 判定 |
+| --- | --- | --- |
+| `dequant_int8_gemv_simd` | shared expert down、旧 lm_head | **同じ病気** → 修正 |
+| `shared_int8_gate_up_act_simd` | shared expert gate/up 融合 | **同じ病気** → 修正 |
+
+**この 2 つは現行ピンで毎トークン通る**(現行の shared expert は 8bit)。
+ルーターと違って「使われていない経路」ではないので、group 64 での恒等性が
+そのまま既存モデルの正しさになる。§5-A の group 64 側は修正前後で
+`3.454e-04` / `3.761e-04` の同値、実機の greedy 出力も文字単位で一致、
+ヒット数も `3341/7854` `7238/7440` で不変 (**実測**)。
+
+安全な残り (**実測**、いずれも group 依存の幾何を持たない):
+
+- `dequant_int4.metal` / `moe.metal` / `logit.metal` のベクタ化ブロック
+  → §3-1-a で修正済み、§5-A のケース 1-5 が担保
+- `embed_lookup_int4` / `prefill_embed_lookup_int4_block` — 要素ごとに
+  `gid / GS` でスケールを引くだけ
+- `prefill.metal` の GEMV / QMM / ルーター — 純粋なスカラーループ
+- `tensorops.metal` (MPP) — group != 64 で経路ごと無効化済み (§3-1)
+
+これで **group 32 で走りうる経路はすべてハーネス上にある**。
+
 #### 3-1-b. 初期化順序 (**実測**)
 
 `MetalContext()` は 3 つの入口すべてで `Model.load` より**前**に構築される:
@@ -477,18 +540,34 @@ group を引数で受け取れるようにする**(参照実装は素直なル�
 **Phase A の本体は上表ではなく §3-1-a の 4 箇所 (計 約 16 行)。**
 残りは機械的な置換で、危険度が桁違いに違う。
 
-### Phase B — bf16 ルーター
+### Phase B — bf16 ルーター — **完了**
 
 | ファイル | 変更 |
 | --- | --- |
-| `Metal/MoE/moe.metal` | `router_gemv_gemma4_bf16_r4` |
-| `Metal/Prefill/prefill.metal` | `prefill_router_gemma4_bf16_block` (top-k 共通化) |
-| `Kernels/MoE/MoE.swift` | `encodeRouterGemma4BF16` |
-| `Kernels/Prefill/MoE/PrefillRouter.swift` | bf16 block ラッパー |
-| `Runtime/Inference/RealForwardRunner.swift` | ルーター分岐 (decode + prefill) |
-| `Infrastructure/ModelIO/ModelTypes.swift` / `Model.swift` | `routerWeightBits` 公開 |
-| `Infrastructure/ModelIO/ManifestReader.swift` | router bits [8,16] 検証 |
-| `Runtime/Inference/Model.swift` (`validateRuntimeSchema`) | router bits 16 → BF16 schema 検証 |
+| `Metal/MoE/moe.metal` | `router_gemv_gemma4_bf16_r4` + **INT8 ルーターの group ジオメトリ修正 (§3-1-a-2)** |
+| `Metal/Prefill/prefill.metal` | `prefill_router_gemma4_bf16_block` (top-k は `prefill_router_emit_topk` に共通化) |
+| `Kernels/MoE/MoE.swift` | `encodeRouterGemma4BF16` + `RouterError` + select 部の共通化 |
+| `Kernels/Prefill/MoE/PrefillRouter.swift` | `encodeGemma4BF16Block` |
+| `Runtime/Inference/RealForwardRunner.swift` | ルーター分岐 (decode + prefill)、MoE/PrefillRouter に bits を渡す |
+| `Runtime/Inference/Model.swift` | `routerWeightBits` 公開 + `validateRuntimeSchema` に `requireBF16Matrix` |
+| `Infrastructure/ModelIO/ManifestReader.swift` | router bits [8,16]、bits 16 は scheme/scale/bias を `bf16`/`none`/`none` 要求、**groupSize を manifest 駆動に** |
+| `Metal/Quant/dequant_int8.metal` | §3-1-a-3 の 2 箇所を同じ変換で修正 |
+| `Kernels/Quant/DequantInt8GEMV.swift` / `Kernels/MoE/SharedExpertInt8.swift` | N % 64 のガード。前者は harness 用に `package` 可視化 |
+| `TurboFieldfareValidation/.../DequantInt8Gemv.swift` / `MoE/Moe.swift` | 参照に `groupSize:` を追加、`MoeRef.runFFNInt8` を新設 |
+| `TurboFieldfareKernelCheck/main.swift` | §5-A ケース 6-9 |
+
+**設計上の決定 (実装で確定した点):**
+
+- **ルーターは片方しかコンパイルしない。** `MoE` / `PrefillRouter` は
+  `routerWeightBits` を受け取り、対応する 1 本だけ PSO を作る
+  (`SharedExpertRuntime(weightBits:)` と同じ形)。誤った側を encode したら
+  precondition で落ちる。
+- **bf16 カーネルは group サイズに一切依存しない** (群構造がないため)。
+  `TURBO_AFFINE_GROUP_SIZE` を参照しないので、group 32/64 のどちらでも同一。
+- `ManifestReader.validateQuant` の groupSize 検証は
+  「`Quantization.supportedGroupSizes` に入っていて、かつ全スロットで一致」に
+  変えた。`Model.affineGroupSize` が embedding スロット 1 つを全体の代表として
+  読む前提 (Phase A のコメント) を、これで初めて実際に保証している。
 
 ### Phase C — repacker のローカルスナップショット対応 (簡略化済み)
 
@@ -535,11 +614,33 @@ GPU フレームキャプチャだけ。今回の主リスク (§3-1-a) には �
 ```bash
 .build/release/TurboFieldfareCLI --model scratch/gemma4.gturbo \
   --messages-file bench/haiku.json --max-new 64 --seed 1   # 動作 + footer
-./bench.sh ja    # tok/s が RESULTS §3-4 から ±4% 以内 (run 間振れと同幅)
+TEMP=0 MAXNEW=384 ./bench.sh ja   # tok/s が RESULTS §3-4 から ±4% 以内
 ```
 
 > **§5-0 だけでは不十分。** 旧モデルは group 64 なので、この回帰確認は
 > **§3-1-a の group 32 バグを構造的に検出できない。**必ず §5-A と併用する。
+
+#### 結果 (**実測**、2026-08-16、Phase A+B 適用後)
+
+`TEMP=0 MAXNEW=384 ./bench.sh ja`、3 回インターリーブ、64 スロット、
+`trusted-install`。ベースラインは RESULTS §3-4 (同条件・greedy)。
+
+| prompt | 3 回の tok/s | 中央値 | ベースライン | 差 | 判定 |
+| --- | --- | ---: | ---: | ---: | --- |
+| haiku | 31.132 / 30.838 / 30.852 | 30.852 | 30.84 | **+0.04%** | 合格 |
+| math | 28.442 / 28.306 / 28.480 | 28.442 | 28.42 | **+0.08%** | 合格 |
+| story | 31.001 / 31.005 / 30.645 | 31.001 | 31.31 | **−0.99%** | 合格 |
+
+**3 本とも ±1% 以内**で、±4% のゲートに対して大きな余裕がある。
+副次的な一致も確認した (性能より強い同一性の証拠):
+
+- decode ヒット率 99.2 / 97.4 / 98.5% は §3-4 と**小数第 1 位まで同値**
+- peak 7.02-7.10 GB は §3-4 の 7.05-7.13 GB と同水準
+- 3 本とも `stop=maxTokens` で 384 tok 生成 (§3-4 と同じ打ち切り方)
+
+Phase B 適用後の実機スモーク (`--max-new 32`、haiku、greedy) も
+**Phase A 記録のヒット数と 1 件も違わない**: `prefill 3341/7854`、
+`decode 7238/7440` (**実測**)。
 
 ### 5-A. group 32 カーネルの数値検証 (**Phase A の出口条件**)
 
@@ -558,6 +659,9 @@ Phase A0 のハーネスで、**合成入力に対し GPU カーネル vs CPU �
 | 4 | MoE gate/up (`…u16load`) | 2816 | routed、2 行同時読み |
 | 5 | MoE down | **704** | **末尾ループを踏む** (2 blk + 6 群) |
 | 6 | bf16 ルーター (Phase B) | 2816 | 新規カーネル |
+| 7 | int8 ルーター (Phase B で追加) | 2816 | §3-1-a-2 の 5 箇所目 |
+| 8 | `dequant_int8_gemv_simd` | 2112 | §3-1-a-3 |
+| 9 | int8 shared expert (gate/up 融合 + down) | 2816 / 2112 | §3-1-a-3。現行ピンの実経路 |
 
 - 各ケースを **group 64 と group 32 の両方**で回す。64 側は「既存の挙動が
   1 bit も変わっていない」ことの確認、32 側が本番。
@@ -578,6 +682,29 @@ Phase A0 のハーネスで、**合成入力に対し GPU カーネル vs CPU �
 > **独立な 4 draw の全一致**を要求している (壊れたカーネルが 4 回とも
 > 参照と同じ argmax を出す確率は無視できる)。実際、修正前は 4 draw 中
 > 4 draw とも不一致だった。
+>
+> **Phase B で 4 ケース追加し、group あたり 10 ケース = 計 20 になった**
+> (**実測**、2026-08-16)。ルーターは top-8 のインデックス完全一致 + 重みの
+> 相対誤差で判定し、これも 4 draw 回す。CPU 参照はハーネス内の素の二重ループで、
+> カーネルと構造を共有しない。
+>
+> ```
+> group 64: 10/10 PASS  router-int8 3.320e-04 / router-bf16 2.308e-04
+>                       int8-gemv 3.454e-04 / shared-expert-int8 3.761e-04
+> group 32: 10/10 PASS  router-int8 4.261e-04 / router-bf16 3.756e-04
+>                       int8-gemv 2.172e-04 / shared-expert-int8 4.372e-04
+> ```
+>
+> **検出力も 4 本すべてで確認した** (旧ジオメトリに戻して再実行):
+>
+> | ケース | group 64 | group 32 |
+> | --- | --- | --- |
+> | router-int8 | PASS `3.320e-04` (同値) | FAIL 4 draw ともエキスパート選択が不一致 |
+> | int8-gemv | PASS `3.454e-04` (同値) | FAIL `rel=1.118e+00` |
+> | shared-expert-int8 | PASS `3.761e-04` (同値) | FAIL `rel=6.834e+00` |
+>
+> group 64 の相対誤差が**修正前後で 1 桁も変わらない**ことが、
+> 既存モデルの挙動不変の直接証拠 (式に GS=64 を入れると元のコードに戻る)。
 
 ### 5-1. インストール (ローカルスナップショットから)
 
@@ -629,14 +756,15 @@ footer 全文 / プロトコルからの逸脱すべて) を残す。スイー�
 
 | リスク | 内容 | 対策 |
 | --- | --- | --- |
-| ~~**ベクタ化ブロックの黙った破壊**~~ | ~~§3-1-a~~ | **解消 (2026-08-16)。**4 箇所を書き換え、§5-A が group 64/32 とも 6/6 PASS。修正前に同じハーネスが 6/6 FAIL していたので、検出力があることも確認済み |
+| ~~**ベクタ化ブロックの黙った破壊**~~ | ~~§3-1-a~~ | **解消 (2026-08-16)。**Phase A で 4 箇所、Phase B でさらに 3 箇所 (§3-1-a-2 / §3-1-a-3) を書き換え、§5-A は group 64/32 とも **10/10 PASS**。7 箇所すべて、旧コードに戻すと group 32 が FAIL / group 64 は同値のまま PASS することを確認済み (検出力の裏取り) |
 | ハーネス自身が壊れを見逃す | 比較関数が NaN を「一致」に潰す、コマンドバッファのエラーを見ない、参照側が無信号 | **1 件顕在化して解消 (2026-08-16)。**`RelError.compute` は `max(0, .nan) == 0` のため NaN 出力が rel=0 = PASS になり、実際に routed-moe の group 32 が壊れたまま PASS していた。NaN-safe な比較 + コマンドバッファ検査 + 参照信号検査に差し替え済み |
 | group 32 化による decode 性能低下 | expert 読み出し +10.7%、スケール帯域は倍 | GPU 律速なので影響は小さい見込み (§2)。**ゲート値に余白がないことは §5-2-3 で明示し、判定基準を事前に決めた** |
 | define 注入の遅延コンパイル | 初回 `pipeline()` 前に group size を設定し忘れると誤ったライブラリが焼かれる。`MetalContext()` は 3 入口とも `Model.load` より前に構築される (§3-1-b、**実測**) | runner init 順序を 1 箇所に集約、設定前に pipeline を引かない前提を assert |
 | 上流 README の品質主張が再現しない | KL 0.090 等は自己申告 (**未確認**) | 受入は §5-2 の実機ゲートで判定し、数値を信用しない |
 | ~~インストール中断~~ | ~~15.8 GB の DL~~ | **解消。スナップショット取得済み (§1-2)。repack はローカル** |
 | shared expert 4bit の品質 | 現行 8bit から低下する可能性 | QAT チェックポイント由来のため許容。俳句/数式ゲートで観察 |
-| 既存モデルのデグレ | Phase A でカーネル定数を触る | §5-0 で旧モデル回帰、加えて §5-A を **group 64 でも**回して数値不変を確認 |
+| ~~既存モデルのデグレ~~ | ~~Phase A でカーネル定数を触る~~ | **Phase A+B について解消 (2026-08-16)。**§5-0 は 3 本とも ±1% 以内でヒット率まで同値、§5-A の group 64 は 8/8 PASS で相対誤差も修正前と同値 |
+| ~~**棚卸しの漏れ**~~ | ~~group パラメータ化の対象一覧 (§3-1-a) が 4 箇所~~ | **解消 (2026-08-16)。**実際には 7 箇所だった (§3-1-a-2 で 5 番目、§3-1-a-3 で 6・7 番目)。全 6 ファイルを走査し、残りは group 依存の幾何を持たないことを確認。**group 32 で走りうる経路はすべて §5-A に載っている** |
 
 ## 7. 中止条件
 
