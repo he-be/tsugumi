@@ -60,7 +60,7 @@ public struct AppRuntimeOptions: Equatable, Sendable {
     public var rdadvisePolicy: AppRDAdvicePolicy
     public var modelVerification: AppModelVerification
 
-    public init(expertCacheSlots: Int = 16,
+    public init(expertCacheSlots: Int = 48,
                 expertCachePolicy: AppExpertCachePolicy = .lfu,
                 prefillEnabled: Bool = true,
                 prefillChunkTokens: Int = 128,
@@ -95,12 +95,20 @@ public struct AppRuntimeOptions: Equatable, Sendable {
         return "Cache \(expertCacheSlots) \(expertCachePolicy.label), \(prefill), FP16 KV, RDADVISE \(rdadvisePolicy.label.lowercased()), \(verification)"
     }
 
+    /// Slot labels compare peak memory against the default (48 slots) using
+    /// the pinned QAT checkpoint's expert stride: 30 layers x 3,719,168 B
+    /// = about 0.11 GB per slot.
     public static func slotsLabel(for slots: Int) -> String {
         switch slots {
-        case 8: "8, -0.8 GB"
-        case 16: "16, Default"
-        case 24: "24, +0.8 GB"
-        case 32: "32, +1.61 GB"
+        case 8: "8, -4.46 GB"
+        case 16: "16, -3.57 GB"
+        case 24: "24, -2.68 GB"
+        case 32: "32, -1.79 GB"
+        case 48: "48, Default"
+        case 64: "64, +1.79 GB"
+        case 80: "80, +3.57 GB"
+        case 96: "96, +5.36 GB"
+        case 112: "112, +7.14 GB"
         default: "\(slots)"
         }
     }

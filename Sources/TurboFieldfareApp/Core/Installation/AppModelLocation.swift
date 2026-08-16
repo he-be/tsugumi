@@ -28,16 +28,16 @@ enum AppModelLocation {
         if let executableURL,
            let root = packageRoot(startingAt: executableURL.deletingLastPathComponent(),
                                   fileExists: fileExists) {
-            return root.appendingPathComponent("scratch/gemma4.gturbo", isDirectory: true)
+            return root.appendingPathComponent("scratch/gemma4-qat.gturbo", isDirectory: true)
                 .standardizedFileURL
         }
         if let root = packageRoot(startingAt: currentDirectoryURL, fileExists: fileExists) {
-            return root.appendingPathComponent("scratch/gemma4.gturbo", isDirectory: true)
+            return root.appendingPathComponent("scratch/gemma4-qat.gturbo", isDirectory: true)
                 .standardizedFileURL
         }
         return applicationSupportURL
             .appendingPathComponent("TurboFieldfare", isDirectory: true)
-            .appendingPathComponent("gemma4.gturbo", isDirectory: true)
+            .appendingPathComponent("gemma4-qat.gturbo", isDirectory: true)
             .standardizedFileURL
     }
 
