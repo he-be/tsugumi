@@ -769,6 +769,148 @@ kernel void prefill_dequant_int4_qmm_f16_block(
     Y[t * N + n] = half(acc);
 }
 
+/// `Y[T, N] = X[T, K] * W[N, K]^T` with 8x8 `simdgroup_matrix` tiles.
+///
+/// `prefill_dequant_int4_qmm_f16_block` gives one thread the whole K reduction
+/// for a single (token, row) pair, so a weight byte is re-read once per token
+/// block of 8 and every FMA is scalar. This one stages a 64x32 activation tile
+/// and a dequantized 32x64 weight tile in threadgroup memory, then walks them
+/// with `simdgroup_multiply_accumulate`: a weight byte is read once per 64
+/// tokens and the reduction runs on the matrix units.
+///
+/// One threadgroup (4 simdgroups, 128 threads) owns a 64x64 output tile; each
+/// simdgroup owns a 32x32 quadrant of it as a 4x4 array of 8x8 accumulators.
+/// The accumulators stay `float` so the K reduction keeps the scalar kernel's
+/// precision. `stage` is aliased as the two half tiles during the K loop and
+/// reused as the float epilogue tile afterwards.
+///
+/// K is a multiple of the affine group size (32 or 64) and therefore of the
+/// 32-wide K tile, so a tile never straddles a group boundary and each 8-wide
+/// dequant chunk needs one scale/bias pair. T and N are unconstrained.
+constant constexpr uint kPrefillQMMTileM = 64;
+constant constexpr uint kPrefillQMMTileN = 64;
+constant constexpr uint kPrefillQMMTileK = 32;
+constant constexpr uint kPrefillQMMThreads = 128;
+
+kernel void prefill_int4_qmm_simdgroup_f16(
+    device const uint8_t* W      [[buffer(0)]],
+    device const bfloat*  scales [[buffer(1)]],
+    device const bfloat*  biases [[buffer(2)]],
+    device const half*    X      [[buffer(3)]],
+    device half*          Y      [[buffer(4)]],
+    constant uint&        T      [[buffer(5)]],
+    constant uint&        N      [[buffer(6)]],
+    constant uint&        K      [[buffer(7)]],
+    uint3                 lid3   [[thread_position_in_threadgroup]],
+    uint3                 tgid3  [[threadgroup_position_in_grid]],
+    uint                  sgid   [[simdgroup_index_in_threadgroup]]
+) {
+    const uint lid = lid3.x;
+    const uint2 tgid = tgid3.xy;
+    threadgroup float stage[kPrefillQMMTileM * kPrefillQMMTileN];
+    threadgroup half* As = (threadgroup half*)stage;
+    threadgroup half* Bs = As + kPrefillQMMTileM * kPrefillQMMTileK;
+
+    const uint tBase = tgid.y * kPrefillQMMTileM;
+    const uint nBase = tgid.x * kPrefillQMMTileN;
+    const uint groups = K / kPrefillGroupSize;
+    const uint row_bytes = K / 2u;
+
+    // Quadrant of the 64x64 tile this simdgroup accumulates.
+    const uint sg_m = (sgid / 2u) * 32u;
+    const uint sg_n = (sgid % 2u) * 32u;
+
+    simdgroup_float8x8 acc[4][4];
+    for (uint i = 0; i < 4u; ++i) {
+        for (uint j = 0; j < 4u; ++j) {
+            acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+        }
+    }
+
+    // Weight row and dequant chunk this thread refills every K tile. Two
+    // threads share a row and take two of the four 8-wide chunks each.
+    const uint w_n_local = lid & (kPrefillQMMTileN - 1u);
+    const uint w_chunk_base = lid / kPrefillQMMTileN;
+    const uint w_n = nBase + w_n_local;
+    device const uint8_t* w_row = W + w_n * row_bytes;
+    device const bfloat* s_row = scales + w_n * groups;
+    device const bfloat* b_row = biases + w_n * groups;
+
+    for (uint k0 = 0; k0 < K; k0 += kPrefillQMMTileK) {
+        // Activations: 64x32 halves, 16 per thread, K-contiguous per row.
+        for (uint i = 0; i < 16u; ++i) {
+            const uint idx = i * kPrefillQMMThreads + lid;
+            const uint m = idx / kPrefillQMMTileK;
+            const uint kk = idx % kPrefillQMMTileK;
+            const uint t = tBase + m;
+            As[idx] = (t < T) ? X[t * K + k0 + kk] : half(0.0f);
+        }
+
+        // Weights: 32x64 halves, stored K-major so an 8x8 load is already the
+        // [k, n] fragment the matrix unit wants.
+        for (uint c = 0; c < 2u; ++c) {
+            const uint kk = (w_chunk_base + c * 2u) * 8u;
+            if (w_n < N) {
+                const uint g = (k0 + kk) / kPrefillGroupSize;
+                const float scale = float(s_row[g]);
+                const float bias = float(b_row[g]);
+                device const uint8_t* w_ptr = w_row + ((k0 + kk) >> 1);
+                for (uint p = 0; p < 4u; ++p) {
+                    const uint8_t packed = w_ptr[p];
+                    const float lo = fma(float(packed & 0x0Fu), scale, bias);
+                    const float hi = fma(float(packed >> 4), scale, bias);
+                    Bs[(kk + 2u * p) * kPrefillQMMTileN + w_n_local] = half(lo);
+                    Bs[(kk + 2u * p + 1u) * kPrefillQMMTileN + w_n_local] = half(hi);
+                }
+            } else {
+                for (uint p = 0; p < 8u; ++p) {
+                    Bs[(kk + p) * kPrefillQMMTileN + w_n_local] = half(0.0f);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        simdgroup_half8x8 a[4];
+        simdgroup_half8x8 b[4];
+        for (uint kk = 0; kk < kPrefillQMMTileK; kk += 8u) {
+            for (uint i = 0; i < 4u; ++i) {
+                simdgroup_load(a[i],
+                               As + (sg_m + i * 8u) * kPrefillQMMTileK + kk,
+                               kPrefillQMMTileK);
+            }
+            for (uint j = 0; j < 4u; ++j) {
+                simdgroup_load(b[j],
+                               Bs + kk * kPrefillQMMTileN + sg_n + j * 8u,
+                               kPrefillQMMTileN);
+            }
+            for (uint i = 0; i < 4u; ++i) {
+                for (uint j = 0; j < 4u; ++j) {
+                    simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (uint i = 0; i < 4u; ++i) {
+        for (uint j = 0; j < 4u; ++j) {
+            simdgroup_store(acc[i][j],
+                            stage + (sg_m + i * 8u) * kPrefillQMMTileN + sg_n + j * 8u,
+                            kPrefillQMMTileN);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = 0; i < 32u; ++i) {
+        const uint idx = i * kPrefillQMMThreads + lid;
+        const uint t = tBase + idx / kPrefillQMMTileN;
+        const uint n = nBase + idx % kPrefillQMMTileN;
+        if (t < T && n < N) {
+            Y[t * N + n] = half(stage[idx]);
+        }
+    }
+}
+
 static inline void prefill_rope_apply_neox_pair(
     device half* head_ptr,
     uint i,

@@ -594,6 +594,74 @@ func checkSharedExpertInt8(d: Int, f: Int, groupSize: Int,
            detail: "gate/up groups=\(d / groupSize) down groups=\(f / groupSize)")
 }
 
+// MARK: - Case 10 — prefill INT4 QMM (simdgroup_matrix tiles)
+
+/// `Y[t, n] = X[t, k] * W[n, k]^T` through the prefill QMM, which serves both
+/// the Q/K/V/O projections and the batched shared MLP.
+///
+/// The tiled kernel is the one place where a K tile (32) can be narrower than
+/// the affine group (64), so the scale/bias index has to come from the global
+/// K position rather than the tile counter — the failure mode that killed the
+/// MPP path. `k = 2816` covers it: 88 tiles over 44 groups at group 64, and
+/// 88 tiles over 88 groups at group 32.
+///
+/// Shapes that are not whole tiles (`t = 131`, `n = 100`) check the masked
+/// edges: out-of-range rows must contribute zero rather than garbage, and
+/// out-of-range outputs must not be written at all.
+func checkPrefillInt4QMM(t: Int, n: Int, k: Int, groupSize: Int,
+                         seed: UInt64) throws -> CaseResult {
+    var rng = SeedTree(seed).key("prefill-qmm-t\(t)-n\(n)-k\(k)-g\(groupSize)")
+    let rows = quantizedRows(count: n, n: k, groupSize: groupSize, rng: &rng)
+    let (packed, scales, biases) = packRows(rows)
+
+    let xFp16 = (0..<(t * k)).map { _ in Float16(rng.uniform(-1.0, 1.0)) }
+
+    let context = try makeContext(groupSize: groupSize)
+    let kernel = try PrefillInt4QMM(context: context)
+
+    // A sentinel in the output catches a tile that skips its masked store.
+    let sentinel = [Float16](repeating: Float16(-7.0), count: t * n)
+    guard let wBuf = context.device.makeBuffer(bytes: packed, length: packed.count,
+                                               options: .storageModeShared),
+          let sBuf = context.device.makeBuffer(
+            bytes: scales, length: scales.count * MemoryLayout<UInt16>.stride,
+            options: .storageModeShared),
+          let bBuf = context.device.makeBuffer(
+            bytes: biases, length: biases.count * MemoryLayout<UInt16>.stride,
+            options: .storageModeShared),
+          let xBuf = Fp16Buffer.make(context.device, halves: xFp16),
+          let yBuf = Fp16Buffer.make(context.device, halves: sentinel),
+          let cmd = context.queue.makeCommandBuffer() else {
+        fatalError("buffer allocation failed")
+    }
+
+    let path = kernel.encode(commandBuffer: cmd,
+                             weights: wBuf, scales: sBuf, biases: bBuf,
+                             x: xBuf, y: yBuf,
+                             t: t, n: n, k: k)
+    waitAndCheck(cmd, "prefill-qmm t=\(t) n=\(n) k=\(k) g=\(groupSize)")
+    guard path == .simdgroupMatrix else {
+        fatalError("prefill-qmm t=\(t) n=\(n) k=\(k) g=\(groupSize): "
+                   + "ran the \(path.rawValue) path, so the tiled kernel is untested")
+    }
+
+    let xRef = xFp16.map { Float($0) }
+    var reference = [Float](repeating: 0, count: t * n)
+    for row in 0..<t {
+        let y = DequantInt4GemvRef.apply(weightRows: rows,
+                                         x: Array(xRef[(row * k)..<((row + 1) * k)]),
+                                         n: k, groupSize: groupSize)
+        reference.replaceSubrange((row * n)..<((row + 1) * n), with: y)
+    }
+    return result("prefill-qmm t=\(t) n=\(n) k=\(k)", groupSize: groupSize,
+           rel: relativeError(actual: Fp16Buffer.read(yBuf, count: t * n),
+                              reference: reference),
+           tolerance: Double(Tolerance.fp16Reduction),
+           detail: "path=\(path.rawValue) "
+                   + "tiles=\((t + 63) / 64)x\((n + 63) / 64)x\(k / 32) "
+                   + "kTilesPerGroup=\(groupSize / 32)")
+}
+
 // MARK: - Driver
 
 let arguments = CommandLine.arguments
@@ -625,6 +693,14 @@ for groupSize in groupSizes {
     pass.append(try checkInt8GEMV(m: 128, n: 2112, groupSize: groupSize, seed: 0xE1))
     pass.append(try checkSharedExpertInt8(d: 2816, f: 2112, groupSize: groupSize,
                                           seed: 0xE2))
+    // Prefill QMM: whole tiles at the shared-MLP gate shape, then a token and
+    // row count that both fall mid-tile.
+    pass.append(try checkPrefillInt4QMM(t: 64, n: 2112, k: 2816,
+                                        groupSize: groupSize, seed: 0xF1))
+    pass.append(try checkPrefillInt4QMM(t: 131, n: 100, k: 2816,
+                                        groupSize: groupSize, seed: 0xF2))
+    pass.append(try checkPrefillInt4QMM(t: 7, n: 64, k: 128,
+                                        groupSize: groupSize, seed: 0xF3))
 
     for entry in pass {
         let status = entry.passed ? "PASS" : "FAIL"

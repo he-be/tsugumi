@@ -346,7 +346,7 @@ import TurboFieldfareValidationSupport
             cb.commit()
             cb.waitUntilCompleted()
             #expect(cb.error == nil)
-            return Fp16Buffer.read(y, count: yElements).map(Float.init)
+            return Fp16Buffer.read(y, count: yElements)
         }
 
         let batched = try run(scratchRows: Self.rows)
@@ -361,7 +361,7 @@ import TurboFieldfareValidationSupport
                                        cols: Int,
                                        rng: inout SplitMix64) -> SharedExpertInt8Proj {
         let values = (0..<rows).map { _ in (0..<cols).map { _ in Float(rng.uniform(-0.4, 0.4)) } }
-        let quantized = values.map(Quantization.quantizeInt4Affine)
+        let quantized = values.map { Quantization.quantizeInt4Affine($0) }
         let packed = quantized.flatMap(\.packed)
         let scales = quantized.flatMap(\.scales)
         let biases = quantized.flatMap(\.biases)

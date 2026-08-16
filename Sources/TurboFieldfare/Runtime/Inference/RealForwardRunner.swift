@@ -116,14 +116,20 @@ internal enum PrefillProjectionDispatch: Sendable, Equatable {
 }
 
 internal enum PrefillProjectionDispatchPolicy {
+    /// `tiledQMM` is whether `PrefillInt4QMM` can serve this shape with the
+    /// `simdgroup_matrix` kernel rather than the scalar one. Q is the widest
+    /// projection (N = numQHeads * headDim), which is exactly where the scalar
+    /// QMM's 8x8 threadgroup lost to a GEMV per row; the tiled kernel reverses
+    /// that, so Q only stays on `repeatedGEMV` when the tiled path is off.
     static func selectedDispatch(for family: PrefillProjectionFamily,
-                                 chunkTokens: Int) -> PrefillProjectionDispatch {
+                                 chunkTokens: Int,
+                                 tiledQMM: Bool) -> PrefillProjectionDispatch {
         guard chunkTokens >= 32 else {
             return .repeatedGEMV
         }
         switch family {
         case .q:
-            return .repeatedGEMV
+            return tiledQMM ? .qmm : .repeatedGEMV
         case .kv, .o, .shared, .routed:
             return .qmm
         }
@@ -693,8 +699,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     return
                 }
             }
-            if PrefillProjectionDispatchPolicy.selectedDispatch(for: family,
-                                                                chunkTokens: tokenCount) == .qmm {
+            if PrefillProjectionDispatchPolicy.selectedDispatch(
+                for: family,
+                chunkTokens: tokenCount,
+                tiledQMM: prefillQMM.usesSimdgroupPath(k: columns)) == .qmm {
                 prefillQMM.encode(commandBuffer: commandBuffer,
                                   weights: weights.buffer,
                                   weightsOffset: Int(weights.offset),
