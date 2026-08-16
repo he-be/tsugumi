@@ -37,15 +37,28 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     public let prefillAttentionPath: RuntimePrefillAttentionPath
     public let headPath: RuntimeHeadPath
 
-    /// 64 slots is where measured decode throughput stops improving on M3 Pro.
-    /// Routing is heavily skewed, so 50% residency already gives a 99.2% decode
-    /// hit rate; the remaining expert I/O overlaps the shared-MLP GPU work, which
-    /// is why 96 slots buys another 0.6 points of hit rate but no tokens per
-    /// second. Going the other way costs real throughput (48 slots is about 4.5%
-    /// slower). Machines that cannot hold the cache are rejected by
-    /// `ExpertCacheBudget` at runner construction with an actionable error rather
-    /// than silently swapping.
-    public init(expertCacheSlots: Int = 64,
+    /// Expert I/O overlaps the shared-MLP GPU work, so slots buy throughput only
+    /// while the misses they remove were still poking out from behind that work.
+    /// Past that point they buy hit rate and nothing else: on the group-32 QAT
+    /// checkpoint, 96 slots reach a 97.7% decode hit rate against 64 slots'
+    /// 90.6% — better than the group-64 baseline manages — at identical tokens
+    /// per second.
+    ///
+    /// 48 is where that ceiling is reached with the least memory. The QAT
+    /// checkpoint measures within noise of 64 slots there (+1.2% to +1.8%, three
+    /// interleaved runs) while its peak footprint drops 1.8 GB, and 32 is the
+    /// cliff (-6% to -7%, hit rate 72-77%). It has more GPU work per token than
+    /// the group-64 lineage, so it hides more I/O and tolerates a smaller cache.
+    ///
+    /// This costs the group-64 baseline about 4.5%, which was measured when 64
+    /// was the default and is not re-measured here: 64 is that checkpoint's knee,
+    /// where its 99.2% decode hit rate stops improving. Pass
+    /// `--expert-cache-slots 64` to get it back.
+    ///
+    /// Machines that cannot hold the cache are rejected by `ExpertCacheBudget` at
+    /// runner construction with an actionable error rather than silently
+    /// swapping.
+    public init(expertCacheSlots: Int = 48,
                 expertCachePolicy: RuntimeExpertCachePolicy = .lfu,
                 rdadvisePolicy: RDAdvicePolicyMode = .off,
                 prefillEnabled: Bool = true,

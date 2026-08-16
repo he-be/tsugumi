@@ -34,7 +34,7 @@
 #   ※ 1 行目の prefill= はトークン数、2 行目の prefill= が秒数
 #
 # CLI が受け付ける値:
-#   --expert-cache-slots   8|16|24|32|48|64|80|96|112  (既定64)
+#   --expert-cache-slots   8|16|24|32|48|64|80|96|112  (既定48)
 #                          1 スロット約 100MB。載らない設定は起動時に拒否される
 #   --expert-cache-policy  lfu|lru      (既定lfu)
 #   --prefill              on|off       (既定on、on は16スロット以上必須)

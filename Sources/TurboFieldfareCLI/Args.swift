@@ -112,7 +112,7 @@ extension Args {
       --stop <string>            Stop substring (repeatable).
       --quiet                    Suppress the timing footer.
       --expert-cache-slots <n>   Expert-cache slots: 8, 16, 24, 32, 48, 64, 80, 96, or 112
-                                 (default 64). Costs about 100 MB per slot; a value
+                                 (default 48). Costs about 100 MB per slot; a value
                                  the device cannot keep resident is rejected at load.
       --expert-cache-policy <s>  Expert-cache policy: lfu or lru (default lfu).
       --prefill on|off           Enable or disable chunked prompt prefill (default on).
