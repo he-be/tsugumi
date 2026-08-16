@@ -53,6 +53,11 @@ LOGS="$OUT/logs"
 TSV="$OUT/results.tsv"
 RUNS="${RUNS:-3}"
 COOLDOWN="${COOLDOWN:-20}"
+# Modes that want their own generation length check MAXNEW_EXPLICIT before
+# overriding: `${MAXNEW:-N}` inside a cmd_* is a no-op once the line below has
+# filled MAXNEW in, which silently ran `ja` at 128 instead of its intended 384
+# and made its rows non-comparable with the 384-token baseline in RESULTS §3-4.
+MAXNEW_EXPLICIT="${MAXNEW+set}"
 MAXNEW="${MAXNEW:-128}"
 
 # サンプリングは Gemma 4 の推奨値 = CLI の既定値に固定する。
@@ -202,7 +207,8 @@ sweep_msgs() {
 # PLAN 付録の 3 プロンプト。スロットは 64 固定 (既定値の常用構成)。
 # 見たいのは「プロンプトが変わると pp/tg がどう動くか」だけ。
 cmd_ja() {
-  preflight; MAXNEW="${MAXNEW:-384}"
+  preflight
+  [ -n "$MAXNEW_EXPLICIT" ] || MAXNEW=384
   COMMON="--expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 \
 --rdadvise off --verification trusted-install"
   sweep_msgs ja \
@@ -220,7 +226,8 @@ MSG
 # n-gram の反復を数える。種を振って SEEDS 本ずつ。統計ではなく挙動の確認用。
 # 温度を変えて見たいときは TEMP=0 ./bench.sh loopcheck のように上書きする。
 cmd_loopcheck() {
-  preflight; MAXNEW="${MAXNEW:-1024}"
+  preflight
+  [ -n "$MAXNEW_EXPLICIT" ] || MAXNEW=1024
   local common="--expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 \
 --rdadvise off --verification trusted-install"
   local tag="t${TEMP}"
