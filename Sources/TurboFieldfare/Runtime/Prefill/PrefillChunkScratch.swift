@@ -9,10 +9,16 @@ struct PrefillChunkScratchLayout: Sendable, Equatable {
     let routedIntermediate: Int
     let topK: Int
     let routedPairMicrobatchRows: Int
+    /// Rows a tiled routed-MoE batch may hold. Larger than the per-pair path's
+    /// microbatch because the tiled path amortizes an expert's weight tile over
+    /// its rows: batches end on expert boundaries, so the budget has to hold a
+    /// few whole experts to keep the 64-row blocks full.
+    let routedGEMMBatchRows: Int
 
     init(config: ArchConfig,
                 chunkTokens: Int,
-                routedPairMicrobatchRows: Int = 32) {
+                routedPairMicrobatchRows: Int = 32,
+                routedGEMMBatchRows: Int = 2048) {
         self.chunkTokens = max(1, min(chunkTokens, PrefillRuntimeConfig.maxChunkTokens))
         self.hiddenSize = config.hiddenSize
         self.maxQElementsPerToken = config.numHeads * max(config.headDim, config.fullHeadDim)
@@ -22,6 +28,11 @@ struct PrefillChunkScratchLayout: Sendable, Equatable {
         self.routedIntermediate = config.moeIntermediateSize
         self.topK = config.topKExperts
         self.routedPairMicrobatchRows = max(1, min(routedPairMicrobatchRows, 128))
+        // A chunk can never produce more than `chunkTokens * topK` route pairs,
+        // so a narrow chunk needs no more staging than that.
+        self.routedGEMMBatchRows = max(64, min(routedGEMMBatchRows,
+                                               4096,
+                                               self.chunkTokens * config.topKExperts))
     }
 
     init(config: ArchConfig, runtime: PrefillRuntimeConfig) {
@@ -46,7 +57,10 @@ struct PrefillChunkScratchLayout: Sendable, Equatable {
     /// The shared MLP runs the whole chunk in one QMM per projection, so its
     /// gate/up/activation staging is `[chunkTokens, F]` rather than one row.
     var sharedExpertScratchElements: Int { chunkTokens * sharedIntermediate }
-    var routedGateUpActElements: Int { 3 * routedPairMicrobatchRows * routedIntermediate }
+    /// Gate, up and activation thirds for whichever routed path runs.
+    var routedGateUpActElements: Int {
+        3 * max(routedPairMicrobatchRows, routedGEMMBatchRows) * routedIntermediate
+    }
     var routedDownOutputElements: Int { routedPairMicrobatchRows * hiddenSize }
 
     var devicePrivateBytes: Int {

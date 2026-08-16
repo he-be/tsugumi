@@ -5,11 +5,80 @@ import Darwin
 enum PrefillGroupedRoutedMoEBufferIndex {
     static let hidden = 0
     static let sortedPairs = 1
+    static let blocks = 2
     static let routePartials = 5
     static let gateUpActScratch = 7
     static let downScratch = 8
     static let expertArgumentState = 9
     static let params = 10
+    static let mode = 11
+}
+
+/// One 64-row slice of one expert's route pairs, as the tiled GEMM sees it.
+/// Matches `PrefillRoutedGEMMBlockMSL`.
+struct PrefillRoutedGEMMBlock: Equatable, Sendable {
+    var localSlot: UInt32
+    var pairStart: UInt32
+    var rowCount: UInt32
+    var localRow: UInt32
+}
+
+/// One dispatch's worth of blocks. `rows` is the batch's row count, which is
+/// both the stride between the gate/up/act thirds of the scratch and the row
+/// capacity the scratch must have.
+struct PrefillRoutedGEMMBatch: Equatable, Sendable {
+    var rows: Int
+    var blocks: [PrefillRoutedGEMMBlock]
+}
+
+/// Cuts a tile's expert groups into batches of blocks for the tiled GEMM.
+///
+/// Two rules, both about keeping the 64-row weight reuse intact:
+/// batches start and end on group boundaries whenever a group fits, so a
+/// batch boundary never splits an expert into two partial blocks; and a group
+/// larger than the row budget is cut on a multiple of 64 so only its own tail
+/// block is partial.
+enum PrefillRoutedGEMMPlanner {
+    static let tileRows = 64
+
+    static func plan(groups: [PrefillMoEGroup], maxRowsPerBatch: Int) -> [PrefillRoutedGEMMBatch] {
+        let budget = max(tileRows, (maxRowsPerBatch / tileRows) * tileRows)
+        var batches: [PrefillRoutedGEMMBatch] = []
+        var blocks: [PrefillRoutedGEMMBlock] = []
+        var rows = 0
+
+        func flush() {
+            guard rows > 0 else { return }
+            batches.append(PrefillRoutedGEMMBatch(rows: rows, blocks: blocks))
+            blocks.removeAll(keepingCapacity: true)
+            rows = 0
+        }
+
+        for (slot, group) in groups.enumerated() {
+            var taken = 0
+            let count = Int(group.pairCount)
+            while taken < count {
+                if rows == budget { flush() }
+                // A group that fits in an empty batch is never split.
+                if rows > 0, rows + (count - taken) > budget { flush() }
+                let take = min(count - taken, budget - rows)
+                var done = 0
+                while done < take {
+                    let rowCount = min(tileRows, take - done)
+                    blocks.append(PrefillRoutedGEMMBlock(
+                        localSlot: UInt32(slot),
+                        pairStart: group.pairStart + UInt32(taken + done),
+                        rowCount: UInt32(rowCount),
+                        localRow: UInt32(rows + done)))
+                    done += rowCount
+                }
+                rows += take
+                taken += take
+            }
+        }
+        flush()
+        return batches
+    }
 }
 
 struct PrefillGroupedRoutedMoEStreamedMetadataBuffers {
@@ -337,8 +406,34 @@ enum PrefillGroupedRoutedMoEError: Error, Equatable, CustomStringConvertible {
 }
 
 final class PrefillGroupedRoutedMoE {
+    /// Which kernel served a tile, so an A/B measurement can assert the path
+    /// it meant to time actually ran.
+    enum Path: String, Sendable {
+        /// One thread per (pair, row), scalar K reduction, weights re-read
+        /// once per 8 pairs.
+        case perPairGEMV = "per-pair-gemv"
+        /// 64x64 output tile per threadgroup, 8x8 `simdgroup_matrix` products,
+        /// weights re-read once per 64 pairs of the same expert.
+        case expertGEMM = "expert-gemm"
+    }
+
+    static let gemmTileM = 64
+    static let gemmTileN = 64
+    static let gemmTileK = 32
+    static let gemmThreadsPerGroup = 128
+
+    /// `TF_PREFILL_MOE=scalar` forces the per-pair GEMV kernels, so the two
+    /// paths can be measured against each other without a rebuild. It is also
+    /// the way back to FP32 weight arithmetic: the tiled path stages its
+    /// dequantized weights as FP16, one rounding per weight (see
+    /// `PrefillInt4QMM`). Anything else, including unset, takes the tiled path.
+    private static let forcedPath = ProcessInfo.processInfo.environment["TF_PREFILL_MOE"]
+
+    private let affineGroupSize: Int
     private let batchedPhase1PSO: MTLComputePipelineState
     private let batchedDownPSO: MTLComputePipelineState
+    private let gemmPSO: MTLComputePipelineState?
+    private let geluMulPSO: MTLComputePipelineState?
     private let streamedArgEncoder: MTLArgumentEncoder
 
     func makeStreamedArgumentBuffer(device: MTLDevice,
@@ -359,13 +454,36 @@ final class PrefillGroupedRoutedMoE {
     }
 
     init(context: MetalContext) throws {
+        self.affineGroupSize = context.affineGroupSize
         self.batchedPhase1PSO = try context.pipeline("prefill_grouped_routed_moe_batched_phase1")
         self.batchedDownPSO = try context.pipeline("prefill_grouped_routed_moe_batched_down")
+        if Self.forcedPath == "scalar" {
+            self.gemmPSO = nil
+            self.geluMulPSO = nil
+        } else {
+            // The tile shape fixes the threadgroup at 128 threads; a build
+            // where register pressure caps it lower cannot run this kernel.
+            let candidate = try? context.pipeline("prefill_moe_gemm_int4")
+            let usable = (candidate?.maxTotalThreadsPerThreadgroup ?? 0) >= Self.gemmThreadsPerGroup
+            self.gemmPSO = usable ? candidate : nil
+            self.geluMulPSO = usable ? try? context.pipeline("prefill_moe_gate_up_gelu_mul") : nil
+        }
         guard let streamedFn = try context.library.makeFunction(name: "prefill_grouped_routed_moe_batched_phase1") else {
             throw MetalError.missingFunction("prefill_grouped_routed_moe_batched_phase1")
         }
         self.streamedArgEncoder = streamedFn.makeArgumentEncoder(
             bufferIndex: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
+    }
+
+    /// The tiled kernel walks K in 32-element steps and reads one scale/bias
+    /// pair per 8 weights, so both reductions (`D` for gate/up, `F` for down)
+    /// have to be aligned to the tile and to the affine group.
+    func usesExpertGEMMPath(d: Int, f: Int) -> Bool {
+        guard gemmPSO != nil, geluMulPSO != nil else { return false }
+        for k in [d, f] where k % Self.gemmTileK != 0 || k % affineGroupSize != 0 {
+            return false
+        }
+        return true
     }
 
     func makeStreamedMetadataBuffers(
@@ -460,4 +578,102 @@ final class PrefillGroupedRoutedMoE {
         return microbatchCount
     }
 
+    /// Runs a tile as one GEMM per expert-row-block instead of one GEMV per
+    /// (pair, row).
+    ///
+    /// `groups` are the tile's expert groups in binding order — group `i` is
+    /// `binding.expertIDs[i]` — which is what makes the expert lookup a plain
+    /// index instead of the per-thread search the per-pair kernels do.
+    ///
+    /// Three dispatches per batch: gate and up over the gathered activations
+    /// (one dispatch, `z` picks the projection), the non-linearity, then down
+    /// scattered into `routePartials`. `routePartials` is written for every
+    /// pair exactly once, so the token-major reduction downstream is unchanged.
+    @discardableResult
+    func encodeStreamedTiled(commandBuffer: MTLCommandBuffer,
+                             hidden: MTLBuffer,
+                             hiddenOffset: Int = 0,
+                             sortedPairs: MTLBuffer,
+                             sortedPairsOffset: Int = 0,
+                             routePartials: MTLBuffer,
+                             routePartialsOffset: Int = 0,
+                             gateUpActScratch: MTLBuffer,
+                             gateUpActScratchOffset: Int = 0,
+                             argumentBuffer: PrefillStreamedTileArgumentBuffer,
+                             binding: PrefillStreamedTileBinding,
+                             groups: [PrefillMoEGroup],
+                             params: PrefillGroupedRoutedMoEStreamedParams,
+                             maxRowsPerBatch: Int) -> Int {
+        guard let gemmPSO, let geluMulPSO,
+              params.liveExpertCount == UInt32(binding.views.count),
+              groups.count == binding.views.count,
+              maxRowsPerBatch > 0 else { return 0 }
+        // The block list travels in a `setBytes` argument (4 KB), which caps
+        // the rows a batch may describe well above any useful batch size.
+        let batches = PrefillRoutedGEMMPlanner.plan(groups: groups,
+                                                    maxRowsPerBatch: min(maxRowsPerBatch, 4096))
+        let nTilesGateUp = (Int(params.routedIntermediate) + Self.gemmTileN - 1) / Self.gemmTileN
+        let nTilesDown = (Int(params.d) + Self.gemmTileN - 1) / Self.gemmTileN
+        let threadgroup = MTLSize(width: Self.gemmThreadsPerGroup, height: 1, depth: 1)
+
+        for batch in batches {
+            var p = params
+            // The kernels read `pair_count` as the batch's row count: it is the
+            // stride between the gate, up and act thirds of the scratch.
+            p.pairStart = 0
+            p.pairCount = UInt32(batch.rows)
+            var blocks = batch.blocks
+            let blockBytes = blocks.count * MemoryLayout<PrefillRoutedGEMMBlock>.stride
+
+            func encodeGEMM(mode: UInt32, nTiles: Int, depth: Int) {
+                guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+                enc.setComputePipelineState(gemmPSO)
+                enc.setBuffer(hidden, offset: hiddenOffset,
+                              index: PrefillGroupedRoutedMoEBufferIndex.hidden)
+                enc.setBuffer(sortedPairs, offset: sortedPairsOffset,
+                              index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
+                enc.setBytes(&blocks, length: blockBytes,
+                             index: PrefillGroupedRoutedMoEBufferIndex.blocks)
+                enc.setBuffer(routePartials, offset: routePartialsOffset,
+                              index: PrefillGroupedRoutedMoEBufferIndex.routePartials)
+                enc.setBuffer(gateUpActScratch, offset: gateUpActScratchOffset,
+                              index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
+                enc.setBuffer(argumentBuffer.buffer, offset: 0,
+                              index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
+                enc.setBytes(&p,
+                             length: MemoryLayout<PrefillGroupedRoutedMoEStreamedParams>.stride,
+                             index: PrefillGroupedRoutedMoEBufferIndex.params)
+                var modeVar = mode
+                enc.setBytes(&modeVar, length: MemoryLayout<UInt32>.size,
+                             index: PrefillGroupedRoutedMoEBufferIndex.mode)
+                for view in binding.views {
+                    enc.useResource(view.buffer, usage: .read)
+                }
+                enc.dispatchThreadgroups(MTLSize(width: nTiles,
+                                                 height: blocks.count,
+                                                 depth: depth),
+                                         threadsPerThreadgroup: threadgroup)
+                enc.endEncoding()
+            }
+
+            encodeGEMM(mode: 0, nTiles: nTilesGateUp, depth: 2)
+
+            if let enc = commandBuffer.makeComputeCommandEncoder() {
+                enc.setComputePipelineState(geluMulPSO)
+                enc.setBuffer(gateUpActScratch, offset: gateUpActScratchOffset, index: 0)
+                var rowsVar = UInt32(batch.rows)
+                var fVar = params.routedIntermediate
+                enc.setBytes(&rowsVar, length: MemoryLayout<UInt32>.size, index: 1)
+                enc.setBytes(&fVar, length: MemoryLayout<UInt32>.size, index: 2)
+                let elements = batch.rows * Int(params.routedIntermediate)
+                let width = min(geluMulPSO.maxTotalThreadsPerThreadgroup, 256)
+                enc.dispatchThreads(MTLSize(width: elements, height: 1, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))
+                enc.endEncoding()
+            }
+
+            encodeGEMM(mode: 1, nTiles: nTilesDown, depth: 1)
+        }
+        return batches.count
+    }
 }

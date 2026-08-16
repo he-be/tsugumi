@@ -347,6 +347,17 @@ struct PrefillStreamedRoutedBlobsMSL {
     device const uint8_t* blob[kPrefillMaxTileExperts];
 };
 
+/// One 64-row slice of one expert's route pairs. Pairs are sorted by expert, so
+/// a slice is contiguous in `sorted_pairs` and every row in it shares a single
+/// set of weights — which is what lets the GEMM below hold a weight tile in
+/// threadgroup memory and spend it on 64 rows instead of one.
+struct PrefillRoutedGEMMBlockMSL {
+    uint local_slot;   // index into PrefillStreamedRoutedBlobsMSL::blob
+    uint pair_start;   // global index into sorted_pairs
+    uint row_count;    // 1...64
+    uint local_row;    // first row of this block inside the batch scratch
+};
+
 struct PrefillGroupedRoutedMoEStreamedParamsMSL {
     uint pair_start;
     uint pair_count;
@@ -728,6 +739,207 @@ kernel void prefill_grouped_routed_moe_batched_down(
     const half value = half(prefill_moe_int4_gemv_row_dev(down_W, down_s, down_b, act, d, p.F));
     down_scratch[pair_local * p.D + d] = value;
     route_partials[(pair.token * p.top_k + pair.rank) * p.D + d] = value;
+}
+
+/// Routed-expert GEMM: `Y[rows, N] = X[rows, K] * W[N, K]^T` for one expert.
+///
+/// `prefill_grouped_routed_moe_batched_phase1` / `_down` give one thread the
+/// whole K reduction for a single (pair, row) and re-read the expert's weights
+/// once per 8 pairs, which put the routed MoE at 892 MB of logical reads per
+/// token. This kernel is the tiled QMM (`prefill_int4_qmm_simdgroup_f16`) with
+/// two changes that the routed case needs:
+///
+///   * rows come from a `PrefillRoutedGEMMBlockMSL`, so the M dimension is a
+///     gather (mode 0: pair -> token -> hidden row) or a scatter (mode 1:
+///     pair -> (token, rank) -> route_partials row) instead of a plain stride;
+///   * the weights come from the expert blob named by the block, so a weight
+///     byte is read once per 64 pairs of that expert.
+///
+/// Mode 0 runs gate and up over the same activation tile (`tgid.z` picks which)
+/// into the first two thirds of `act`; `prefill_moe_gate_up_gelu_mul` folds
+/// them into the third. Mode 1 runs down out of that third into route_partials.
+///
+/// Geometry, accumulator precision and the K-tile/affine-group relationship are
+/// all identical to `prefill_int4_qmm_simdgroup_f16` — see its comment.
+constant constexpr uint kPrefillMoEGEMMTileM = 64;
+constant constexpr uint kPrefillMoEGEMMTileN = 64;
+constant constexpr uint kPrefillMoEGEMMTileK = 32;
+constant constexpr uint kPrefillMoEGEMMThreads = 128;
+constant constexpr uint kPrefillMoEGEMMModeGateUp = 0;
+
+kernel void prefill_moe_gemm_int4(
+    device const half*                                   hidden         [[buffer(0)]],
+    device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
+    device const PrefillRoutedGEMMBlockMSL*              blocks         [[buffer(2)]],
+    device half*                                         route_partials [[buffer(5)]],
+    device half*                                         act            [[buffer(7)]],
+    device const PrefillStreamedRoutedBlobsMSL&          routed         [[buffer(9)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p              [[buffer(10)]],
+    constant uint&                                       mode           [[buffer(11)]],
+    uint3                                                lid3           [[thread_position_in_threadgroup]],
+    uint3                                                tgid3          [[threadgroup_position_in_grid]]
+) {
+    const uint lid = lid3.x;
+    const uint sgid = lid / 32u;
+    const PrefillRoutedGEMMBlockMSL blk = blocks[tgid3.y];
+    const uint nBase = tgid3.x * kPrefillMoEGEMMTileN;
+    const bool gate_up = (mode == kPrefillMoEGEMMModeGateUp);
+    const bool is_up = gate_up && (tgid3.z == 1u);
+
+    const uint N = gate_up ? p.F : p.D;
+    const uint K = gate_up ? p.D : p.F;
+    const uint act_rows = p.pair_count;
+
+    threadgroup float stage[kPrefillMoEGEMMTileM * kPrefillMoEGEMMTileN];
+    threadgroup half* As = (threadgroup half*)stage;
+    threadgroup half* Bs = As + kPrefillMoEGEMMTileM * kPrefillMoEGEMMTileK;
+    // Row-major element offsets of this block's rows, resolved once.
+    threadgroup uint src_off[kPrefillMoEGEMMTileM];
+    threadgroup uint dst_off[kPrefillMoEGEMMTileM];
+
+    device const uint8_t* blob = routed.blob[blk.local_slot];
+    uint w_off = p.down_W_off;
+    uint s_off = p.down_s_off;
+    uint b_off = p.down_b_off;
+    if (gate_up) {
+        w_off = is_up ? p.up_W_off : p.gate_W_off;
+        s_off = is_up ? p.up_s_off : p.gate_s_off;
+        b_off = is_up ? p.up_b_off : p.gate_b_off;
+    }
+    device const uint8_t* W = blob + w_off;
+    device const bfloat* S = reinterpret_cast<device const bfloat*>(blob + s_off);
+    device const bfloat* B = reinterpret_cast<device const bfloat*>(blob + b_off);
+
+    device const half* X = gate_up ? hidden
+                                   : (device const half*)(act + 2u * act_rows * p.F);
+    device half* Y = gate_up ? (act + (is_up ? act_rows * p.F : 0u)) : route_partials;
+
+    if (lid < kPrefillMoEGEMMTileM) {
+        uint so = 0u;
+        uint dof = 0u;
+        if (lid < blk.row_count) {
+            const PrefillTokenExpertPairMSL pr = sorted_pairs[blk.pair_start + lid];
+            if (gate_up) {
+                so = pr.token * p.hidden_stride_elements;
+                dof = (blk.local_row + lid) * p.F;
+            } else {
+                so = (blk.local_row + lid) * p.F;
+                dof = (pr.token * p.top_k + pr.rank) * p.D;
+            }
+        }
+        src_off[lid] = so;
+        dst_off[lid] = dof;
+    }
+
+    // Quadrant of the 64x64 tile this simdgroup accumulates.
+    const uint sg_m = (sgid / 2u) * 32u;
+    const uint sg_n = (sgid % 2u) * 32u;
+
+    simdgroup_float8x8 acc[4][4];
+    for (uint i = 0; i < 4u; ++i) {
+        for (uint j = 0; j < 4u; ++j) {
+            acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+        }
+    }
+
+    const uint groups = K / kPrefillGroupSize;
+    const uint row_bytes = K / 2u;
+    const uint w_n_local = lid & (kPrefillMoEGEMMTileN - 1u);
+    const uint w_chunk_base = lid / kPrefillMoEGEMMTileN;
+    const uint w_n = nBase + w_n_local;
+    device const uint8_t* w_row = W + w_n * row_bytes;
+    device const bfloat* s_row = S + w_n * groups;
+    device const bfloat* b_row = B + w_n * groups;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint k0 = 0; k0 < K; k0 += kPrefillMoEGEMMTileK) {
+        // Activations: 64x32 halves, 16 per thread, K-contiguous per row.
+        for (uint i = 0; i < 16u; ++i) {
+            const uint idx = i * kPrefillMoEGEMMThreads + lid;
+            const uint m = idx / kPrefillMoEGEMMTileK;
+            const uint kk = idx % kPrefillMoEGEMMTileK;
+            As[idx] = (m < blk.row_count) ? X[src_off[m] + k0 + kk] : half(0.0f);
+        }
+
+        // Weights: 32x64 halves, K-major so an 8x8 load is the [k, n] fragment.
+        for (uint c = 0; c < 2u; ++c) {
+            const uint kk = (w_chunk_base + c * 2u) * 8u;
+            if (w_n < N) {
+                const uint g = (k0 + kk) / kPrefillGroupSize;
+                const float scale = float(s_row[g]);
+                const float bias = float(b_row[g]);
+                device const uint8_t* w_ptr = w_row + ((k0 + kk) >> 1);
+                for (uint q = 0; q < 4u; ++q) {
+                    const uint8_t packed = w_ptr[q];
+                    const float lo = fma(float(packed & 0x0Fu), scale, bias);
+                    const float hi = fma(float(packed >> 4), scale, bias);
+                    Bs[(kk + 2u * q) * kPrefillMoEGEMMTileN + w_n_local] = half(lo);
+                    Bs[(kk + 2u * q + 1u) * kPrefillMoEGEMMTileN + w_n_local] = half(hi);
+                }
+            } else {
+                for (uint q = 0; q < 8u; ++q) {
+                    Bs[(kk + q) * kPrefillMoEGEMMTileN + w_n_local] = half(0.0f);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        simdgroup_half8x8 a[4];
+        simdgroup_half8x8 b[4];
+        for (uint kk = 0; kk < kPrefillMoEGEMMTileK; kk += 8u) {
+            for (uint i = 0; i < 4u; ++i) {
+                simdgroup_load(a[i],
+                               As + (sg_m + i * 8u) * kPrefillMoEGEMMTileK + kk,
+                               kPrefillMoEGEMMTileK);
+            }
+            for (uint j = 0; j < 4u; ++j) {
+                simdgroup_load(b[j],
+                               Bs + kk * kPrefillMoEGEMMTileN + sg_n + j * 8u,
+                               kPrefillMoEGEMMTileN);
+            }
+            for (uint i = 0; i < 4u; ++i) {
+                for (uint j = 0; j < 4u; ++j) {
+                    simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (uint i = 0; i < 4u; ++i) {
+        for (uint j = 0; j < 4u; ++j) {
+            simdgroup_store(acc[i][j],
+                            stage + (sg_m + i * 8u) * kPrefillMoEGEMMTileN + sg_n + j * 8u,
+                            kPrefillMoEGEMMTileN);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = 0; i < 32u; ++i) {
+        const uint idx = i * kPrefillMoEGEMMThreads + lid;
+        const uint m = idx / kPrefillMoEGEMMTileN;
+        const uint n = nBase + idx % kPrefillMoEGEMMTileN;
+        if (m < blk.row_count && n < N) {
+            Y[dst_off[m] + n] = half(stage[idx]);
+        }
+    }
+}
+
+/// `act[2] = gelu(act[0]) * act[1]` over one batch of routed rows. The two
+/// GEMM halves land in separate thirds of the scratch, so the non-linearity
+/// that used to be fused into the per-pair kernel is its own pass; it is one
+/// pass over `rows x F` halves per batch.
+kernel void prefill_moe_gate_up_gelu_mul(
+    device half*   act   [[buffer(0)]],
+    constant uint& rows  [[buffer(1)]],
+    constant uint& F     [[buffer(2)]],
+    uint           gid   [[thread_position_in_grid]]
+) {
+    const uint total = rows * F;
+    if (gid >= total) return;
+    const float gate = float(act[gid]);
+    const float up = float(act[total + gid]);
+    act[2u * total + gid] = half(prefill_gelu_pytorch_tanh(gate) * up);
 }
 
 kernel void prefill_dequant_int4_qmm_f16_block(

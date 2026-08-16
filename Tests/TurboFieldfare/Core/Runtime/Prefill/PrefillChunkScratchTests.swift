@@ -24,13 +24,18 @@ import Metal
         // The shared MLP stages the whole chunk, not one row.
         #expect(layout.sharedExpertScratchElements == 32 * 2112)
         #expect(layout.routedPairMicrobatchRows == 32)
-        #expect(layout.routedGateUpActElements == 3 * 32 * 704)
+        // The tiled routed path stages a whole batch of route pairs, not one
+        // 32-row microbatch. A 32-token chunk can only produce 32 x topK pairs,
+        // so that is the cap here.
+        #expect(layout.routedGEMMBatchRows == 32 * 8)
+        #expect(layout.routedGateUpActElements == 3 * 32 * 8 * 704)
         #expect(layout.routedDownOutputElements == 32 * 2816)
 
         // The Task 7 worksheet put this at 4.5 MiB with a single-row shared-MLP
         // staging buffer; batching that projection over the chunk adds
-        // 3 x 32 x 2112 FP16 (about 0.4 MiB at T32).
-        let worksheetT32UpperBound = Int(5.0 * 1_048_576.0)
+        // 3 x 32 x 2112 FP16 (about 0.4 MiB at T32), and staging the routed
+        // GEMM's 256 pairs instead of 32 adds 3 x 224 x 704 FP16 (0.9 MiB).
+        let worksheetT32UpperBound = Int(6.0 * 1_048_576.0)
         #expect(layout.totalPersistentBytes <= worksheetT32UpperBound)
     }
 
@@ -53,8 +58,12 @@ import Metal
         #expect(layout.totalPersistentBytes > 250 * 1_048_576)
         #expect(layout.totalPersistentBytes <= 300 * 1_048_576)
 
+        // 128-token chunk: the routed GEMM stages 1024 pairs (3 x 1024 x 704
+        // FP16 = 4.1 MiB), which is most of the difference from the 20 MiB this
+        // bound held before the tiled path existed.
         let defaultLayout = PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 128)
-        #expect(defaultLayout.totalPersistentBytes <= 20 * 1_048_576)
+        #expect(defaultLayout.routedGEMMBatchRows == 128 * 8)
+        #expect(defaultLayout.totalPersistentBytes <= 24 * 1_048_576)
     }
 
     @Test func allocationUsesPrivateScratchAndSharedRouteMetadata() throws {

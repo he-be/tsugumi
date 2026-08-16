@@ -1207,17 +1207,32 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         guard let tileCB = ctx.queue.makeCommandBuffer() else {
                             throw ModelError.residentBufferWrapFailed
                         }
-                        _ = prefillGroupedMoE.encodeStreamedBatched(
-                            commandBuffer: tileCB,
-                            hidden: scratch.routedX,
-                            sortedPairs: metadata.sortedPairs,
-                            routePartials: scratch.routePartials,
-                            gateUpActScratch: scratch.routedGateUpActScratch,
-                            downScratch: scratch.routedDownScratch,
-                            argumentBuffer: argumentBuffer,
-                            binding: fetch.binding,
-                            params: streamedParams,
-                            pairMicrobatchRows: scratch.layout.routedPairMicrobatchRows)
+                        if prefillGroupedMoE.usesExpertGEMMPath(d: D, f: cfg.moeIntermediateSize) {
+                            let groupStart = Int(tile.groupStart)
+                            _ = prefillGroupedMoE.encodeStreamedTiled(
+                                commandBuffer: tileCB,
+                                hidden: scratch.routedX,
+                                sortedPairs: metadata.sortedPairs,
+                                routePartials: scratch.routePartials,
+                                gateUpActScratch: scratch.routedGateUpActScratch,
+                                argumentBuffer: argumentBuffer,
+                                binding: fetch.binding,
+                                groups: Array(routes.groups[groupStart..<(groupStart + Int(tile.groupCount))]),
+                                params: streamedParams,
+                                maxRowsPerBatch: scratch.layout.routedGEMMBatchRows)
+                        } else {
+                            _ = prefillGroupedMoE.encodeStreamedBatched(
+                                commandBuffer: tileCB,
+                                hidden: scratch.routedX,
+                                sortedPairs: metadata.sortedPairs,
+                                routePartials: scratch.routePartials,
+                                gateUpActScratch: scratch.routedGateUpActScratch,
+                                downScratch: scratch.routedDownScratch,
+                                argumentBuffer: argumentBuffer,
+                                binding: fetch.binding,
+                                params: streamedParams,
+                                pairMicrobatchRows: scratch.layout.routedPairMicrobatchRows)
+                        }
                         tileCB.commit()
                         pendingTiles.append(PendingPrefillTile(tileIndex: tileIndex,
                                                                commandBuffer: tileCB,
