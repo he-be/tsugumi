@@ -1,7 +1,7 @@
 # 調査: prefill (pp) はどこまで行けるか — SSD か実装か
 
 作成: 2026-08-16
-更新: 2026-08-16 (attn バケットの分離計測と full attention の置き換え、§7-4 - §7-6)
+更新: 2026-08-16 (attn バケットの分離計測と full attention の置き換え、§7-4 - §7-7)
 目標: **300 pp tok/s**。表記は PLAN.md に合わせる: **実測** / **導出** / **未確認**
 
 **現在地: 1973 トークンで 78.5 pp (出荷既定)。調査開始時は 37.2。**
@@ -434,10 +434,48 @@ shared=4.15s  moe=8.58s  tail=0.05s       GPU 合計 24.82s / 壁時計 27.20s =
 **新カーネルに当たるようになった**ので CPU 参照との突き合わせはそこで効く。
 ブロック境界 (kQBlock 2 / threadgroup 16) を跨ぐケースを
 `qBlockFullAttentionMatchesReferenceAcrossBlockBoundaries` として追加した。
-**ただしこの環境ではテストを実行できていない** —
-Xcode が入っておらず CommandLineTools だけなので `Testing` モジュールが解決できず、
-`Scripts/test.sh` が (触っていない Repack / Format ターゲットも含めて) 落ちる。
+**ただしこの環境ではテストを実行できていない** — Xcode が入っておらず CommandLineTools だけなので `Testing` モジュールが解決できず、`Scripts/test.sh` が (触っていない Repack / Format ターゲットも含めて) 落ちる。
 **greedy 出力の一致もまだ取っていない。**再開時の最初の作業はこの 2 つ。
+
+> **§7-7 で両方とも片付いた** (テスト環境は解決、数値検証は全合格、greedy は残存)。
+
+### 7-7. 検証環境が解決、テストを実行した (2026-08-16)
+
+§7-5 を書いた時点の「Xcode がなく `Scripts/test.sh` が落ちる」は解決した。
+経緯と結果 (**実測**):
+
+1. **Xcode 26.6 を `/Applications` にインストール。**GUI は起動しない —
+   `LSMinimumSystemVersion = 26.2` で macOS 26.2 (Tahoe) 以降専用であり、
+   この Mac (15.7.5) での起動弾きは仕様。ただしテストに必要なのは GUI ではなく
+   Swift 6.2+ ツールチェーンと `Testing` モジュールで、バンドル内の
+   ツールチェーンから供給される。`xcode-select -s` で既定を切り替え済み
+   (Swift 6.3.3)。なお Xcode 16.0 (Swift 6.0) では tools 6.2 要求に届かず不可。
+2. **`Scripts/test.sh`: 698 テスト / 126 スイート中 12 失敗。**失敗はすべて
+   「出荷既定の変更に追従していない固定値テスト」の陳腐化で、
+   **数値検証の失敗はない**:
+   - `RuntimeConfigurationTests` — 既定が 16 → 48 スロット、
+     attention パスが `.fullTensorOps2DPreferred` → `.causalQBlock` (§7-1, §7-5 どおり)
+   - `AppRuntimeOptionsTests` — summary 文言 "prefill 128" → "prefill 2048"
+   - `AppContextLengthOptionTests` — KV 容量表が chunk 128 時代の値
+   - `AppModelInstallTests` — ピンモデルの QAT lattice-aligned 版への差し替え未追従
+   - `CLIArgumentsTests` — help の期待リストに `--messages-file` /
+     `--dump-expert-trace` 等が無い
+3. **`PrefillAttentionTests` は全合格。**headDim 512 の全ケースとブロック境界越え
+   (`qBlockFullAttentionMatchesReferenceAcrossBlockBoundaries`) が新
+   `attention_prefill_causal_qblock_d512` 経由で CPU 参照と一致。
+   §8 筆頭の数値検証はこれで**実測**に置き換わった。
+4. **greedy 出力一致は仍未取得。**CLI に attention パスの切替フラグがなく、
+   `.fullTensorOps2DValidityV2` との A/B を取るにはフック追加か
+   `TurboFieldfareValidation` 拡張が要る (**未確認**のまま残す)。
+5. **Swift 6.3.3 の型チェッカーでテスト 2 ファイルがコンパイルエラーになる**
+   (`SharedExpertInt4Tests` / `PrefillSharedExpertTests`)。
+   `quantizeInt4Affine(_:groupSize:)` の関数参照が曖昧になるのと、
+   `[Float]` への `.map(Float.init)` (恒等) が曖昧になるもの。修正は機械的
+   (関数参照のクロージャ化 / 恒等 map の削除) だが本調査では**未コミット**。
+   CLT の Swift 6.2.4 では発生しない。
+
+テスト実行時の逸脱: 上記 5 のみ (実行のための一時修正、検証後に破棄)。
+作業ツリーは `da64fc7` のまま。ハードウェア等の計測条件は §1 と同一。
 
 ### 7-6. 次の的 (GPU 24.8 s の内訳から)
 
@@ -466,8 +504,8 @@ SWA の 1.72 s は帯域で説明がつく (**導出**): qblock は 4 クエリ�
 
 ## 8. 未確認
 
-- **`attention_prefill_causal_qblock_d512` の数値検証** (§7-5)。
-  テストが実行できておらず、greedy 一致も未取得。**再開時の最初の作業**
+- ~~`attention_prefill_causal_qblock_d512` の数値検証~~ (**§7-7 で解決**: テスト全合格)。
+  **greedy 一致のみ未取得。A/B フック追加が再開時の最初の作業**
 - full 層の attention 本体が 0.30 s = 1.7 TFLOP/s と、SWA (0.48) より
   演算あたり速い理由。1 層の K+V が 2478 トークンで 10 MB しかなく
   丸ごとキャッシュに載っている、という仮説を立てただけ
