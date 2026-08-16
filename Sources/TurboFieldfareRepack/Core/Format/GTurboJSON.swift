@@ -66,6 +66,19 @@ enum GTurboJSON {
                 throw RepackError.configurationInvalid(
                     detail: "missing manifest quant slot bit width for \(name)")
             }
+            guard weightBits != 16 else {
+                // Unquantized BF16 slot (the QAT router): no affine companions,
+                // so the scheme and the companion types have to say "none"
+                // rather than describe scales that were never written. The
+                // group size still carries the model's base value; nothing
+                // reads it for this slot.
+                return GTurboManifestQuantSlotV1(
+                    weightBits: 16,
+                    scheme: "bf16",
+                    scaleType: "none",
+                    biasType: "none",
+                    groupSize: plan.baseGroupSize)
+            }
             return GTurboManifestQuantSlotV1(
                 weightBits: weightBits,
                 scheme: plan.baseMode,

@@ -207,6 +207,22 @@ swift run -c release TurboFieldfareRepack \
 The runtime accepts only a completed `.gturbo` directory with a final
 `manifest.json`.
 
+Repack a checkpoint that is already staged on disk in its distributed form —
+the safetensors shards plus `model.safetensors.index.json`, `config.json` and
+the tokenizer files — instead of streaming it:
+
+```bash
+swift run -c release TurboFieldfareRepack \
+  --output scratch/gemma4-qat.gturbo \
+  --source-snapshot scratch/qat-aligned-snapshot
+```
+
+Nothing is downloaded in this mode: the shards are read in place with `pread`.
+The snapshot still has to be one this build pins. Its
+`model.safetensors.index.json` digest selects the source and supplies the
+revision recorded in the manifest and the install receipt, and an unrecognised
+digest is rejected.
+
 Verify an existing installation without loading the model:
 
 ```bash

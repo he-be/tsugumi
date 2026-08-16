@@ -26,3 +26,13 @@ public enum SupportedModelSource {
             resume: resume)
     }
 }
+
+/// Lattice-aligned QAT checkpoint. Its shards are staged on disk first and
+/// repacked with `--source-snapshot`; there is no streaming path for it.
+public enum QATAlignedModelSource {
+    public static let displayName = "Gemma 4 26B-A4B IT QAT q4_0 (lattice-aligned)"
+    public static let repoID = "mlx-community/gemma-4-26B-A4B-it-qat-q4_0-mlx-aligned"
+    public static let revision = "745a97a754ed4b7713163c7d0e9c11da41809e0c"
+    public static let sourceIndexSHA256 =
+        "7dbbeef0345505798abcf0ac54434116a48c2f1e7aad828071c17a7a871adfe7"
+}

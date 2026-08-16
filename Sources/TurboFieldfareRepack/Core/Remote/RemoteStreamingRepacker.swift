@@ -1,4 +1,6 @@
 import Foundation
+import TurboFieldfareFormat
+
 public struct RemoteStreamingRepackOptions: Sendable {
     public let repoID: String
     public let revision: String
@@ -16,6 +18,10 @@ public struct RemoteStreamingRepackOptions: Sendable {
     public let baseURL: URL
     public let rangeRetryAttempts: Int
     public let retryBaseDelayNs: UInt64
+    /// When set, the payload is read from this staged snapshot instead of the
+    /// repository. `repoID` and `revision` are then resolved from the
+    /// snapshot's index digest, so they are empty here.
+    public let sourceSnapshotDirectory: String?
 
     public init(repoID: String,
                 revision: String,
@@ -49,11 +55,44 @@ public struct RemoteStreamingRepackOptions: Sendable {
         self.baseURL = baseURL
         self.rangeRetryAttempts = rangeRetryAttempts
         self.retryBaseDelayNs = retryBaseDelayNs
+        self.sourceSnapshotDirectory = nil
+    }
+
+    /// Repacks from a snapshot already staged on disk. There is no network
+    /// leg, so no token, session or retry policy applies; the source identity
+    /// comes from the snapshot's pinned index digest.
+    public init(sourceSnapshotDirectory: String,
+                outputDir: String,
+                copyAuditPath: String? = nil,
+                rangeChunkBytes: Int = RemoteChunkPolicy.defaultBytes,
+                writeTileBytes: Int = WriterCore.tileBytes,
+                minFreeReserveBytes: UInt64 = 1 * 1024 * 1024 * 1024,
+                overwrite: Bool = false,
+                resume: Bool = false,
+                dryRunSpaceCheck: Bool = false) {
+        self.repoID = ""
+        self.revision = ""
+        self.outputDir = outputDir
+        self.token = nil
+        self.requireKnownSource = true
+        self.copyAuditPath = copyAuditPath
+        self.rangeChunkBytes = rangeChunkBytes
+        self.writeTileBytes = writeTileBytes
+        self.minFreeReserveBytes = minFreeReserveBytes
+        self.overwrite = overwrite
+        self.resume = resume
+        self.dryRunSpaceCheck = dryRunSpaceCheck
+        self.downloadSession = RemoteDownloadSession()
+        self.baseURL = URL(string: "https://huggingface.co")!
+        self.rangeRetryAttempts = 0
+        self.retryBaseDelayNs = 0
+        self.sourceSnapshotDirectory = sourceSnapshotDirectory
     }
 }
 
 public struct RemoteStreamingRepackResult: Sendable {
     public let outputDir: String
+    public let sourceRepoID: String
     public let resolvedCommit: String
     let plan: RepackPlan
     public let rangeRequestCount: Int
@@ -63,6 +102,13 @@ public struct RemoteStreamingRepackResult: Sendable {
     public let reusedBytes: UInt64
     public let downloadedThisRunBytes: UInt64
     public let dryRun: Bool
+
+    /// Human-readable name of the pin this install matched. Falls back to the
+    /// repo ID for a snapshot installed with fingerprint checks relaxed.
+    public var sourceDisplayName: String {
+        SourceFingerprint.knownSources
+            .first { $0.repoID == sourceRepoID }?.displayName ?? sourceRepoID
+    }
 }
 
 public final class RemoteStreamingRepacker {
@@ -161,51 +207,42 @@ public final class RemoteStreamingRepacker {
         let saved = options.resume
             ? try RemoteInstallCheckpoint.load(from: paths.checkpointFile)
             : nil
-        if let saved {
+        // The streaming path knows its identity up front, so reject a foreign
+        // checkpoint before spending a request on metadata. A staged snapshot
+        // has no identity until its index digest has been read, so that case is
+        // covered by the `checkpoint.matches` guard further down instead.
+        if let saved, options.sourceSnapshotDirectory == nil {
             guard saved.repoID == options.repoID,
                   saved.requestedRevision == options.revision else {
                 throw RepackError.installStateIncompatible(
                     detail: "saved download belongs to a different source")
             }
         }
-        let retryPolicy = RemoteRetryPolicy(attempts: options.rangeRetryAttempts,
-                                            baseDelayNs: options.retryBaseDelayNs)
-        let remote = HuggingFaceRemoteSource(repoID: options.repoID,
-                                             requestedRevision: options.revision,
-                                             resolvedCommit: saved?.resolvedCommit,
-                                             token: options.token,
-                                             downloadSession: options.downloadSession,
-                                             baseURL: options.baseURL,
-                                             tempDirectory: paths.partialDirectory,
-                                             retryPolicy: retryPolicy)
         progress(.downloadingMetadata)
-        let snapshot = try await RemoteSnapshotLoader.load(remote: remote,
-                                                           requireKnownSource: options.requireKnownSource,
-                                                           metadataDirectory: paths.metadataDirectory,
-                                                           audit: audit)
+        let source = try await bindSource(paths: paths, saved: saved)
         try Task.checkCancellation()
-        let plan = try RepackPlanner.plan(meta: snapshot.metadata,
-                                          arch: snapshot.arch,
-                                          shardHeaders: snapshot.shardHeaders,
+        let plan = try RepackPlanner.plan(meta: source.metadata,
+                                          arch: source.arch,
+                                          shardHeaders: source.shardHeaders,
                                           outputDir: paths.partialDirectory)
         let rangePlan = try RangeCopyPlanner.plan(repackPlan: plan,
                                                   rangeChunkBytes: options.rangeChunkBytes,
                                                   layoutMode: "identity",
                                                   layoutOrderSha256: nil)
         var checkpoint = saved ?? RemoteInstallCheckpoint(
-            repoID: options.repoID,
-            requestedRevision: options.revision,
-            resolvedCommit: snapshot.resolvedCommit,
-            sourceIndexSHA256: snapshot.metadata.indexSha256Hex,
+            repoID: source.repoID,
+            requestedRevision: source.requestedRevision,
+            resolvedCommit: source.resolvedCommit,
+            sourceIndexSHA256: source.metadata.indexSha256Hex,
             planFingerprint: rangePlan.canonicalFingerprint,
             totalSourceBytes: rangePlan.remoteBytesToDownload)
         if saved != nil {
-            guard checkpoint.resolvedCommit == snapshot.resolvedCommit,
+            guard checkpoint.resolvedCommit == source.resolvedCommit,
                   checkpoint.totalSourceBytes == rangePlan.remoteBytesToDownload,
                   checkpoint.matches(
-                      repoID: options.repoID,
-                      requestedRevision: options.revision,
-                      sourceIndexSHA256: snapshot.metadata.indexSha256Hex,
+                      repoID: source.repoID,
+                      requestedRevision: source.requestedRevision,
+                      sourceIndexSHA256: source.metadata.indexSha256Hex,
                       planFingerprint: rangePlan.canonicalFingerprint) else {
                 throw RepackError.installStateIncompatible(
                     detail: "saved download source or copy plan changed")
@@ -242,13 +279,13 @@ public final class RemoteStreamingRepacker {
         progress(.checkingDisk(diskRequirement))
         try Task.checkCancellation()
 
-        audit.remoteRepoID = options.repoID
-        audit.remoteRequestedRevision = options.revision
-        audit.remoteResolvedCommit = snapshot.resolvedCommit
-        audit.remoteRangeStreamingSupported = true
+        audit.remoteRepoID = source.repoID
+        audit.remoteRequestedRevision = source.requestedRevision
+        audit.remoteResolvedCommit = source.resolvedCommit
+        audit.remoteRangeStreamingSupported = source.remote != nil
         audit.remoteGapBytesDownloaded = rangePlan.remoteGapBytesDownloaded
-        audit.sourceSnapshotSha256 = snapshot.metadata.indexSha256Hex
-        audit.bitWidthOverridesHonored = snapshot.metadata.bitsOverrides.count
+        audit.sourceSnapshotSha256 = source.metadata.indexSha256Hex
+        audit.bitWidthOverridesHonored = source.metadata.bitsOverrides.count
         audit.tensorsDroppedMultimodal = plan.excludedMultimodalTensorNames
         audit.packedExpertLayoutMode = "identity"
 
@@ -257,7 +294,8 @@ public final class RemoteStreamingRepacker {
                 try? FileManager.default.removeItem(atPath: paths.partialDirectory)
             }
             return RemoteStreamingRepackResult(outputDir: options.outputDir,
-                                               resolvedCommit: snapshot.resolvedCommit,
+                                               sourceRepoID: source.repoID,
+                                               resolvedCommit: source.resolvedCommit,
                                                plan: plan,
                                                rangeRequestCount: rangePlan.coalescedCopies.count,
                                                remoteBytesToDownload: rangePlan.remoteBytesToDownload,
@@ -278,9 +316,7 @@ public final class RemoteStreamingRepacker {
                 parentDirectory: paths.parentDirectory)
         }
 
-        let provider = HTTPRangeSourceByteProvider(remote: remote.pinned(commit: snapshot.resolvedCommit),
-                                                   files: snapshot.remoteFiles,
-                                                   writeTileBytes: options.writeTileBytes)
+        let provider = source.provider
         let reusedBytes = checkpoint.completedRanges.reduce(UInt64(0)) {
             $0 + $1.sourceBytes
         }
@@ -331,19 +367,26 @@ public final class RemoteStreamingRepacker {
                              progress: progress)
 
         try Task.checkCancellation()
-        try await copyRemoteMetadataSidecars(snapshot: snapshot,
-                                             remote: remote,
-                                             partialDir: paths.partialDirectory,
-                                             progress: progress)
+        if let remote = source.remote {
+            try await copyRemoteMetadataSidecars(snapshot: remote.snapshot,
+                                                 remote: remote.source,
+                                                 partialDir: paths.partialDirectory,
+                                                 progress: progress)
+        } else {
+            try copyLocalMetadataSidecars(snapshotDirectory: source.sidecarDirectory,
+                                          partialDir: paths.partialDirectory,
+                                          progress: progress)
+        }
         try? FileManager.default.removeItem(atPath: paths.rangeTemporaryFile)
         try? FileManager.default.removeItem(atPath: paths.metadataDirectory)
         progress(.finalizing)
         try Task.checkCancellation()
         try writeManifest(plan: plan,
                           partialDir: paths.partialDirectory,
-                          metadata: snapshot.metadata,
+                          metadata: source.metadata,
                           expertStride: expertStride,
-                          resolvedCommit: snapshot.resolvedCommit)
+                          repoID: source.repoID,
+                          resolvedCommit: source.resolvedCommit)
 
         try Task.checkCancellation()
         if try Posix.entryKind(paths.finalDirectory) == .directory {
@@ -365,7 +408,8 @@ public final class RemoteStreamingRepacker {
         }
 
         return RemoteStreamingRepackResult(outputDir: options.outputDir,
-                                           resolvedCommit: snapshot.resolvedCommit,
+                                           sourceRepoID: source.repoID,
+                                           resolvedCommit: source.resolvedCommit,
                                            plan: plan,
                                            rangeRequestCount: rangePlan.coalescedCopies.count,
                                            remoteBytesToDownload: rangePlan.remoteBytesToDownload,
@@ -375,6 +419,83 @@ public final class RemoteStreamingRepacker {
                                            downloadedThisRunBytes:
                                                audit.remoteBytesDownloaded - payloadDownloadStart,
                                            dryRun: false)
+    }
+
+    /// Everything downstream of "where do the source bytes come from". The two
+    /// modes differ only in how the metadata was obtained and which provider
+    /// serves the payload; `remote` is nil for a staged snapshot.
+    private struct BoundSource {
+        let metadata: IndexLoader.SourceMetadata
+        let arch: ArchInfo
+        let shardHeaders: [Safetensors.Header]
+        let repoID: String
+        let requestedRevision: String
+        let resolvedCommit: String
+        /// Directory holding `config.json` for the tokenizer sidecar copy.
+        let sidecarDirectory: String
+        let provider: SourceByteProvider
+        let remote: (source: HuggingFaceRemoteSource, snapshot: RemoteSnapshot)?
+    }
+
+    private func bindSource(paths: RemoteInstallPaths,
+                            saved: RemoteInstallCheckpoint?) async throws -> BoundSource {
+        if let snapshotDirectory = options.sourceSnapshotDirectory {
+            let snapshot = try LocalSnapshotLoader.load(directory: snapshotDirectory,
+                                                        audit: audit)
+            try requireOutsideInstall(snapshot.directory, paths: paths)
+            return BoundSource(
+                metadata: snapshot.metadata,
+                arch: snapshot.arch,
+                shardHeaders: snapshot.shardHeaders,
+                repoID: snapshot.source.repoID,
+                requestedRevision: snapshot.source.revision,
+                resolvedCommit: snapshot.source.revision,
+                sidecarDirectory: snapshot.directory,
+                provider: LocalSnapshotByteProvider(shardPaths: snapshot.shardPaths,
+                                                    writeTileBytes: options.writeTileBytes),
+                remote: nil)
+        }
+
+        let retryPolicy = RemoteRetryPolicy(attempts: options.rangeRetryAttempts,
+                                            baseDelayNs: options.retryBaseDelayNs)
+        let remote = HuggingFaceRemoteSource(repoID: options.repoID,
+                                             requestedRevision: options.revision,
+                                             resolvedCommit: saved?.resolvedCommit,
+                                             token: options.token,
+                                             downloadSession: options.downloadSession,
+                                             baseURL: options.baseURL,
+                                             tempDirectory: paths.partialDirectory,
+                                             retryPolicy: retryPolicy)
+        let snapshot = try await RemoteSnapshotLoader.load(
+            remote: remote,
+            requireKnownSource: options.requireKnownSource,
+            metadataDirectory: paths.metadataDirectory,
+            audit: audit)
+        return BoundSource(
+            metadata: snapshot.metadata,
+            arch: snapshot.arch,
+            shardHeaders: snapshot.shardHeaders,
+            repoID: options.repoID,
+            requestedRevision: options.revision,
+            resolvedCommit: snapshot.resolvedCommit,
+            sidecarDirectory: snapshot.metadataDirectory,
+            provider: HTTPRangeSourceByteProvider(
+                remote: remote.pinned(commit: snapshot.resolvedCommit),
+                files: snapshot.remoteFiles,
+                writeTileBytes: options.writeTileBytes),
+            remote: (source: remote, snapshot: snapshot))
+    }
+
+    /// The install rewrites and renames the partial directory, so a snapshot
+    /// living inside it would be destroyed mid-run.
+    private func requireOutsideInstall(_ directory: String,
+                                       paths: RemoteInstallPaths) throws {
+        for reserved in [paths.partialDirectory, paths.finalDirectory] {
+            guard directory != reserved, !directory.hasPrefix(reserved + "/") else {
+                throw RepackError.configurationInvalid(
+                    detail: "source snapshot lives inside the install directory \(reserved)")
+            }
+        }
     }
 
     private func validateOptions() throws {
@@ -549,6 +670,41 @@ public final class RemoteStreamingRepacker {
         }
     }
 
+    /// Same sidecar set as the streaming path, taken from the staged snapshot.
+    /// The size caps are kept so a doctored snapshot cannot smuggle a huge
+    /// tokenizer into the installed model.
+    private func copyLocalMetadataSidecars(snapshotDirectory: String,
+                                           partialDir: String,
+                                           progress: @Sendable (ModelInstallProgress) -> Void) throws {
+        let tokenizerDir = (partialDir as NSString).appendingPathComponent("tokenizer")
+        let files: [(name: String, cap: UInt64, required: Bool)] = [
+            ("config.json", 1 * 1024 * 1024, true),
+            ("tokenizer.json", 64 * 1024 * 1024, true),
+            ("tokenizer_config.json", 4 * 1024 * 1024, true),
+            ("special_tokens_map.json", 1 * 1024 * 1024, false),
+            ("chat_template.jinja", 4 * 1024 * 1024, false),
+            ("chat_template.json", 4 * 1024 * 1024, false),
+        ]
+        try Posix.mkdirP(tokenizerDir)
+        for file in files {
+            try Task.checkCancellation()
+            let src = (snapshotDirectory as NSString).appendingPathComponent(file.name)
+            guard try Posix.entryKind(src) == .regular else {
+                if file.required {
+                    throw RepackError.configurationInvalid(
+                        detail: "source snapshot is missing \(file.name)")
+                }
+                continue
+            }
+            let data = try Posix.readBoundedData(src, maximumBytes: file.cap)
+            let dst = (tokenizerDir as NSString).appendingPathComponent(file.name)
+            try writeSmall(path: dst, data: data)
+            try recordOutputFile(relativePath: "tokenizer/\(file.name)",
+                                 path: dst,
+                                 progress: progress)
+        }
+    }
+
     private func isRemoteNotFound(_ error: Error) -> Bool {
         if case RepackError.remoteHTTPStatus(_, 404) = error {
             return true
@@ -563,6 +719,7 @@ public final class RemoteStreamingRepacker {
                                partialDir: String,
                                metadata: IndexLoader.SourceMetadata,
                                expertStride: UInt64,
+                               repoID: String,
                                resolvedCommit: String) throws {
         var bits = GTurboJSON.QuantBitWidths(
             embedding: 4,
@@ -577,8 +734,12 @@ public final class RemoteStreamingRepacker {
             if e.name.hasSuffix(".self_attn.q_proj.weight"), let s = e.quantSpec {
                 bits.attention = s.bits
             }
-            if e.name.hasSuffix(".router.proj.weight"), let s = e.quantSpec {
-                bits.router = s.bits
+            if e.name.hasSuffix(".router.proj.weight") {
+                // The QAT checkpoints ship the router unquantized, so it has no
+                // quant spec and no scale/bias companions. 16 is what the
+                // manifest reader reads as "BF16, no affine metadata".
+                bits.router = e.quantSpec?.bits
+                    ?? (e.dtype == GTurboFormatV1.DType.bf16.rawValue ? 16 : bits.router)
             }
             if e.name.hasSuffix(".mlp.gate_proj.weight"), let s = e.quantSpec {
                 bits.sharedExpert = s.bits
@@ -609,7 +770,7 @@ public final class RemoteStreamingRepacker {
             outputDir: options.outputDir,
             manifestSha256: manifestSha,
             manifestSize: UInt64(data.count),
-            sourceRepoID: options.repoID,
+            sourceRepoID: repoID,
             sourceRevision: resolvedCommit,
             files: audit.outputFiles)
         let receiptPath = (partialDir as NSString)
