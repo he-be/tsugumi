@@ -39,6 +39,13 @@ public final class RepackAudit {
     public var remoteResolvedCommit: String?
     public var remoteRetries: [RemoteRetryRecord] = []
     public var stalePartialsRemoved: [String] = []
+    public var visionRepoID: String?
+    public var visionResolvedCommit: String?
+    public var visionTensorCount: Int = 0
+    public var visionPayloadBytes: UInt64 = 0
+    /// Tensors whose bytes were proven identical in the text checkpoint and the
+    /// vision repository. Empty for a text-only install.
+    public var visionParityTensors: [String] = []
 
     public init() {}
 
@@ -133,8 +140,17 @@ public final class RepackAudit {
             "largest_remote_payload_heap_bytes": largestRemotePayloadHeapBytes,
             "remote_retries": retryArr,
             "stale_partials_removed": stalePartialsRemoved,
+            "vision_tensor_count": visionTensorCount,
+            "vision_payload_bytes": visionPayloadBytes,
+            "vision_parity_tensors": visionParityTensors,
             "output_files": filesArr
         ]
+        if let visionRepoID {
+            dict["vision_repo_id"] = visionRepoID
+        }
+        if let visionResolvedCommit {
+            dict["vision_resolved_commit"] = visionResolvedCommit
+        }
         if let packedExpertLayoutOrderPath {
             dict["packed_expert_layout_order_path"] = packedExpertLayoutOrderPath
         }

@@ -40,6 +40,54 @@ private enum FormatFixture {
             bitWidthOverridesHonored: bitWidthOverridesHonored)
     }
 
+    /// A manifest that also carries the vision tower. The extra file entry is
+    /// what the section's `weightsPath` has to resolve to.
+    static func visionManifest(
+        vision: GTurboManifestVisionV1? = FormatFixture.vision(),
+        flagged: Bool = true,
+        minor: Int = GTurboFormatV1.versionMinorVision
+    ) -> GTurboManifestV1 {
+        let base = manifest(minor: minor)
+        var flags = base.flags
+        if flagged { flags["visionTower"] = true }
+        var files = base.files
+        files[GTurboFormatV1.visionWeightsPath] =
+            GTurboManifestFileV1(size: 16_384 + 4_096, sha256: zeroSHA)
+        return GTurboManifestV1(
+            versionMinor: minor,
+            flags: flags,
+            modelID: base.modelID,
+            sourceSnapshotHash: base.sourceSnapshotHash,
+            arch: base.arch,
+            quant: base.quant,
+            vision: vision,
+            files: files,
+            expertsPerLayer: base.expertsPerLayer,
+            numLayers: base.numLayers,
+            expertStride: base.expertStride,
+            bitWidthOverridesHonored: base.bitWidthOverridesHonored)
+    }
+
+    static func vision(hiddenSize: Int = 1152,
+                       numHeads: Int = 16,
+                       headDim: Int = 72,
+                       weightDType: String = "bf16",
+                       weightsPath: String = GTurboFormatV1.visionWeightsPath,
+                       payloadBytes: UInt64 = 4_096,
+                       imageTokenID: Int = 258880) -> GTurboManifestVisionV1 {
+        GTurboManifestVisionV1(
+            hiddenSize: hiddenSize, numLayers: 27, numHeads: numHeads,
+            numKVHeads: 16, headDim: headDim, intermediateSize: 4304,
+            patchSize: 16, poolingKernelSize: 3, positionEmbeddingSize: 10240,
+            ropeTheta: 100, rmsNormEps: 1e-6,
+            hiddenActivation: "gelu_pytorch_tanh", standardize: true,
+            maxSoftTokens: 280, weightDType: weightDType,
+            imageTokenID: imageTokenID, boiTokenID: 255999, eoiTokenID: 258882,
+            weightsPath: weightsPath, tensorCount: 356,
+            payloadBytes: payloadBytes,
+            sourceRepo: "google/fixture", sourceRevision: "f1e06dc5")
+    }
+
     static let quantSlot = GTurboManifestQuantSlotV1(
         weightBits: 4, scheme: "affine", scaleType: "BF16",
         biasType: "BF16", groupSize: 64)
@@ -153,6 +201,88 @@ private enum FormatFixture {
         var files = try #require(root["files"] as? [String: Any])
         files[reserved] = files["model_weights.bin"]
         root["files"] = files
+        let data = try JSONSerialization.data(withJSONObject: root)
+        #expect(throws: GTurboFormatError.self) { try GTurboManifestCodec.decode(data) }
+    }
+
+    @Test func textOnlyManifestOmitsTheVisionSectionEntirely() throws {
+        let encoded = try GTurboManifestCodec.encode(FormatFixture.manifest())
+        let root = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        // Byte-identity of a text-only install depends on this key never
+        // appearing, so assert its absence rather than that it decodes to nil.
+        #expect(root["vision"] == nil)
+        #expect(try GTurboManifestCodec.decode(encoded).vision == nil)
+    }
+
+    @Test func roundTripsTheVisionSection() throws {
+        let manifest = FormatFixture.visionManifest()
+        let encoded = try GTurboManifestCodec.encode(manifest)
+        let decoded = try GTurboManifestCodec.decode(encoded)
+        #expect(decoded == manifest)
+        #expect(decoded.vision?.tensorCount == 356)
+        #expect(decoded.flags["visionTower"] == true)
+    }
+
+    @Test func rejectsVisionSectionWithoutItsFlag() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.visionManifest(flagged: false))
+        }
+    }
+
+    @Test func rejectsVisionFlagWithoutASection() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.visionManifest(vision: nil))
+        }
+    }
+
+    @Test func rejectsVisionAtTheTextOnlyMinorVersion() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.visionManifest(minor: 0))
+        }
+    }
+
+    @Test func rejectsVisionWeightsPathThatIsNotDeclaredInFiles() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.visionManifest(
+                vision: FormatFixture.vision(weightsPath: "vision/other.bin")))
+        }
+    }
+
+    @Test func rejectsVisionPayloadLargerThanItsFile() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.visionManifest(
+                vision: FormatFixture.vision(payloadBytes: 1 << 40)))
+        }
+    }
+
+    @Test func rejectsNonBF16VisionWeights() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.visionManifest(
+                vision: FormatFixture.vision(weightDType: "fp16")))
+        }
+    }
+
+    @Test func rejectsVisionHeadGeometryThatDoesNotFillTheHiddenSize() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.visionManifest(
+                vision: FormatFixture.vision(numHeads: 15)))
+        }
+    }
+
+    @Test func rejectsDuplicateImageMarkerTokenIDs() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.visionManifest(
+                vision: FormatFixture.vision(imageTokenID: 255999)))
+        }
+    }
+
+    @Test func rejectsUnknownFlagsIncludingTypos() throws {
+        var root = try #require(JSONSerialization.jsonObject(
+            with: GTurboManifestCodec.encode(FormatFixture.manifest())) as? [String: Any])
+        var flags = try #require(root["flags"] as? [String: Any])
+        flags["visionTowers"] = true
+        root["flags"] = flags
         let data = try JSONSerialization.data(withJSONObject: root)
         #expect(throws: GTurboFormatError.self) { try GTurboManifestCodec.decode(data) }
     }

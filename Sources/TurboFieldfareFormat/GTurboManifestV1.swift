@@ -102,6 +102,74 @@ package struct GTurboManifestQuantV1: Codable, Equatable, Sendable {
     }
 }
 
+/// Vision tower description. Optional and additive: a text-only manifest omits
+/// the whole section, so its bytes are unchanged by this schema. A manifest
+/// that carries it also carries `flags.visionTower`, which an older runtime
+/// rejects outright rather than silently ignoring the images.
+package struct GTurboManifestVisionV1: Codable, Equatable, Sendable {
+    package let hiddenSize: Int
+    package let numLayers: Int
+    package let numHeads: Int
+    package let numKVHeads: Int
+    package let headDim: Int
+    package let intermediateSize: Int
+    package let patchSize: Int
+    package let poolingKernelSize: Int
+    package let positionEmbeddingSize: Int
+    package let ropeTheta: Double
+    package let rmsNormEps: Double
+    package let hiddenActivation: String
+    package let standardize: Bool
+    package let maxSoftTokens: Int
+    package let weightDType: String
+    package let imageTokenID: Int
+    package let boiTokenID: Int
+    package let eoiTokenID: Int
+    /// Relative path of the tower weights inside the model directory. Also
+    /// present in `files`, which is what carries its size and digest.
+    package let weightsPath: String
+    package let tensorCount: Int
+    package let payloadBytes: UInt64
+    /// The tower's own provenance. `sourceSnapshotHash` describes the text
+    /// checkpoint only, and the two come from different repositories.
+    package let sourceRepo: String
+    package let sourceRevision: String
+
+    package init(hiddenSize: Int, numLayers: Int, numHeads: Int, numKVHeads: Int,
+                 headDim: Int, intermediateSize: Int, patchSize: Int,
+                 poolingKernelSize: Int, positionEmbeddingSize: Int,
+                 ropeTheta: Double, rmsNormEps: Double,
+                 hiddenActivation: String, standardize: Bool,
+                 maxSoftTokens: Int, weightDType: String,
+                 imageTokenID: Int, boiTokenID: Int, eoiTokenID: Int,
+                 weightsPath: String, tensorCount: Int, payloadBytes: UInt64,
+                 sourceRepo: String, sourceRevision: String) {
+        self.hiddenSize = hiddenSize
+        self.numLayers = numLayers
+        self.numHeads = numHeads
+        self.numKVHeads = numKVHeads
+        self.headDim = headDim
+        self.intermediateSize = intermediateSize
+        self.patchSize = patchSize
+        self.poolingKernelSize = poolingKernelSize
+        self.positionEmbeddingSize = positionEmbeddingSize
+        self.ropeTheta = ropeTheta
+        self.rmsNormEps = rmsNormEps
+        self.hiddenActivation = hiddenActivation
+        self.standardize = standardize
+        self.maxSoftTokens = maxSoftTokens
+        self.weightDType = weightDType
+        self.imageTokenID = imageTokenID
+        self.boiTokenID = boiTokenID
+        self.eoiTokenID = eoiTokenID
+        self.weightsPath = weightsPath
+        self.tensorCount = tensorCount
+        self.payloadBytes = payloadBytes
+        self.sourceRepo = sourceRepo
+        self.sourceRevision = sourceRevision
+    }
+}
+
 package struct GTurboManifestV1: Codable, Equatable, Sendable {
     package let magic: String
     package let versionMajor: Int
@@ -111,6 +179,7 @@ package struct GTurboManifestV1: Codable, Equatable, Sendable {
     package let sourceSnapshotHash: String?
     package let arch: GTurboManifestArchV1
     package let quant: GTurboManifestQuantV1?
+    package let vision: GTurboManifestVisionV1?
     package let files: [String: GTurboManifestFileV1]
     package let expertsPerLayer: Int
     package let numLayers: Int
@@ -123,6 +192,7 @@ package struct GTurboManifestV1: Codable, Equatable, Sendable {
                  flags: [String: Bool], modelID: String,
                  sourceSnapshotHash: String?, arch: GTurboManifestArchV1,
                  quant: GTurboManifestQuantV1?,
+                 vision: GTurboManifestVisionV1? = nil,
                  files: [String: GTurboManifestFileV1],
                  expertsPerLayer: Int, numLayers: Int, expertStride: UInt64,
                  bitWidthOverridesHonored: Int?) {
@@ -134,6 +204,7 @@ package struct GTurboManifestV1: Codable, Equatable, Sendable {
         self.sourceSnapshotHash = sourceSnapshotHash
         self.arch = arch
         self.quant = quant
+        self.vision = vision
         self.files = files
         self.expertsPerLayer = expertsPerLayer
         self.numLayers = numLayers
@@ -226,6 +297,7 @@ package enum GTurboManifestCodec {
                 }
             }
         }
+        try validateVisionSection(manifest)
         let reservedFiles: Set<String> = ["manifest.json", "verified-install.json"]
         let filePaths = manifest.files.keys.sorted()
         var canonicalPaths: [String: String] = [:]
@@ -267,4 +339,66 @@ package enum GTurboManifestCodec {
         }
     }
 
+    /// The vision section and its flag are one fact written twice; a manifest
+    /// that carries only one of them would let a reader disagree with the
+    /// installer about whether this model can see.
+    private static func validateVisionSection(_ manifest: GTurboManifestV1) throws {
+        let flagged = manifest.flags["visionTower"] == true
+        guard let vision = manifest.vision else {
+            guard !flagged else {
+                throw GTurboFormatError.invalid(
+                    field: "manifest.vision",
+                    reason: "flags.visionTower is set but the vision section is absent")
+            }
+            return
+        }
+        guard flagged else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.flags.visionTower",
+                reason: "vision section present but the flag is not set")
+        }
+        guard manifest.versionMinor >= GTurboFormatV1.versionMinorVision else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.version",
+                reason: "vision requires minor >= \(GTurboFormatV1.versionMinorVision)")
+        }
+        guard vision.hiddenSize > 0, vision.numLayers > 0,
+              vision.numHeads > 0, vision.numKVHeads > 0,
+              vision.headDim > 0, vision.intermediateSize > 0,
+              vision.patchSize > 0, vision.poolingKernelSize > 0,
+              vision.positionEmbeddingSize > 0,
+              vision.maxSoftTokens > 0, vision.tensorCount > 0,
+              vision.payloadBytes > 0,
+              vision.numHeads * vision.headDim == vision.hiddenSize,
+              vision.ropeTheta.isFinite, vision.ropeTheta > 0,
+              vision.rmsNormEps.isFinite, vision.rmsNormEps > 0,
+              !vision.hiddenActivation.isEmpty,
+              !vision.sourceRepo.isEmpty, !vision.sourceRevision.isEmpty else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.vision", reason: "invalid vision values")
+        }
+        guard vision.weightDType.lowercased() == "bf16" else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.vision.weightDType", reason: "expected bf16")
+        }
+        let ids = [vision.imageTokenID, vision.boiTokenID, vision.eoiTokenID]
+        guard ids.allSatisfy({ $0 >= 0 }), Set(ids).count == ids.count else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.vision", reason: "image marker token ids must be distinct")
+        }
+        try GTurboPathValidator.validateRelativePath(vision.weightsPath,
+                                                     field: "manifest.vision.weightsPath")
+        guard let entry = manifest.files[vision.weightsPath] else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.vision.weightsPath",
+                reason: "\(vision.weightsPath) is not declared in manifest.files")
+        }
+        guard entry.size > vision.payloadBytes else {
+            // The file is an index page plus the payload, so it is strictly
+            // larger than the payload it declares.
+            throw GTurboFormatError.invalid(
+                field: "manifest.vision.payloadBytes",
+                reason: "payload \(vision.payloadBytes) does not fit in \(entry.size) bytes")
+        }
+    }
 }

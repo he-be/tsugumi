@@ -251,6 +251,112 @@ V5 のマスクもこの範囲で入れる。
 
 ---
 
+## 0-D. V2 完了 (2026-08-17、**実測**)
+
+§5 の V2 (フォーマット拡張 + repacker) の出口条件を満たした。
+**GPU も 26B の実機ロードも使っていない**ので、以下はすべて合成データでの実測である。
+
+| 追加したもの | 中身 |
+| --- | --- |
+| `GTurboFormatV1` | `knownFlags += "visionTower"`、`versionMinorVision = 1`、`visionWeightsPath` |
+| `GTurboManifestVisionV1` | manifest の optional `vision` セクション (§0-D-1) + 整合検査 |
+| `VisionConfig` (`ModelTypes.swift`) | ランタイム側の期待値。`ManifestReader.validateVision` が field 単位で照合 |
+| `VisionModelSource` / `VisionSourcePin` | Google リポジトリのピン (repo / revision / index SHA / 356 本 / 1,145,588,832 B / パリティ 3 本 / tower config) |
+| `VisionSourceLoader` | index・config.json を取得して**ピンと照合**し、必要な shard のヘッダだけを Range で取る |
+| `VisionRepackPlanner` | **config から期待テンソル表を生成**して突き合わせ、resident v1 レイアウトを組む (§0-D-2) |
+| `RoutingSourceByteProvider` | 1 つのコピー計画を shardID の名前空間で 2 つのソースに振り分ける |
+| `--include-vision` | CLI フラグ。既定は無効 |
+| テスト 23 本 | format 11 / ManifestReader 4 / repack 6 / CLI 2 |
+
+`Scripts/test.sh`: **745 テスト / 132 スイート、12 issue**。
+issue の内訳は `PREFILL_THROUGHPUT.md` §7-7 の陳腐化 5 件と**完全に同じで、新しい失敗はない**
+(722 → 745 は今回の +23)。
+
+### 0-D-1. `manifest.vision` は §4-1-a に 3 項目足した
+
+`weightsPath` / `tensorCount` / `payloadBytes` を追加した。前者はランタイムが
+ファイル名をハードコードしないため、後ろ 2 つは「index が主張する中身」と
+「`files` が主張するファイルサイズ」を**別々に検証できる**ようにするため
+(payload > ファイルサイズは encode 時に弾く)。
+`sourceRevision` は**解決済みコミット**で、ピンと一致しなければ拒否する。
+
+### 0-D-2. 「向こうが送ってきた 356 本」を信用しない
+
+§4-2 は「`RepackAudit.tensors_dropped_multimodal` に除外一覧が出ているから
+一次情報はある」と書いたが、**これは誤りだった (実測)**。
+ローカル QAT snapshot の 1279 テンソルは**全部 `language_model.` で、
+multimodal テンソルは 1 本もない**。除外一覧は空で、拾うべき名前の情報源にならない。
+
+代わりに **`vision_config` から期待テンソル表を生成**する方式にした:
+
+```
+2 (patch embedder) + 13 × 27 (層) + 2 (std) + 1 (projector) = 356
+```
+
+356 という数がピンと一致することも、各テンソルの shape が config から
+導けることも検査する。したがって「上流が黙って 1 本増やした / 形を変えた」は
+インストール時に落ちる。テストでは shard のヘッダから `std_bias` を 1 本だけ
+消した合成リポジトリを作り、`missing: vision_tower.std_bias` で落ちることを固定した。
+
+> **この式を本物の重みに当てて確認した (実測、2026-08-17、ネットワーク不要)。**
+> V0 で取得済みの `scratch/vision-weights/vision.safetensors` の
+> safetensors ヘッダに対して同じ式を展開したところ、
+> **356 名すべてが一致 (欠けも余りもゼロ)、全 shape 一致、全 BF16、
+> 合計 1,145,588,832 B がピンと一致**した。
+> 合成データだけで通したのではなく、production のピンが本物を再現している。
+
+### 0-D-3. パリティ検査 — §1-2 の手作業を毎回の自動検査にした
+
+§1-2 は SHA-256 の先頭 16 桁だけを記録していたので、**全 64 桁を取り直して
+`VisionModelSource.pin.parityTensors` にピンした** (**実測**、ローカル snapshot から):
+
+| テンソル | SHA-256 |
+| --- | --- |
+| `language_model.model.norm.weight` | `134bc0ecd2a53f98…3013e95f43` |
+| `…layers.0.input_layernorm.weight` | `978017393fdf7a41…f5eeaefa77` |
+| `…layers.7.post_feedforward_layernorm.weight` | `5889b58a3573b37a…d9671455a10` |
+
+インストール時に**テキスト側と vision リポジトリ側の両方**をハッシュし、
+ピンと、そして互いと突き合わせる。3 つのどれが食い違っても中止する。
+
+> **検出力の裏取り (§6-3 の手続き)。**別シードで作った合成チェックポイントから
+> tower を組み、元のスナップショットに対してインストールさせる試験を入れた。
+> この tower は**自分のピンとは整合している**ので、テキスト側との比較でしか
+> 気づけない。実際 `the two checkpoints differ` で落ちる。
+> 「壊すと落ちる」ことを確認していない検査は入れていない。
+
+### 0-D-4. `--source-snapshot` でも tower はネットワークから来る
+
+テキストはローカル、tower は HTTP という **2 本差し**なので、
+スナップショット用イニシャライザにも session / token / リトライ設定が要るようになった
+(`--include-vision` のときだけ効く)。コピー計画側は `shardID` に
+`vision:` 名前空間を付けて 1 つの計画に同居させ、
+`RoutingSourceByteProvider` が振り分ける。**チェックポイント (resume) も 1 本のまま**で、
+vision 込みの計画は fingerprint が変わるので、text-only の途中状態を
+vision 付きで resume しようとすると「計画が変わった」として弾かれる。
+
+### 0-D-5. 退行なしの担保
+
+- **manifest のバイト一致**: `Tests/TurboFieldfareFormatCompatibility` の
+  凍結フィクスチャ (manifest / layout / resident index の SHA-256) が**そのまま通る**。
+  `vision` は optional なので、text-only の JSON には**キー自体が現れない**
+  (これも単体テストで固定した)。
+- **fingerprint**: vision があるときだけ 2 フィールド追加する。text-only の
+  計画 fingerprint は 1 ビットも変わらない。
+- **既定の出力物**: `--include-vision` なしのインストールで `vision/` が作られず、
+  vision リポジトリへのリクエストが **0 件**であることをテストで固定した。
+
+### 0-D-6. 旧ランタイムの拒否について (正直な限界)
+
+「旧バイナリが flag で落ちる」は**このリポジトリ内では直接試験できない**
+(現行ビルドは `visionTower` を既知フラグとして知っているため)。
+機構そのもの (未知フラグ → `ModelError.unknownFlag` で `Model.load` が失敗) は
+既存テストと今回足した誤記フラグのテストで押さえてある。
+V6 の受入で、**vision 付き `.gturbo` を旧タグのビルドに食わせて実際に落ちること**を
+一度だけ実機で確認する (§7 に追加)。
+
+---
+
 ## 1. ソース側の事実確認 (**実測**、2026-08-16)
 
 ### 1-1. vision 重みの所在と内訳
@@ -572,10 +678,14 @@ swift run -c release TurboFieldfareRepack \
   --include-vision                       # ← 追加。既定は無効 (現行の出力と 1 バイトも変わらない)
 ```
 
-- `--include-vision` のとき、`RepackPlanner.classify` の `.excludedMultimodal` を
+- ~~`--include-vision` のとき、`RepackPlanner.classify` の `.excludedMultimodal` を
   「除外」から「vision 収集」に反転させる。**除外の一覧は既に `RepackAudit` に
   `tensors_dropped_multimodal` として出ている** (**実測**) ので、
-  「何を拾うべきか」の一次情報は既にある。
+  「何を拾うべきか」の一次情報は既にある。~~
+  **この項は誤りだった (§0-D-2、2026-08-17)。**ローカル snapshot に multimodal
+  テンソルは 1 本もないので除外一覧は空で、情報源にならない。
+  実装は `vision_config` から期待テンソル表 (356 本) を生成して照合する方式にした。
+  `classify` にも `RepackAudit` にも手を入れていない。
 - vision の byte provider は `HTTPRangeSourceByteProvider` (既存)。
   Phase C で `SourceByteProvider` がプロトコル化済みなので、
   **text = `LocalSnapshotByteProvider` / vision = HTTP という 2 本差し**で済む (**実測**)。
@@ -763,7 +873,7 @@ tower は prefill の前段でしか動かないので、**§5-0 のテキスト
 | --- | --- | --- |
 | **V0** | 参照系の固定 | 下記 §5-V0 — **完了 (2026-08-17、§0-B)** |
 | **V1** | 前処理 + トークン列 (GPU なし) | 参照 fixture と patch 一致 (許容 §6-1)。画像なしの `<\|image\|>` が**エラーになる** — **完了 (2026-08-17、§0-C)** |
-| **V2** | フォーマット拡張 + repacker | `--include-vision` で `.gturbo` が出来、**旧バイナリが flag で拒否する**。`--include-vision` なしの出力が現行とバイト一致 |
+| **V2** | フォーマット拡張 + repacker | `--include-vision` で `.gturbo` が出来、**旧バイナリが flag で拒否する**。`--include-vision` なしの出力が現行とバイト一致 — **完了 (2026-08-17、§0-D)**。ただし旧バイナリでの実拒否確認は V6 に持ち越し (§0-D-6) |
 | **V3** | tower カーネル + 単体検証 + **性能実測** | `TurboFieldfareKernelCheck` に vision ケース追加で全 PASS + **検出力の裏取り**。bf16 QMM の実測 GFLOP/s を記録 |
 | **V4** | tower 統合 (画像 → soft token) | 参照実装の `pooler_output` と相対誤差 ≤ §6-2 の閾値 |
 | **V5** | prefill 統合 (スパン・マスク・scatter) | 実画像で説明が成立。**テキストのみの回帰 ±1%** (§5-0 相当) |
@@ -873,6 +983,7 @@ tower は off-path なので、動いたら実装ミス)。
 | 6 | Server | `data:` URI で 200、`http(s)` URI で 400、画像ありでプロンプトキャッシュが**publish されない**こと |
 | 7 | 起動 | `--verification trusted-install` / `full-sha256` の両方で exit 0 |
 | 8 | 退行なし | `--include-vision` なしで作った `.gturbo` が現行とバイト一致 (V2 の出口条件の再確認) |
+| 9 | 旧ランタイム拒否 | vision 付き `.gturbo` を **vision 以前のタグでビルドしたバイナリ**に渡し、`unknown v1 flag` で exit != 0 になることを実機で 1 回確認する (§0-D-6) |
 
 記録は `RESULTS_VISION.md` に PLAN §6 準拠 (commit / ハード / コマンド / exit code /
 footer 全文 / プロトコルからの逸脱すべて)。

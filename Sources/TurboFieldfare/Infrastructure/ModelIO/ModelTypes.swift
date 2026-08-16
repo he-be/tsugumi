@@ -106,6 +106,77 @@ public struct ArchConfig: Sendable, Equatable {
     }
 }
 
+/// Compile-time vision tower baseline, checked field-by-field against
+/// `manifest.json -> vision` when the installed model carries a tower. Unlike
+/// `ArchConfig` there is no per-checkpoint variation to accommodate: the tower
+/// comes from one pinned upstream repository (`PLAN_VISION.md` §1-1).
+public struct VisionConfig: Sendable, Equatable {
+    public let hiddenSize: Int
+    public let numLayers: Int
+    public let numHeads: Int
+    public let numKVHeads: Int
+    public let headDim: Int
+    public let intermediateSize: Int
+    public let patchSize: Int
+    public let poolingKernelSize: Int
+    public let positionEmbeddingSize: Int
+    public let ropeTheta: Double
+    public let rmsNormEps: Double
+    public let hiddenActivation: String
+    public let standardize: Bool
+    public let maxSoftTokens: Int
+    public let imageTokenID: Int
+    public let boiTokenID: Int
+    public let eoiTokenID: Int
+
+    public init(hiddenSize: Int, numLayers: Int, numHeads: Int, numKVHeads: Int,
+                headDim: Int, intermediateSize: Int, patchSize: Int,
+                poolingKernelSize: Int, positionEmbeddingSize: Int,
+                ropeTheta: Double, rmsNormEps: Double, hiddenActivation: String,
+                standardize: Bool, maxSoftTokens: Int,
+                imageTokenID: Int, boiTokenID: Int, eoiTokenID: Int) {
+        self.hiddenSize = hiddenSize
+        self.numLayers = numLayers
+        self.numHeads = numHeads
+        self.numKVHeads = numKVHeads
+        self.headDim = headDim
+        self.intermediateSize = intermediateSize
+        self.patchSize = patchSize
+        self.poolingKernelSize = poolingKernelSize
+        self.positionEmbeddingSize = positionEmbeddingSize
+        self.ropeTheta = ropeTheta
+        self.rmsNormEps = rmsNormEps
+        self.hiddenActivation = hiddenActivation
+        self.standardize = standardize
+        self.maxSoftTokens = maxSoftTokens
+        self.imageTokenID = imageTokenID
+        self.boiTokenID = boiTokenID
+        self.eoiTokenID = eoiTokenID
+    }
+
+    /// Gemma 4 vision tower. `maxSoftTokens` is an upper bound: the token count
+    /// of one image follows its aspect ratio (`PLAN_VISION.md` §2-1).
+    public static let gemma4Vision = VisionConfig(
+        hiddenSize: 1152,
+        numLayers: 27,
+        numHeads: 16,
+        numKVHeads: 16,
+        headDim: 72,
+        intermediateSize: 4304,
+        patchSize: 16,
+        poolingKernelSize: 3,
+        positionEmbeddingSize: 10240,
+        ropeTheta: 100.0,
+        rmsNormEps: 1e-6,
+        hiddenActivation: "gelu_pytorch_tanh",
+        standardize: true,
+        maxSoftTokens: 280,
+        imageTokenID: 258880,
+        boiTokenID: 255999,
+        eoiTokenID: 258882
+    )
+}
+
 /// Failure modes for the validation gates in `Model.load`.
 enum ModelError: Error, CustomStringConvertible, Equatable {
     case partialInstall(path: String)

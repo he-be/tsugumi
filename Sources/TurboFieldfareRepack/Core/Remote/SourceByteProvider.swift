@@ -17,13 +17,19 @@ public final class HTTPRangeSourceByteProvider: SourceByteProvider {
     private let remote: HuggingFaceRemoteSource
     private let files: [String: RemoteFileInfo]
     private let writeTileBytes: Int
+    /// Namespace stripped from a shard ID to recover the remote filename. A
+    /// vision install copies from two repositories, and their shard filenames
+    /// would otherwise collide in one copy plan.
+    private let shardIDPrefix: String
 
     public init(remote: HuggingFaceRemoteSource,
                 files: [String: RemoteFileInfo],
-                writeTileBytes: Int = WriterCore.tileBytes) {
+                writeTileBytes: Int = WriterCore.tileBytes,
+                shardIDPrefix: String = "") {
         self.remote = remote
         self.files = files
         self.writeTileBytes = writeTileBytes
+        self.shardIDPrefix = shardIDPrefix
     }
 
     public func copyBatch(
@@ -55,8 +61,11 @@ public final class HTTPRangeSourceByteProvider: SourceByteProvider {
                 try FileManager.default.removeItem(atPath: temporaryPath)
             }
             let base = downloaded
+            let filename = copy.shardID.hasPrefix(shardIDPrefix)
+                ? String(copy.shardID.dropFirst(shardIDPrefix.count))
+                : copy.shardID
             let temporary = try await remote.downloadRangeToTempFile(
-                filename: copy.shardID,
+                filename: filename,
                 info: info,
                 offset: copy.sourceOffset,
                 length: Int(copy.size),
@@ -131,6 +140,59 @@ public final class HTTPRangeSourceByteProvider: SourceByteProvider {
         try RangeCopyIO.destinationDigest(copy,
                                           partialDirectory: partialDirectory,
                                           scratch: scratch)
+    }
+}
+
+/// Splits one copy plan across two sources by shard-ID namespace. A vision
+/// install takes its text weights from the checkpoint being installed and its
+/// tower from the pinned upstream repository, but both write into the same
+/// partial directory under one checkpoint, so the batch stays a single unit of
+/// work.
+public final class RoutingSourceByteProvider: SourceByteProvider {
+    private let prefix: String
+    private let prefixed: SourceByteProvider
+    private let rest: SourceByteProvider
+
+    public init(prefix: String,
+                prefixed: SourceByteProvider,
+                rest: SourceByteProvider) {
+        self.prefix = prefix
+        self.prefixed = prefixed
+        self.rest = rest
+    }
+
+    public func copyBatch(
+        _ copies: [CoalescedRangeCopy],
+        completedRangeIDs: Set<String>,
+        partialDirectory: String,
+        temporaryPath: String,
+        audit: RepackAudit,
+        progress: @escaping @Sendable (UInt64) -> Void,
+        commit: (RemoteCompletedRange) throws -> Void
+    ) async throws {
+        let groups: [(SourceByteProvider, [CoalescedRangeCopy])] = [
+            (rest, copies.filter { !$0.shardID.hasPrefix(prefix) }),
+            (prefixed, copies.filter { $0.shardID.hasPrefix(prefix) }),
+        ]
+        // Sub-providers report bytes within their own batch; the caller wants
+        // one rising total.
+        var completedBefore: UInt64 = 0
+        for (provider, group) in groups where !group.isEmpty {
+            var groupBytes: UInt64 = 0
+            let base = completedBefore
+            try await provider.copyBatch(
+                group,
+                completedRangeIDs: completedRangeIDs,
+                partialDirectory: partialDirectory,
+                temporaryPath: temporaryPath,
+                audit: audit,
+                progress: { bytes in progress(base + bytes) },
+                commit: { completed in
+                    groupBytes += completed.sourceBytes
+                    try commit(completed)
+                })
+            completedBefore = base + groupBytes
+        }
     }
 }
 

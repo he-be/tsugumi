@@ -91,6 +91,19 @@ struct RepackPlan: Sendable {
     let layers: [LayerFilePlan]
     let matchedModelID: String?
     let excludedMultimodalTensorNames: [String]
+    /// Vision tower weights, when the install was asked for them. A separate
+    /// resident file so a text-only run never reads or hashes its bytes.
+    var vision: VisionFilePlan? = nil
+}
+
+/// The vision tower's resident file plus the provenance the manifest records
+/// for it. The tower comes from a different repository than the text weights,
+/// so it carries its own source identity (`PLAN_VISION.md` §4-1-a).
+struct VisionFilePlan: Sendable {
+    let resident: ResidentFilePlan
+    let source: VisionSourcePin
+    let payloadBytes: UInt64
+    var tensorCount: Int { resident.entries.count }
 }
 
 // MARK: - Planner
@@ -235,31 +248,36 @@ enum RepackPlanner {
 
     // MARK: - Resident planning
 
+    /// String table plus the padded index region size for a set of entry names.
+    /// Shared by the LM resident file and the vision tower file so both obey the
+    /// same v1 index layout.
+    static func residentIndexLayout(names: [String])
+        -> (stringTable: [UInt8], offsets: [UInt32], indexSize: UInt64) {
+        var stringTable: [UInt8] = []
+        var offsets: [UInt32] = []
+        offsets.reserveCapacity(names.count)
+        for n in names {
+            offsets.append(UInt32(stringTable.count))
+            stringTable.append(contentsOf: n.utf8)
+        }
+        // Index size includes the fixed header, fixed-width entries, and the
+        // string table, padded to a 16 KB page boundary.
+        let rawIdx = UInt64(GTurboBinary.indexHeaderBytes
+            + names.count * GTurboBinary.indexEntryBytes
+            + stringTable.count)
+        return (stringTable, offsets, roundUpToPage(rawIdx))
+    }
+
     private static func planResidentFile(path: String,
                                          baseNames: [String],
                                          registry: [String: SourceTensor],
                                          meta: IndexLoader.SourceMetadata) throws
                                         -> ResidentFilePlan {
-        let entryCount = baseNames.count
-
-        var stringTable: [UInt8] = []
-        var offsets: [UInt32] = []
-        offsets.reserveCapacity(entryCount)
-        for n in baseNames {
-            offsets.append(UInt32(stringTable.count))
-            stringTable.append(contentsOf: n.utf8)
-        }
-
-        // Index size includes the fixed header, fixed-width entries, and the
-        // string table, padded to a 16 KB page boundary.
-        let rawIdx = UInt64(GTurboBinary.indexHeaderBytes
-            + entryCount * GTurboBinary.indexEntryBytes
-            + stringTable.count)
-        let indexSize = roundUpToPage(rawIdx)
+        let (stringTable, offsets, indexSize) = residentIndexLayout(names: baseNames)
 
         var fileCursor = indexSize
         var entries: [ResidentEntry] = []
-        entries.reserveCapacity(entryCount)
+        entries.reserveCapacity(baseNames.count)
 
         for name in baseNames {
             guard let weight = registry[name] else {

@@ -20,21 +20,31 @@ struct LocalSnapshot {
 enum LocalSnapshotLoader {
     /// Loads and fingerprints a staged snapshot.
     ///
-    /// Unlike the remote loader this always requires a known source: the
-    /// install checkpoint and the receipt both record a 40-character revision,
-    /// and a directory of files carries none. The index digest supplies it.
-    static func load(directory: String, audit: RepackAudit? = nil) throws -> LocalSnapshot {
+    /// A staged snapshot has no commit of its own, so its identity comes from
+    /// the index digest matching a pin. `requireKnownSource: false` relaxes that
+    /// for synthetic snapshots under test, which then identify as unpinned; the
+    /// installer keeps the strict default.
+    static func load(directory: String,
+                     requireKnownSource: Bool = true,
+                     audit: RepackAudit? = nil) throws -> LocalSnapshot {
         guard try Posix.entryKind(directory) == .directory else {
             throw RepackError.configurationInvalid(
                 detail: "source snapshot is not a directory: \(directory)")
         }
         let root = try Posix.physicalPath(directory)
         let metadata = try IndexLoader.load(snapshotDir: root)
-        guard let source = SourceFingerprint.source(
-            forIndexSha256: metadata.indexSha256Hex) else {
+        let matched = SourceFingerprint.source(forIndexSha256: metadata.indexSha256Hex)
+        guard matched != nil || !requireKnownSource else {
             throw RepackError.sourceFingerprintRejected(path: metadata.indexPath,
                                                         sha256: metadata.indexSha256Hex)
         }
+        let source = matched ?? SourceFingerprint.KnownSource(
+            repoID: "unknown/snapshot",
+            // The install checkpoint records a 40-character revision; an
+            // unpinned snapshot has none, so the digest stands in for one.
+            revision: String(metadata.indexSha256Hex.prefix(40)),
+            indexSha256Hex: metadata.indexSha256Hex,
+            displayName: "unpinned snapshot")
         let arch = try ArchInfo.load(configPath: metadata.configPath)
 
         var shardPaths: [String: String] = [:]

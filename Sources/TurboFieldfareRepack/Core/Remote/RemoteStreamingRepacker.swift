@@ -22,6 +22,13 @@ public struct RemoteStreamingRepackOptions: Sendable {
     /// repository. `repoID` and `revision` are then resolved from the
     /// snapshot's index digest, so they are empty here.
     public let sourceSnapshotDirectory: String?
+    /// Also install the vision tower from its own pinned repository. Off by
+    /// default: a text-only install must stay byte-identical to what this
+    /// installer produced before vision existed.
+    public let includeVision: Bool
+    /// Vision pin to install. Separate from `includeVision` so a test can bind
+    /// a synthetic tower without reaching the network.
+    public let visionPin: VisionSourcePin
 
     public init(repoID: String,
                 revision: String,
@@ -38,7 +45,9 @@ public struct RemoteStreamingRepackOptions: Sendable {
                 downloadSession: RemoteDownloadSession = RemoteDownloadSession(),
                 baseURL: URL = URL(string: "https://huggingface.co")!,
                 rangeRetryAttempts: Int = 4,
-                retryBaseDelayNs: UInt64 = 1_000_000_000) {
+                retryBaseDelayNs: UInt64 = 1_000_000_000,
+                includeVision: Bool = false,
+                visionPin: VisionSourcePin = VisionModelSource.pin) {
         self.repoID = repoID
         self.revision = revision
         self.outputDir = outputDir
@@ -56,25 +65,36 @@ public struct RemoteStreamingRepackOptions: Sendable {
         self.rangeRetryAttempts = rangeRetryAttempts
         self.retryBaseDelayNs = retryBaseDelayNs
         self.sourceSnapshotDirectory = nil
+        self.includeVision = includeVision
+        self.visionPin = visionPin
     }
 
-    /// Repacks from a snapshot already staged on disk. There is no network
-    /// leg, so no token, session or retry policy applies; the source identity
-    /// comes from the snapshot's pinned index digest.
+    /// Repacks from a snapshot already staged on disk. The text weights have no
+    /// network leg — the source identity comes from the snapshot's pinned index
+    /// digest — so the session, token and retry policy exist only for the vision
+    /// tower, which is always fetched from its own repository.
     public init(sourceSnapshotDirectory: String,
                 outputDir: String,
+                requireKnownSource: Bool = true,
                 copyAuditPath: String? = nil,
                 rangeChunkBytes: Int = RemoteChunkPolicy.defaultBytes,
                 writeTileBytes: Int = WriterCore.tileBytes,
                 minFreeReserveBytes: UInt64 = 1 * 1024 * 1024 * 1024,
                 overwrite: Bool = false,
                 resume: Bool = false,
-                dryRunSpaceCheck: Bool = false) {
+                dryRunSpaceCheck: Bool = false,
+                includeVision: Bool = false,
+                visionPin: VisionSourcePin = VisionModelSource.pin,
+                downloadSession: RemoteDownloadSession = RemoteDownloadSession(),
+                baseURL: URL = URL(string: "https://huggingface.co")!,
+                token: String? = nil,
+                rangeRetryAttempts: Int = 4,
+                retryBaseDelayNs: UInt64 = 1_000_000_000) {
         self.repoID = ""
         self.revision = ""
         self.outputDir = outputDir
-        self.token = nil
-        self.requireKnownSource = true
+        self.token = token
+        self.requireKnownSource = requireKnownSource
         self.copyAuditPath = copyAuditPath
         self.rangeChunkBytes = rangeChunkBytes
         self.writeTileBytes = writeTileBytes
@@ -82,11 +102,13 @@ public struct RemoteStreamingRepackOptions: Sendable {
         self.overwrite = overwrite
         self.resume = resume
         self.dryRunSpaceCheck = dryRunSpaceCheck
-        self.downloadSession = RemoteDownloadSession()
-        self.baseURL = URL(string: "https://huggingface.co")!
-        self.rangeRetryAttempts = 0
-        self.retryBaseDelayNs = 0
+        self.downloadSession = downloadSession
+        self.baseURL = baseURL
+        self.rangeRetryAttempts = includeVision ? rangeRetryAttempts : 0
+        self.retryBaseDelayNs = includeVision ? retryBaseDelayNs : 0
         self.sourceSnapshotDirectory = sourceSnapshotDirectory
+        self.includeVision = includeVision
+        self.visionPin = visionPin
     }
 }
 
@@ -221,10 +243,21 @@ public final class RemoteStreamingRepacker {
         progress(.downloadingMetadata)
         let source = try await bindSource(paths: paths, saved: saved)
         try Task.checkCancellation()
-        let plan = try RepackPlanner.plan(meta: source.metadata,
+        var plan = try RepackPlanner.plan(meta: source.metadata,
                                           arch: source.arch,
                                           shardHeaders: source.shardHeaders,
                                           outputDir: paths.partialDirectory)
+        let vision = try await bindVisionSource(paths: paths, source: source)
+        if let vision {
+            plan.vision = try VisionRepackPlanner.plan(
+                path: ((paths.partialDirectory as NSString)
+                    .appendingPathComponent("vision") as NSString)
+                    .appendingPathComponent("vision_weights.bin"),
+                pin: vision.pin,
+                textHiddenSize: source.arch.hiddenSize,
+                shardHeaders: vision.shardHeaders)
+            try await verifyVisionParity(vision: vision, source: source)
+        }
         let rangePlan = try RangeCopyPlanner.plan(repackPlan: plan,
                                                   rangeChunkBytes: options.rangeChunkBytes,
                                                   layoutMode: "identity",
@@ -288,6 +321,12 @@ public final class RemoteStreamingRepacker {
         audit.bitWidthOverridesHonored = source.metadata.bitsOverrides.count
         audit.tensorsDroppedMultimodal = plan.excludedMultimodalTensorNames
         audit.packedExpertLayoutMode = "identity"
+        if let visionPlan = plan.vision, let vision {
+            audit.visionRepoID = vision.pin.repoID
+            audit.visionResolvedCommit = vision.resolvedCommit
+            audit.visionTensorCount = visionPlan.tensorCount
+            audit.visionPayloadBytes = visionPlan.payloadBytes
+        }
 
         if options.dryRunSpaceCheck {
             if saved == nil {
@@ -316,7 +355,19 @@ public final class RemoteStreamingRepacker {
                 parentDirectory: paths.parentDirectory)
         }
 
-        let provider = source.provider
+        let provider: SourceByteProvider
+        if let vision {
+            provider = RoutingSourceByteProvider(
+                prefix: BoundVisionSource.shardIDPrefix,
+                prefixed: HTTPRangeSourceByteProvider(
+                    remote: vision.remote,
+                    files: vision.files,
+                    writeTileBytes: options.writeTileBytes,
+                    shardIDPrefix: BoundVisionSource.shardIDPrefix),
+                rest: source.provider)
+        } else {
+            provider = source.provider
+        }
         let reusedBytes = checkpoint.completedRanges.reduce(UInt64(0)) {
             $0 + $1.sourceBytes
         }
@@ -349,6 +400,11 @@ public final class RemoteStreamingRepacker {
         try recordOutputFile(relativePath: "model_weights.bin",
                              path: plan.resident.path,
                              progress: progress)
+        if let visionPlan = plan.vision {
+            try recordOutputFile(relativePath: GTurboFormatV1.visionWeightsPath,
+                                 path: visionPlan.resident.path,
+                                 progress: progress)
+        }
         for layer in plan.layers where layer.expertsPerLayer > 0 {
             try Task.checkCancellation()
             let rel = "packed_experts/" + (layer.path as NSString).lastPathComponent
@@ -435,13 +491,18 @@ public final class RemoteStreamingRepacker {
         let sidecarDirectory: String
         let provider: SourceByteProvider
         let remote: (source: HuggingFaceRemoteSource, snapshot: RemoteSnapshot)?
+        /// `shard filename -> absolute path` for a staged snapshot. Tensors
+        /// carry the filename, so reading one directly needs this map.
+        let localShardPaths: [String: String]
     }
 
     private func bindSource(paths: RemoteInstallPaths,
                             saved: RemoteInstallCheckpoint?) async throws -> BoundSource {
         if let snapshotDirectory = options.sourceSnapshotDirectory {
-            let snapshot = try LocalSnapshotLoader.load(directory: snapshotDirectory,
-                                                        audit: audit)
+            let snapshot = try LocalSnapshotLoader.load(
+                directory: snapshotDirectory,
+                requireKnownSource: options.requireKnownSource,
+                audit: audit)
             try requireOutsideInstall(snapshot.directory, paths: paths)
             return BoundSource(
                 metadata: snapshot.metadata,
@@ -453,7 +514,8 @@ public final class RemoteStreamingRepacker {
                 sidecarDirectory: snapshot.directory,
                 provider: LocalSnapshotByteProvider(shardPaths: snapshot.shardPaths,
                                                     writeTileBytes: options.writeTileBytes),
-                remote: nil)
+                remote: nil,
+                localShardPaths: snapshot.shardPaths)
         }
 
         let retryPolicy = RemoteRetryPolicy(attempts: options.rangeRetryAttempts,
@@ -483,7 +545,110 @@ public final class RemoteStreamingRepacker {
                 remote: remote.pinned(commit: snapshot.resolvedCommit),
                 files: snapshot.remoteFiles,
                 writeTileBytes: options.writeTileBytes),
-            remote: (source: remote, snapshot: snapshot))
+            remote: (source: remote, snapshot: snapshot),
+            localShardPaths: [:])
+    }
+
+    /// Binds the pinned vision repository, or nil when this install is text
+    /// only. The tower never comes from the checkpoint being installed: it is
+    /// fetched from Google's unquantized QAT release over ranges.
+    private func bindVisionSource(paths: RemoteInstallPaths,
+                                  source: BoundSource) async throws -> BoundVisionSource? {
+        guard options.includeVision else { return nil }
+        if options.requireKnownSource {
+            guard source.repoID == VisionModelSource.requiredTextRepoID else {
+                throw RepackError.configurationInvalid(detail: """
+                    --include-vision requires the \(VisionModelSource.requiredTextRepoID) \
+                    text checkpoint; this install is \(source.repoID)
+                    """)
+            }
+        }
+        return try await VisionSourceLoader.load(
+            pin: options.visionPin,
+            token: options.token,
+            downloadSession: options.downloadSession,
+            baseURL: options.baseURL,
+            tempDirectory: paths.partialDirectory,
+            retryPolicy: RemoteRetryPolicy(attempts: options.rangeRetryAttempts,
+                                           baseDelayNs: options.retryBaseDelayNs),
+            metadataDirectory: paths.metadataDirectory,
+            audit: audit)
+    }
+
+    /// Proves the tower and the text weights derive from the same checkpoint by
+    /// hashing tensors that exist unquantized in both, on both sides, against a
+    /// pinned digest (`PLAN_VISION.md` §1-2). Without this, pairing a tower with
+    /// unrelated text weights would produce a model that runs and answers badly.
+    private func verifyVisionParity(vision: BoundVisionSource,
+                                    source: BoundSource) async throws {
+        var byName: [String: SourceTensor] = [:]
+        for header in source.shardHeaders {
+            for tensor in header.tensors { byName[tensor.name] = tensor }
+        }
+        for parity in vision.pin.parityTensors {
+            try Task.checkCancellation()
+            guard let tensor = byName[parity.textName] else {
+                throw RepackError.configurationInvalid(detail: """
+                    text checkpoint has no \(parity.textName); it cannot be paired \
+                    with the \(vision.pin.repoID) vision tower
+                    """)
+            }
+            guard tensor.sizeBytes <= 1024 * 1024 else {
+                throw RepackError.configurationInvalid(
+                    detail: "parity tensor \(parity.textName) is unexpectedly large")
+            }
+            let digest = try await hashTextTensor(tensor, source: source)
+            guard digest.lowercased() == parity.sha256.lowercased() else {
+                throw RepackError.configurationInvalid(detail: """
+                    text tensor \(parity.textName) hashes to \(digest), but the pinned \
+                    vision tower expects \(parity.sha256); the two checkpoints differ
+                    """)
+            }
+            guard vision.parityDigests[parity.textName]?.lowercased()
+                    == digest.lowercased() else {
+                throw RepackError.configurationInvalid(
+                    detail: "vision source disagrees with the text checkpoint on \(parity.textName)")
+            }
+        }
+        audit.visionParityTensors = vision.pin.parityTensors.map(\.textName).sorted()
+    }
+
+    private func hashTextTensor(_ tensor: SourceTensor,
+                                source: BoundSource) async throws -> String {
+        if let remote = source.remote {
+            guard let info = remote.snapshot.remoteFiles[tensor.shardPath] else {
+                throw RepackError.configurationInvalid(
+                    detail: "no remote info for \(tensor.shardPath)")
+            }
+            let temporary = try await remote.source
+                .pinned(commit: remote.snapshot.resolvedCommit)
+                .downloadRangeToTempFile(filename: tensor.shardPath,
+                                         info: info,
+                                         offset: tensor.absoluteOffset,
+                                         length: Int(tensor.sizeBytes),
+                                         audit: audit)
+            defer { try? FileManager.default.removeItem(atPath: temporary.path) }
+            audit.remoteRangeRequests += 1
+            audit.remoteBytesDownloaded += temporary.byteCount
+            return try Sha256Stream.hashFile(path: temporary.path)
+        }
+        guard let shardPath = source.localShardPaths[tensor.shardPath] else {
+            throw RepackError.configurationInvalid(
+                detail: "no staged shard for \(tensor.shardPath)")
+        }
+        let fd = try Posix.openReadNoFollow(shardPath)
+        defer { close(fd) }
+        let count = Int(tensor.sizeBytes)
+        let buffer = UnsafeMutableRawBufferPointer.allocate(byteCount: max(count, 1),
+                                                            alignment: 16)
+        defer { buffer.deallocate() }
+        try Posix.preadAll(fd: fd, path: shardPath,
+                           buf: buffer.baseAddress!, count: count,
+                           offset: tensor.absoluteOffset)
+        audit.recordRead(bytes: count)
+        var stream = Sha256Stream()
+        stream.update(UnsafeRawBufferPointer(rebasing: buffer[0..<count]))
+        return stream.finalizeHexString()
     }
 
     /// The install rewrites and renames the partial directory, so a snapshot
@@ -522,6 +687,13 @@ public final class RemoteStreamingRepacker {
             audit: audit)
         try Posix.fsync(resident, path: plan.resident.path)
         close(resident)
+        if let vision = plan.vision {
+            let visionFD = try ResidentWriter.createAndWriteIndex(
+                plan: vision.resident,
+                audit: audit)
+            try Posix.fsync(visionFD, path: vision.resident.path)
+            close(visionFD)
+        }
         for layer in plan.layers where layer.expertsPerLayer > 0 {
             try Task.checkCancellation()
             let descriptor = try Posix.openCreateRW(layer.path)
@@ -545,8 +717,16 @@ public final class RemoteStreamingRepacker {
             }
         }
 
-        let expectedIndex = try ResidentWriter.encodeIndex(plan: plan.resident)
-        let descriptor = try Posix.openReadNoFollow(plan.resident.path)
+        for residentPlan in [plan.resident] + (plan.vision.map { [$0.resident] } ?? []) {
+            guard try indexPageMatches(residentPlan) else { return false }
+        }
+        return true
+    }
+
+    private func indexPageMatches(_ residentPlan: ResidentFilePlan) throws -> Bool {
+        let expectedIndex = try ResidentWriter.encodeIndex(plan: residentPlan)
+        guard try Posix.entryKind(residentPlan.path) == .regular else { return false }
+        let descriptor = try Posix.openReadNoFollow(residentPlan.path)
         defer { close(descriptor) }
         let scratch = UnsafeMutableRawBufferPointer.allocate(
             byteCount: min(WriterCore.tileBytes, max(1, expectedIndex.count)),
@@ -558,7 +738,7 @@ public final class RemoteStreamingRepacker {
                 let count = min(scratch.count, expected.count - offset)
                 try Posix.preadAll(
                     fd: descriptor,
-                    path: plan.resident.path,
+                    path: residentPlan.path,
                     buf: scratch.baseAddress!,
                     count: count,
                     offset: UInt64(offset))

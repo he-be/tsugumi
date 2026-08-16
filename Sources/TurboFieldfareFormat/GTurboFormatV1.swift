@@ -4,14 +4,22 @@ package enum GTurboFormatV1 {
     package static let magic = "GTURBO"
     package static let versionMajor = 1
     package static let versionMinor = 0
+    /// Minor version stamped on a manifest that carries a `vision` section.
+    /// Rejection of such a model by an older runtime is the `visionTower` flag's
+    /// job (`decode` accepts any `minor >= 0`); the bump is descriptive.
+    package static let versionMinorVision = 1
     package static let alignmentBytes: UInt64 = 16_384
     package static let residentHeaderBytes = 24
     package static let residentEntryBytes = 72
     package static let residentIndexMaxBytes: UInt64 = 16 * 1024 * 1024
 
     package static let knownFlags: Set<String> = [
-        "streamingPresent", "turboQuantKV", "aneSharedExpert",
+        "streamingPresent", "turboQuantKV", "aneSharedExpert", "visionTower",
     ]
+
+    /// Where a vision-capable install keeps the tower weights. A separate file
+    /// from `model_weights.bin` so a text-only run never pays for its bytes.
+    package static let visionWeightsPath = "vision/vision_weights.bin"
 
     package enum DType: UInt8, Sendable {
         case u32 = 0

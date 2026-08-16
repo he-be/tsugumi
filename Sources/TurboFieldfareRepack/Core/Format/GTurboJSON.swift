@@ -102,16 +102,52 @@ enum GTurboJSON {
                     detail: "duplicate manifest file entry \(file.relativePath)")
             }
         }
+        var flags = [
+            "streamingPresent": true,
+            "turboQuantKV": false,
+            "aneSharedExpert": false,
+        ]
+        var wireVision: GTurboManifestVisionV1?
+        if let vision = plan.vision {
+            // The flag is the compatibility gate: a runtime that predates vision
+            // rejects the whole model rather than quietly ignoring images.
+            flags["visionTower"] = true
+            let config = vision.source.config
+            wireVision = GTurboManifestVisionV1(
+                hiddenSize: config.hiddenSize,
+                numLayers: config.numLayers,
+                numHeads: config.numHeads,
+                numKVHeads: config.numKVHeads,
+                headDim: config.headDim,
+                intermediateSize: config.intermediateSize,
+                patchSize: config.patchSize,
+                poolingKernelSize: config.poolingKernelSize,
+                positionEmbeddingSize: config.positionEmbeddingSize,
+                ropeTheta: config.ropeTheta,
+                rmsNormEps: config.rmsNormEps,
+                hiddenActivation: config.hiddenActivation,
+                standardize: config.standardize,
+                maxSoftTokens: config.maxSoftTokens,
+                weightDType: "bf16",
+                imageTokenID: config.imageTokenID,
+                boiTokenID: config.boiTokenID,
+                eoiTokenID: config.eoiTokenID,
+                weightsPath: GTurboFormatV1.visionWeightsPath,
+                tensorCount: vision.tensorCount,
+                payloadBytes: vision.payloadBytes,
+                sourceRepo: vision.source.repoID,
+                sourceRevision: vision.source.revision)
+        }
         return try GTurboManifestCodec.encode(GTurboManifestV1(
-            flags: [
-                "streamingPresent": true,
-                "turboQuantKV": false,
-                "aneSharedExpert": false,
-            ],
+            versionMinor: wireVision == nil
+                ? GTurboFormatV1.versionMinor
+                : GTurboFormatV1.versionMinorVision,
+            flags: flags,
             modelID: modelID,
             sourceSnapshotHash: sourceSnapshotHash,
             arch: wireArch,
             quant: quant,
+            vision: wireVision,
             files: wireFiles,
             expertsPerLayer: expertsPerLayer,
             numLayers: numLayers,

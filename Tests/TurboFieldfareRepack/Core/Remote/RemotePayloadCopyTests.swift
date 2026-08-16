@@ -5,6 +5,9 @@ import Testing
 
 final class FakeHFURLProtocol: URLProtocol, @unchecked Sendable {
     nonisolated(unsafe) static var files: [String: Data] = [:]
+    /// Files that belong to one specific repository, consulted before `files`.
+    /// A vision install talks to two repositories whose filenames collide.
+    nonisolated(unsafe) static var repoFiles: [String: [String: Data]] = [:]
     nonisolated(unsafe) static var commit = "cc499c86a958ea7f05cffaa91c7e7243240dabbe"
     nonisolated(unsafe) static var failures: [String: [FakeFailure]] = [:]
     nonisolated(unsafe) static var requestCounts: [String: Int] = [:]
@@ -64,7 +67,7 @@ final class FakeHFURLProtocol: URLProtocol, @unchecked Sendable {
             break
         }
 
-        guard let data = Self.files[filename] else {
+        guard let data = Self.data(for: url, filename: filename) else {
             let response = HTTPURLResponse(url: request.url!,
                                            statusCode: 404,
                                            httpVersion: nil,
@@ -135,6 +138,22 @@ final class FakeHFURLProtocol: URLProtocol, @unchecked Sendable {
             headers["ETag"] = "\"\(xetHash)\""
         }
         return headers
+    }
+
+    static func data(for url: URL, filename: String) -> Data? {
+        if let repo = repoID(from: url), let scoped = repoFiles[repo]?[filename] {
+            return scoped
+        }
+        return files[filename]
+    }
+
+    /// The two path components before `resolve`, i.e. `owner/name`.
+    static func repoID(from url: URL) -> String? {
+        let parts = url.path.split(separator: "/").map(String.init)
+        guard let resolveIndex = parts.firstIndex(of: "resolve"), resolveIndex >= 2 else {
+            return nil
+        }
+        return parts[(resolveIndex - 2)..<resolveIndex].joined(separator: "/")
     }
 
     static func filename(from url: URL) -> String? {
@@ -210,6 +229,7 @@ func remoteFiles(snapshotDir: String,
 
 func resetFakeHF() {
     FakeHFURLProtocol.files = [:]
+    FakeHFURLProtocol.repoFiles = [:]
     FakeHFURLProtocol.failures = [:]
     FakeHFURLProtocol.requestCounts = [:]
     FakeHFURLProtocol.requestedRanges = [:]

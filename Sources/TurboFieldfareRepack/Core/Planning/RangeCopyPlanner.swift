@@ -73,6 +73,17 @@ public enum RangeCopyPlanner {
             }
         }
 
+        // The tower is BF16 with no companions, so one copy per tensor.
+        if let vision = repackPlan.vision {
+            for entry in vision.resident.entries {
+                copies.append(RangeCopy(shardID: entry.sourceWeight.shardPath,
+                                        sourceOffset: entry.sourceWeight.absoluteOffset,
+                                        size: entry.sizeBytes,
+                                        destinationPath: vision.resident.path,
+                                        destinationOffset: entry.fileOffset))
+            }
+        }
+
         for layer in repackPlan.layers where layer.expertsPerLayer > 0 {
             for expert in 0..<layer.expertsPerLayer {
                 let blobBase = UInt64(layer.physicalRank(for: expert)) * layer.expertStride
@@ -93,6 +104,11 @@ public enum RangeCopyPlanner {
         let indexData = try ResidentWriter.encodeIndex(plan: repackPlan.resident)
         let indexSha = hashData(indexData)
         let expectedOutputs = expectedOutputList(for: repackPlan)
+        // Appended only when a tower is present, so a text-only plan keeps the
+        // fingerprint it had before vision existed.
+        let visionIndexSha = try repackPlan.vision.map {
+            hashData(try ResidentWriter.encodeIndex(plan: $0.resident))
+        }
         let fingerprint = try canonicalFingerprint(
             copies: coalesced,
             outputRoot: outputRoot(for: repackPlan),
@@ -100,6 +116,7 @@ public enum RangeCopyPlanner {
             layoutMode: layoutMode,
             layoutOrderSha256: layoutOrderSha256,
             residentIndexSha256: indexSha,
+            visionIndexSha256: visionIndexSha,
             expectedOutputs: expectedOutputs)
         let downloaded = coalesced.reduce(UInt64(0)) { $0 + $1.size }
         let copied = copies.reduce(UInt64(0)) { $0 + $1.size }
@@ -204,6 +221,11 @@ public enum RangeCopyPlanner {
             RemoteExpectedOutput(relativePath: "model_weights.bin",
                                  size: plan.resident.totalSize)
         ]
+        if let vision = plan.vision {
+            outputs.append(RemoteExpectedOutput(
+                relativePath: "vision/" + (vision.resident.path as NSString).lastPathComponent,
+                size: vision.resident.totalSize))
+        }
         outputs.append(contentsOf: plan.layers
             .filter { $0.expertsPerLayer > 0 }
             .map {
@@ -245,6 +267,7 @@ public enum RangeCopyPlanner {
         layoutMode: String,
         layoutOrderSha256: String?,
         residentIndexSha256: String,
+        visionIndexSha256: String? = nil,
         expectedOutputs: [RemoteExpectedOutput]
     ) throws -> String {
         var writer = FingerprintWriter(domain: "TurboFieldfare.RemoteInstallPlan.v1")
@@ -254,6 +277,10 @@ public enum RangeCopyPlanner {
         writer.append(layoutMode)
         writer.append(layoutOrderSha256 ?? "")
         writer.append(residentIndexSha256)
+        if let visionIndexSha256 {
+            writer.append("vision")
+            writer.append(visionIndexSha256)
+        }
         writer.append(UInt64(expectedOutputs.count))
         for output in expectedOutputs {
             writer.append(output.relativePath)

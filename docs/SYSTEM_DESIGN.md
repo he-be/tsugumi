@@ -104,6 +104,8 @@ gemma4.gturbo/
     layer_00.bin
     ...
     layer_29.bin
+  vision/
+    vision_weights.bin              # only with --include-vision
 ```
 
 `model_weights.bin` contains the embedding/head, attention projections,
@@ -124,6 +126,18 @@ is rejected.
 may load. It records the architecture, file sizes, and SHA-256 hashes. Without
 it, the runtime treats the installation as partial. `verified-install.json`
 records which manifest, directory, and files were verified.
+
+An installation made with `--include-vision` also carries `vision/`. The vision
+tower does not ship with the text checkpoint, so the installer fetches it from
+its own pinned repository and records that provenance in a `vision` section of
+the manifest, alongside a `visionTower` flag. The flag is the compatibility
+gate: a runtime that predates vision rejects unknown flags, so it refuses such
+a model outright rather than loading it and ignoring images. The tower lives in
+its own file because `model_weights.bin` is hashed in full at every load, and a
+text-only workload should not pay for weights it never reads. Because the two
+halves come from different repositories, the installer proves they belong
+together: unquantized tensors present in both are hashed on both sides and
+compared against a pinned digest before anything is written.
 
 [`TurboFieldfareFormat`](../Sources/TurboFieldfareFormat) defines the v1 JSON
 files and resident index used by the installer, verifier, and runtime. This

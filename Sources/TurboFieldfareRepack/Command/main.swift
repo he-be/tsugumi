@@ -14,6 +14,12 @@ repackages it without materializing the source checkpoint on disk. Set HF_TOKEN
 only if Hugging Face requests authentication. A cancelled or interrupted
 download can be continued with --resume or removed with --discard-partial.
 
+--include-vision also installs the Gemma 4 vision tower. Its weights are not
+part of the text checkpoint, so they are fetched over ranges from the pinned
+upstream repository (about 1.15 GB) and written to vision/vision_weights.bin.
+The install refuses to pair a tower with text weights it does not belong to.
+Without this flag the output is byte-for-byte what it has always been.
+
 --source-snapshot repacks from a checkpoint already staged on disk in its
 distributed form (the safetensors shards plus model.safetensors.index.json,
 config.json and the tokenizer files). The snapshot must be one this build
@@ -29,6 +35,7 @@ private struct Arguments {
     var verifyInstall = false
     var inputGTurbo: String?
     var sourceSnapshot: String?
+    var includeVision = false
 
     static func parse(_ values: [String]) throws -> Arguments {
         var parsed = Arguments()
@@ -49,6 +56,9 @@ private struct Arguments {
                 index += 1
             case "--verify-install":
                 parsed.verifyInstall = true
+                index += 1
+            case "--include-vision":
+                parsed.includeVision = true
                 index += 1
             case "--output", "--input-gturbo", "--source-snapshot":
                 guard index + 1 < values.count else {
@@ -73,7 +83,7 @@ private struct Arguments {
                 throw ParseError.missingRequired("--output")
             }
             guard parsed.inputGTurbo == nil, parsed.sourceSnapshot == nil,
-                  !parsed.overwrite, !parsed.verifyInstall else {
+                  !parsed.overwrite, !parsed.verifyInstall, !parsed.includeVision else {
                 throw ParseError.invalidMode("--discard-partial only accepts --output")
             }
             return parsed
@@ -83,7 +93,7 @@ private struct Arguments {
                 throw ParseError.missingRequired("--input-gturbo")
             }
             guard parsed.output == nil, parsed.sourceSnapshot == nil,
-                  !parsed.overwrite, !parsed.resume else {
+                  !parsed.overwrite, !parsed.resume, !parsed.includeVision else {
                 throw ParseError.invalidMode("verification accepts only --input-gturbo")
             }
         } else {
@@ -164,13 +174,16 @@ private func run(_ values: [String]) async -> Int32 {
             outputDir: URL(fileURLWithPath: output).path,
             minFreeReserveBytes: SupportedModelSource.reserveBytes,
             overwrite: arguments.overwrite,
-            resume: arguments.resume)
+            resume: arguments.resume,
+            includeVision: arguments.includeVision,
+            token: ProcessInfo.processInfo.environment["HF_TOKEN"])
     } else {
         options = SupportedModelSource.installOptions(
             outputDirectory: URL(fileURLWithPath: output),
             overwrite: arguments.overwrite,
             token: ProcessInfo.processInfo.environment["HF_TOKEN"],
-            resume: arguments.resume)
+            resume: arguments.resume,
+            includeVision: arguments.includeVision)
     }
     do {
         let result = try await RemoteStreamingRepacker(options: options).run()

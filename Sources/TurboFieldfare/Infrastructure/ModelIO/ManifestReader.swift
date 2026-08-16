@@ -46,6 +46,32 @@ public struct ManifestQuant: Decodable, Equatable, Sendable {
     public let routedExpert: ManifestQuantSlot
 }
 
+public struct ManifestVision: Decodable, Equatable, Sendable {
+    public let hiddenSize: Int
+    public let numLayers: Int
+    public let numHeads: Int
+    public let numKVHeads: Int
+    public let headDim: Int
+    public let intermediateSize: Int
+    public let patchSize: Int
+    public let poolingKernelSize: Int
+    public let positionEmbeddingSize: Int
+    public let ropeTheta: Double
+    public let rmsNormEps: Double
+    public let hiddenActivation: String
+    public let standardize: Bool
+    public let maxSoftTokens: Int
+    public let weightDType: String
+    public let imageTokenID: Int
+    public let boiTokenID: Int
+    public let eoiTokenID: Int
+    public let weightsPath: String
+    public let tensorCount: Int
+    public let payloadBytes: UInt64
+    public let sourceRepo: String
+    public let sourceRevision: String
+}
+
 public struct Manifest: Decodable, Equatable, Sendable {
     public let magic: String
     public let versionMajor: Int
@@ -55,6 +81,7 @@ public struct Manifest: Decodable, Equatable, Sendable {
     public let sourceSnapshotHash: String?
     public let arch: ManifestArch
     public let quant: ManifestQuant?
+    public let vision: ManifestVision?
     public let files: [String: ManifestFileEntry]
     public let expertsPerLayer: Int
     public let numLayers: Int
@@ -127,6 +154,12 @@ public enum ManifestReader {
                 detail: "manifest requests removed TurboQuant KV runtime support")
         }
         try validateArch(m.arch, expected: expected)
+        if let vision = m.vision {
+            try validateVision(vision, expected: .gemma4Vision)
+            if m.files[vision.weightsPath] == nil {
+                throw ModelError.missingFile(name: vision.weightsPath)
+            }
+        }
         if let quant = m.quant {
             try validateQuant(quant)
         } else if expected.numLayers == ArchConfig.gemma4_26B_A4B.numLayers,
@@ -180,6 +213,40 @@ public enum ManifestReader {
             throw ModelError.indexCorrupt(
                 detail: "\(name) group size \(slot.groupSize) disagrees with the model's \(groupSize)")
         }
+    }
+
+    /// Field-by-field, in the same shape as `validateArch`. A tower whose
+    /// geometry disagrees with the compiled kernels would not fail loudly — it
+    /// would produce plausible-looking soft tokens — so the mismatch is caught
+    /// here rather than in the first image.
+    private static func validateVision(_ v: ManifestVision,
+                                       expected e: VisionConfig) throws {
+        func check<T: Equatable & CustomStringConvertible>(
+            _ field: String, _ actual: T, _ expected: T) throws {
+            if actual != expected {
+                throw ModelError.archMismatch(field: "vision.\(field)",
+                                              expected: "\(expected)",
+                                              actual: "\(actual)")
+            }
+        }
+        try check("hiddenSize",            v.hiddenSize,            e.hiddenSize)
+        try check("numLayers",             v.numLayers,             e.numLayers)
+        try check("numHeads",              v.numHeads,              e.numHeads)
+        try check("numKVHeads",            v.numKVHeads,            e.numKVHeads)
+        try check("headDim",               v.headDim,               e.headDim)
+        try check("intermediateSize",      v.intermediateSize,      e.intermediateSize)
+        try check("patchSize",             v.patchSize,             e.patchSize)
+        try check("poolingKernelSize",     v.poolingKernelSize,     e.poolingKernelSize)
+        try check("positionEmbeddingSize", v.positionEmbeddingSize, e.positionEmbeddingSize)
+        try check("ropeTheta",             v.ropeTheta,             e.ropeTheta)
+        try check("rmsNormEps",            v.rmsNormEps,            e.rmsNormEps)
+        try check("hiddenActivation",      v.hiddenActivation,      e.hiddenActivation)
+        try check("standardize",           v.standardize,           e.standardize)
+        try check("maxSoftTokens",         v.maxSoftTokens,         e.maxSoftTokens)
+        try check("imageTokenID",          v.imageTokenID,          e.imageTokenID)
+        try check("boiTokenID",            v.boiTokenID,            e.boiTokenID)
+        try check("eoiTokenID",            v.eoiTokenID,            e.eoiTokenID)
+        try check("weightDType",           v.weightDType.lowercased(), "bf16")
     }
 
     private static func validateArch(_ a: ManifestArch,
@@ -269,6 +336,34 @@ private extension ManifestQuant {
     }
 }
 
+private extension ManifestVision {
+    init(wire: GTurboManifestVisionV1) {
+        self.init(hiddenSize: wire.hiddenSize,
+                  numLayers: wire.numLayers,
+                  numHeads: wire.numHeads,
+                  numKVHeads: wire.numKVHeads,
+                  headDim: wire.headDim,
+                  intermediateSize: wire.intermediateSize,
+                  patchSize: wire.patchSize,
+                  poolingKernelSize: wire.poolingKernelSize,
+                  positionEmbeddingSize: wire.positionEmbeddingSize,
+                  ropeTheta: wire.ropeTheta,
+                  rmsNormEps: wire.rmsNormEps,
+                  hiddenActivation: wire.hiddenActivation,
+                  standardize: wire.standardize,
+                  maxSoftTokens: wire.maxSoftTokens,
+                  weightDType: wire.weightDType,
+                  imageTokenID: wire.imageTokenID,
+                  boiTokenID: wire.boiTokenID,
+                  eoiTokenID: wire.eoiTokenID,
+                  weightsPath: wire.weightsPath,
+                  tensorCount: wire.tensorCount,
+                  payloadBytes: wire.payloadBytes,
+                  sourceRepo: wire.sourceRepo,
+                  sourceRevision: wire.sourceRevision)
+    }
+}
+
 private extension Manifest {
     init(wire: GTurboManifestV1) {
         self.init(magic: wire.magic,
@@ -279,6 +374,7 @@ private extension Manifest {
                   sourceSnapshotHash: wire.sourceSnapshotHash,
                   arch: ManifestArch(wire: wire.arch),
                   quant: wire.quant.map(ManifestQuant.init(wire:)),
+                  vision: wire.vision.map(ManifestVision.init(wire:)),
                   files: wire.files.mapValues(ManifestFileEntry.init(wire:)),
                   expertsPerLayer: wire.expertsPerLayer,
                   numLayers: wire.numLayers,

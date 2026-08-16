@@ -40,6 +40,26 @@ struct RepackCLITests {
         #expect(result.stderr.contains("no resumable install state exists"))
     }
 
+    @Test func visionIsNotAModeForVerificationOrDiscard() throws {
+        let output = temporaryOutput("vision-modes")
+        defer { clean(output) }
+        let discard = try run(["--discard-partial", "--output", output,
+                               "--include-vision"])
+        #expect(discard.status == 2)
+        #expect(discard.stderr.contains("--discard-partial only accepts --output"))
+
+        let verify = try run(["--verify-install", "--input-gturbo", output,
+                              "--include-vision"])
+        #expect(verify.status == 2)
+        #expect(verify.stderr.contains("verification accepts only --input-gturbo"))
+    }
+
+    @Test func helpDocumentsTheVisionFlag() throws {
+        let result = try run(["--help"])
+        #expect(result.status == 0)
+        #expect(result.stdout.contains("--include-vision"))
+    }
+
     private func run(_ arguments: [String]) throws
         -> (status: Int32, stdout: String, stderr: String) {
         let executable = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)

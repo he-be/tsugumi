@@ -60,36 +60,11 @@ enum RemoteSnapshotLoader {
                 throw RepackError.remoteProtocolInvalid(detail: "shard \(shard) does not advertise byte ranges")
             }
             files[shard] = info
-            let prefix = try await pinned.downloadRangeToTempFile(filename: shard,
-                                                                 info: info,
-                                                                 offset: 0,
-                                                                 length: 8,
-                                                                 audit: audit)
-            defer { try? FileManager.default.removeItem(atPath: prefix.path) }
-            let prefixData = try Data(contentsOf: URL(fileURLWithPath: prefix.path))
-            guard prefixData.count == 8 else {
-                throw RepackError.safetensorsHeaderInvalid(path: shard, detail: "short header prefix")
-            }
-            let headerSize = prefixData.withUnsafeBytes { raw -> UInt64 in
-                var value: UInt64 = 0
-                for i in 0..<8 {
-                    value |= UInt64(raw[i]) << UInt64(i * 8)
-                }
-                return value
-            }
-            if headerSize > Safetensors.maxHeaderBytes || headerSize > info.size - 8 {
-                throw RepackError.safetensorsHeaderTooLarge(path: shard, size: headerSize)
-            }
-            let headerFile = try await pinned.downloadRangeToTempFile(filename: shard,
-                                                                     info: info,
-                                                                     offset: 8,
-                                                                     length: Int(headerSize),
-                                                                     audit: audit)
-            defer { try? FileManager.default.removeItem(atPath: headerFile.path) }
-            let headerData = try Data(contentsOf: URL(fileURLWithPath: headerFile.path))
-            headers.append(try Safetensors.parseHeaderBytes(path: shard,
-                                                            fileSize: info.size,
-                                                            headerBytes: headerData))
+            headers.append(try await RemoteShardHeader.load(remote: pinned,
+                                                            filename: shard,
+                                                            info: info,
+                                                            shardID: shard,
+                                                            audit: audit))
         }
 
         return RemoteSnapshot(metadata: metadata,
