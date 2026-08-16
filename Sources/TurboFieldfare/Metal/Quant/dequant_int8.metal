@@ -78,11 +78,19 @@ kernel void dequant_int8_gemv_simd(
     device const bfloat*  s_row = scales + uint(row) * n_groups;
     device const bfloat*  b_row = biases + uint(row) * n_groups;
 
+    // A step is a fixed 64 elements (32 lanes x 2 bytes); the group size decides
+    // how many groups that spans. At group 64 `g == st` and this is the original
+    // loop. See the same transform in `router_gemv_gemma4_body` (moe.metal).
+    const uint groups_per_step = 64u / kInt8GroupSize;
+    const uint lanes_per_group = 32u / groups_per_step;
+    const uint steps = NN / 64u;
+
     float acc = 0.0f;
-    for (uint g = 0; g < n_groups; ++g) {
+    for (uint st = 0; st < steps; ++st) {
+        const uint g = st * groups_per_step + lane / lanes_per_group;
         float s = float(s_row[g]);
         float b = float(b_row[g]);
-        uint i0 = g * kInt8GroupSize + lane * 2;
+        uint i0 = st * 64u + lane * 2u;
         uint i1 = i0 + 1;
         float q0 = float(uint(W_row[i0]));
         float q1 = float(uint(W_row[i1]));
@@ -127,10 +135,16 @@ kernel void shared_int8_gate_up_act_simd(
     device const bfloat* up_s_row = upScales + row * n_groups;
     device const bfloat* up_b_row = upBiases + row * n_groups;
 
+    // Same fixed-64-element step as `dequant_int8_gemv_simd` above.
+    const uint groups_per_step = 64u / kInt8GroupSize;
+    const uint lanes_per_group = 32u / groups_per_step;
+    const uint steps = NN / 64u;
+
     float gate_acc = 0.0f;
     float up_acc = 0.0f;
-    for (uint g = 0; g < n_groups; ++g) {
-        uint i0 = g * kInt8GroupSize + lane * 2u;
+    for (uint st = 0; st < steps; ++st) {
+        const uint g = st * groups_per_step + lane / lanes_per_group;
+        uint i0 = st * 64u + lane * 2u;
         uint i1 = i0 + 1u;
         float x0 = float(x[i0]);
         float x1 = float(x[i1]);

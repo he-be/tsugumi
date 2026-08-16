@@ -55,6 +55,34 @@ public enum MoeRef {
                                         groupSize: groupSize)
     }
 
+    /// INT8 sibling of `runFFN`, for checkpoints whose shared expert is 8-bit.
+    /// The kernel fuses gate/up/GELU into one pass and runs down separately;
+    /// this keeps all three apart.
+    public static func runFFNInt8(
+        gateRows: [Quantization.Int8AffineRow],
+        upRows:   [Quantization.Int8AffineRow],
+        downRows: [Quantization.Int8AffineRow],
+        x: [Float],
+        d: Int,
+        f: Int,
+        groupSize: Int = Quantization.groupSize
+    ) -> [Float] {
+        precondition(gateRows.count == f, "gateRows must be F=\(f)")
+        precondition(upRows.count == f, "upRows must be F=\(f)")
+        precondition(downRows.count == d, "downRows must be D=\(d)")
+        precondition(x.count == d)
+
+        let gateOut = DequantInt8GemvRef.apply(weightRows: gateRows, x: x, n: d,
+                                               groupSize: groupSize)
+        let upOut   = DequantInt8GemvRef.apply(weightRows: upRows,   x: x, n: d,
+                                               groupSize: groupSize)
+        let gated   = geluTanh(gateOut)
+        var act = [Float](repeating: 0, count: f)
+        vDSP_vmul(gated, 1, upOut, 1, &act, 1, vDSP_Length(f))
+        return DequantInt8GemvRef.apply(weightRows: downRows, x: act, n: f,
+                                        groupSize: groupSize)
+    }
+
     /// Routed-only sibling of `applyStreamed`. Gemma 4's parallel-MoE block
     /// computes dense MLP and routed branches separately, then sums; this is
     /// the routed-only half.

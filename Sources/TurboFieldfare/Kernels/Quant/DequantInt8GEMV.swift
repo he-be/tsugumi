@@ -13,7 +13,7 @@ import Metal
 ///   * lm_head — M=262144, N=2816 (final classifier, tied with embed table)
 ///
 /// One SIMD group (32 threads) runs per output row.
-final class DequantInt8GEMV {
+package final class DequantInt8GEMV {
     private struct Shape: Hashable {
         var m: UInt32
         var n: UInt32
@@ -29,7 +29,7 @@ final class DequantInt8GEMV {
 
     private let affineGroupSize: Int
 
-    init(context: MetalContext) throws {
+    package init(context: MetalContext) throws {
         self.affineGroupSize = context.affineGroupSize
         let kernelName = "dequant_int8_gemv_simd"
         self.pso = try context.pipeline(kernelName)
@@ -50,7 +50,7 @@ final class DequantInt8GEMV {
     /// Encodes the GEMV onto `commandBuffer`. Offsets allow passing the same
     /// mmap'd `MTLBuffer` for weights / scales / biases when they share a
     /// page-aligned blob.
-    func encode(commandBuffer: MTLCommandBuffer,
+    package func encode(commandBuffer: MTLCommandBuffer,
                        weights: MTLBuffer, weightsOffset: Int = 0,
                        scales:  MTLBuffer, scalesOffset:  Int = 0,
                        biases:  MTLBuffer, biasesOffset:  Int = 0,
@@ -62,6 +62,8 @@ final class DequantInt8GEMV {
                        n: UInt32) {
         precondition(n % UInt32(affineGroupSize) == 0,
                      "N must be a multiple of \(affineGroupSize)")
+        // The kernel walks the row in fixed 64-element steps (32 lanes x 2).
+        precondition(n % 64 == 0, "N must be a multiple of 64")
         precondition(xOffset >= 0 && yOffset >= 0, "buffer offsets must be non-negative")
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(specializedPSOs[Shape(m: m, n: n)] ?? pso)

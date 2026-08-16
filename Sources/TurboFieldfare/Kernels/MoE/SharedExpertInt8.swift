@@ -180,6 +180,11 @@ final class SharedExpertInt8 {
                                       up: SharedExpertInt8Proj,
                                       scratchAct: MTLBuffer,
                                       scratchActOffset: Int) throws {
+        // The kernel walks a row in fixed 64-element steps (32 lanes x 2).
+        guard gate.cols % 64 == 0 else {
+            throw SharedExpertInt8Error.dimensionMismatch(
+                "cols \(gate.cols) is not a multiple of 64")
+        }
         guard let enc = cb.makeComputeCommandEncoder() else {
             throw SharedExpertInt8Error.dimensionMismatch("encoder alloc failed")
         }
