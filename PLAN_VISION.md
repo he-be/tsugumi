@@ -357,6 +357,81 @@ V6 の受入で、**vision 付き `.gturbo` を旧タグのビルドに食わせ
 
 ---
 
+## 0-E. `--add-vision` — 既存インストールへの追記 (2026-08-17、**実測**)
+
+V2 の `--include-vision` は**インストール**のフラグで、インストーラは出力ディレクトリを
+常に一から組み立てる。既存の 15 GB のインストールに vision を足すには
+15 GB を丸ごとコピーし直すことになり、実行中は **31 GB**(`.partial` と既存の同居)を
+食う。テキスト側のバイトも digest も 1 ビットも変わらないのだから、これは純粋な無駄である。
+
+| やり方 | 定常のディスク | 実行中のピーク |
+| --- | ---: | ---: |
+| 同じパスに `--overwrite` で入れ直す | 15 GB → 16.2 GB | 約 31 GB |
+| 別パスに入れて両方残す | 31 GB | 31 GB |
+| **`--add-vision`** (今回) | **16.2 GB** | **16.2 GB** |
+
+```
+swift run -c release TurboFieldfareRepack --add-vision --input-gturbo <model.gturbo>
+```
+
+V3 の前に片付けた。そうしないと V4〜V6 の実機確認のたびに 15 GB のコピーが発生する。
+
+| 追加したもの | 中身 |
+| --- | --- |
+| `VisionAppendInstaller` (`Core/Workflow`) | `AddVisionOptions` / `AddVisionResult`。ダウンロードは tower の 1.15 GB のみ |
+| `--add-vision --input-gturbo` | 他のモードとは排他。`--include-vision` との併用も拒否する |
+| テスト 7 本 | 追記 5 (`VisionAppendInstallTests`) + CLI 2 |
+
+`Scripts/test.sh`: **752 テスト / 133 スイート、12 issue**。
+issue の内訳は `PREFILL_THROUGHPUT.md` §7-7 の陳腐化 5 件と**完全に同じで、新しい失敗はない**
+(745 → 752 は今回の +7)。
+
+### 0-E-1. 出口条件は「フル install とバイト一致」にした
+
+「vision が付いた」ではなく、**`--include-vision` で最初から入れたものと区別がつかない**
+ことを検査する。同じ snapshot から (a) text-only → `--add-vision` と
+(b) `--include-vision` の 2 つを作り、
+**`manifest.json` をバイト比較**する。これ 1 本で flag / `versionMinor` /
+`vision` セクション / `files` 表が全部載る。`vision/vision_weights.bin` も
+バイト比較する。
+
+### 0-E-2. テキスト側は「触っていない」を inode で測った
+
+内容が同じことでは足りない — 書き直せば内容は同じで inode が変わる。
+`model_weights.bin` と `packed_experts/layout.json` の
+**(inode, mtime, size) が追記の前後で不変**であることを検査する。
+同時に、**その測り方が書き直しを検出できること**も検査した:
+参照インストール側の `model_weights.bin` は**バイト一致するのに inode は違う**
+(§6-3 の「壊すと FAIL する」を測定手段そのものに当てたもの)。
+
+### 0-E-3. パリティ検査は snapshot なしでも成立する (**実測**)
+
+§0-D-3 の検査は元 snapshot のシャードをハッシュしていた。追記時にそれは無い。
+代わりに **インストール済み `model_weights.bin` の resident index から名前で引く**。
+照合対象の norm テンソルは量子化されず、元の名前のまま bf16 で入っているので
+(`dtype == bf16` かつ scale/bias なしを検査してから読む)、両側をハッシュできる。
+別シードのチェックポイントから組んだ tower — **自分のピンとは整合している** —
+を追記させると `the two checkpoints differ` で落ちることをテストで固定した。
+
+### 0-E-4. 中断してもモデルは壊れない
+
+tower は**モデルディレクトリの外** (`<model>.gturbo.vision.partial/`) で組み立て、
+完成してから `rename` で中に移す。順序は **重み → manifest**:
+その間の窓ではモデルは「元のテキスト専用モデル + 誰も読まないファイル」でしかない。
+逆順だと存在しない tower を宣言する瞬間ができる。
+失敗時はステージングごと消すので、モデルディレクトリには 1 バイトも残らない
+(`--verify-install` の `unexpectedEntries` が空のままであることをテストで固定した)。
+再開機構は持たない — 1.15 GB なので、やり直しでよい。
+
+- 追記後は **`VerifiedInstallTool.run` を必ず走らせる**。`verified-install.json` は
+  「全ファイルを検査した」という主張なので、manifest から digest を書き写すだけでは
+  嘘になる。tower を含めて全部ハッシュし直してから受領証を書く。
+- 同名の中断インストール (`.partial` / `.resume.json`) がある場合は**拒否する**。
+  resume が後から別のテキスト重みを promote すると、tower が照合していない
+  重みと組になってしまう。
+
+---
+
 ## 1. ソース側の事実確認 (**実測**、2026-08-16)
 
 ### 1-1. vision 重みの所在と内訳
@@ -582,6 +657,8 @@ V4 の参照比較で「どちらが上流と一致するか」を**測って**�
 
 実 peak は QAT 実測 6.0 GB (`RESULTS_QAT.md`) に対し **7.2 GB 前後**と見込む (**導出**)。
 ディスク: `.gturbo` が +1.15 GB (15.5 GB → 16.7 GB)。ダウンロードは range 取得 1.15 GB。
+**インストールは 1 個のまま太る** — `--add-vision` があるので、既存インストールに
+足す場合もコピーは発生せず、実行中のピークも +1.15 GB で済む (§0-E)。
 
 `ExpertCacheBudget.residentBytes` は `residentIndex.header.residentSize` を読むだけなので、
 vision を**別ファイル**にする場合はそのぶんを明示的に足す必要がある (§4-1、変更点)。
@@ -874,6 +951,7 @@ tower は prefill の前段でしか動かないので、**§5-0 のテキスト
 | **V0** | 参照系の固定 | 下記 §5-V0 — **完了 (2026-08-17、§0-B)** |
 | **V1** | 前処理 + トークン列 (GPU なし) | 参照 fixture と patch 一致 (許容 §6-1)。画像なしの `<\|image\|>` が**エラーになる** — **完了 (2026-08-17、§0-C)** |
 | **V2** | フォーマット拡張 + repacker | `--include-vision` で `.gturbo` が出来、**旧バイナリが flag で拒否する**。`--include-vision` なしの出力が現行とバイト一致 — **完了 (2026-08-17、§0-D)**。ただし旧バイナリでの実拒否確認は V6 に持ち越し (§0-D-6) |
+| **V2-a** | `--add-vision` (既存インストールへの追記) | 追記後の `manifest.json` と `vision/vision_weights.bin` が `--include-vision` の出力と**バイト一致**、テキスト側の inode が不変 — **完了 (2026-08-17、§0-E)** |
 | **V3** | tower カーネル + 単体検証 + **性能実測** | `TurboFieldfareKernelCheck` に vision ケース追加で全 PASS + **検出力の裏取り**。bf16 QMM の実測 GFLOP/s を記録 |
 | **V4** | tower 統合 (画像 → soft token) | 参照実装の `pooler_output` と相対誤差 ≤ §6-2 の閾値 |
 | **V5** | prefill 統合 (スパン・マスク・scatter) | 実画像で説明が成立。**テキストのみの回帰 ±1%** (§5-0 相当) |
@@ -984,6 +1062,7 @@ tower は off-path なので、動いたら実装ミス)。
 | 7 | 起動 | `--verification trusted-install` / `full-sha256` の両方で exit 0 |
 | 8 | 退行なし | `--include-vision` なしで作った `.gturbo` が現行とバイト一致 (V2 の出口条件の再確認) |
 | 9 | 旧ランタイム拒否 | vision 付き `.gturbo` を **vision 以前のタグでビルドしたバイナリ**に渡し、`unknown v1 flag` で exit != 0 になることを実機で 1 回確認する (§0-D-6) |
+| 10 | 追記 | 実機の既存インストールに `--add-vision` を 1 回走らせ、**ダウンロードが 1.15 GB 前後**、`model_weights.bin` の inode が不変、再検証が exit 0 であることを記録する (§0-E) |
 
 記録は `RESULTS_VISION.md` に PLAN §6 準拠 (commit / ハード / コマンド / exit code /
 footer 全文 / プロトコルからの逸脱すべて)。

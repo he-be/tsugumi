@@ -6,6 +6,7 @@ Usage:
   TurboFieldfareRepack --output <model.gturbo> [--overwrite] [--resume]
   TurboFieldfareRepack --output <model.gturbo> --source-snapshot <dir> [--overwrite]
   TurboFieldfareRepack --discard-partial --output <model.gturbo>
+  TurboFieldfareRepack --add-vision --input-gturbo <model.gturbo>
   TurboFieldfareRepack --verify-install --input-gturbo <model.gturbo>
   TurboFieldfareRepack --help
 
@@ -19,6 +20,13 @@ part of the text checkpoint, so they are fetched over ranges from the pinned
 upstream repository (about 1.15 GB) and written to vision/vision_weights.bin.
 The install refuses to pair a tower with text weights it does not belong to.
 Without this flag the output is byte-for-byte what it has always been.
+
+--add-vision adds that same tower to a model that is already installed. The
+text weights are not read, rewritten or re-downloaded, so it costs the 1.15 GB
+of tower and nothing else, and the result is identical to having installed the
+model with --include-vision in the first place. It refuses a model that already
+has a tower, and re-verifies the whole install afterwards. An interrupted run
+leaves the model untouched; just run it again.
 
 --source-snapshot repacks from a checkpoint already staged on disk in its
 distributed form (the safetensors shards plus model.safetensors.index.json,
@@ -36,6 +44,7 @@ private struct Arguments {
     var inputGTurbo: String?
     var sourceSnapshot: String?
     var includeVision = false
+    var addVision = false
 
     static func parse(_ values: [String]) throws -> Arguments {
         var parsed = Arguments()
@@ -60,6 +69,9 @@ private struct Arguments {
             case "--include-vision":
                 parsed.includeVision = true
                 index += 1
+            case "--add-vision":
+                parsed.addVision = true
+                index += 1
             case "--output", "--input-gturbo", "--source-snapshot":
                 guard index + 1 < values.count else {
                     throw ParseError.missingValue(flag)
@@ -78,13 +90,31 @@ private struct Arguments {
         guard !(parsed.resume && parsed.discardPartial) else {
             throw ParseError.invalidMode("--resume and --discard-partial are mutually exclusive")
         }
+        guard !(parsed.addVision && parsed.verifyInstall) else {
+            throw ParseError.invalidMode("--add-vision and --verify-install are mutually exclusive")
+        }
         if parsed.discardPartial {
             guard parsed.output != nil else {
                 throw ParseError.missingRequired("--output")
             }
             guard parsed.inputGTurbo == nil, parsed.sourceSnapshot == nil,
-                  !parsed.overwrite, !parsed.verifyInstall, !parsed.includeVision else {
+                  !parsed.overwrite, !parsed.verifyInstall, !parsed.includeVision,
+                  !parsed.addVision else {
                 throw ParseError.invalidMode("--discard-partial only accepts --output")
+            }
+            return parsed
+        }
+        if parsed.addVision {
+            guard parsed.inputGTurbo != nil else {
+                throw ParseError.missingRequired("--input-gturbo")
+            }
+            guard parsed.output == nil, parsed.sourceSnapshot == nil,
+                  !parsed.overwrite, !parsed.resume else {
+                throw ParseError.invalidMode("--add-vision accepts only --input-gturbo")
+            }
+            guard !parsed.includeVision else {
+                throw ParseError.invalidMode(
+                    "--add-vision already installs the tower; drop --include-vision")
             }
             return parsed
         }
@@ -149,6 +179,30 @@ private func run(_ values: [String]) async -> Int32 {
             return 0
         } catch {
             printError("discard failed: \(error)")
+            return 1
+        }
+    }
+
+    if arguments.addVision, let input = arguments.inputGTurbo {
+        do {
+            let result = try await VisionAppendInstaller(
+                options: AddVisionOptions(
+                    inputGTurbo: URL(fileURLWithPath: input).path,
+                    token: ProcessInfo.processInfo.environment["HF_TOKEN"],
+                    minFreeReserveBytes: SupportedModelSource.reserveBytes)).run()
+            print("Added the vision tower to \(result.modelDirectory)")
+            print("Tower: \(result.tensorCount) tensors, \(result.payloadBytes) bytes")
+            print("Source: \(result.visionRepoID) @ \(result.visionResolvedCommit)")
+            print("Downloaded \(result.downloadedBytes) bytes")
+            print("Re-verified \(result.verifiedFileCount) files "
+                  + "(\(result.verifiedBytes) bytes)")
+            if !result.unexpectedEntries.isEmpty {
+                printError("warning: undeclared entries in the model directory: "
+                           + result.unexpectedEntries.joined(separator: ", "))
+            }
+            return 0
+        } catch {
+            printError("add-vision failed: \(error)")
             return 1
         }
     }

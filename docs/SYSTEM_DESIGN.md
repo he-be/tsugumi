@@ -105,7 +105,7 @@ gemma4.gturbo/
     ...
     layer_29.bin
   vision/
-    vision_weights.bin              # only with --include-vision
+    vision_weights.bin              # only with --include-vision / --add-vision
 ```
 
 `model_weights.bin` contains the embedding/head, attention projections,
@@ -138,6 +138,18 @@ text-only workload should not pay for weights it never reads. Because the two
 halves come from different repositories, the installer proves they belong
 together: unquantized tensors present in both are hashed on both sides and
 compared against a pinned digest before anything is written.
+
+A model that is already installed does not have to be rebuilt to gain the
+tower. `--add-vision --input-gturbo <model.gturbo>` downloads only the tower,
+writes it beside the text weights, and rewrites `manifest.json` and
+`verified-install.json`; the result is byte-identical to the same model
+installed with `--include-vision`. The same parity proof runs, measured against
+the installed `model_weights.bin` rather than the source checkpoint — the
+tensors it compares are stored there unquantized under their original names.
+The tower file is staged outside the model directory and moved in only once it
+is complete, so an interrupted run leaves the text-only model untouched. The
+whole install is re-verified afterwards, because the receipt it writes asserts
+that every file was checked.
 
 [`TurboFieldfareFormat`](../Sources/TurboFieldfareFormat) defines the v1 JSON
 files and resident index used by the installer, verifier, and runtime. This
