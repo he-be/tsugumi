@@ -20,7 +20,12 @@ public enum RuntimeExpertCachePolicy: String, Codable, Sendable {
 }
 
 public struct RuntimeConfiguration: Sendable, Equatable {
-    public static let allowedExpertCacheSlots = [8, 16, 24, 32]
+    /// Slot counts the front ends will accept. Everything above 32 is specific
+    /// to machines with enough unified memory to hold it: the cache costs
+    /// `numLayers * slots * expertStride` (about 100 MB per slot for
+    /// gemma-4-26b-a4b), and `ExpertCacheBudget` rejects a configuration that
+    /// would push past the Metal device's recommended working set.
+    public static let allowedExpertCacheSlots = [8, 16, 24, 32, 48, 64, 80, 96, 112]
     public static let allowedPrefillChunkTokens = [32, 64, 128]
     public static let minimumExpertCacheSlotsForChunkedPrefill = 16
 
@@ -32,7 +37,15 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     public let prefillAttentionPath: RuntimePrefillAttentionPath
     public let headPath: RuntimeHeadPath
 
-    public init(expertCacheSlots: Int = 16,
+    /// 64 slots is where measured decode throughput stops improving on M3 Pro.
+    /// Routing is heavily skewed, so 50% residency already gives a 99.2% decode
+    /// hit rate; the remaining expert I/O overlaps the shared-MLP GPU work, which
+    /// is why 96 slots buys another 0.6 points of hit rate but no tokens per
+    /// second. Going the other way costs real throughput (48 slots is about 4.5%
+    /// slower). Machines that cannot hold the cache are rejected by
+    /// `ExpertCacheBudget` at runner construction with an actionable error rather
+    /// than silently swapping.
+    public init(expertCacheSlots: Int = 64,
                 expertCachePolicy: RuntimeExpertCachePolicy = .lfu,
                 rdadvisePolicy: RDAdvicePolicyMode = .off,
                 prefillEnabled: Bool = true,

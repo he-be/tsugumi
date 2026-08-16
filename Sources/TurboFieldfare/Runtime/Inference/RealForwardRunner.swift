@@ -232,6 +232,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         self.ctx = context
         self.cfg = model.config
         self.maxContext = maxContext
+        // Reject a cache that would not stay resident before allocating any of
+        // it: overshooting the working set trades SSD reads for OS compression,
+        // which is the opposite of what a large cache is for.
+        let budget = model.expertCacheBudget(
+            slotCount: runtimeConfiguration.expertCacheSlots,
+            maxContext: maxContext)
+        guard budget.fitsRecommendedWorkingSet else {
+            throw ExpertCacheBudgetError.exceedsRecommendedWorkingSet(budget)
+        }
+        self.memoryBudget = budget
         self.useFusedGreedyHead = runtimeConfiguration.headPath == .fusedRows
         self.prefillAttentionPath = runtimeConfiguration.prefillAttentionPath
         let useFP16Ring = runtimeConfiguration.fp16RingEnabled
@@ -404,6 +414,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         rdadviseAdaptivePosition = -1
         rdadviseAdaptivePositionBytes = 0
     }
+
+    /// Memory this configuration committed to at init, for diagnostics.
+    public let memoryBudget: ExpertCacheBudget
 
     public private(set) var totalIoNanos: UInt64 = 0
     public private(set) var totalCb1Nanos: UInt64 = 0

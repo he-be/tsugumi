@@ -72,6 +72,14 @@ public final class PreadExpertStreamer: @unchecked Sendable {
     private var slotExpert: [Int]
     private var slotLastUse: [Int]
     private var expertUseCount: [Int]
+    /// How many slots currently hold each expert. Zero is a definite miss, so
+    /// the common case costs one array read instead of a scan over every slot.
+    /// Usually zero or one; it can exceed one when a plan had to re-read an
+    /// expert whose slot was pinned by `avoidingSlots`.
+    private var expertResidency: [Int]
+    /// One slot known to hold each expert. A hint only — it is validated before
+    /// use, and a stale hint just falls back to the scan the old code always did.
+    private var expertSlotHint: [Int]
     private var useClock = 0
     private let cacheLock = NSLock()
 
@@ -164,6 +172,8 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         self.slotExpert = [Int](repeating: -1, count: slotCount)
         self.slotLastUse = [Int](repeating: 0, count: slotCount)
         self.expertUseCount = [Int](repeating: 0, count: max(1, layout.expertsPerLayer))
+        self.expertResidency = [Int](repeating: 0, count: max(1, layout.expertsPerLayer))
+        self.expertSlotHint = [Int](repeating: -1, count: max(1, layout.expertsPerLayer))
         closeFDOnFailure = false
     }
 
@@ -228,8 +238,19 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         var reserved = [Bool](repeating: false, count: slotCount)
 
         for index in experts.indices {
+            let expert = experts[index]
+            guard expert >= 0, expert < expertResidency.count,
+                  expertResidency[expert] > 0 else { continue }
+            let hint = expertSlotHint[expert]
+            if hint >= 0, !reserved[hint], slotExpert[hint] == expert {
+                assignedSlots[index] = hint
+                reserved[hint] = true
+                continue
+            }
+            // The hint is taken by an earlier duplicate or has gone stale.
+            // Another slot may still hold this expert, so fall back to a scan.
             for slot in 0..<slotCount
-                where !reserved[slot] && slotExpert[slot] == experts[index] {
+                where !reserved[slot] && slotExpert[slot] == expert {
                 assignedSlots[index] = slot
                 reserved[slot] = true
                 break
@@ -240,10 +261,13 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         }
 
         let misses = experts.indices.filter { assignedSlots[$0] == -1 }
-        let evictable = (0..<slotCount)
-            .filter { !reserved[$0] }
-            .sorted { shouldEvictSlot($0, before: $1) }
-        guard misses.count <= evictable.count else { return nil }
+        // Only the `misses.count` cheapest victims are ever used, so pick them
+        // directly. Sorting every slot dominated planning once the cache grew
+        // past a few dozen slots, and it ran even when nothing had to be evicted.
+        let victims = misses.isEmpty
+            ? []
+            : cheapestEvictableSlots(count: misses.count, reserved: reserved)
+        guard misses.count <= victims.count else { return nil }
 
         useClock = clock
         for expert in experts where expert >= 0 && expert < expertUseCount.count {
@@ -253,10 +277,10 @@ public final class PreadExpertStreamer: @unchecked Sendable {
             slotLastUse[slot] = clock
         }
         for (offset, index) in misses.enumerated() {
-            let slot = evictable[offset]
+            let slot = victims[offset]
             assignedSlots[index] = slot
             reserved[slot] = true
-            slotExpert[slot] = -1
+            releaseSlotLocked(slot)
             slotLastUse[slot] = clock
         }
 
@@ -293,7 +317,14 @@ public final class PreadExpertStreamer: @unchecked Sendable {
 
         cacheLock.lock()
         for index in plan.misses {
-            slotExpert[plan.assignedSlots[index]] = plan.experts[index]
+            let slot = plan.assignedSlots[index]
+            let expert = plan.experts[index]
+            releaseSlotLocked(slot)
+            slotExpert[slot] = expert
+            if expert >= 0, expert < expertResidency.count {
+                expertResidency[expert] += 1
+                expertSlotHint[expert] = slot
+            }
         }
         cacheLock.unlock()
 
@@ -320,7 +351,10 @@ public final class PreadExpertStreamer: @unchecked Sendable {
 
     public func adviseExpertMisses(experts: [Int]) -> ExpertIOAdviceResult {
         cacheLock.lock()
-        let misses = experts.filter { !slotExpert.contains($0) }
+        let misses = experts.filter { expert in
+            guard expert >= 0, expert < expertResidency.count else { return true }
+            return expertResidency[expert] == 0
+        }
         cacheLock.unlock()
         return adviseRanges(expertAdviceRanges(experts: misses), requested: misses.count)
     }
@@ -347,6 +381,45 @@ public final class PreadExpertStreamer: @unchecked Sendable {
             }
         }
         return result
+    }
+
+    /// The `count` slots that `shouldEvictSlot` ranks first, in that order.
+    /// Equivalent to sorting every unreserved slot and taking the prefix, but it
+    /// keeps only `count` candidates (topK, so 8 during decode) in flight.
+    /// Returns fewer than `count` when there are not enough unreserved slots.
+    private func cheapestEvictableSlots(count: Int, reserved: [Bool]) -> [Int] {
+        var picked: [Int] = []
+        picked.reserveCapacity(count)
+        for slot in 0..<slotCount where !reserved[slot] {
+            if picked.count < count {
+                picked.append(slot)
+                var index = picked.count - 1
+                while index > 0, shouldEvictSlot(slot, before: picked[index - 1]) {
+                    picked[index] = picked[index - 1]
+                    index -= 1
+                }
+                picked[index] = slot
+            } else if shouldEvictSlot(slot, before: picked[count - 1]) {
+                var index = count - 1
+                while index > 0, shouldEvictSlot(slot, before: picked[index - 1]) {
+                    picked[index] = picked[index - 1]
+                    index -= 1
+                }
+                picked[index] = slot
+            }
+        }
+        return picked
+    }
+
+    /// Mark `slot` as holding nothing, keeping the residency index in step.
+    /// Callers must already hold `cacheLock`.
+    private func releaseSlotLocked(_ slot: Int) {
+        let evicted = slotExpert[slot]
+        if evicted >= 0, evicted < expertResidency.count {
+            expertResidency[evicted] -= 1
+            if expertSlotHint[evicted] == slot { expertSlotHint[evicted] = -1 }
+        }
+        slotExpert[slot] = -1
     }
 
     private func shouldEvictSlot(_ lhs: Int, before rhs: Int) -> Bool {
