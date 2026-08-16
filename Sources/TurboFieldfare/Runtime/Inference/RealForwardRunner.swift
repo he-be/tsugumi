@@ -232,6 +232,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         self.ctx = context
         self.cfg = model.config
         self.maxContext = maxContext
+        // The shader library bakes in the affine group size, so it has to be
+        // chosen before the first pipeline is built — which is what the kernel
+        // constructors below do. `MetalContext` is created before `Model.load`
+        // at every entry point, so this is the first place the manifest value
+        // is known.
+        try context.setAffineGroupSize(model.affineGroupSize)
         // Reject a cache that would not stay resident before allocating any of
         // it: overshooting the working set trades SSD reads for OS compression,
         // which is the opposite of what a large cache is for.

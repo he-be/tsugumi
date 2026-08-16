@@ -1,7 +1,17 @@
 #include <metal_stdlib>
 using namespace metal;
 
-constant constexpr uint kMoEGroupSize = 64;
+#ifndef TURBO_AFFINE_GROUP_SIZE
+#define TURBO_AFFINE_GROUP_SIZE 64
+#endif
+constant constexpr uint kMoEGroupSize = TURBO_AFFINE_GROUP_SIZE;
+// Vectorized INT4 block geometry — see the note in dequant_int4.metal.
+// A block is a fixed 128 bytes (32 lanes x 4 bytes); the group size decides how
+// many affine groups that spans and how many lanes cover one group.
+constant constexpr uint kMoEGroupsPerBlock = 256u / kMoEGroupSize;
+constant constexpr uint kMoELanesPerGroup  = kMoEGroupSize / 8u;
+constant constexpr uint kMoETailLanes      = kMoEGroupSize / 2u;
+
 constant constexpr uint kMaxStreamedExperts = 8;
 constant constexpr float kGeluSqrt2OverPi = 0.7978845608028654f;
 constant constexpr float kGeluCubicCoeff = 0.044715f;
@@ -202,11 +212,11 @@ static inline float moe_int4_gemv_row_simd_dev_vec(
     device const bfloat* b_row = B + uint(row) * n_groups;
 
     float acc = 0.0f;
-    const uint full_blocks = n_groups / 4;
+    const uint full_blocks = n_groups / kMoEGroupsPerBlock;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
         const uint w4 = *((device const uint*)(W_row + byte_base));
-        const uint g = blk * 4u + (lane >> 3);
+        const uint g = blk * kMoEGroupsPerBlock + lane / kMoELanesPerGroup;
         const float s = float(s_row[g]);
         const float b = float(b_row[g]);
         const uint elem = byte_base * 2u;
@@ -229,7 +239,9 @@ static inline float moe_int4_gemv_row_simd_dev_vec(
         acc = fma(s, dot, acc);
         acc = fma(b, sum, acc);
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
+    for (uint g = full_blocks * kMoEGroupsPerBlock; g < n_groups; ++g) {
+        // Only the first kMoETailLanes lanes hold a byte of this group.
+        if (lane >= kMoETailLanes) break;
         const float s = float(s_row[g]);
         const float b = float(b_row[g]);
         const uint8_t byte = W_row[g * (kMoEGroupSize / 2) + lane];
@@ -268,14 +280,14 @@ static inline float2 moe_int4_gate_up_rows_simd_dev_vec_u16load(
 
     float g_acc = 0.0f;
     float u_acc = 0.0f;
-    const uint full_blocks = n_groups / 4;
+    const uint full_blocks = n_groups / kMoEGroupsPerBlock;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
         device const ushort* gp = (device const ushort*)(gW_row + byte_base);
         device const ushort* up = (device const ushort*)(uW_row + byte_base);
         const uint gw4 = uint(gp[0]) | (uint(gp[1]) << 16);
         const uint uw4 = uint(up[0]) | (uint(up[1]) << 16);
-        const uint g = blk * 4u + (lane >> 3);
+        const uint g = blk * kMoEGroupsPerBlock + lane / kMoELanesPerGroup;
         const float gs = float(gS_row[g]);
         const float gb = float(gB_row[g]);
         const float us = float(uS_row[g]);
@@ -314,7 +326,9 @@ static inline float2 moe_int4_gate_up_rows_simd_dev_vec_u16load(
         u_acc = fma(us, u_dot, u_acc);
         u_acc = fma(ub, sum, u_acc);
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
+    for (uint g = full_blocks * kMoEGroupsPerBlock; g < n_groups; ++g) {
+        // Only the first kMoETailLanes lanes hold a byte of this group.
+        if (lane >= kMoETailLanes) break;
         const float gs = float(gS_row[g]);
         const float gb = float(gB_row[g]);
         const float us = float(uS_row[g]);

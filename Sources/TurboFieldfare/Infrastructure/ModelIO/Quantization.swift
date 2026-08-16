@@ -2,7 +2,17 @@ import Foundation
 
 public enum Quantization {
 
+    /// Legacy/default affine group size. The *authoritative* value for a loaded
+    /// model is `Manifest.quant.embedding.groupSize`; this constant is the
+    /// fallback used by fixtures and by callers that predate group-32 support.
+    /// See `MetalContext.affineGroupSize` for the shader-side counterpart.
     public static let groupSize: Int = 64
+
+    /// Group sizes the runtime can compile shaders for. The vectorized INT4
+    /// GEMV blocks read 128 bytes per SIMD group, so a group must be a whole
+    /// number of lanes wide (`groupSize / 8` lanes) and must divide 128 bytes
+    /// evenly — 32 and 64 both satisfy this.
+    public static let supportedGroupSizes: Set<Int> = [32, 64]
 
     // MARK: - BF16 helpers
     //
@@ -47,7 +57,9 @@ public enum Quantization {
     /// Affine 4-bit quantize: `q ∈ [0..15]`, `w ≈ q * scale + bias`.
     /// Scale and bias are computed from per-group min/max, then rounded to BF16.
     /// Test-fixture only — the runtime importer never calls this.
-    public static func quantizeInt4Affine(_ row: [Float]) -> Int4AffineRow {
+    public static func quantizeInt4Affine(_ row: [Float],
+                                          groupSize: Int = Quantization.groupSize)
+        -> Int4AffineRow {
         precondition(row.count % groupSize == 0,
                      "row length \(row.count) is not a multiple of \(groupSize)")
 
@@ -101,7 +113,9 @@ public enum Quantization {
         return Int4AffineRow(packed: packed, scales: scales, biases: biases)
     }
 
-    public static func dequantizeInt4Affine(_ r: Int4AffineRow, n: Int) -> [Float] {
+    public static func dequantizeInt4Affine(_ r: Int4AffineRow, n: Int,
+                                            groupSize: Int = Quantization.groupSize)
+        -> [Float] {
         precondition(n == r.packed.count * 2)
         var out = [Float](repeating: 0, count: n)
         let nGroups = n / groupSize
@@ -132,7 +146,9 @@ public enum Quantization {
         }
     }
 
-    public static func quantizeInt8Affine(_ row: [Float]) -> Int8AffineRow {
+    public static func quantizeInt8Affine(_ row: [Float],
+                                          groupSize: Int = Quantization.groupSize)
+        -> Int8AffineRow {
         precondition(row.count % groupSize == 0,
                      "row length \(row.count) is not a multiple of \(groupSize)")
 
@@ -176,7 +192,9 @@ public enum Quantization {
         return Int8AffineRow(packed: packed, scales: scales, biases: biases)
     }
 
-    public static func dequantizeInt8Affine(_ r: Int8AffineRow, n: Int) -> [Float] {
+    public static func dequantizeInt8Affine(_ r: Int8AffineRow, n: Int,
+                                            groupSize: Int = Quantization.groupSize)
+        -> [Float] {
         precondition(n == r.packed.count)
         var out = [Float](repeating: 0, count: n)
         let nGroups = n / groupSize

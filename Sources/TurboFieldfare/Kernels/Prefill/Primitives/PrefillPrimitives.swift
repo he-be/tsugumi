@@ -2,9 +2,11 @@ import Foundation
 import Metal
 
 final class PrefillEmbedLookupInt4 {
+    private let affineGroupSize: Int
     private let pso: MTLComputePipelineState
 
     init(context: MetalContext) throws {
+        self.affineGroupSize = context.affineGroupSize
         self.pso = try context.pipeline("prefill_embed_lookup_int4_block")
     }
 
@@ -17,8 +19,8 @@ final class PrefillEmbedLookupInt4 {
                        t: UInt32,
                        d: UInt32,
                        outScale: Float) {
-        precondition(d % UInt32(Quantization.groupSize) == 0,
-                     "D must be a multiple of \(Quantization.groupSize)")
+        precondition(d % UInt32(affineGroupSize) == 0,
+                     "D must be a multiple of \(affineGroupSize)")
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(pso)
         enc.setBuffer(table, offset: tableOffset, index: 0)
@@ -71,9 +73,11 @@ final class PrefillRMSNorm {
 }
 
 final class PrefillInt4QMM {
+    private let affineGroupSize: Int
     private let pso: MTLComputePipelineState
 
     init(context: MetalContext) throws {
+        self.affineGroupSize = context.affineGroupSize
         self.pso = try context.pipeline("prefill_dequant_int4_qmm_f16_block")
     }
 
@@ -86,8 +90,8 @@ final class PrefillInt4QMM {
                        t: Int,
                        n: Int,
                        k: Int) {
-        precondition(k % Quantization.groupSize == 0,
-                     "K must be a multiple of \(Quantization.groupSize)")
+        precondition(k % affineGroupSize == 0,
+                     "K must be a multiple of \(affineGroupSize)")
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(pso)
         enc.setBuffer(weights, offset: weightsOffset, index: 0)

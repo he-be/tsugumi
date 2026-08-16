@@ -27,7 +27,10 @@ final class DequantInt8GEMV {
         Shape(m: 2816, n: 2112),    // shared expert down
     ]
 
+    private let affineGroupSize: Int
+
     init(context: MetalContext) throws {
+        self.affineGroupSize = context.affineGroupSize
         let kernelName = "dequant_int8_gemv_simd"
         self.pso = try context.pipeline(kernelName)
 
@@ -57,8 +60,8 @@ final class DequantInt8GEMV {
                        yOffset: Int = 0,
                        m: UInt32,
                        n: UInt32) {
-        precondition(n % UInt32(Quantization.groupSize) == 0,
-                     "N must be a multiple of \(Quantization.groupSize)")
+        precondition(n % UInt32(affineGroupSize) == 0,
+                     "N must be a multiple of \(affineGroupSize)")
         precondition(xOffset >= 0 && yOffset >= 0, "buffer offsets must be non-negative")
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(specializedPSOs[Shape(m: m, n: n)] ?? pso)

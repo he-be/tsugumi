@@ -187,7 +187,7 @@ actor RealInferenceSession {
             onState(.loading(.verifyingWeights))
             let runtimeConfiguration = try key.options.resolvedRuntimeConfiguration(
                 forceLogitsHead: key.forceLogitsHead)
-            let context: MetalContext
+            var context: MetalContext
             if let ctx {
                 context = ctx
             } else {
@@ -200,6 +200,14 @@ actor RealInferenceSession {
                 streamingMode: .pread(slotCount: runtimeConfiguration.expertCacheSlots),
                 expertCachePolicy: runtimeConfiguration.modelExpertCachePolicy,
                 integrityPolicy: key.options.modelVerification.runtimeValue)
+            // The shader library is specialized for one affine group size, so a
+            // context carried over from a model quantized at a different group
+            // size cannot serve this one. Same physical device either way, so
+            // the model loaded above stays valid.
+            if !context.canUseAffineGroupSize(loadedModel.affineGroupSize) {
+                context = try MetalContext()
+                ctx = context
+            }
             try Task.checkCancellation()
 
             onState(.loading(.preparingRunner))

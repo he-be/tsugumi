@@ -6,7 +6,10 @@ using namespace metal;
 using namespace mpp::tensor_ops;
 #endif
 
-constant constexpr uint kPrefillGroupSize = 64;
+#ifndef TURBO_AFFINE_GROUP_SIZE
+#define TURBO_AFFINE_GROUP_SIZE 64
+#endif
+constant constexpr uint kPrefillGroupSize = TURBO_AFFINE_GROUP_SIZE;
 constant constexpr uint kPrefillRmsMaxSimdGroups = 8;
 constant constexpr uint kPrefillPostMaxD = 4096;
 constant constexpr uint kPrefillRouterMaxExperts = 256;

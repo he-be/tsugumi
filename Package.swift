@@ -107,6 +107,14 @@ let package = Package(
             dependencies: ["TurboFieldfare"],
             path: "Sources/TurboFieldfareValidation/Support"
         ),
+        // Numeric self-check for the affine-INT4 kernels at each supported
+        // group size. An executable rather than a test target because
+        // `swift test` cannot run in the development environment.
+        .executableTarget(
+            name: "TurboFieldfareKernelCheck",
+            dependencies: ["TurboFieldfare", "TurboFieldfareValidationSupport"],
+            path: "Sources/TurboFieldfareKernelCheck"
+        ),
         .testTarget(
             name: "TurboFieldfareFormatTests",
             dependencies: ["TurboFieldfareFormat"],

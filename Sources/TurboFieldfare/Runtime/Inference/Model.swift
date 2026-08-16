@@ -35,6 +35,12 @@ public struct Model {
     public var modelID: String { manifest.modelID }
     public var sourceSnapshotHash: String? { manifest.sourceSnapshotHash }
     public var sharedExpertWeightBits: Int { manifest.quant?.sharedExpert.weightBits ?? 8 }
+    /// Affine group size this model's weights are quantized at. Uniform across
+    /// every slot — `ManifestReader.validateQuant` rejects a manifest whose
+    /// slots disagree — so the embedding slot speaks for the whole model.
+    public var affineGroupSize: Int {
+        manifest.quant?.embedding.groupSize ?? Quantization.groupSize
+    }
 
     let residentBuffer: ResidentBuffer
     let residentIndex: ResidentIndex

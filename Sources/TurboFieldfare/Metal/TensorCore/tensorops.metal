@@ -5,7 +5,10 @@ using namespace metal;
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace mpp::tensor_ops;
 
-constant constexpr uint kW4A8GroupSize = 64;
+#ifndef TURBO_AFFINE_GROUP_SIZE
+#define TURBO_AFFINE_GROUP_SIZE 64
+#endif
+constant constexpr uint kW4A8GroupSize = TURBO_AFFINE_GROUP_SIZE;
 constant constexpr int kMPPAffineTileM = 64;
 constant constexpr int kMPPAffineTileN = 32;
 constant constexpr int kMPPAffineTileK = 64;

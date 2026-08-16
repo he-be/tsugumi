@@ -17,7 +17,24 @@ using namespace metal;
 // element; the per-element inner loop keeps the scalar path's FMA count.
 // ============================================================================
 
-constant constexpr uint kGroupSize = 64;
+#ifndef TURBO_AFFINE_GROUP_SIZE
+#define TURBO_AFFINE_GROUP_SIZE 64
+#endif
+constant constexpr uint kGroupSize = TURBO_AFFINE_GROUP_SIZE;
+
+// Geometry of the vectorized INT4 GEMV block, derived from the group size.
+//
+// A SIMD group consumes a fixed 128 bytes per block (32 lanes x 4 bytes = 256
+// nibbles). How many affine groups that spans depends on the group size, and
+// so does how many lanes cover one group. At group 64 a group is 32 bytes, so
+// a block is 4 groups and 8 lanes cover one group; at group 32 a group is 16
+// bytes, so a block is 8 groups and 4 lanes cover one group. Both of these
+// were previously hardcoded as `4` and `lane >> 3`, which is why a bare group
+// size change reads the wrong scales and runs off the end of the row.
+constant constexpr uint kGroupsPerBlock = 256u / kGroupSize;
+constant constexpr uint kLanesPerGroup  = kGroupSize / 8u;
+// Bytes in one group == the number of lanes with real work in the scalar tail.
+constant constexpr uint kTailLanes      = kGroupSize / 2u;
 constant uint FC_INT4_M [[function_constant(20)]];
 constant uint FC_INT4_N [[function_constant(21)]];
 constant bool FC_INT4_USE_FC [[function_constant(22)]];
@@ -112,16 +129,15 @@ static inline void dequant_int4_gemv_simd_body(
     device const bfloat*  b_row = biases + uint(row) * n_groups;
 
     float acc = 0.0f;
-    // The vectorized row path reads
-    // weights a uint (4 bytes = 8 nibbles) and x as half4 in 4-group (128-byte)
-    // blocks, with a scalar byte-per-lane remainder. Within a block the 32
-    // lanes split 8-per-group, each handling 8 contiguous elements of one
-    // 64-element group, so the affine factoring s·Σqx + b·Σx is preserved
-    // (simd_sum aggregates; s/b are constant within a group). Aligned: row
-    // stride N/2 and weightsOffset are multiples of 4; x is
-    // half4-aligned (lane*8 elements). N=2816/4096/8192 → 44/64/128 groups, all
-    // exact 4-blocks; the remainder covers any non-multiple-of-4 group count.
-    const uint full_blocks = n_groups / 4;
+    // The vectorized row path reads weights as a uint (4 bytes = 8 nibbles) and
+    // x as half4 in 128-byte blocks, with a scalar byte-per-lane remainder.
+    // Within a block the 32 lanes split `kLanesPerGroup` per group, each
+    // handling 8 contiguous elements of one group, so the affine factoring
+    // s·Σqx + b·Σx is preserved (simd_sum aggregates; s/b are constant within a
+    // group). Aligned: row stride N/2 and weightsOffset are multiples of 4; x
+    // is half4-aligned (lane*8 elements). The remainder loop covers any group
+    // count that is not a whole number of blocks.
+    const uint full_blocks = n_groups / kGroupsPerBlock;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
         // Read the 4-byte weight chunk as two ushorts. The resident weight
@@ -132,7 +148,7 @@ static inline void dequant_int4_gemv_simd_body(
         // vs byte-by-byte.
         device const ushort* wp = (device const ushort*)(W_row + byte_base);
         const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
-        const uint g  = blk * 4u + (lane >> 3);
+        const uint g  = blk * kGroupsPerBlock + lane / kLanesPerGroup;
         const float s = float(s_row[g]);
         const float b = float(b_row[g]);
         const uint elem = byte_base * 2u;
@@ -153,7 +169,9 @@ static inline void dequant_int4_gemv_simd_body(
         acc = fma(s, dot, acc);
         acc = fma(b, sum, acc);
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
+    for (uint g = full_blocks * kGroupsPerBlock; g < n_groups; ++g) {
+        // Only the first kTailLanes lanes hold a byte of this group.
+        if (lane >= kTailLanes) break;
         const float s = float(s_row[g]);
         const float b = float(b_row[g]);
         const uint8_t byte = W_row[g * (kGroupSize / 2) + lane];

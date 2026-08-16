@@ -7,7 +7,10 @@ final class PrefillFinalRowHeadInt4 {
     private let normed: MTLBuffer
     private let maxD: Int
 
+    private let affineGroupSize: Int
+
     init(context: MetalContext, maxD: Int = 2816) throws {
+        self.affineGroupSize = context.affineGroupSize
         precondition(maxD > 0, "maxD must be positive")
         self.rms = try RMSNorm(context: context)
         self.int4 = try DequantInt4GEMV(context: context)
@@ -39,8 +42,8 @@ final class PrefillFinalRowHeadInt4 {
         precondition(row >= 0, "row must be non-negative")
         precondition(rowStrideElements >= Int(d), "row stride must cover d")
         precondition(Int(d) <= maxD, "d=\(d) exceeds maxD=\(maxD)")
-        precondition(d % UInt32(Quantization.groupSize) == 0,
-                     "d must be a multiple of \(Quantization.groupSize)")
+        precondition(d % UInt32(affineGroupSize) == 0,
+                     "d must be a multiple of \(affineGroupSize)")
         let hiddenOffset = (row * rowStrideElements) * MemoryLayout<Float16>.size
         rms.encodeBF16W(commandBuffer: commandBuffer,
                         x: hiddenBlock,

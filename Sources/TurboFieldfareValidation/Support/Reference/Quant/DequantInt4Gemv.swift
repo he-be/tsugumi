@@ -13,18 +13,19 @@ public enum DequantInt4GemvRef {
     public static func apply(
         weightRows: [Quantization.Int4AffineRow],
         x: [Float],
-        n: Int
+        n: Int,
+        groupSize: Int = Quantization.groupSize
     ) -> [Float] {
         precondition(!weightRows.isEmpty)
         precondition(x.count == n)
-        precondition(n % Quantization.groupSize == 0,
-                     "N must be a multiple of \(Quantization.groupSize)")
+        precondition(n % groupSize == 0,
+                     "N must be a multiple of \(groupSize)")
 
         let m = weightRows.count
         var y = [Float](repeating: 0, count: m)
 
         for row in 0..<m {
-            let wRow = Quantization.dequantizeInt4Affine(weightRows[row], n: n)
+            let wRow = Quantization.dequantizeInt4Affine(weightRows[row], n: n, groupSize: groupSize)
             var dot: Float = 0
             wRow.withUnsafeBufferPointer { pw in
                 x.withUnsafeBufferPointer { px in

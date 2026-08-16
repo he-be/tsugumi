@@ -2,7 +2,7 @@ import Metal
 
 /// Final BF16 RMSNorm, INT4 affine lm-head projection, and greedy argmax.
 /// The hot path writes one token ID without materializing vocab-sized logits.
-final class LMHeadChainInt4 {
+package final class LMHeadChainInt4 {
     static let rowsPerThreadgroup = 8
 
     private static let rowSummaryStride = 2
@@ -23,9 +23,12 @@ final class LMHeadChainInt4 {
     private let maxD: Int
     private let maxVocab: Int
 
-    init(context: MetalContext,
-         maxD: Int = 2816,
-         maxVocab: Int = 262144) throws {
+    private let affineGroupSize: Int
+
+    package init(context: MetalContext,
+                 maxD: Int = 2816,
+                 maxVocab: Int = 262144) throws {
+        self.affineGroupSize = context.affineGroupSize
         self.rms = try RMSNorm(context: context)
         self.rowGreedy = try context.pipeline("lm_head_greedy_int4_rows_chunk_raw")
         self.rowGreedySpecialized = try context.pipeline(
@@ -50,7 +53,7 @@ final class LMHeadChainInt4 {
         self.rowSummariesBuffer = rowSummariesBuffer
     }
 
-    func encodeGreedyDecode(commandBuffer: MTLCommandBuffer,
+    package func encodeGreedyDecode(commandBuffer: MTLCommandBuffer,
                             hidden: MTLBuffer,
                             hiddenOffset: Int = 0,
                             normWeight: MTLBuffer,
@@ -68,8 +71,8 @@ final class LMHeadChainInt4 {
         precondition(Int(d) <= maxD, "d=\(d) exceeds wrapper maxD=\(maxD)")
         precondition(Int(vocab) <= maxVocab,
                      "vocab=\(vocab) exceeds wrapper maxVocab=\(maxVocab)")
-        precondition(Int(d) % Quantization.groupSize == 0,
-                     "d must be a multiple of \(Quantization.groupSize)")
+        precondition(Int(d) % affineGroupSize == 0,
+                     "d must be a multiple of \(affineGroupSize)")
         precondition(hiddenOffset >= 0, "hiddenOffset must be non-negative")
         precondition(weightsOffset % 2 == 0,
                      "lm_head_greedy_int4_rows_chunk_raw needs a 2-aligned weightsOffset")

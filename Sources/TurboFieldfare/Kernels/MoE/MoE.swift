@@ -28,7 +28,7 @@ public struct MoEExpertOffsets {
     }
 }
 
-final class MoE {
+package final class MoE {
     static let maxStreamedExperts = 8
 
     private static let realDecodeD: UInt32 = 2816
@@ -62,7 +62,10 @@ final class MoE {
     private let routedArgEncoder: MTLArgumentEncoder
     private let reusableRoutedArgBuffer: MTLBuffer
 
-    init(context: MetalContext) throws {
+    private let affineGroupSize: Int
+
+    package init(context: MetalContext) throws {
+        self.affineGroupSize = context.affineGroupSize
         let routerName = "router_gemv_gemma4_r4"
         self.routerGemvPSO = try context.pipeline(
             routerName,
@@ -92,7 +95,7 @@ final class MoE {
         guard let logits = context.device.makeBuffer(
             length: 256 * MemoryLayout<Float>.stride,
             options: .storageModeShared),
-              let phase1Function = context.library.makeFunction(
+              let phase1Function = try context.library.makeFunction(
                 name: "moe_phase1_gate_up_act_u16load") else {
             throw MetalError.noDevice
         }
@@ -118,7 +121,7 @@ final class MoE {
                                    numExperts: UInt32,
                                    d: UInt32,
                                    topK: UInt32) {
-        precondition(d.isMultiple(of: UInt32(Quantization.groupSize)))
+        precondition(d.isMultiple(of: UInt32(affineGroupSize)))
         precondition(numExperts <= 256)
         precondition(topK == UInt32(Self.maxStreamedExperts))
 
@@ -158,7 +161,7 @@ final class MoE {
         }
     }
 
-    func makeRoutedArgumentBuffer(routedBlobs: [MTLBuffer],
+    package func makeRoutedArgumentBuffer(routedBlobs: [MTLBuffer],
                                          topK: UInt32) -> MTLBuffer? {
         validate(routedBlobs: routedBlobs, topK: topK)
         guard let buffer = routedBlobs.first?.device.makeBuffer(
@@ -177,7 +180,7 @@ final class MoE {
         return reusableRoutedArgBuffer
     }
 
-    func encodeRoutedPersistentPhase1U16Load(
+    package func encodeRoutedPersistentPhase1U16Load(
         commandBuffer: MTLCommandBuffer,
         routedArgBuffer: MTLBuffer,
         routedBlobs: [MTLBuffer],
@@ -257,7 +260,7 @@ final class MoE {
         encoder.endEncoding()
     }
 
-    func encodeRoutedPersistentPhase2Reduce(
+    package func encodeRoutedPersistentPhase2Reduce(
         commandBuffer: MTLCommandBuffer,
         routedArgBuffer: MTLBuffer,
         routedBlobs: [MTLBuffer],

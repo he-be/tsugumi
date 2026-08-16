@@ -30,7 +30,10 @@ public struct PrefillTokenExpertPair: Equatable, Sendable {
 final class PrefillRouter {
     private let pso: MTLComputePipelineState
 
+    private let affineGroupSize: Int
+
     init(context: MetalContext) throws {
+        self.affineGroupSize = context.affineGroupSize
         self.pso = try context.pipeline("prefill_router_gemma4_block")
     }
 
@@ -59,8 +62,8 @@ final class PrefillRouter {
         precondition(queryCount > 0, "queryCount must be positive")
         precondition(numExperts <= 256, "numExperts > 256 is not supported")
         precondition(topK > 0 && topK <= 64, "topK must be in 1...64")
-        precondition(d % UInt32(Quantization.groupSize) == 0,
-                     "D must be a multiple of \(Quantization.groupSize)")
+        precondition(d % UInt32(affineGroupSize) == 0,
+                     "D must be a multiple of \(affineGroupSize)")
         precondition(hiddenStrideElements >= d, "hidden stride is too small")
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(pso)

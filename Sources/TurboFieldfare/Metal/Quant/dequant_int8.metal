@@ -13,7 +13,10 @@ using namespace metal;
 // Fused dequant + GEMV for the router and shared expert projections.
 // ============================================================================
 
-constant constexpr uint kInt8GroupSize = 64;
+#ifndef TURBO_AFFINE_GROUP_SIZE
+#define TURBO_AFFINE_GROUP_SIZE 64
+#endif
+constant constexpr uint kInt8GroupSize = TURBO_AFFINE_GROUP_SIZE;
 constant constexpr uint kRowsPerTGInt8 = 8;
 constant uint FC_INT8_M [[function_constant(70)]];
 constant uint FC_INT8_N [[function_constant(71)]];

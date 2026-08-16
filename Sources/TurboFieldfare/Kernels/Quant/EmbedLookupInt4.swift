@@ -12,7 +12,10 @@ import Metal
 final class EmbedLookupInt4 {
     private let pso: MTLComputePipelineState
 
+    private let affineGroupSize: Int
+
     init(context: MetalContext) throws {
+        self.affineGroupSize = context.affineGroupSize
         self.pso = try context.pipeline("embed_lookup_int4")
     }
 
@@ -27,8 +30,8 @@ final class EmbedLookupInt4 {
                        tokenId: UInt32,
                        d: UInt32,
                        outScale: Float) {
-        precondition(d % UInt32(Quantization.groupSize) == 0,
-                     "D must be a multiple of \(Quantization.groupSize)")
+        precondition(d % UInt32(affineGroupSize) == 0,
+                     "D must be a multiple of \(affineGroupSize)")
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(pso)
         enc.setBuffer(table,  offset: tableOffset,  index: 0)

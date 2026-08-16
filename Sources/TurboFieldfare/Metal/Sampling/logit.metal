@@ -611,7 +611,17 @@ void sample_topk64_final(
 // Fused greedy lm-head path. Eight SIMD groups each evaluate one INT4 row;
 // a second dispatch reduces the per-threadgroup argmax summaries.
 constant constexpr uint kLMHeadRowsPerTG = 8;
-constant constexpr uint kLMHeadGroupSize = 64;
+#ifndef TURBO_AFFINE_GROUP_SIZE
+#define TURBO_AFFINE_GROUP_SIZE 64
+#endif
+constant constexpr uint kLMHeadGroupSize = TURBO_AFFINE_GROUP_SIZE;
+// Vectorized INT4 block geometry — see the note in dequant_int4.metal.
+// A block is a fixed 128 bytes (32 lanes x 4 bytes); the group size decides how
+// many affine groups that spans and how many lanes cover one group.
+constant constexpr uint kLMHeadGroupsPerBlock = 256u / kLMHeadGroupSize;
+constant constexpr uint kLMHeadLanesPerGroup  = kLMHeadGroupSize / 8u;
+constant constexpr uint kLMHeadTailLanes      = kLMHeadGroupSize / 2u;
+
 constant constexpr uint kLMHeadRowSummaryStride = 2;
 constant uint FC_HEAD_D [[function_constant(10)]];
 constant uint FC_HEAD_V [[function_constant(11)]];
@@ -643,12 +653,12 @@ inline float lmhead_int4_gemv_row_simd_dev(device const uint8_t*    W,
     device const bfloat*  b_row = biases + uint(row) * n_groups;
 
     float acc = 0.0f;
-    const uint full_blocks = n_groups / 4u;
+    const uint full_blocks = n_groups / kLMHeadGroupsPerBlock;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
         device const ushort* wp = (device const ushort*)(W_row + byte_base);
         const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
-        const uint g  = blk * 4u + (lane >> 3);
+        const uint g  = blk * kLMHeadGroupsPerBlock + lane / kLMHeadLanesPerGroup;
         const float s = float(s_row[g]);
         const float b = float(b_row[g]);
         const uint elem = byte_base * 2u;
@@ -669,7 +679,9 @@ inline float lmhead_int4_gemv_row_simd_dev(device const uint8_t*    W,
         acc = fma(s, dot, acc);
         acc = fma(b, sum, acc);
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
+    for (uint g = full_blocks * kLMHeadGroupsPerBlock; g < n_groups; ++g) {
+        // Only the first kLMHeadTailLanes lanes hold a byte of this group.
+        if (lane >= kLMHeadTailLanes) break;
         const float s = float(s_row[g]);
         const float b = float(b_row[g]);
         const uint8_t byte = W_row[g * (kLMHeadGroupSize / 2) + lane];

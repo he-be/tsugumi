@@ -361,7 +361,7 @@ final class PrefillGroupedRoutedMoE {
     init(context: MetalContext) throws {
         self.batchedPhase1PSO = try context.pipeline("prefill_grouped_routed_moe_batched_phase1")
         self.batchedDownPSO = try context.pipeline("prefill_grouped_routed_moe_batched_down")
-        guard let streamedFn = context.library.makeFunction(name: "prefill_grouped_routed_moe_batched_phase1") else {
+        guard let streamedFn = try context.library.makeFunction(name: "prefill_grouped_routed_moe_batched_phase1") else {
             throw MetalError.missingFunction("prefill_grouped_routed_moe_batched_phase1")
         }
         self.streamedArgEncoder = streamedFn.makeArgumentEncoder(

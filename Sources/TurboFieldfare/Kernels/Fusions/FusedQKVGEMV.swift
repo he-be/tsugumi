@@ -16,7 +16,10 @@ final class FusedQKVGEMV {
         Shape(qRows: 8192, kvRows: 1024, n: 2816),
     ]
 
+    private let affineGroupSize: Int
+
     init(context: MetalContext) throws {
+        self.affineGroupSize = context.affineGroupSize
         self.pso = try context.pipeline("dequant_int4_qkv_gemv_simd",
                                         constants: [],
                                         maxTotalThreadsPerThreadgroup: 512)
@@ -52,8 +55,8 @@ final class FusedQKVGEMV {
                        qRows: UInt32,
                        kvRows: UInt32,
                        n: UInt32) {
-        precondition(n % UInt32(Quantization.groupSize) == 0,
-                     "N must be a multiple of \(Quantization.groupSize)")
+        precondition(n % UInt32(affineGroupSize) == 0,
+                     "N must be a multiple of \(affineGroupSize)")
         precondition(qWeightsOffset % 2 == 0 &&
                      kWeightsOffset % 2 == 0 &&
                      vWeightsOffset % 2 == 0,

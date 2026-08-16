@@ -2,7 +2,7 @@ import Metal
 
 /// MLX-affine INT4 matrix-vector multiplication.
 /// Eight SIMD groups process eight output rows per threadgroup.
-final class DequantInt4GEMV {
+package final class DequantInt4GEMV {
     private struct Shape: Hashable {
         var m: UInt32
         var n: UInt32
@@ -21,7 +21,10 @@ final class DequantInt4GEMV {
     private let pipeline: MTLComputePipelineState
     private let specializedPipelines: [Shape: MTLComputePipelineState]
 
-    init(context: MetalContext) throws {
+    private let affineGroupSize: Int
+
+    package init(context: MetalContext) throws {
+        self.affineGroupSize = context.affineGroupSize
         self.pipeline = try context.pipeline(
             "dequant_int4_gemv_simd",
             constants: [],
@@ -41,7 +44,7 @@ final class DequantInt4GEMV {
         self.specializedPipelines = specializedPipelines
     }
 
-    func encode(commandBuffer: MTLCommandBuffer,
+    package func encode(commandBuffer: MTLCommandBuffer,
                 weights: MTLBuffer,
                 weightsOffset: Int = 0,
                 scales: MTLBuffer,
@@ -54,8 +57,8 @@ final class DequantInt4GEMV {
                 yOffset: Int = 0,
                 m: UInt32,
                 n: UInt32) {
-        precondition(n % UInt32(Quantization.groupSize) == 0,
-                     "N must be a multiple of \(Quantization.groupSize)")
+        precondition(n % UInt32(affineGroupSize) == 0,
+                     "N must be a multiple of \(affineGroupSize)")
         // The kernel reads packed weights through a `ushort*`; the repacker
         // guarantees two-byte sub-tensor alignment but not four-byte alignment.
         precondition(weightsOffset % 2 == 0,
