@@ -1,10 +1,11 @@
 # 調査: prefill (pp) はどこまで行けるか — SSD か実装か
 
 作成: 2026-08-16
-更新: 2026-08-16 (Gate 1 と Gate 2 の一部を実装、§7)
+更新: 2026-08-16 (attn バケットの分離計測と full attention の置き換え、§7-4 - §7-6)
 目標: **300 pp tok/s**。表記は PLAN.md に合わせる: **実測** / **導出** / **未確認**
 
 **現在地: 1973 トークンで 78.5 pp (出荷既定)。調査開始時は 37.2。**
+**2478 トークンでは 70.2 → 91.1 pp (§7-5、作業ツリーに未コミット、数値検証が残っている)。**
 何をしたかは §7。以下 §1-§6 は調査時点の記録で、数字はそのとき (チャンク上限 128、
 カーネル変更前) のもの。
 
@@ -345,21 +346,132 @@ moe     6.8s (28%)
 full 層用の `attention_prefill_full_tensorops_2d_validity_v2` が既にその形なので、
 それを headDim 256 + リング + スライディング窓に一般化するのが素直。
 
-### 7-4. 次の的 (GPU 24.1 s の内訳から)
+> **この段落は §7-4 の分離計測で否定された。**13.9 s の内訳を取ると
+> attention 本体は 2.0 s しかなく、その大半は SWA ではなく **full 5 層**だった。
+> tensorops 経路は qblock 経路より演算あたり 8 倍遅い。一般化する方向は逆で、
+> **qblock を headDim 512 に広げるのが正しかった** (§7-5)。
+> SWA 側の縮約も律速ではなく、帯域だった (§7-6)。
 
-| 的 | 現状 | 手段 |
-| --- | ---: | --- |
-| attention (射影込み) | 13.9 s | `simdgroup_matrix` 化。射影の分離計測がまだ |
-| routed MoE | 6.8 s | expert 単位 GEMM (§6 Gate 3、手つかず) |
-| 共有 MLP | 3.3 s | `MPPPrefillInt4QMM` の group-32 対応 (§6 Gate 4) |
+### 7-4. attn バケットの分離計測 (2026-08-16、**実測**)
 
-300 tok/s は 1973 トークンを 6.58 s。まだ 3.8 倍ある。
+§7-3 が「射影と attention 本体の比率が分からない」で止まっていたので、
+`TF_PREFILL_GPU_PROFILE=2` を足した。層ごとに 1 本だったコマンドバッファを
+グループごとに切り、それぞれの `gpuStartTime`/`gpuEndTime` を足す
+(`PrefillGPUProfile.Detail`、`RealForwardRunner.cutProfiled`)。
+
+**計装のコストは +1.3%** (attn 19.90 s → 20.15 s、**実測**)。
+コマンドバッファが 1 チャンクあたり 30 本から 240 本に増えるが、
+その程度で済むので分離計測はほぼ無害に取れる。
+
+以下このセクションの数字は**プロンプト 2478 トークン**のもの
+(`bench/l.json` が §7-1 当時の 1973 から変わっている)。
+同じ設定の基準値は **pp 70.2** (prefill 35.29 s、48 スロット / chunk 2048 /
+`--max-context 4096` / QAT)。§7-1 の 78.5 は 1973 トークンでの値で、
+長いほど attention の二次項が効くので直接は比べられない。
+
+| グループ | GPU | attn 内の比 | 演算量 (**導出**) | 実効 |
+| --- | ---: | ---: | ---: | ---: |
+| q/k/v 射影 | **6.36 s** | 32% | — | — |
+| o 射影 | **3.06 s** | 15% | — | — |
+| (射影 合計) | 9.42 s | 47% | 5.57 TFLOP | **0.59 TFLOP/s** |
+| **attention 本体 / full 5 層** | **8.31 s** | **41%** | 0.50 TFLOP | **0.06 TFLOP/s** |
+| attention 本体 / SWA 25 層 | 1.72 s | 9% | 0.82 TFLOP | 0.48 TFLOP/s |
+| rope + per-head norm | 0.27 s | 1% | | |
+| post-attention + router | 0.42 s | 2% | | |
+| embed / input norm / KV copy | 0.02 s | 0% | | |
+| **合計** | **20.15 s** | | | |
+
+**§7-3 の見立ては逆だった。**
+「SWA 25 層が遅く、full 5 層は tensorops で速い」と思っていたが、
+実際は **full 5 層が 8.31 s で、SWA 25 層は 1.72 s**。
+層あたりにすると full は 1.66 s、SWA は 0.069 s で **24 倍**の開きがある。
+演算量あたりでも full の tensorops 経路は SWA の qblock 経路の **8 分の 1**。
+§7-3 が次の的に挙げた「`attention_prefill_full_tensorops_2d_validity_v2` を
+headDim 256 に一般化する」は、**いちばん遅いカーネルを広げる作業**だった。
+
+`attention_prefill_full_tensorops_2d_validity_v2` が遅い理由 (**導出**、コード読み):
+
+- 1 threadgroup = **1 クエリ** × 8 ヘッド。クエリ間で K/V を共有しない
+  (§4 で `attention_prefill_causal_tiled` を批判したのと同じ形)。
+- キータイル 64 本ごとの softmax を `if (lid < 8)` で **128 スレッド中 8 スレッド**が
+  直列に回す (最大取り + exp の 2 周)。tensor op 本体より
+  こちらがクリティカルパスに乗っている。
+
+### 7-5. full attention を qblock に置き換えた (**実測**)
+
+`attention_prefill_causal_qblock_impl` はテンプレート
+`<kElemsPerLane, kQBlock>` なので、headDim 512 は
+`<16u, 2u>` を足すだけ (`attention_prefill_causal_qblock_d512`)。
+full 層は窓なし・リングなしだが、`slidingWindow` に
+`startPosition + t` が入るので既存のコードがそのまま全可視になる。
+`kQBlock` を 2 にしたのはレジスタで、`q_reg` と `acc` が
+`kQBlock × kElemsPerLane` 本ずつ要るため 4 だと 128 本を超えて溢れる。
+
+| | 変更前 | 変更後 |
+| --- | ---: | ---: |
+| attention 本体 / full 5 層 | 8.31 s | **0.30 s** (**28 分の 1**) |
+| attn バケット合計 | 20.15 s | **12.03 s** |
+| GPU 合計 | 32.94 s | **24.82 s** |
+| prefill (壁時計) | 35.41 s | **27.20 s** |
+| **pp (2478 トークン)** | **70.2** | **91.1** |
+
+**+30%。**カーネル 1 本 (テンプレート実体化 20 行) とディスパッチ表の差し替えだけ。
+
+置き換え後の内訳 (**実測**):
+
+```
+qkv=6.31s(52%) oproj=3.06s(25%) attn.swa=1.72s(14%) attn.full=0.30s(3%)
+post=0.42s(3%) rope=0.20s(2%) norm+kvcopy+embed=0.02s
+                                          attn 合計 12.03s
+shared=4.15s  moe=8.58s  tail=0.05s       GPU 合計 24.82s / 壁時計 27.20s = 91%
+```
+
+**検証の状態**: `RuntimePrefillAttentionPath` に `.causalQBlock` を足して既定にした。
+`.fullTensorOps2DValidityV2` は残してあるので A/B は取れる。
+`PrefillAttentionTests` の headDim 512 のケース (`full-origin` /
+`full-short-gqa` / `full-production-gqa` /
+`prefillAttentionProductionDimsBoundedVisibility`) は既定 `.causalTiled` 経由で
+**新カーネルに当たるようになった**ので CPU 参照との突き合わせはそこで効く。
+ブロック境界 (kQBlock 2 / threadgroup 16) を跨ぐケースを
+`qBlockFullAttentionMatchesReferenceAcrossBlockBoundaries` として追加した。
+**ただしこの環境ではテストを実行できていない** —
+Xcode が入っておらず CommandLineTools だけなので `Testing` モジュールが解決できず、
+`Scripts/test.sh` が (触っていない Repack / Format ターゲットも含めて) 落ちる。
+**greedy 出力の一致もまだ取っていない。**再開時の最初の作業はこの 2 つ。
+
+### 7-6. 次の的 (GPU 24.8 s の内訳から)
+
+| 的 | 現状 | 実効 | 手段 |
+| --- | ---: | ---: | --- |
+| **q/k/v/o 射影** | **9.37 s** | 0.59 TFLOP/s | §6 Gate 4。`MPPPrefillInt4QMM` が group-32 で死んでいる |
+| routed MoE | 8.58 s | | §6 Gate 3 (expert 単位 GEMM、手つかず) |
+| 共有 MLP | 4.15 s | | 同じく Gate 4 |
+| attention 本体 (SWA) | 1.72 s | 0.48 TFLOP/s | **帯域律速。優先度は低い** |
+| attention 本体 (full) | 0.30 s | 1.7 TFLOP/s | 済み |
+
+**射影と MoE と共有 MLP で GPU の 89%。**つまり残りは全部
+「int4 GEMM を `simdgroup_matrix` で書く」という一つの作業に集約された。
+attention は 2.0 s / 24.8 s = 8% まで落ちたので、もう主戦場ではない。
+
+SWA の 1.72 s は帯域で説明がつく (**導出**): qblock は 4 クエリごとに
+窓を読み直すので、K+V の実読み出しは 2478 トークンで **約 210 GB**、
+1.72 s なら **122 GB/s** = DRAM 150 GB/s の 81%。
+これ以上は「1 回読んだ K/V をもっと多くのクエリで使う」しかなく、
+`kQBlock` を上げるか threadgroup メモリで共有するかだが、
+取れるのは最大 1.7 s なので後回しでよい。
+
+300 tok/s は 2478 トークンを 8.26 s。GPU 24.8 s に対してまだ 3.0 倍。
 
 ---
 
 ## 8. 未確認
 
-- attention 13.9 s のうち、attention 本体と q/k/v/o 射影の比率 (分離計測していない)
+- **`attention_prefill_causal_qblock_d512` の数値検証** (§7-5)。
+  テストが実行できておらず、greedy 一致も未取得。**再開時の最初の作業**
+- full 層の attention 本体が 0.30 s = 1.7 TFLOP/s と、SWA (0.48) より
+  演算あたり速い理由。1 層の K+V が 2478 トークンで 10 MB しかなく
+  丸ごとキャッシュに載っている、という仮説を立てただけ
+- `kQBlock` を 2 より上げたときの full 層の挙動 (レジスタが溢れる見込み、未測定)
 - `U(2048) ≈ 110` は chunk 1024 (97.9) からの外挿
 - chunk 512 で 1 回だけ観測した 30.6 s の外れ値 (peak 11.4 GB、スワップの疑い)
 - 現行 `prefill_dequant_int4_qmm_f16_block` が per-token GEMV とほぼ同速だった理由

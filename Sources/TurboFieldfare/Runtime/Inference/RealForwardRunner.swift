@@ -794,6 +794,28 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         guard var cb = ctx.queue.makeCommandBuffer() else {
             throw ModelError.residentBufferWrapFailed
         }
+
+        /// Detail mode only: close `cb` and open a fresh one, so the work
+        /// encoded since the previous cut gets its own GPU timestamps. The
+        /// segments are committed as they are cut and collected at the end of
+        /// the layer, so nothing blocks the CPU mid-layer.
+        var profiledSegments: [(PrefillGPUProfile.Detail, MTLCommandBuffer)] = []
+        func cutProfiled(_ detail: PrefillGPUProfile.Detail) throws {
+            guard PrefillGPUProfile.isDetailed else { return }
+            cb.commit()
+            profiledSegments.append((detail, cb))
+            guard let next = ctx.queue.makeCommandBuffer() else {
+                throw ModelError.residentBufferWrapFailed
+            }
+            cb = next
+        }
+        func flushProfiledSegments() throws {
+            for (detail, segment) in profiledSegments {
+                try waitProfiled(.attention, segment, detail: detail)
+            }
+            profiledSegments.removeAll(keepingCapacity: true)
+        }
+
         prefillEmbed.encode(commandBuffer: cb,
                             table: emb.buffer,
                             tableOffset: Int(emb.offset),
@@ -806,6 +828,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                             t: UInt32(t),
                             d: UInt32(D),
                             outScale: sqrtHidden)
+        try cutProfiled(.embed)
 
         for L in 0..<cfg.numLayers {
             model.beginOpeningRoutedExpertStreamer(layer: L)
@@ -824,6 +847,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                    t: UInt32(t),
                                    d: UInt32(D),
                                    eps: eps)
+            try cutProfiled(.norm)
             encodeInt4Projection(commandBuffer: cb,
                                  family: .q,
                                  weights: views.q,
@@ -854,6 +878,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                  tokenCount: t,
                                  xStrideElements: D,
                                  yStrideElements: kvDim)
+            try cutProfiled(.qkvProjection)
 
             let rotatedPairs = isFull
                 ? UInt32(Double(cfg.fullHeadDim) * cfg.partialRotaryFactor / 2.0)
@@ -876,6 +901,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                        theta: isFull ? Float(cfg.fullRopeTheta) : Float(cfg.ropeTheta),
                                        rotatedPairs: rotatedPairs,
                                        eps: eps)
+            try cutProfiled(.rope)
 
             if let kv {
                 let bytes = t * kvDim * MemoryLayout<Float16>.stride
@@ -888,6 +914,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                          valueSource: scratch.vStage,
                                          bytesPerToken: bytes / t)
             }
+            try cutProfiled(.kvCopy)
             let params = PrefillAttentionParams(
                     startPosition: UInt32(startPosition),
                     queryCount: UInt32(t),
@@ -919,6 +946,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                 throw PrefillError.chunkedUnsupported(
                     "chunked prefill attention requires FP16 KV")
             }
+            try cutProfiled(isFull ? .attentionFull : .attentionSWA)
             encodeInt4Projection(commandBuffer: cb,
                                      family: .o,
                                      weights: views.o,
@@ -929,6 +957,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                      tokenCount: t,
                                      xStrideElements: qDim,
                                      yStrideElements: D)
+            try cutProfiled(.outputProjection)
             prefillPostAttention.encode(commandBuffer: cb,
                                             hidden: scratch.hidden,
                                             attn: scratch.h1,
@@ -988,7 +1017,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             }
 
                     cb.commit()
-                    try waitProfiled(.attention, cb)
+                    try waitProfiled(.attention, cb, detail: .post)
+                    try flushProfiledSegments()
 
                     let routeCount = t * cfg.topKExperts
                     let idPtr = scratch.routeIDs.contents()
@@ -1820,9 +1850,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// stage. Off unless `TF_PREFILL_GPU_PROFILE=1`, and the accounting is
     /// GPU-side, so a stage that overlaps expert I/O shows only its GPU cost.
     private func waitProfiled(_ stage: PrefillGPUProfile.Stage,
-                              _ cb: MTLCommandBuffer) throws {
+                              _ cb: MTLCommandBuffer,
+                              detail: PrefillGPUProfile.Detail? = nil) throws {
         try waitForCompletion(cb)
-        prefillGPUProfile.record(stage, cb)
+        prefillGPUProfile.record(stage, cb, detail: detail)
     }
 
     private nonisolated func waitUntilCompleted(_ cb: MTLCommandBuffer) {

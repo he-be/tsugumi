@@ -147,6 +147,26 @@ import TurboFieldfareValidationSupport
         try Self.runAndCompare(fixture, label: "qblock-chunk-\(chunk)")
     }
 
+    /// headDim 512 dispatches `attention_prefill_causal_qblock_d512`, the full
+    /// attention layers. One simdgroup carries two queries there and a
+    /// threadgroup carries 16, and those layers see the whole prefix rather
+    /// than a window, so the key loop runs from zero. Same boundary straddling
+    /// as the 256 case, plus a start offset that puts the block's queries on
+    /// either side of a chunk edge.
+    @Test(arguments: [1, 2, 3, 15, 16, 17, 33])
+    func qBlockFullAttentionMatchesReferenceAcrossBlockBoundaries(_ chunk: Int) throws {
+        for start in [0, 1_021] {
+            let fixture = Self.makeFixture(start: start,
+                                           chunk: chunk,
+                                           window: 0,
+                                           seed: 0xA970 + UInt64(chunk),
+                                           headDim: 512,
+                                           qHeads: 16,
+                                           kvHeads: 2)
+            try Self.runAndCompare(fixture, label: "qblock512-start\(start)-chunk\(chunk)")
+        }
+    }
+
     /// The same kernel again, this time reading a wrapped FP16 ring: the
     /// sliding-window layers are the ones that run on a ring in production, and
     /// the ring modulus is a function constant, so it is a separate pipeline.

@@ -10,6 +10,11 @@ public enum RuntimePrefillPolicy: String, Codable, Sendable {
 
 public enum RuntimePrefillAttentionPath: String, Codable, Sendable {
     case causalTiled = "causal-tiled"
+    /// The query-blocked kernel wherever a specialisation exists, which is both
+    /// head dimensions the pinned model uses. Measured against the TensorOps
+    /// path on the full layers in `docs/investigations/PREFILL_THROUGHPUT.md`
+    /// §7-6.
+    case causalQBlock = "causal-qblock"
     case fullTensorOps2DPreferred = "full-tensorops-2d-preferred"
     case fullTensorOps2DValidityV2 = "full-tensorops-2d-validity-v2"
 }
@@ -71,7 +76,7 @@ public struct RuntimeConfiguration: Sendable, Equatable {
                 rdadvisePolicy: RDAdvicePolicyMode = .off,
                 prefillEnabled: Bool = true,
                 prefillChunkTokens: Int = 2048,
-                prefillAttentionPath: RuntimePrefillAttentionPath = .fullTensorOps2DPreferred,
+                prefillAttentionPath: RuntimePrefillAttentionPath = .causalQBlock,
                 forceLogitsHead: Bool = false) {
         precondition(Self.allowedExpertCacheSlots.contains(expertCacheSlots),
                      "unsupported expert-cache slot count")

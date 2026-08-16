@@ -41,12 +41,22 @@ struct PrefillAttentionParams: Sendable, Equatable {
 
 
 final class PrefillAttention {
-    /// Queries one simdgroup of `attention_prefill_causal_qblock_d256` owns, and
-    /// the head dimension it is specialised for. Both are compiled into the
-    /// kernel, so a shape that does not match falls back to the tiled kernel.
-    private static let qBlockQueriesPerSimdgroup = 4
-    private static let qBlockHeadDim: UInt32 = 256
+    /// A compiled specialisation of the query-blocked kernel. The head
+    /// dimension and the queries per simdgroup are template arguments, so the
+    /// host has to dispatch the exact shape a kernel was built for; a head
+    /// dimension with no entry here falls back to the tiled kernel.
+    private struct QBlockSpecialisation {
+        let function: String
+        let queriesPerSimdgroup: Int
+    }
+
     private static let qBlockThreads = 256
+    private static let qBlockSpecialisations: [UInt32: QBlockSpecialisation] = [
+        256: QBlockSpecialisation(function: "attention_prefill_causal_qblock_d256",
+                                  queriesPerSimdgroup: 4),
+        512: QBlockSpecialisation(function: "attention_prefill_causal_qblock_d512",
+                                  queriesPerSimdgroup: 2),
+    ]
 
     private let context: MetalContext
     private let psoCausalTiled: MTLComputePipelineState
@@ -85,16 +95,19 @@ final class PrefillAttention {
         enum Variant { case tensorOps, qBlock, tiled }
         let variant: Variant
         let pipeline: MTLComputePipelineState
+        var qBlock: QBlockSpecialisation?
         if let tensorOpsPipeline {
             variant = .tensorOps
             pipeline = tensorOpsPipeline
         } else if tensorOpsShape && path == .fullTensorOps2DValidityV2 {
             preconditionFailure(
                 "TensorOps 2D prefill attention requires Apple10 MPP tensor support")
-        } else if params.headDim == Self.qBlockHeadDim {
-            // The sliding-window layers, which is where the window re-reads are.
+        } else if let specialisation = Self.qBlockSpecialisations[params.headDim] {
+            // Both attention kinds: 256 is the sliding-window layers, 512 the
+            // full ones.
             variant = .qBlock
-            pipeline = qBlockPipeline(kvRingCapacity: kvRingCapacity)
+            qBlock = specialisation
+            pipeline = qBlockPipeline(specialisation, kvRingCapacity: kvRingCapacity)
         } else {
             // Explicit mode also falls back for incompatible shapes. Benchmark
             // fixtures must use 512/16/2 to prove that TensorOps ran.
@@ -127,9 +140,9 @@ final class PrefillAttention {
                              height: Int(params.numQHeads) / 8,
                              depth: 1)
         case .qBlock:
-            // One simdgroup per `qBlockQueriesPerSimdgroup` queries, and the
-            // kernel derives the same figure from `simdgroups_per_threadgroup`.
-            let queriesPerGroup = Self.qBlockQueriesPerSimdgroup * (threadCount / threadWidth)
+            // One simdgroup per `queriesPerSimdgroup` queries, and the kernel
+            // derives the same figure from `simdgroups_per_threadgroup`.
+            let queriesPerGroup = (qBlock?.queriesPerSimdgroup ?? 1) * (threadCount / threadWidth)
             groups = MTLSize(
                 width: (Int(params.queryCount) + queriesPerGroup - 1) / queriesPerGroup,
                 height: Int(params.numQHeads),
@@ -179,13 +192,13 @@ final class PrefillAttention {
         }
     }
 
-    private func qBlockPipeline(kvRingCapacity: UInt32) -> MTLComputePipelineState {
+    private func qBlockPipeline(_ specialisation: QBlockSpecialisation,
+                                kvRingCapacity: UInt32) -> MTLComputePipelineState {
         let constants = kvRingCapacity > 0
             ? [MetalFunctionConstant(index: 76, value: .uint32(kvRingCapacity))]
             : []
         do {
-            return try context.pipeline("attention_prefill_causal_qblock_d256",
-                                        constants: constants)
+            return try context.pipeline(specialisation.function, constants: constants)
         } catch {
             preconditionFailure("failed to build query-blocked prefill attention pipeline: \(error)")
         }

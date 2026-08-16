@@ -1097,6 +1097,29 @@ kernel void attention_prefill_causal_qblock_d256(
         Q, K, V, O, p, tg, lane, simd_group, simdgroups);
 }
 
+// Same kernel at headDim 512, which is the full-attention layers.
+//
+// Those layers have no window, so the key loop is the whole prefix and the
+// register cost of a query block is what limits it: `q_reg` and `acc` are both
+// `kQBlock * kElemsPerLane` floats per lane, and kElemsPerLane doubles with the
+// head dimension. Two queries per simdgroup keeps that at 64 registers plus the
+// key/value pair, where four would be 128 and spill.
+[[kernel, max_total_threads_per_threadgroup(256)]]
+kernel void attention_prefill_causal_qblock_d512(
+    device const half* Q [[buffer(0)]],
+    device const half* K [[buffer(1)]],
+    device const half* V [[buffer(2)]],
+    device half* O [[buffer(3)]],
+    constant PrefillAttentionParams& p [[buffer(4)]],
+    uint3 tg [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]],
+    uint simdgroups [[simdgroups_per_threadgroup]]
+) {
+    attention_prefill_causal_qblock_impl<16u, 2u>(
+        Q, K, V, O, p, tg, lane, simd_group, simdgroups);
+}
+
 #if defined(__HAVE_TENSOR__)
 
 constant constexpr int kPrefillTensorOpsOutputs = 8;
