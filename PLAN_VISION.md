@@ -33,6 +33,224 @@ M3 Pro 18GB / macOS 15.7.5 / `macos15-support` ブランチ
 
 ---
 
+## 0-A. 本 PLAN 作成後に変わった前提 (2026-08-17)
+
+本 PLAN は `docs/investigations/PREFILL_THROUGHPUT.md` の **§7-1 時点** (78.5 pp) を
+前提に書いた。その後 §7-5 / §7-8 / §7-9 が入り、**prefill の実装は別物になった**
+(2478 トークンで **231 pp**、GPU 8.11 s)。本 PLAN の設計判断のうち
+**4 つが陳腐化し、1 つは追い風になった**。以下が正、本文の該当箇所より優先する。
+
+| # | 本文の記述 | 現状 (**実測**) | 影響 |
+| --- | --- | --- | --- |
+| 1 | §4-5-a「`maxChunkTokens = 128`、画像スパン 280 は**必ず割れる**」 | 上限 2048、**既定も 2048** | **問題そのものが消えた。**スパン ≤ 280 は既定チャンクに丸ごと収まる。スクラッチ +20 MB も KV +0.03 GB も**不要**。ただし「境界に跨がらせない」責任はプランナに残る (§0-A-1) |
+| 2 | §4-4 #2「`prefill_dequant_int4_qmm_f16_block` の bf16 版」 | その scalar QMM は**もう主経路ではない**。`prefill_int4_qmm_simdgroup_f16` (64×64 タイル / `simdgroup_matrix` / 4 simdgroup) が既定で **3.53 TFLOP/s** | 写す雛形が変わる。**bf16 版は int4 版より簡単** — dequant もグループも要らず、`Bs` を bf16→half で埋めるだけ (§0-A-2) |
+| 3 | §3-2「S=280 で 3〜10 s/画像」「実効 0.41 TFLOP/s」 | 射影の実効は **3.53 TFLOP/s**、MoE で 2.17 | 3.54 TFLOP ÷ 3.5 TFLOP/s ≈ **1 s/画像** (**導出**)。§7 ゲート 4 の「10 s を超えたら 140 に落とす」はほぼ発火しない見込み |
+| 4 | §4-4 #5 / §4-5-b「`attention_prefill_causal_tiled` から派生」「`last_exclusive` に手を入れる」 | 既定は `attention_prefill_causal_qblock_d256` / `_d512` (`RuntimePrefillAttentionPath.causalQBlock`)。tiled は**フォールバック**に降格 | 双方向マスクは **qblock の `window_last[j]` / `window_first[j]`** に入れる。tiled 側にも同じ意味で入れる (フォールバックが黙って causal に落ちるのを防ぐ、§0-A-3) |
+| 5 | §8「V3 の bf16 QMM 実測が 0.1 TFLOP/s 台なら中止」 | その水準は scalar QMM 時代の値 | 中止線を **1.0 TFLOP/s** に引き直す (§0-A-4) |
+
+### 0-A-1. チャンク境界 — 「広げる」から「割らせない」だけに縮んだ
+
+既定 2048 ≥ 280 なので、`PrefillChunkPlanner.spans` に画像スパンを渡し、
+**スパンを跨ぐ境界を作らない**ようにするだけでよい。却下案だった
+「`allowedPrefillChunkTokens` を太らせる」も、採用案だった
+「スクラッチを max(chunkTokens, 280) に広げる」も**どちらも不要**。
+2048 トークンのチャンクの中に 280 のスパンが 1 つ入るだけなので、
+プランナは「境界がスパン内部に落ちるなら境界をスパン先頭まで前倒しする」で足りる。
+スクラッチも KV リングも**現行のまま 1 バイトも増えない**。
+
+> 例外: `--prefill-chunk-tokens 32/64/128` を明示指定した実行では
+> スパン (最大 280) がチャンク幅を超える。この場合は
+> **そのチャンクだけスパン長まで広げる**か、明示的にエラーにする。
+> V5 で決める。既定経路には影響しない。
+
+### 0-A-2. bf16 タイル GEMM は int4 版より簡単
+
+`prefill_int4_qmm_simdgroup_f16` の K ループは
+「重み 32×64 を threadgroup に FP16 で dequant して置く」ところが本体で、
+bf16 重みならその dequant が**単なる型変換**になる。
+scale/bias の索き (`(k0 + kk) / kPrefillGroupSize`) も、group 32/64 の
+両対応も、**まるごと消える**。§4-4 #2 が「group 概念に依存しない」と
+書いていた性質は、int4 版が既に獲得したので**差分がさらに小さい**。
+
+なお §7-8 の教訓として、**この経路は fp16 で重みを持つので上流と bit 一致しない**
+(重み 1 個につき丸めが 1 回増える)。vision は元から前処理で一致しないので
+新しい問題ではないが、§6-1 層 B の閾値はこれを織り込む。
+
+### 0-A-3. 双方向マスクの実装位置
+
+`attention_prefill_causal_qblock_impl` はクエリ `j` ごとに
+`window_first[j]` / `window_last[j]` を持ち、キーループはその和集合
+(`block_first`..`block_last`) を回して各クエリで範囲外を `continue` する。
+**画像スパンはこの 2 つの配列を書き換えるだけで表現できる** —
+スパン内のクエリは `window_last[j] = min(kvValidCount, spanEnd)`。
+`block_last` は自動的に広がるので、キーループの構造には手を入れない。
+
+§2-7 の「スパン ≤ 280 < window 1024 なので `first` の緩和は不要」は
+qblock でもそのまま成立する (**導出**、V4 で参照比較により裏を取る)。
+
+### 0-A-4. 追い風: TTFT の見通し
+
+§3-2 の 3 つの対策のうち **2 (bf16 GEMM のタイル化) は既に済んだ資産の流用**になり、
+**3 (tower をチャンクループの外に出す) は元から設計に入っている**。
+残る 1 (`--image-tokens`) は出すが、既定 280 を下げる判断は**発火しない見込み**。
+§7 ゲート 4 の「実測して記録する」は変えない — 見込みは見込みでしかない。
+
+### 0-A-5. テキスト回帰のベースラインが動いた
+
+§6-4 は `RESULTS_QAT.md` の QAT ベースラインと比べると書いてあるが、
+そのベースライン (37.2 pp) は **231 pp** に置き換わっている。
+V5 / V6 のテキスト回帰は **`PREFILL_THROUGHPUT.md` §7-9 の 231 pp / GPU 8.11 s /
+peak 6.64 GB** に対して測る。decode 側 (`bench.sh ja`) は QAT ベースラインのまま。
+
+---
+
+## 0-B. V0 完了 (2026-08-17、**実測**)
+
+§5-V0 の出口条件を満たした。参照系は動いており、V1 以降に進んでよい。
+
+| 成果物 | 実体 |
+| --- | --- |
+| `scratch/vision-venv/` | uv + Python 3.12.11 / torch 2.13.0 (CPU) / **transformers 5.6.2** / torchvision 0.28.0 / pillow |
+| `scratch/vision-weights/vision.safetensors` | **356 テンソル / 1,145,588,832 B**。§1-1 の予測と**厳密一致**。payload SHA-256 `4b30208c77e9a5dd…` |
+| `scratch/vision-fixtures/` | 3 画像 × soft token {70, 280} = **6 ケース**、195 MB |
+| `Scripts/vision/fetch_vision_weights.py` | index SHA-256 / テンソル数 / バイト数 / 全 BF16 を**検査してから**書く。46 GB の shard 1 から 1.15 GB だけを 6 回の Range 要求で取る |
+| `Scripts/vision/make_test_images.py` | 合成画像 3 枚。写真ではなく**このリポジトリだけから再現できる**ことを優先した |
+| `Scripts/vision/dump_vision_fixtures.py` | 26B のテキスト側を**一度もロードせずに** tower + projector を組む (§5-V0 の想定どおり) |
+
+### 0-B-1. 参照は float32 で取った (**判断**)
+
+重みは bf16 だが、参照は float32 で回している。
+**参照は比較対象より精度が高くなければ意味がない** — bf16 参照だと
+参照自身の丸めが許容に混ざり、§6-1 層 B が検出したい写し間違いを隠す。
+
+### 0-B-2. 「280 は上限」が実測で確定した
+
+§2-1 の主張 (付録 A で調査資料を訂正した点) を、6 ケース全部が裏付けた。
+**どのケースも 280 にも 70 にもならない:**
+
+| 画像 | max_soft_tokens | patch 格子 | patch 数 | **soft token 数** |
+| --- | ---: | --- | ---: | ---: |
+| square-512 (512×512) | 70 | 24×24 | 576 | **64** |
+| square-512 | 280 | 48×48 | 2304 | **256** |
+| tall-480x1200 | 70 | 15×39 | 585 | **65** |
+| tall-480x1200 | 280 | 30×78 | 2340 | **260** |
+| wide-1024x768 (1024×768) | 70 | 27×21 | 567 | **63** |
+| wide-1024x768 | 280 | 57×42 | 2394 | **266** |
+
+> **本文 §2-1 の計算例は誤りだった。**「1024×768 → factor≈0.79 → 816×576 →
+> 51×36 patch = 1836 → 204 soft token」と書いたが、正しくは
+> factor = √(2520·16² / (1024·768)) = **0.9057**、912×672、**57×42 = 2394 patch、266 soft token**。
+> 「280 固定は誤り」という結論は変わらない (むしろ**強まった**) が、
+> 途中の数字は上の表で置き換える。
+
+### 0-B-3. fixture の形式
+
+Swift から読む素朴なバイナリ (`TFVFIX01` + dtype u32 + ndim u32 + dims u32[] + payload)。
+1 ケースにつき `pixel_values` / `position_ids` / `patch_embed` /
+`layer{0,13,26}` / `pooled` / `soft_tokens` の 8 本 + `manifest.json`。
+
+信号があることも確認した (§6-3 が要求する「参照側に信号があること」、**実測**):
+`layer26` の rms 74.3 が `pooled` で 1.21 に落ちる — `std_scale`/`std_bias` に
+よる標準化 (§2-5) が効いている証拠。NaN はどのテンソルにもない。
+`soft_tokens` の rms が **1.11** である点が §2-6 の罠を裏づける:
+テキスト埋め込みは √2816 = 53.1 倍されるので、
+**画像位置に同じスケールを掛けると 53 倍ずれる**。
+
+### 0-B-4. V0 で追加検証した本文の主張 (**実測**、上流ソースを直接読んだ)
+
+本 PLAN §2 は取得したソースの読解だった。今回ローカルに 5.6.2 が入ったので照合した。
+
+| 主張 | 判定 |
+| --- | --- |
+| §1-3 `vision_config` 全項目 | **一致** (config.json を再取得して照合) |
+| §1-3 `processor_config.json` (`do_normalize: false` 含む) | **一致** |
+| §2-1 前処理の式・patch 並び (行優先) ・patch 内 (py, px, c) | **一致** (`convert_image_to_patches` の `transpose(1,3,2,4,0)`) |
+| §2-2 patch embedder (`2(x-0.5)` → Linear → 位置テーブル 2 本の和) | **一致** |
+| §2-4 2D RoPE (spatial_dim 36、`inv_freq[j] = 100^(-2j/36)`、両次元同一) | **一致** (`compute_default_rope_parameters` に「両次元が同一周波数」と明記されている) |
+| §2-5 pooler (`(x/3) + (pw/3)·(y/3)` の並び → ×√1152 → 標準化) | **一致**。加えて**プーリングの累算は float32** で行われる (`hidden_states.float()`) |
+| §2-6 projector (no-scale RMSNorm → Linear) と soft token が √hidden を**受けない**こと | **一致** |
+| §2-7 双方向マスクが sliding 層のみ | **一致**。さらに `text_config.use_bidirectional_attention == "vision"` を確認 — この分岐に入ることが**設定で確定**した |
+| §4-6 `--image-tokens {70,140,280}` | 上流の `_SUPPORTED_SOFT_TOKENS` は **(70, 140, 280, 560, 1120)**。280 に絞るのは我々の選択であって上流の制約ではない (`processor_config` の既定が 280) |
+
+---
+
+## 0-C. V1 完了 (2026-08-17、**実測**)
+
+§5 の V1 (前処理 + トークン列、GPU なし) の出口条件を満たした。
+
+| 追加したもの | 中身 |
+| --- | --- |
+| `Sources/TurboFieldfare/Vision/VisionGeometry.swift` | `get_aspect_ratio_preserving_size` + patchify の移植。退化アスペクト比の救済分岐も含む |
+| `.../VisionImagePreprocessor.swift` | ImageIO で復号 → CGContext で目標サイズに縮小 → `/255` しつつ (py, px, c) 順に並べ替え → `[P, 768]` の fp16 |
+| `.../VisionPrompt.swift` | マーカー ID の解決、`<\|image\|>` → `boi + image×n + eoi` の展開、スパン算出、**メディアマーカーの拒否** |
+| `Sources/TurboFieldfareValidation/Support/Fixtures/VisionFixtures.swift` | fixture リーダ + **NaN-safe な `relativeError`** (§6-3)。V3/V4 の KernelCheck からも使う |
+| テスト 17 本 (4 スイート) | 下記 |
+
+`Scripts/test.sh`: **722 テスト / 131 スイート、12 issue**。
+内訳は `PREFILL_THROUGHPUT.md` §7-7 の陳腐化 5 件と**完全に同じで、新しい失敗はない**
+(705 → 722 は今回の +17)。
+
+### 0-C-1. 幾何は「一致」、画素は「近い」— 分けて測った
+
+前処理は上流とビット一致しない (§4-3) が、**整数の部分は一致する**。
+そこを混ぜないよう、テストを 2 本に割った。
+
+- **幾何は厳密一致**: 6 ケース全部で patch 格子 / patch 数 / soft token 数が
+  参照ダンプと**完全一致**。加えて「pooled セルはちょうど 9 patch を受ける」
+  「両辺が 48 の倍数」「patch 数 ≤ 予算」を 36 通りのアスペクト比で検査。
+- **画素は差を測る** (§6-1 層 C、**実測**、値域 [0,1] の平均絶対差):
+
+| ケース | 整列時 | **転置した対照** | 分離 |
+| --- | ---: | ---: | ---: |
+| square-512-s70 | 0.00329 | 0.2958 | 90× |
+| square-512-s280 | 0.00266 | 0.2681 | 101× |
+| tall-480x1200-s70 | 0.00811 | 0.3515 | 43× |
+| tall-480x1200-s280 | 0.00164 | 0.3536 | **216×** |
+| wide-1024x768-s70 | 0.01148 | 0.3532 | 31× |
+| wide-1024x768-s280 | 0.00159 | 0.3530 | **222×** |
+
+**CoreGraphics の縮小と torchvision の antialias bicubic の差は平均 0.0016〜0.011。**
+テスト画像は高周波のリング模様を意図的に入れてある (リサイズが実際に効く条件) ので、
+写真ではこれより小さくなるはず (**未確認**)。
+
+> **対照を測ったことが本体。**§6-3 の「壊すと FAIL することを確認する」を
+> ここで先に一度やった: 同じ測り方で patch 格子を転置すると
+> **31〜222 倍**に跳ね、通ったばかりの閾値 0.05 を確実に超える。
+> 閾値 0.05 は「別のリサンプラは通すが、並びの間違いは通さない」ところに置いた。
+
+### 0-C-2. 塞いだ穴 — 画像なしの `<|image|>`
+
+`applyChatTemplate` / `encodeTextContinuation` が
+`<|image|>` `<|image>` `<image|>` `<|audio|>` `<|video|>` (と開閉の異形) を
+**エラーにする**ようになった (`VisionPromptAssembler.rejectMediaMarkers`)。
+
+これまでは特殊 ID が普通の埋め込みとして通り、**tower も走らないまま
+「見たかのような流暢な答え」が出ていた**。出力が壊れて見えないので
+警告では足りず、エラーにするしかない。
+マーカーは長い順に走査するので、`<|image|>` が `<|image>` として誤報されない
+(これもテストで固定した)。
+
+`ServerPromptCache.matchTextContinuation` は拒否を**キャッシュミス扱い**にする。
+ここで投げると「キャッシュの問題」として報告されてしまうので、
+通常の encode 経路に型付きエラーを出させる。
+
+### 0-C-3. 新規事実: 双方向グループは boi/eoi を**含まない** (**実測**)
+
+§2-7 / §4-5-b は「同グループ (= 同じ 1 枚の画像) のトークン同士」と書いていたが、
+その境界を詰めていなかった。上流を読んで確定した:
+
+```
+processing_utils.py:1665   mm_token_types[isin(input_ids, self.image_ids)] = 1
+processing_utils.py:596    self.image_ids = [image_token_id]        # ← 258880 だけ
+```
+
+つまり双方向になるのは **`<|image|>` × n の範囲だけ**で、
+**`<|image>` (255999) と `<image|>` (258882) は普通の causal トークン**。
+`VisionImageSpan.tokenOffset` を boi の**次**から始めているのはこのため。
+V5 のマスクもこの範囲で入れる。
+
+---
+
 ## 1. ソース側の事実確認 (**実測**、2026-08-16)
 
 ### 1-1. vision 重みの所在と内訳
@@ -272,6 +490,13 @@ soft token 数 S、patch 数 P = 9S。1 画像あたり:
 | 140 | 1260 | 13.4 G | 37.5 G | 7.3 G | 58.2 GFLOP | **1.57 TFLOP** |
 | 70 | 630 | 6.7 G | 18.7 G | 1.8 G | 27.3 GFLOP | **0.74 TFLOP** |
 
+> **この節の実効値は §0-A で置き換わった。**以下の 0.41 TFLOP/s は
+> `PREFILL_THROUGHPUT.md` §7-1 時点の値で、§7-8 の
+> `prefill_int4_qmm_simdgroup_f16` により**射影は 3.53 TFLOP/s** になっている。
+> 3.54 TFLOP ÷ 3.5 TFLOP/s ≈ **1 s/画像**が現在の見積り (**導出**、§0-A-4)。
+> 対策 2 は済んだ資産の流用、対策 3 は元から設計に入っているので、
+> 残る判断は対策 1 (`--image-tokens`) だけになった。
+
 比較対象 (**実測**、`RESULTS_QAT.md`): テキスト prefill は 510 tok / 10.0 s。
 active 4B とすると実効 **0.41 TFLOP/s**。ただしテキスト prefill は expert I/O を
 含む値なので、重みが常駐する tower はこれより効率が出るはず (**未確認**)。
@@ -392,10 +617,10 @@ CGImageSource で読み込み → sRGB / 8bit RGB に統一 (do_convert_rgb 相�
 | # | カーネル | 内容 | 既存との関係 |
 | --- | --- | --- | --- |
 | 1 | `vision_patch_embed_block` | `2(x-0.5)` → [768→1152] GEMM → 位置テーブル 2 本を加算 | 新規 (GEMM 部は #2 と共通化) |
-| 2 | `vision_bf16_qmm_f16_block` | `Y[t,n] = Σ_k W[n,k]·X[t,k]`、W は bf16、X/Y は fp16 | `prefill_dequant_int4_qmm_f16_block` の bf16 版。**group 概念がないので `TURBO_AFFINE_GROUP_SIZE` に一切依存しない** (Phase B の bf16 ルーターと同じ性質、**実測**) |
+| 2 | `vision_bf16_qmm_f16_block` | `Y[t,n] = Σ_k W[n,k]·X[t,k]`、W は bf16、X/Y は fp16 | ~~`prefill_dequant_int4_qmm_f16_block` の bf16 版~~ → **`prefill_int4_qmm_simdgroup_f16` の bf16 版** (§0-A-2)。64×64 タイル / 4 simdgroup / K タイル 32 の構成をそのまま使い、dequant を型変換に置き換える。**group 概念も scale/bias の索きも丸ごと消える** |
 | 3 | `vision_rmsnorm_bf16w_block` | 既存の `prefill_rmsnorm_bf16w_block` を D=1152 で呼ぶだけ | **流用 (新規カーネルなし)** |
 | 4 | `vision_qk_norm_rope2d_block` | head ごとの q/k RMSNorm(72) + v の no-scale RMSNorm + 2D RoPE | `prefill_rope_apply_neox_pair` を x/y で 2 回呼ぶ。既存 `PrefillQKVEpilogue` の構造を写す |
-| 5 | `vision_attention_full_tiled` | 非 causal・全可視・scale 1.0 の tiled attention | `attention_prefill_causal_tiled` から `first=0 / last=P` に固定した派生。オンライン softmax の骨格は同一 |
+| 5 | `vision_attention_full_tiled` | 非 causal・全可視・scale 1.0 の attention | ~~`attention_prefill_causal_tiled` から派生~~ → **`attention_prefill_causal_qblock_impl` から派生** (§0-A-3)。tiled は既にフォールバックに降格している。ただし **headDim 72 は `kElemsPerLane × 32` に載らない** (72 / 32 = 2.25) ので、レーン割り当てはそのままでは使えない。V3 で決める |
 | 6 | `vision_mlp_act_block` | `gelu_tanh(gate) * up` | 既存 `prefill` の gelu と同じ式 (`prefill.metal:27`) |
 | 7 | `vision_pool_project_block` | 3×3 平均 → ×sqrt(1152) → `(h-bias)*scale` → no-scale RMSNorm → [1152→2816] | 新規 (GEMM は #2) |
 
@@ -409,6 +634,14 @@ CGImageSource で読み込み → sRGB / 8bit RGB に統一 (do_convert_rgb 相�
 ### 4-5. ランタイム: prefill への統合 (**最大の設計課題**)
 
 #### (a) チャンク境界が画像スパンを割ってはいけない
+
+> **この項は §0-A-1 で置き換わった。**以下の「128 なので必ず割れる」は
+> `PREFILL_THROUGHPUT.md` §7-2 で上限も既定も **2048** になったため成立しない。
+> スパン (最大 280) は既定チャンクに丸ごと収まるので、
+> **スクラッチの拡張も KV リングの拡張も不要**。
+> 残る仕事は「境界をスパン内部に落とさない」だけで、
+> 却下案 (`allowedPrefillChunkTokens` を太らせる) の懸念も消えている。
+> 以下は記録として残す。
 
 `PrefillRuntimeConfig.maxChunkTokens = 128`、
 `RuntimeConfiguration.allowedPrefillChunkTokens = [32, 64, 128]`、
@@ -437,6 +670,14 @@ PrefillChunkPlanner.spans(tokenCount:startPosition:chunkTokens:imageSpans:)
   「vision を足したらテキストが遅くなった」は最悪の失敗の仕方。
 
 #### (b) 双方向マスク
+
+> **実装位置は §0-A-3 に移った。**既定経路は
+> `attention_prefill_causal_qblock_d256` / `_d512` なので、
+> 下の `last_exclusive` ではなく **`window_first[j]` / `window_last[j]`** を
+> 書き換える。`block_last` は自動的に広がるのでキーループの構造は不変。
+> tiled 側 (フォールバック) にも同じ意味で入れる — 入れないと
+> フォールバック時に黙って causal に落ちる。
+> **範囲は `<|image|>` × n だけ** (boi/eoi は含まない、§0-C-3)。
 
 `PrefillAttentionParams` に `visibleEndBuffer` (device `uint*`、長さ = queryCount) を足す:
 
@@ -520,8 +761,8 @@ tower は prefill の前段でしか動かないので、**§5-0 のテキスト
 
 | Phase | 内容 | 出口条件 |
 | --- | --- | --- |
-| **V0** | 参照系の固定 | 下記 §5-V0 |
-| **V1** | 前処理 + トークン列 (GPU なし) | 参照 fixture と patch 一致 (許容 §6-1)。画像なしの `<\|image\|>` が**エラーになる** |
+| **V0** | 参照系の固定 | 下記 §5-V0 — **完了 (2026-08-17、§0-B)** |
+| **V1** | 前処理 + トークン列 (GPU なし) | 参照 fixture と patch 一致 (許容 §6-1)。画像なしの `<\|image\|>` が**エラーになる** — **完了 (2026-08-17、§0-C)** |
 | **V2** | フォーマット拡張 + repacker | `--include-vision` で `.gturbo` が出来、**旧バイナリが flag で拒否する**。`--include-vision` なしの出力が現行とバイト一致 |
 | **V3** | tower カーネル + 単体検証 + **性能実測** | `TurboFieldfareKernelCheck` に vision ケース追加で全 PASS + **検出力の裏取り**。bf16 QMM の実測 GFLOP/s を記録 |
 | **V4** | tower 統合 (画像 → soft token) | 参照実装の `pooler_output` と相対誤差 ≤ §6-2 の閾値 |
@@ -608,6 +849,11 @@ vision でも同じ手続きを取る:
 TEMP=0 MAXNEW=384 ./bench.sh ja      # 3 回インターリーブ中央値、48 スロット
 ```
 
+> **prefill 側のベースラインは §0-A-5 で差し替わった。**pp は
+> `PREFILL_THROUGHPUT.md` §7-9 の **231 pp / GPU 8.11 s / peak 6.64 GB**
+> (2478 トークン) に対して測る。下の `bench.sh ja` は decode の話なので
+> QAT ベースラインのままでよい。
+
 `RESULTS_QAT.md` の QAT ベースラインに対し **±4% 以内** (実際には ±1% を期待。
 tower は off-path なので、動いたら実装ミス)。
 `load=` の秒数も見る — vision を別ファイルにした狙い (§4-1) が効いているかは
@@ -635,11 +881,14 @@ footer 全文 / プロトコルからの逸脱すべて)。
 
 ## 8. 中止条件
 
-- **V0 の参照ダンプが作れない** → 以降に進まない。目視ゲートで代替しない。
-  「カーネルのバグ」と「チェックポイントの素の性能」を分離する手段がないまま
-  進めるのは、PLAN_QAT §5-A を捨てるのと同じ。
-- **V3 の bf16 QMM 実測が 0.1 TFLOP/s 台** → S=280 で 30 s 級になる。
+- ~~**V0 の参照ダンプが作れない** → 以降に進まない~~ **解除 (2026-08-17)。**
+  §0-B で 6 ケース分の参照ダンプが取れた。「カーネルのバグ」と
+  「チェックポイントの素の性能」を分離する手段は確保できている。
+- **V3 の bf16 QMM 実測が ~~0.1~~ 1.0 TFLOP/s を下回る** → S=280 で 3.5 s 超になる。
   カーネル設計を戻すか、既定 soft token を落とすかを決めるまで V4 に進まない。
+  **線を 10 倍上げた**のは、比較対象が scalar QMM (0.59 TFLOP/s) ではなく
+  タイル化後の射影 (3.53 TFLOP/s) になったため (§0-A-5 ではなく §0-A の 5 行目)。
+  0.1 TFLOP/s 台は今や「何かを致命的に間違えた」水準で、中止条件として機能しない。
 - **V5 でテキストのみの回帰が ±4% を超える** → 設計を見直すまで先に進まない。
 - **双方向マスクが実装できない構成しか取れない** (チャンク上限を上げるとテキストが
   退行する等) → causal 近似で通すのではなく、いったん報告して判断を仰ぐ。

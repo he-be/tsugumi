@@ -54,7 +54,7 @@ struct ServerPromptCacheTests {
             Issue.record("expected text continuation hit")
             return
         }
-        let bridge = tokenizer.encodeTextContinuation(userContent: "second")
+        let bridge = try tokenizer.encodeTextContinuation(userContent: "second")
         #expect(cached == kvBacked.count)
         #expect(effective == kvBacked + bridge)
         #expect(!rendered.prefix(kvBacked.count).elementsEqual(kvBacked))

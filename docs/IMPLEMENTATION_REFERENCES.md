@@ -33,6 +33,36 @@ included for broader design context rather than a line-level claim.
   is the direct tokenizer dependency. TurboFieldfare adds bounded streaming
   detokenization around it.
 
+### Vision tower
+
+Pinned to `transformers` tag
+[`v5.6.2`](https://github.com/huggingface/transformers/tree/v5.6.2/src/transformers/models/gemma4),
+which is the version the reference fixtures are generated with. The vision path
+has more places to be silently wrong than the text path — patch ordering,
+two-dimensional RoPE, the pooling index, and which tensors receive the
+`sqrt(hidden)` scale — so each is pinned to a specific reader rather than to the
+model family in general.
+
+- [`modeling_gemma4.py`](https://github.com/huggingface/transformers/blob/v5.6.2/src/transformers/models/gemma4/modeling_gemma4.py)
+  defines the patch embedder, the 27 encoder layers, `apply_multidimensional_rope`,
+  the pooler, and `Gemma4MultimodalEmbedder`. It is also where the bidirectional
+  image mask is built, on the sliding-attention layers only.
+- [`image_processing_gemma4.py`](https://github.com/huggingface/transformers/blob/v5.6.2/src/transformers/models/gemma4/image_processing_gemma4.py)
+  and its
+  [PIL counterpart](https://github.com/huggingface/transformers/blob/v5.6.2/src/transformers/models/gemma4/image_processing_pil_gemma4.py)
+  define the resize, the patch layout, and the fact that a soft-token budget is
+  a ceiling rather than a per-image constant. The two disagree with each other
+  numerically, which is why TurboFieldfare does not chase bit-identity with
+  either.
+- [`processing_gemma4.py`](https://github.com/huggingface/transformers/blob/v5.6.2/src/transformers/models/gemma4/processing_gemma4.py)
+  defines the `boi + image * n + eoi` expansion.
+- [`google/gemma-4-26B-A4B-it-qat-q4_0-unquantized`](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-unquantized),
+  pinned at
+  [`f1e06dc5`](https://huggingface.co/google/gemma-4-26B-A4B-it-qat-q4_0-unquantized/tree/f1e06dc520982d9b9edd76859fdb7ab209449949),
+  is the source of the BF16 vision weights (356 tensors, 1,145,588,832 B). It is
+  the same checkpoint the QAT text weights derive from, which is what makes the
+  two safe to combine.
+
 ## Metal and kernels
 
 - Pinned [MLX Metal kernels](https://github.com/ml-explore/mlx/tree/4367c73b60541ddd5a266ce4644fd93d20223b6e/mlx/backend/metal/kernels)

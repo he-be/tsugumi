@@ -413,6 +413,14 @@ references lead to the supporting code and tests.
 - **Router and routed MoE.** [`MoE`](../Sources/TurboFieldfare/Kernels/MoE/MoE.swift)
   and [`moe.metal`](../Sources/TurboFieldfare/Metal/MoE/moe.metal) implement
   top-8 selection, cached-hit work, affine GeGLU, and weighted down reduction.
+- **Vision groundwork (not on any runtime path).** [`VisionGeometry`](../Sources/TurboFieldfare/Vision/VisionGeometry.swift)
+  ports the upstream aspect-ratio-preserving resize, so an image's soft-token
+  count is derived rather than assumed to be the 280 cap;
+  [`VisionImagePreprocessor`](../Sources/TurboFieldfare/Vision/VisionImagePreprocessor.swift)
+  decodes and patchifies; [`VisionPrompt`](../Sources/TurboFieldfare/Vision/VisionPrompt.swift)
+  expands image placeholders and rejects literal media markers.
+  [`VisionFixtures`](../Sources/TurboFieldfareValidation/Support/Fixtures/VisionFixtures.swift)
+  reads the reference dumps produced by [`Scripts/vision/`](../Scripts/vision/README.md).
 - **Metal library and fusions.** [`MetalContext`](../Sources/TurboFieldfare/Infrastructure/Metal/MetalContext.swift),
   [`tensorops.metal`](../Sources/TurboFieldfare/Metal/TensorCore/tensorops.metal),
   and [`fused.metal`](../Sources/TurboFieldfare/Metal/Fusions/fused.metal) show
@@ -438,8 +446,19 @@ references lead to the supporting code and tests.
 ## Scope and limitations
 
 The current runtime supports text-only generation with the pinned Gemma 4
-26B-A4B instruction checkpoint. The source model supports image input, but
-TurboFieldfare omits its vision tower.
+26B-A4B instruction checkpoint. The source model supports image input, and
+TurboFieldfare does not yet run its vision tower: **no image reaches the model
+today.** Work toward that is under way and tracked in
+[`PLAN_VISION.md`](../PLAN_VISION.md); phases V0 (reference fixtures) and V1
+(preprocessing and prompt assembly, both CPU-only) have landed, and the
+`Sources/TurboFieldfare/Vision/` directory is that groundwork rather than a
+working path. Nothing in it is wired into `RealForwardRunner`.
+
+One user-visible change did land with V1: the multimodal marker tokens
+(`<|image|>`, `<|audio|>`, `<|video|>`, and their openers and closers) are now
+**rejected** when they appear as literal text in a prompt. Previously those ids
+were embedded as ordinary tokens, which produced a fluent answer about an image
+nobody supplied.
 
 The Mac app offers 4K, 8K, 16K, 32K, and 64K context lengths. Published app
 and CLI acceptance evidence covers up to 4K. Vision input, training,

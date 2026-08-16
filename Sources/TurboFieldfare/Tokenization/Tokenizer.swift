@@ -37,7 +37,11 @@ public enum GFTokenizerError: Error, CustomStringConvertible {
 ///
 /// TurboFieldfare owns the minimal chat framing because the upstream
 /// `tokenizer_config.json` has no `chat_template`. Literal control-token text in
-/// user content is accepted as a trusted-input research-runtime limitation.
+/// user content is accepted as a trusted-input research-runtime limitation —
+/// with one carve-out: the multimodal markers (`<|image|>`, `<|audio|>`,
+/// `<|video|>`, and their openers/closers) are rejected outright, because those
+/// ids would otherwise be embedded as ordinary text and produce a fluent answer
+/// about an image nobody supplied (`VisionPromptAssembler.rejectMediaMarkers`).
 public struct GFTokenizer: @unchecked Sendable {
     public static let modelID = "google/gemma-4-26B-A4B-it"
     public static let chatTemplateIdentity = "gemma4-it-text-no-tools-v1"
@@ -329,6 +333,7 @@ public struct GFTokenizer: @unchecked Sendable {
                 guard let content = first.content else {
                     throw GFTokenizerError.invalidChatTemplate("text-only messages require content")
                 }
+                try VisionPromptAssembler.rejectMediaMarkers(in: content)
                 body = content.trimmingCharacters(in: .whitespacesAndNewlines)
                 rest = messages.dropFirst()
             }
@@ -339,6 +344,7 @@ public struct GFTokenizer: @unchecked Sendable {
             guard let rawContent = message.content else {
                 throw GFTokenizerError.invalidChatTemplate("text-only messages require content")
             }
+            try VisionPromptAssembler.rejectMediaMarkers(in: rawContent)
             let content = rawContent.trimmingCharacters(in: .whitespacesAndNewlines)
             if message.role == .system && index != 0 {
                 throw GFTokenizerError.invalidChatTemplate("system message must be first")
@@ -398,7 +404,8 @@ public struct GFTokenizer: @unchecked Sendable {
         ).map(Int32.init)
     }
 
-    public func encodeTextContinuation(userContent: String) -> [Int32] {
+    public func encodeTextContinuation(userContent: String) throws -> [Int32] {
+        try VisionPromptAssembler.rejectMediaMarkers(in: userContent)
         let content = userContent.trimmingCharacters(in: .whitespacesAndNewlines)
         return [endOfTurnID] + encode(
             "\n\(Self.turnOpen)user\n\(content)\(Self.turnClose)\n"

@@ -162,7 +162,14 @@ struct ServerPromptCache: Sendable {
                 || entry.assistantTurn.rawStopReason == .maxTokens else {
             return .miss
         }
-        var bridge = tokenizer.encodeTextContinuation(userContent: content)
+        // A rejected continuation (today: literal media markers in the text) is
+        // a cache miss, not an error here. The request still has to go through
+        // the normal encode path, which raises the typed error with the context
+        // the caller needs; failing inside the cache probe would report it as a
+        // caching problem instead.
+        guard var bridge = try? tokenizer.encodeTextContinuation(userContent: content) else {
+            return .miss
+        }
         if entry.assistantTurn.rawStopReason == .maxTokens {
             bridge = entry.uncommittedBoundaryTokenIDs + bridge
         } else if bridge.first != entry.uncommittedBoundaryTokenIDs.first {
