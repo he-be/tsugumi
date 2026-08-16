@@ -389,7 +389,8 @@ public actor ServerModelSession: ServerInferenceBackend {
     public static func load(modelDirectory: URL,
                             maxContext: Int,
                             promptCacheMode: ServerPromptCacheMode = .singlePrefix,
-                            runtimeConfiguration: RuntimeConfiguration) async throws -> ServerModelSession {
+                            runtimeConfiguration: RuntimeConfiguration,
+                            integrityPolicy: ModelIntegrityPolicy = .fullSha256) async throws -> ServerModelSession {
         let tokenizerFolder = GFTokenizer.tokenizerFolder(forModelDirectory: modelDirectory)
         guard let tokenizerFolder else {
             throw GFTokenizerError.missingToolTemplate
@@ -406,7 +407,7 @@ public actor ServerModelSession: ServerInferenceBackend {
             device: context.device,
             streamingMode: .pread(slotCount: runtime.expertCacheSlots),
             expertCachePolicy: runtime.modelExpertCachePolicy,
-            integrityPolicy: .fullSha256)
+            integrityPolicy: integrityPolicy)
         let runner = try RealForwardRunner(model: model,
                                            context: context,
                                            maxContext: maxContext,

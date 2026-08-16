@@ -18,6 +18,8 @@ public struct Args: Equatable, Sendable {
     public var prefillPolicy: RuntimePrefillPolicy
     public var prefillChunkTokens: Int
     public var rdadvisePolicy: RDAdvicePolicyMode
+    public var verification: ModelIntegrityPolicy
+    public var dumpExpertTrace: String?
 
     public init(model: String,
                 prompt: String? = nil,
@@ -35,7 +37,9 @@ public struct Args: Equatable, Sendable {
                 expertCachePolicy: RuntimeExpertCachePolicy = RuntimeConfiguration.production.expertCachePolicy,
                 prefillPolicy: RuntimePrefillPolicy = RuntimeConfiguration.production.prefillPolicy,
                 prefillChunkTokens: Int = RuntimeConfiguration.production.prefillChunkTokens,
-                rdadvisePolicy: RDAdvicePolicyMode = RuntimeConfiguration.production.rdadvisePolicy) {
+                rdadvisePolicy: RDAdvicePolicyMode = RuntimeConfiguration.production.rdadvisePolicy,
+                verification: ModelIntegrityPolicy = .fullSha256,
+                dumpExpertTrace: String? = nil) {
         self.model = model
         self.prompt = prompt
         self.messagesFile = messagesFile
@@ -53,6 +57,8 @@ public struct Args: Equatable, Sendable {
         self.prefillPolicy = prefillPolicy
         self.prefillChunkTokens = prefillChunkTokens
         self.rdadvisePolicy = rdadvisePolicy
+        self.verification = verification
+        self.dumpExpertTrace = dumpExpertTrace
     }
 }
 
@@ -105,6 +111,11 @@ extension Args {
                                  Chunked prefill requires 16 or more cache slots.
       --prefill-chunk-tokens <n> Prefill chunk size: 32, 64, or 128 (default 128).
       --rdadvise <s>             Read-advice policy: off, default, bounded, or adaptive (default off).
+      --verification <s>         Model integrity: full-sha256 or trusted-install
+                                 (default full-sha256). trusted-install checks sizes
+                                 against verified-install.json instead of rehashing
+                                 every layer file on first touch.
+      --dump-expert-trace <path> Write every routed-expert request to a TSV trace.
       --help                     Show this message.
     """
 
@@ -153,6 +164,8 @@ extension Args {
         var prefillPolicy = runtimeDefaults.prefillPolicy
         var prefillChunkTokens = runtimeDefaults.prefillChunkTokens
         var rdadvisePolicy = runtimeDefaults.rdadvisePolicy
+        var verification = ModelIntegrityPolicy.fullSha256
+        var dumpExpertTrace: String?
 
         var index = 0
         while index < argv.count {
@@ -246,6 +259,14 @@ extension Args {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 rdadvisePolicy = parsed
+            case "--verification":
+                let value = try takeValue(argv, &index, flag: flag)
+                guard let parsed = ModelIntegrityPolicy(commandLineName: value) else {
+                    throw ArgsError.invalidValue(flag: flag, value: value)
+                }
+                verification = parsed
+            case "--dump-expert-trace":
+                dumpExpertTrace = try takeValue(argv, &index, flag: flag)
             default:
                 throw ArgsError.unknownFlag(flag)
             }
@@ -277,7 +298,9 @@ extension Args {
                              expertCachePolicy: expertCachePolicy,
                              prefillPolicy: prefillPolicy,
                              prefillChunkTokens: prefillChunkTokens,
-                             rdadvisePolicy: rdadvisePolicy)
+                             rdadvisePolicy: rdadvisePolicy,
+                             verification: verification,
+                             dumpExpertTrace: dumpExpertTrace)
         _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
         return arguments
     }

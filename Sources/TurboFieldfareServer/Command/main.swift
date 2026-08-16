@@ -25,7 +25,8 @@ do {
         modelDirectory: modelURL,
         maxContext: arguments.maxContext,
         promptCacheMode: arguments.promptCacheMode,
-        runtimeConfiguration: runtimeConfiguration)
+        runtimeConfiguration: runtimeConfiguration,
+        integrityPolicy: arguments.verification)
     let server = TurboFieldfareHTTPServer(
         modelID: arguments.modelID,
         queueLimit: arguments.queueLimit,

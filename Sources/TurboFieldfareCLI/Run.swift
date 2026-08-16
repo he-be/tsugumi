@@ -59,13 +59,14 @@ public func run(args: Args,
         guard MTLCreateSystemDefaultDevice() != nil else {
             return errored(stderr, "no Metal device", 1)
         }
+        let loadStart = Date()
         let context = try MetalContext()
         let model = try Model.load(
             directoryURL: modelURL,
             device: context.device,
             streamingMode: .pread(slotCount: runtime.expertCacheSlots),
             expertCachePolicy: runtime.modelExpertCachePolicy,
-            integrityPolicy: .fullSha256)
+            integrityPolicy: args.verification)
         let runner = try RealForwardRunner(
             model: model,
             context: context,
@@ -73,6 +74,21 @@ public func run(args: Args,
             runtimeConfiguration: runtime)
         let scratch = try RawCompletionScratch(context: context,
                                                vocab: model.config.vocabSize)
+        let loadSeconds = Date().timeIntervalSince(loadStart)
+
+        if let tracePath = args.dumpExpertTrace {
+            try model.telemetry.startTrace(path: tracePath, header: [
+                "model": model.modelID,
+                "slots": "\(runtime.expertCacheSlots)",
+                "policy": runtime.expertCachePolicy.rawValue,
+                "experts": "\(model.config.numExperts)",
+                "topK": "\(model.config.topKExperts)",
+                "layers": "\(model.config.numLayers)",
+                "prefill": runtime.prefillPolicy.rawValue,
+                "prefillChunkTokens": "\(runtime.prefillChunkTokens)",
+            ])
+        }
+        defer { model.telemetry.finishTrace() }
         let stats = try await runRawCompletion(
             producer: runner,
             tokenizer: tokenizer,
@@ -95,7 +111,11 @@ public func run(args: Args,
             let tokensPerSecond = stats.decodeSeconds > 0
                 ? Double(stats.newTokens) / stats.decodeSeconds
                 : 0
-            let footer = "\n[stop=\(String(describing: stats.reason)) prefill=\(stats.prefillTokens)tok new=\(stats.newTokens)tok decode=\(String(format: "%.2f", stats.decodeSeconds))s tok/s=\(String(format: "%.3f", tokensPerSecond))]\n"
+            var footer = "\n[stop=\(String(describing: stats.reason)) prefill=\(stats.prefillTokens)tok new=\(stats.newTokens)tok decode=\(String(format: "%.2f", stats.decodeSeconds))s tok/s=\(String(format: "%.3f", tokensPerSecond))]\n"
+            footer += statsFooter(loadSeconds: loadSeconds,
+                                  stats: stats,
+                                  telemetry: model.telemetry.snapshot(),
+                                  runner: runner)
             stderr.write(Data(footer.utf8))
         }
         return RunResult(exitCode: 0)
@@ -105,6 +125,47 @@ public func run(args: Args,
     } catch {
         return errored(stderr, "\(error)", 1)
     }
+}
+
+/// Phase-0 instrumentation lines. Kept on their own lines below the original
+/// footer so existing footer parsers keep working unchanged.
+private func statsFooter(loadSeconds: Double,
+                         stats: RawDecodeResult,
+                         telemetry: ExpertTelemetrySnapshot,
+                         runner: RealForwardRunner) -> String {
+    func s(_ value: Double) -> String { String(format: "%.3f", value) }
+    func ms(_ nanos: UInt64, per count: Int) -> String {
+        guard count > 0 else { return "n/a" }
+        return String(format: "%.2f", Double(nanos) / 1e6 / Double(count))
+    }
+    func gb(_ bytes: UInt64) -> String {
+        String(format: "%.2f", Double(bytes) / 1e9)
+    }
+    func pct(_ value: Double) -> String { String(format: "%.1f", value * 100) }
+
+    let memory = ProcessMemoryFootprint.current()
+    let newTokens = max(stats.newTokens, 1)
+
+    var lines = "[load=\(s(loadSeconds))s"
+    lines += " layerVerify=\(s(telemetry.layerVerifySeconds))s/\(telemetry.layersOpened)layers"
+    lines += " prefill=\(s(stats.prefillSeconds))s"
+    lines += " ttft=\(s(stats.timeToFirstTokenSeconds))s"
+    lines += " peak=\(gb(memory.peakPhysFootprintBytes))GB"
+    lines += " rss=\(gb(memory.peakResidentBytes))GB]\n"
+
+    let p = telemetry.prefill
+    let d = telemetry.decode
+    lines += "[expert prefill hit=\(pct(p.hitRate))% \(p.hits)/\(p.experts)"
+    lines += " io=\(s(Double(p.fetchNanos) / 1e9))s"
+    lines += " | decode hit=\(pct(d.hitRate))% \(d.hits)/\(d.experts)"
+    lines += " io=\(s(Double(d.fetchNanos) / 1e9))s]\n"
+
+    lines += "[decode/tok io=\(ms(runner.totalIoNanos, per: newTokens))ms"
+    lines += " cb1=\(ms(runner.totalCb1Nanos, per: newTokens))ms"
+    lines += " cb2=\(ms(runner.totalCb2Nanos, per: newTokens))ms"
+    lines += " head=\(ms(runner.totalHeadNanos &+ runner.totalHeadFusedNanos, per: newTokens))ms]\n"
+
+    return lines
 }
 
 private func errored(_ stderr: FileHandle, _ message: String, _ code: Int32) -> RunResult {

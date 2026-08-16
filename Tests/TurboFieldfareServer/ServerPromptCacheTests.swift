@@ -221,6 +221,7 @@ struct ServerPromptCacheTests {
             prefillSeconds: 0,
             newTokens: 1,
             decodeSeconds: 0,
+            timeToFirstTokenSeconds: 0,
             reason: reason,
             kvPosition: kvBacked.count,
             kvBackedTokenIDs: kvBacked,

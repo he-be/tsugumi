@@ -48,6 +48,11 @@ public struct Model {
     let streamersBox: StreamersBox
     let streamersQueue: DispatchQueue
 
+    /// Routed-expert instrumentation. A reference type so every copy of this
+    /// struct — the runner's, the prefill kernels' — accumulates into one set of
+    /// counters.
+    public let telemetry: ExpertTelemetry
+
     final class StreamersBox: @unchecked Sendable {
         var streamers: [PreadExpertStreamer?]
         var layerVerified: [Bool]
@@ -67,7 +72,8 @@ public struct Model {
          packedExpertsLayout: PackedExpertsLayout,
          manifest: Manifest,
          directoryURL: URL,
-         modelDirectory: GTurboModelDirectory) {
+         modelDirectory: GTurboModelDirectory,
+         telemetry: ExpertTelemetry = ExpertTelemetry()) {
         self.device = device
         self.config = config
         self.streamingMode = streamingMode
@@ -81,6 +87,7 @@ public struct Model {
         self.modelDirectory = modelDirectory
         self.streamersBox = StreamersBox(numLayers: packedExpertsLayout.numLayers)
         self.streamersQueue = DispatchQueue(label: "turbo-fieldfare.expert-streamers")
+        self.telemetry = telemetry
     }
 
     // MARK: - Resident accessors
@@ -271,6 +278,15 @@ public struct Model {
         if streamersBox.streamers[L] != nil {
             return
         }
+        let openStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        var verifyNanos: UInt64 = 0
+        var verifiedBytes: UInt64 = 0
+        defer {
+            telemetry.recordLayerOpen(
+                totalNanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - openStart,
+                verifyNanos: verifyNanos,
+                verifiedBytes: verifiedBytes)
+        }
         let basename = packedExpertsLayout.layers[L].file
         let url = directoryURL
             .appendingPathComponent("packed_experts")
@@ -290,9 +306,12 @@ public struct Model {
             }
             switch integrityPolicy {
             case .fullSha256:
+                let verifyStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                 try Sha256Verifier.verifyFile(fileDescriptor: layerFD,
                                               named: manifestRel,
                                               expectedHex: entry.sha256)
+                verifyNanos = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - verifyStart
+                verifiedBytes = actualSize
             case .sizeCheckTrustedReceipt:
                 break
             }

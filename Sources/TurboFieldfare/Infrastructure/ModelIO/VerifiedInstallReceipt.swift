@@ -5,6 +5,27 @@ public enum ModelIntegrityPolicy: Sendable, Equatable {
     case sizeCheckTrustedReceipt
 }
 
+extension ModelIntegrityPolicy {
+    /// Spelling shared by `--verification` on the CLI and the server, and by the
+    /// Mac app's verification picker.
+    public static let commandLineNames = ["full-sha256", "trusted-install"]
+
+    public init?(commandLineName: String) {
+        switch commandLineName {
+        case "full-sha256": self = .fullSha256
+        case "trusted-install": self = .sizeCheckTrustedReceipt
+        default: return nil
+        }
+    }
+
+    public var commandLineName: String {
+        switch self {
+        case .fullSha256: return "full-sha256"
+        case .sizeCheckTrustedReceipt: return "trusted-install"
+        }
+    }
+}
+
 public struct VerifiedInstallReceipt: Codable, Equatable, Sendable {
     public struct FileEntry: Codable, Equatable, Sendable {
         public let size: UInt64

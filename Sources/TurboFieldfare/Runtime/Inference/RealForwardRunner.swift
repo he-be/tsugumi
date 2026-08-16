@@ -477,6 +477,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
 
     public func produce(token: Int32, position: Int, into logits: MTLBuffer) async throws {
         try prefillChunkState.requireClean(operation: "produce")
+        model.telemetry.beginPhase(.decode, step: position)
         try await produceToken(token: token,
                                position: position,
                                into: logits,
@@ -519,6 +520,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         for (spanIndex, span) in spans.enumerated() {
             let lower = tokens.index(tokens.startIndex, offsetBy: span.tokenOffset)
             let upper = tokens.index(lower, offsetBy: span.tokenCount)
+            model.telemetry.beginPhase(.prefill, step: span.startPosition)
             try await executePrefillChunk(
                 tokens: tokens[lower..<upper],
                 startPosition: span.startPosition,

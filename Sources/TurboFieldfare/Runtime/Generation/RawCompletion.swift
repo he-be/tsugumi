@@ -24,6 +24,9 @@ public struct RawDecodeResult: Sendable {
     public let prefillSeconds: Double
     public let newTokens: Int
     public let decodeSeconds: Double
+    /// Wall time from the start of prefill to the first sampled token. Zero when
+    /// nothing was generated.
+    public let timeToFirstTokenSeconds: Double
     public let reason: StopReason
     public let kvPosition: Int
     public let kvBackedTokenIDs: [Int32]
@@ -179,6 +182,7 @@ public func runRawCompletion(producer: any LogitProducer,
     var generated = 0
     var reason: StopReason = .maxTokens
     var uncommittedBoundaryTokenIDs: [Int32] = []
+    var timeToFirstToken: Double = 0
 
     while true {
         try Task.checkCancellation()
@@ -199,6 +203,9 @@ public func runRawCompletion(producer: any LogitProducer,
                                      history: history, config: config, position: generated)
         }
         generated += 1
+        if generated == 1 {
+            timeToFirstToken = Date().timeIntervalSince(prefillStart)
+        }
         uncommittedBoundaryTokenIDs = [tokenID]
 
         if tokenizer.stopTokenIDs.contains(tokenID) || config.extraStopTokens.contains(tokenID) {
@@ -239,6 +246,7 @@ public func runRawCompletion(producer: any LogitProducer,
                            prefillSeconds: prefillSeconds,
                            newTokens: generated,
                            decodeSeconds: Date().timeIntervalSince(decodeStart),
+                           timeToFirstTokenSeconds: timeToFirstToken,
                            reason: reason,
                            kvPosition: position,
                            kvBackedTokenIDs: history,

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Metal
 import TurboFieldfareFormat
@@ -108,7 +109,8 @@ extension Model {
     public func fetchRoutedExperts(plan: RoutedExpertFetchPlan) async throws -> [TensorView] {
         try ensureLayerOpened(plan.layer)
         let streamer = streamersQueue.sync { streamersBox.streamers[plan.layer]! }
-        return try await withCheckedThrowingContinuation { continuation in
+        let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        let views: [TensorView] = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let buffers = try streamer.executeExpertCachePlan(plan.cachePlan)
@@ -121,15 +123,27 @@ extension Model {
                 }
             }
         }
+        telemetry.recordFetch(layer: plan.layer,
+                              experts: plan.experts,
+                              hits: plan.hits,
+                              misses: plan.misses.count,
+                              nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+        return views
     }
 
     public func fetchRoutedExperts(layer: Int, experts: [Int]) async throws -> [TensorView] {
         try ensureLayerOpened(layer)
         let streamer = streamersQueue.sync { streamersBox.streamers[layer]! }
-        return try await withCheckedThrowingContinuation { continuation in
+        let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        // `loadExpertsCached` plans and executes in one step, so the hit count
+        // is only observable from inside the streamer.
+        nonisolated(unsafe) var observedHits = 0
+        let views: [TensorView] = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    let buffers = try streamer.loadExpertsCached(experts: experts)
+                    let plan = streamer.planExpertsCached(experts: experts)
+                    observedHits = plan.hits
+                    let buffers = try streamer.executeExpertCachePlan(plan)
                     continuation.resume(returning: Self.makeExpertViews(
                         buffers,
                         layer: layer,
@@ -139,6 +153,12 @@ extension Model {
                 }
             }
         }
+        telemetry.recordFetch(layer: layer,
+                              experts: experts,
+                              hits: observedHits,
+                              misses: experts.count - observedHits,
+                              nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+        return views
     }
 
     private static func makeExpertViews(

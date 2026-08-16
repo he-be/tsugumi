@@ -13,6 +13,7 @@ public struct ServerArguments: Equatable, Sendable {
     public let prefillPolicy: RuntimePrefillPolicy
     public let prefillChunkTokens: Int
     public let rdadvisePolicy: RDAdvicePolicyMode
+    public let verification: ModelIntegrityPolicy
 
     public static let usage = """
     usage: TurboFieldfareServer --model <completed .gturbo directory> [options]
@@ -31,6 +32,10 @@ public struct ServerArguments: Equatable, Sendable {
       --prefill-chunk-tokens <n> Prefill chunk size: 32, 64, or 128 (default 128).
       --rdadvise <s>             Read-advice policy: off, default, bounded, or adaptive
                                  (default off).
+      --verification <s>         Model integrity: full-sha256 or trusted-install
+                                 (default full-sha256). trusted-install checks sizes
+                                 against verified-install.json instead of rehashing
+                                 every layer file on first touch.
       --help                     Show this help.
     """
 
@@ -74,6 +79,7 @@ public struct ServerArguments: Equatable, Sendable {
         var prefillPolicy = RuntimePrefillPolicy.chunked
         var prefillChunkTokens = 128
         var rdadvisePolicy = RDAdvicePolicyMode.off
+        var verification = ModelIntegrityPolicy.fullSha256
         var index = 0
         while index < input.count {
             let flag = input[index]
@@ -142,6 +148,12 @@ public struct ServerArguments: Equatable, Sendable {
                         "--rdadvise must be off, default, bounded, or adaptive")
                 }
                 rdadvisePolicy = parsed
+            case "--verification":
+                guard let parsed = ModelIntegrityPolicy(commandLineName: value) else {
+                    throw ServerArgumentError.invalid(
+                        "--verification must be full-sha256 or trusted-install")
+                }
+                verification = parsed
             default:
                 throw ServerArgumentError.invalid("unknown flag: \(flag)")
             }
@@ -157,7 +169,8 @@ public struct ServerArguments: Equatable, Sendable {
                                expertCachePolicy: expertCachePolicy,
                                prefillPolicy: prefillPolicy,
                                prefillChunkTokens: prefillChunkTokens,
-                               rdadvisePolicy: rdadvisePolicy)
+                               rdadvisePolicy: rdadvisePolicy,
+                               verification: verification)
     }
 }
 
