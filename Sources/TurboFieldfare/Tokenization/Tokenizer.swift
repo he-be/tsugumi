@@ -303,15 +303,39 @@ public struct GFTokenizer: @unchecked Sendable {
     }
 
     /// Text-only, no-tool rendering of the pinned IT checkpoint's bundled
-    /// `chat_template.jinja`, with thinking disabled. Keeping this narrow makes
-    /// unsupported tool/media behavior explicit instead of approximating it.
+    /// `chat_template.jinja`. Keeping this narrow makes unsupported tool/media
+    /// behavior explicit instead of approximating it.
     private static let turnOpen    = "<|turn>"
     private static let turnClose   = "<turn|>"
     private static let bosMark     = "<bos>"
+    private static let thinkMark   = "<|think|>"
 
-    public func applyChatTemplate(_ messages: [Message]) throws -> String {
+    /// - Parameter enableThinking: mirrors the template's `enable_thinking`.
+    ///   When false the generation prompt opens the thought channel and closes
+    ///   it immediately, which tells the model to answer without reasoning.
+    ///   When true a `<|think|>` marker leads the system turn and the thought
+    ///   channel is left for the model to open, so it reasons first. The
+    ///   reasoning is real output: it costs generated tokens, and callers that
+    ///   want it hidden route it through `StructuredAssistantDecoder`.
+    public func applyChatTemplate(_ messages: [Message],
+                                  enableThinking: Bool = false) throws -> String {
         var s = Self.bosMark
-        for (index, message) in messages.enumerated() {
+        var rest = messages[...]
+        // The template emits a system turn whenever thinking is on, even with
+        // no system message to put in it, because that turn carries the marker.
+        if enableThinking {
+            var body = ""
+            if let first = messages.first, first.role == .system {
+                guard let content = first.content else {
+                    throw GFTokenizerError.invalidChatTemplate("text-only messages require content")
+                }
+                body = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                rest = messages.dropFirst()
+            }
+            s += Self.turnOpen + "system\n" + Self.thinkMark + "\n" + body
+                + Self.turnClose + "\n"
+        }
+        for (index, message) in rest.enumerated() {
             guard let rawContent = message.content else {
                 throw GFTokenizerError.invalidChatTemplate("text-only messages require content")
             }
@@ -322,7 +346,8 @@ public struct GFTokenizer: @unchecked Sendable {
             let role = message.role == .assistant ? "model" : message.role.rawValue
             s += Self.turnOpen + role + "\n" + content + Self.turnClose + "\n"
         }
-        s += Self.turnOpen + "model\n<|channel>thought\n<channel|>"
+        s += Self.turnOpen + "model\n"
+        if !enableThinking { s += "<|channel>thought\n<channel|>" }
         return s
     }
 

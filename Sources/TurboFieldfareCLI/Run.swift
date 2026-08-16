@@ -31,7 +31,8 @@ public func run(args: Args,
                 }
                 return GFTokenizer.Message(role: role, content: row.content)
             }
-            let rendered = try tokenizer.applyChatTemplate(messages)
+            let rendered = try tokenizer.applyChatTemplate(messages,
+                                                           enableThinking: args.thinking)
             promptIds = tokenizer.encode(rendered, addBOS: false)
         } else {
             return errored(stderr, "one of --prompt or --messages-file is required", 2)

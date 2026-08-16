@@ -19,6 +19,9 @@ public struct Args: Equatable, Sendable {
     public var prefillChunkTokens: Int
     public var rdadvisePolicy: RDAdvicePolicyMode
     public var verification: ModelIntegrityPolicy
+    /// Mirrors the chat template's `enable_thinking`. Only affects
+    /// `--messages-file`; a raw `--prompt` is passed through verbatim.
+    public var thinking: Bool
     public var dumpExpertTrace: String?
 
     public init(model: String,
@@ -39,6 +42,7 @@ public struct Args: Equatable, Sendable {
                 prefillChunkTokens: Int = RuntimeConfiguration.production.prefillChunkTokens,
                 rdadvisePolicy: RDAdvicePolicyMode = RuntimeConfiguration.production.rdadvisePolicy,
                 verification: ModelIntegrityPolicy = .fullSha256,
+                thinking: Bool = false,
                 dumpExpertTrace: String? = nil) {
         self.model = model
         self.prompt = prompt
@@ -58,6 +62,7 @@ public struct Args: Equatable, Sendable {
         self.prefillChunkTokens = prefillChunkTokens
         self.rdadvisePolicy = rdadvisePolicy
         self.verification = verification
+        self.thinking = thinking
         self.dumpExpertTrace = dumpExpertTrace
     }
 }
@@ -118,6 +123,12 @@ extension Args {
                                  (default full-sha256). trusted-install checks sizes
                                  against verified-install.json instead of rehashing
                                  every layer file on first touch.
+      --thinking on|off          Chat-template reasoning channel (default off).
+                                 off closes the thought channel in the generation
+                                 prompt, asking for a direct answer; on leads the
+                                 system turn with <|think|> and lets the model
+                                 reason first. Reasoning is generated text, so it
+                                 spends --max-new. Applies to --messages-file only.
       --dump-expert-trace <path> Write every routed-expert request to a TSV trace.
       --help                     Show this message.
     """
@@ -168,6 +179,7 @@ extension Args {
         var prefillChunkTokens = runtimeDefaults.prefillChunkTokens
         var rdadvisePolicy = runtimeDefaults.rdadvisePolicy
         var verification = ModelIntegrityPolicy.fullSha256
+        var thinking = false
         var dumpExpertTrace: String?
 
         var index = 0
@@ -268,6 +280,13 @@ extension Args {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 verification = parsed
+            case "--thinking":
+                let value = try takeValue(argv, &index, flag: flag)
+                switch value {
+                case "on": thinking = true
+                case "off": thinking = false
+                default: throw ArgsError.invalidValue(flag: flag, value: value)
+                }
             case "--dump-expert-trace":
                 dumpExpertTrace = try takeValue(argv, &index, flag: flag)
             default:
@@ -303,6 +322,7 @@ extension Args {
                              prefillChunkTokens: prefillChunkTokens,
                              rdadvisePolicy: rdadvisePolicy,
                              verification: verification,
+                             thinking: thinking,
                              dumpExpertTrace: dumpExpertTrace)
         _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
         return arguments
