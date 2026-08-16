@@ -28,6 +28,17 @@ public struct MoEExpertOffsets {
     }
 }
 
+public enum RouterError: Error, CustomStringConvertible {
+    case unsupportedWeightBits(Int)
+
+    public var description: String {
+        switch self {
+        case .unsupportedWeightBits(let bits):
+            return "Unsupported router weight bits: \(bits) (expected 8 or 16)"
+        }
+    }
+}
+
 package final class MoE {
     static let maxStreamedExperts = 8
 
@@ -48,6 +59,8 @@ package final class MoE {
         MetalFunctionConstant(index: 43, value: .bool(true)),
     ]
 
+    /// Router GEMV pipelines for whichever weight format this model uses. Only
+    /// one of the two kernels is ever compiled — see `routerWeightBits`.
     private let routerGemvPSO: MTLComputePipelineState
     private let routerGemvSpecializedPSO: MTLComputePipelineState
     private let routerSelectK8PSO: MTLComputePipelineState
@@ -63,10 +76,19 @@ package final class MoE {
     private let reusableRoutedArgBuffer: MTLBuffer
 
     private let affineGroupSize: Int
+    /// 8 for affine INT8 router weights, 16 for the unquantized BF16 router
+    /// that the QAT checkpoints ship.
+    let routerWeightBits: Int
 
-    package init(context: MetalContext) throws {
+    package init(context: MetalContext, routerWeightBits: Int = 8) throws {
         self.affineGroupSize = context.affineGroupSize
-        let routerName = "router_gemv_gemma4_r4"
+        self.routerWeightBits = routerWeightBits
+        let routerName: String
+        switch routerWeightBits {
+        case 8:  routerName = "router_gemv_gemma4_r4"
+        case 16: routerName = "router_gemv_gemma4_bf16_r4"
+        default: throw RouterError.unsupportedWeightBits(routerWeightBits)
+        }
         self.routerGemvPSO = try context.pipeline(
             routerName,
             constants: [],
@@ -109,7 +131,7 @@ package final class MoE {
         self.reusableRoutedArgBuffer = reusable
     }
 
-    func encodeRouterGemma4(commandBuffer: MTLCommandBuffer,
+    package func encodeRouterGemma4(commandBuffer: MTLCommandBuffer,
                                    weights: MTLBuffer, weightsOffset: Int = 0,
                                    scales: MTLBuffer, scalesOffset: Int = 0,
                                    biases: MTLBuffer, biasesOffset: Int = 0,
@@ -121,7 +143,11 @@ package final class MoE {
                                    numExperts: UInt32,
                                    d: UInt32,
                                    topK: UInt32) {
+        precondition(routerWeightBits == 8,
+                     "INT8 router encode on a \(routerWeightBits)-bit router")
         precondition(d.isMultiple(of: UInt32(affineGroupSize)))
+        // The kernel walks the row in fixed 64-element steps (32 lanes x 2).
+        precondition(d.isMultiple(of: 64))
         precondition(numExperts <= 256)
         precondition(topK == UInt32(Self.maxStreamedExperts))
 
@@ -146,6 +172,68 @@ package final class MoE {
             encoder.endEncoding()
         }
 
+        encodeRouterSelect(commandBuffer: commandBuffer,
+                           perExpertScale: perExpertScale,
+                           perExpertScaleOffset: perExpertScaleOffset,
+                           outIndices: outIndices,
+                           outWeights: outWeights,
+                           numExperts: numExperts,
+                           useSpecialized: useSpecialized)
+    }
+
+    /// BF16 (unquantized) router weights. Same logits and top-k contract as
+    /// `encodeRouterGemma4`, minus the scale/bias buffers.
+    package func encodeRouterGemma4BF16(commandBuffer: MTLCommandBuffer,
+                                weights: MTLBuffer, weightsOffset: Int = 0,
+                                hidden: MTLBuffer,
+                                effectiveScale: MTLBuffer, effectiveScaleOffset: Int = 0,
+                                perExpertScale: MTLBuffer, perExpertScaleOffset: Int = 0,
+                                outIndices: MTLBuffer,
+                                outWeights: MTLBuffer,
+                                numExperts: UInt32,
+                                d: UInt32,
+                                topK: UInt32) {
+        precondition(routerWeightBits == 16,
+                     "BF16 router encode on a \(routerWeightBits)-bit router")
+        precondition(numExperts <= 256)
+        precondition(topK == UInt32(Self.maxStreamedExperts))
+
+        var expertCount = numExperts
+        var dimension = d
+        let useSpecialized = numExperts == Self.realDecodeNumExperts
+            && d == Self.realDecodeD
+        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+            encoder.setComputePipelineState(
+                useSpecialized ? routerGemvSpecializedPSO : routerGemvPSO)
+            encoder.setBuffer(weights, offset: weightsOffset, index: 0)
+            encoder.setBuffer(hidden, offset: 0, index: 1)
+            encoder.setBuffer(effectiveScale, offset: effectiveScaleOffset, index: 2)
+            encoder.setBuffer(routerLogits, offset: 0, index: 3)
+            encoder.setBytes(&expertCount, length: MemoryLayout<UInt32>.stride, index: 4)
+            encoder.setBytes(&dimension, length: MemoryLayout<UInt32>.stride, index: 5)
+            encoder.dispatchThreadgroups(
+                MTLSize(width: (Int(numExperts) + 3) / 4, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+            encoder.endEncoding()
+        }
+
+        encodeRouterSelect(commandBuffer: commandBuffer,
+                           perExpertScale: perExpertScale,
+                           perExpertScaleOffset: perExpertScaleOffset,
+                           outIndices: outIndices,
+                           outWeights: outWeights,
+                           numExperts: numExperts,
+                           useSpecialized: useSpecialized)
+    }
+
+    private func encodeRouterSelect(commandBuffer: MTLCommandBuffer,
+                                    perExpertScale: MTLBuffer,
+                                    perExpertScaleOffset: Int,
+                                    outIndices: MTLBuffer,
+                                    outWeights: MTLBuffer,
+                                    numExperts: UInt32,
+                                    useSpecialized: Bool) {
+        var expertCount = numExperts
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
             encoder.setComputePipelineState(
                 useSpecialized ? routerSelectK8SpecializedPSO : routerSelectK8PSO)

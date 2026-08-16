@@ -478,6 +478,61 @@ static inline float prefill_moe_int4_gemv_row_tg(
     return acc;
 }
 
+// Shared by the INT8 and BF16 router blocks: pick the top-KK scores, softmax
+// them, and fold in the per-expert gain. Only thread 0 of the group runs it.
+static inline void prefill_router_emit_topk(
+    threadgroup const float* scores,
+    device const bfloat*     per_expert_scale,
+    device uint*             out_indices,
+    device half*             out_weights,
+    uint                     NE,
+    uint                     KK,
+    uint                     row,
+    uint                     top_k
+) {
+    uint top_idx[kPrefillRouterMaxTopK];
+    float top_score[kPrefillRouterMaxTopK];
+    for (uint i = 0; i < kPrefillRouterMaxTopK; ++i) {
+        top_idx[i] = 0u;
+        top_score[i] = -INFINITY;
+    }
+
+    for (uint e = 0; e < NE; ++e) {
+        float s = scores[e];
+        if (KK > 0 && s <= top_score[KK - 1]) continue;
+        uint pos = KK;
+        for (uint i = 0; i < KK; ++i) {
+            if (s > top_score[i] || (s == top_score[i] && e < top_idx[i])) {
+                pos = i;
+                break;
+            }
+        }
+        if (pos >= KK) continue;
+        for (uint i = KK - 1; i > pos; --i) {
+            top_idx[i] = top_idx[i - 1];
+            top_score[i] = top_score[i - 1];
+        }
+        top_idx[pos] = e;
+        top_score[pos] = s;
+    }
+
+    float max_s = top_score[0];
+    float sum_exp = 0.0f;
+    float exps[kPrefillRouterMaxTopK];
+    for (uint i = 0; i < KK; ++i) {
+        float e = fast::exp(top_score[i] - max_s);
+        exps[i] = e;
+        sum_exp += e;
+    }
+    for (uint i = 0; i < KK; ++i) {
+        const uint expert_idx = top_idx[i];
+        const float w = exps[i] / sum_exp;
+        const float gain = float(per_expert_scale[expert_idx]);
+        out_indices[row * top_k + i] = expert_idx;
+        out_weights[row * top_k + i] = half(w * gain);
+    }
+}
+
 kernel void prefill_router_gemma4_block(
     device const uint8_t* W                [[buffer(0)]],
     device const bfloat*  scales           [[buffer(1)]],
@@ -531,47 +586,50 @@ kernel void prefill_router_gemma4_block(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if (tid == 0) {
-        uint top_idx[kPrefillRouterMaxTopK];
-        float top_score[kPrefillRouterMaxTopK];
-        for (uint i = 0; i < kPrefillRouterMaxTopK; ++i) {
-            top_idx[i] = 0u;
-            top_score[i] = -INFINITY;
-        }
+        prefill_router_emit_topk(scores, per_expert_scale, out_indices,
+                                 out_weights, NE, KK, row, top_k);
+    }
+}
 
-        for (uint e = 0; e < NE; ++e) {
-            float s = scores[e];
-            if (KK > 0 && s <= top_score[KK - 1]) continue;
-            uint pos = KK;
-            for (uint i = 0; i < KK; ++i) {
-                if (s > top_score[i] || (s == top_score[i] && e < top_idx[i])) {
-                    pos = i;
-                    break;
-                }
-            }
-            if (pos >= KK) continue;
-            for (uint i = KK - 1; i > pos; --i) {
-                top_idx[i] = top_idx[i - 1];
-                top_score[i] = top_score[i - 1];
-            }
-            top_idx[pos] = e;
-            top_score[pos] = s;
-        }
+// BF16 router weights (QAT checkpoints). No scales/biases and no group
+// structure — see the note on `router_gemv_gemma4_bf16_body` in moe.metal.
+kernel void prefill_router_gemma4_bf16_block(
+    device const bfloat*  W                [[buffer(0)]],
+    device const half*    hidden           [[buffer(1)]],
+    device const bfloat*  effective_scale  [[buffer(2)]],
+    device const bfloat*  per_expert_scale [[buffer(3)]],
+    device uint*          out_indices      [[buffer(4)]],
+    device half*          out_weights      [[buffer(5)]],
+    constant uint&        T                [[buffer(6)]],
+    constant uint&        num_experts      [[buffer(7)]],
+    constant uint&        D                [[buffer(8)]],
+    constant uint&        top_k            [[buffer(9)]],
+    constant uint&        hidden_stride    [[buffer(10)]],
+    uint                  row              [[threadgroup_position_in_grid]],
+    uint                  tid              [[thread_position_in_threadgroup]],
+    uint                  tg_size          [[threads_per_threadgroup]]
+) {
+    if (row >= T) return;
+    threadgroup float scores[kPrefillRouterMaxExperts];
+    const uint NE = min(num_experts, kPrefillRouterMaxExperts);
+    const uint KK = min(top_k, kPrefillRouterMaxTopK);
+    device const half* row_hidden = hidden + row * hidden_stride;
 
-        float max_s = top_score[0];
-        float sum_exp = 0.0f;
-        float exps[kPrefillRouterMaxTopK];
-        for (uint i = 0; i < KK; ++i) {
-            float e = fast::exp(top_score[i] - max_s);
-            exps[i] = e;
-            sum_exp += e;
+    for (uint e = tid; e < NE; e += tg_size) {
+        device const bfloat* W_row = W + e * D;
+        float acc = 0.0f;
+        for (uint k = 0; k < D; ++k) {
+            acc = fma(float(W_row[k]),
+                      float(row_hidden[k]) * float(effective_scale[k]),
+                      acc);
         }
-        for (uint i = 0; i < KK; ++i) {
-            const uint expert_idx = top_idx[i];
-            const float w = exps[i] / sum_exp;
-            const float gain = float(per_expert_scale[expert_idx]);
-            out_indices[row * top_k + i] = expert_idx;
-            out_weights[row * top_k + i] = half(w * gain);
-        }
+        scores[e] = acc;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid == 0) {
+        prefill_router_emit_topk(scores, per_expert_scale, out_indices,
+                                 out_weights, NE, KK, row, top_k);
     }
 }
 

@@ -271,7 +271,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         self.attention = try Attention(context: context)
         self.shared    = try SharedExpertRuntime(context: context,
                                                   weightBits: model.sharedExpertWeightBits)
-        self.moe       = try MoE(context: context)
+        self.moe       = try MoE(context: context,
+                                 routerWeightBits: model.routerWeightBits)
         self.fusionHead = try LMHeadChainInt4(context: context,
                                               maxD: cfg.hiddenSize,
                                               maxVocab: cfg.vocabSize)
@@ -286,7 +287,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         self.prefillQKVEpilogue = try PrefillQKVEpilogue(context: context)
         self.prefillAttention = try PrefillAttention(context: context)
         self.prefillPostAttention = try PrefillPostAttentionSetup(context: context)
-        self.prefillRouter = try PrefillRouter(context: context)
+        self.prefillRouter = try PrefillRouter(context: context,
+                                               routerWeightBits: model.routerWeightBits)
         self.prefillSharedExpert = try PrefillSharedExpert(
             context: context,
             weightBits: model.sharedExpertWeightBits)
@@ -940,7 +942,24 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                             routedStrideElements: UInt32(D),
                                             routerStrideElements: UInt32(D),
                                             eps: eps)
-            prefillRouter.encodeGemma4Block(
+            if prefillRouter.routerWeightBits == 16 {
+                prefillRouter.encodeGemma4BF16Block(
+                        commandBuffer: cb,
+                        weights: views.router.buffer,
+                        weightsOffset: Int(views.router.offset),
+                        hidden: scratch.routerX,
+                        effectiveScale: effectiveScaleBuffers[L],
+                        perExpertScale: views.routerPerExpertScale.buffer,
+                        perExpertScaleOffset: Int(views.routerPerExpertScale.offset),
+                        outIndices: scratch.routeIDs,
+                        outWeights: scratch.routeWeights,
+                        queryCount: UInt32(t),
+                        numExperts: UInt32(cfg.numExperts),
+                        d: UInt32(D),
+                        topK: UInt32(cfg.topKExperts),
+                        hiddenStrideElements: UInt32(D))
+            } else {
+                prefillRouter.encodeGemma4Block(
                         commandBuffer: cb,
                         weights: views.router.buffer,
                         weightsOffset: Int(views.router.offset),
@@ -959,6 +978,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         d: UInt32(D),
                         topK: UInt32(cfg.topKExperts),
                         hiddenStrideElements: UInt32(D))
+            }
 
                     cb.commit()
                     try waitForCompletion(cb)
@@ -1468,16 +1488,28 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             }
 
             let gRouter: (MTLCommandBuffer) -> Void = { [self] cb in
-                moe.encodeRouterGemma4(commandBuffer: cb,
-                    weights: routerW.buffer, weightsOffset: Int(routerW.offset),
-                    scales:  routerW.buffer, scalesOffset:  Int(routerW.scaleOffset),
-                    biases:  routerW.buffer, biasesOffset:  Int(routerW.biasOffset),
-                    hidden: routerInput,
-                    effectiveScale: effectiveScaleBuffers[L],
-                    perExpertScale: perExpertScale.buffer,
-                    perExpertScaleOffset: Int(perExpertScale.offset),
-                    outIndices: outIndices, outWeights: outWeights,
-                    numExperts: UInt32(cfg.numExperts), d: D, topK: UInt32(cfg.topKExperts))
+                if moe.routerWeightBits == 16 {
+                    moe.encodeRouterGemma4BF16(commandBuffer: cb,
+                        weights: routerW.buffer, weightsOffset: Int(routerW.offset),
+                        hidden: routerInput,
+                        effectiveScale: effectiveScaleBuffers[L],
+                        perExpertScale: perExpertScale.buffer,
+                        perExpertScaleOffset: Int(perExpertScale.offset),
+                        outIndices: outIndices, outWeights: outWeights,
+                        numExperts: UInt32(cfg.numExperts), d: D,
+                        topK: UInt32(cfg.topKExperts))
+                } else {
+                    moe.encodeRouterGemma4(commandBuffer: cb,
+                        weights: routerW.buffer, weightsOffset: Int(routerW.offset),
+                        scales:  routerW.buffer, scalesOffset:  Int(routerW.scaleOffset),
+                        biases:  routerW.buffer, biasesOffset:  Int(routerW.biasOffset),
+                        hidden: routerInput,
+                        effectiveScale: effectiveScaleBuffers[L],
+                        perExpertScale: perExpertScale.buffer,
+                        perExpertScaleOffset: Int(perExpertScale.offset),
+                        outIndices: outIndices, outWeights: outWeights,
+                        numExperts: UInt32(cfg.numExperts), d: D, topK: UInt32(cfg.topKExperts))
+                }
             }
 
             let cb = ctx.queue.makeCommandBuffer()!

@@ -340,6 +340,260 @@ func checkLMHeadGreedy(d: Int, vocab: Int, draws: Int, groupSize: Int,
                : mismatches.joined(separator: "; "))
 }
 
+// MARK: - Case 5 — decode router (INT8 affine and BF16)
+
+/// CPU reference for the router: logits, top-k with the kernel's tie-break,
+/// softmax over the survivors, then the per-expert gain. Plain loops — this
+/// must not share structure with the kernel it checks.
+func routerReference(weightRows: [[Float]], x: [Float], numExperts: Int, topK: Int,
+                     perExpertScale: [Float]) -> (indices: [Int], weights: [Float]) {
+    var logits = [Float](repeating: 0, count: numExperts)
+    for e in 0..<numExperts {
+        var acc: Float = 0
+        for i in 0..<x.count { acc += weightRows[e][i] * x[i] }
+        logits[e] = acc
+    }
+    // Descending by score, ties broken by the lower expert index.
+    let order = (0..<numExperts).sorted {
+        logits[$0] == logits[$1] ? $0 < $1 : logits[$0] > logits[$1]
+    }
+    let chosen = Array(order.prefix(topK))
+    let maxScore = logits[chosen[0]]
+    let exps = chosen.map { expf(logits[$0] - maxScore) }
+    let sum = exps.reduce(0, +)
+    let weights = zip(chosen, exps).map { ($1 / sum) * perExpertScale[$0] }
+    return (chosen, weights)
+}
+
+/// The router GEMV walks a row in fixed 64-element steps, so at group 32 two
+/// affine groups share one step — the same class of geometry assumption as
+/// §3-1-a, in a kernel that check missed. The BF16 variant has no group
+/// structure at all; it runs here to prove the QAT router path is right before
+/// any checkpoint exists to test it against.
+func checkRouter(weightBits: Int, d: Int, numExperts: Int, draws: Int,
+                 groupSize: Int, seed: UInt64) throws -> CaseResult {
+    let topK = 8
+    let label = "router-\(weightBits == 16 ? "bf16" : "int8") d=\(d) experts=\(numExperts)"
+    let context = try makeContext(groupSize: groupSize)
+    let kernel = try MoE(context: context, routerWeightBits: weightBits)
+
+    var worstRel = 0.0
+    var mismatches: [String] = []
+
+    for draw in 0..<draws {
+        var rng = SeedTree(seed &+ UInt64(draw)).key("\(label)-g\(groupSize)")
+        let raw = (0..<numExperts).map { _ in (0..<d).map { _ in rng.uniform(-0.2, 0.2) } }
+
+        // Weight bytes plus, for INT8, the affine companions.
+        var weightBytes: [UInt8] = []
+        var scaleBits: [UInt16] = []
+        var biasBits: [UInt16] = []
+        var dequantized: [[Float]] = []
+        for row in raw {
+            if weightBits == 16 {
+                let bits = row.map { Quantization.bf16Bits($0) }
+                for value in bits {
+                    weightBytes.append(UInt8(truncatingIfNeeded: value))
+                    weightBytes.append(UInt8(truncatingIfNeeded: value >> 8))
+                }
+                dequantized.append(bits.map { Quantization.bf16ToFloat($0) })
+            } else {
+                let quantized = Quantization.quantizeInt8Affine(row, groupSize: groupSize)
+                weightBytes.append(contentsOf: quantized.packed)
+                scaleBits.append(contentsOf: quantized.scales)
+                biasBits.append(contentsOf: quantized.biases)
+                dequantized.append(Quantization.dequantizeInt8Affine(
+                    quantized, n: d, groupSize: groupSize))
+            }
+        }
+
+        let hiddenFp16 = (0..<d).map { _ in Float16(rng.uniform(-1.0, 1.0)) }
+        let effectiveScaleF = (0..<d).map { _ in rng.uniform(0.5, 1.5) }
+        let effectiveScaleBits = effectiveScaleF.map { Quantization.bf16Bits($0) }
+        let perExpertScaleF = (0..<numExperts).map { _ in rng.uniform(0.8, 1.2) }
+        let perExpertScaleBits = perExpertScaleF.map { Quantization.bf16Bits($0) }
+
+        // The kernel folds effective_scale into the activation, not the weight.
+        let x = (0..<d).map {
+            Float(hiddenFp16[$0]) * Quantization.bf16ToFloat(effectiveScaleBits[$0])
+        }
+        let expected = routerReference(
+            weightRows: dequantized, x: x, numExperts: numExperts, topK: topK,
+            perExpertScale: perExpertScaleBits.map { Quantization.bf16ToFloat($0) })
+
+        func halfBuffer(_ values: [UInt16]) -> MTLBuffer? {
+            context.device.makeBuffer(bytes: values,
+                                      length: values.count * MemoryLayout<UInt16>.stride,
+                                      options: .storageModeShared)
+        }
+        guard let wBuf = context.device.makeBuffer(
+                bytes: weightBytes, length: weightBytes.count,
+                options: .storageModeShared),
+              let esBuf = halfBuffer(effectiveScaleBits),
+              let pesBuf = halfBuffer(perExpertScaleBits),
+              let hidden = Fp16Buffer.make(context.device, halves: hiddenFp16),
+              let outIndices = context.device.makeBuffer(
+                length: topK * MemoryLayout<UInt32>.stride, options: .storageModeShared),
+              let outWeights = Fp16Buffer.make(context.device, count: topK),
+              let cmd = context.queue.makeCommandBuffer() else {
+            fatalError("buffer allocation failed")
+        }
+
+        if weightBits == 16 {
+            kernel.encodeRouterGemma4BF16(
+                commandBuffer: cmd, weights: wBuf, hidden: hidden,
+                effectiveScale: esBuf, perExpertScale: pesBuf,
+                outIndices: outIndices, outWeights: outWeights,
+                numExperts: UInt32(numExperts), d: UInt32(d), topK: UInt32(topK))
+        } else {
+            guard let sBuf = halfBuffer(scaleBits), let bBuf = halfBuffer(biasBits) else {
+                fatalError("buffer allocation failed")
+            }
+            kernel.encodeRouterGemma4(
+                commandBuffer: cmd, weights: wBuf, scales: sBuf, biases: bBuf,
+                hidden: hidden, effectiveScale: esBuf, perExpertScale: pesBuf,
+                outIndices: outIndices, outWeights: outWeights,
+                numExperts: UInt32(numExperts), d: UInt32(d), topK: UInt32(topK))
+        }
+        waitAndCheck(cmd, "\(label) g=\(groupSize) draw \(draw)")
+
+        let gpuIndices = (0..<topK).map {
+            Int(outIndices.contents().load(fromByteOffset: $0 * MemoryLayout<UInt32>.stride,
+                                           as: UInt32.self))
+        }
+        if gpuIndices != expected.indices {
+            mismatches.append("draw \(draw): gpu=\(gpuIndices) cpu=\(expected.indices)")
+            continue
+        }
+        worstRel = Swift.max(worstRel, relativeError(
+            actual: Fp16Buffer.read(outWeights, count: topK),
+            reference: expected.weights))
+    }
+
+    let tolerance = Double(Tolerance.fp16Reduction)
+    if !mismatches.isEmpty {
+        return result(label, groupSize: groupSize, rel: .infinity, tolerance: tolerance,
+                      detail: "expert selection differs — " + mismatches.joined(separator: "; "))
+    }
+    return result(label, groupSize: groupSize, rel: worstRel, tolerance: tolerance,
+                  detail: "top-\(topK) agrees on all \(draws) draws"
+                      + (weightBits == 16 ? "" : ", groups=\(d / groupSize)"))
+}
+
+// MARK: - Case 6 — INT8 kernels
+
+/// The INT8 GEMV and the fused INT8 shared-expert carry the same fixed-64
+/// -element step as the router did (§3-1-a-2). Neither is reachable from
+/// either checkpoint we run — the current pin is group 64, and the QAT one is
+/// 4-bit throughout — which is precisely why they went unchecked twice. They
+/// are on the harness now because they *can* run at group 32, not because
+/// something runs them.
+func packInt8Rows(_ rows: [Quantization.Int8AffineRow])
+    -> (packed: [UInt8], scales: [UInt16], biases: [UInt16]) {
+    (rows.flatMap(\.packed), rows.flatMap(\.scales), rows.flatMap(\.biases))
+}
+
+func quantizedInt8Rows(count: Int, n: Int, groupSize: Int,
+                       rng: inout SplitMix64) -> [Quantization.Int8AffineRow] {
+    (0..<count).map { _ in
+        Quantization.quantizeInt8Affine((0..<n).map { _ in rng.uniform(-0.5, 0.5) },
+                                        groupSize: groupSize)
+    }
+}
+
+func checkInt8GEMV(m: Int, n: Int, groupSize: Int, seed: UInt64) throws -> CaseResult {
+    var rng = SeedTree(seed).key("int8-gemv-m\(m)-n\(n)-g\(groupSize)")
+    let rows = quantizedInt8Rows(count: m, n: n, groupSize: groupSize, rng: &rng)
+    let (packed, scales, biases) = packInt8Rows(rows)
+
+    let xFp16 = (0..<n).map { _ in Float16(rng.uniform(-1.0, 1.0)) }
+    let context = try makeContext(groupSize: groupSize)
+    let kernel = try DequantInt8GEMV(context: context)
+
+    guard let wBuf = context.device.makeBuffer(bytes: packed, length: packed.count,
+                                               options: .storageModeShared),
+          let sBuf = context.device.makeBuffer(
+            bytes: scales, length: scales.count * MemoryLayout<UInt16>.stride,
+            options: .storageModeShared),
+          let bBuf = context.device.makeBuffer(
+            bytes: biases, length: biases.count * MemoryLayout<UInt16>.stride,
+            options: .storageModeShared),
+          let xBuf = Fp16Buffer.make(context.device, halves: xFp16),
+          let yBuf = Fp16Buffer.make(context.device, count: m),
+          let cmd = context.queue.makeCommandBuffer() else {
+        fatalError("buffer allocation failed")
+    }
+
+    kernel.encode(commandBuffer: cmd, weights: wBuf, scales: sBuf, biases: bBuf,
+                  x: xBuf, y: yBuf, m: UInt32(m), n: UInt32(n))
+    waitAndCheck(cmd, "int8-gemv m=\(m) n=\(n) g=\(groupSize)")
+
+    let reference = DequantInt8GemvRef.apply(weightRows: rows,
+                                             x: xFp16.map { Float($0) },
+                                             n: n, groupSize: groupSize)
+    return result("int8-gemv m=\(m) n=\(n)", groupSize: groupSize,
+           rel: relativeError(actual: Fp16Buffer.read(yBuf, count: m),
+                              reference: reference),
+           tolerance: Double(Tolerance.fp16Reduction),
+           detail: "groups=\(n / groupSize) steps=\(n / 64)")
+}
+
+/// Fused INT8 gate/up/GELU plus the INT8 down GEMV, at the production shared
+/// -expert shape.
+func checkSharedExpertInt8(d: Int, f: Int, groupSize: Int,
+                           seed: UInt64) throws -> CaseResult {
+    var rng = SeedTree(seed).key("shared-int8-d\(d)-f\(f)-g\(groupSize)")
+    let gateRows = quantizedInt8Rows(count: f, n: d, groupSize: groupSize, rng: &rng)
+    let upRows = quantizedInt8Rows(count: f, n: d, groupSize: groupSize, rng: &rng)
+    let downRows = quantizedInt8Rows(count: d, n: f, groupSize: groupSize, rng: &rng)
+    let xFp16 = (0..<d).map { _ in Float16(rng.uniform(-1.0, 1.0)) }
+
+    let context = try makeContext(groupSize: groupSize)
+    let runtime = try SharedExpertRuntime(context: context, weightBits: 8)
+
+    func projection(_ rows: [Quantization.Int8AffineRow],
+                    rowCount: Int, columns: Int) -> SharedExpertProjection {
+        let (packed, scales, biases) = packInt8Rows(rows)
+        guard let w = context.device.makeBuffer(bytes: packed, length: packed.count,
+                                                options: .storageModeShared),
+              let s = context.device.makeBuffer(
+                bytes: scales, length: scales.count * MemoryLayout<UInt16>.stride,
+                options: .storageModeShared),
+              let b = context.device.makeBuffer(
+                bytes: biases, length: biases.count * MemoryLayout<UInt16>.stride,
+                options: .storageModeShared) else {
+            fatalError("buffer allocation failed")
+        }
+        return SharedExpertProjection(weights: w, scales: s, biases: b,
+                                      rows: UInt32(rowCount), cols: UInt32(columns))
+    }
+
+    guard let xBuf = Fp16Buffer.make(context.device, halves: xFp16),
+          let yBuf = Fp16Buffer.make(context.device, count: d),
+          let actBuf = Fp16Buffer.make(context.device, count: f),
+          let cmd = context.queue.makeCommandBuffer() else {
+        fatalError("buffer allocation failed")
+    }
+
+    try runtime.encode(commandBuffer: cmd, x: xBuf,
+                       gate: projection(gateRows, rowCount: f, columns: d),
+                       up: projection(upRows, rowCount: f, columns: d),
+                       down: projection(downRows, rowCount: d, columns: f),
+                       y: yBuf,
+                       scratchGate: actBuf, scratchUp: actBuf, scratchAct: actBuf)
+    waitAndCheck(cmd, "shared-expert-int8 d=\(d) f=\(f) g=\(groupSize)")
+
+    let reference = MoeRef.runFFNInt8(gateRows: gateRows, upRows: upRows,
+                                      downRows: downRows,
+                                      x: xFp16.map { Float($0) },
+                                      d: d, f: f, groupSize: groupSize)
+    return result("shared-expert-int8 d=\(d) f=\(f)", groupSize: groupSize,
+           rel: relativeError(actual: Fp16Buffer.read(yBuf, count: d),
+                              reference: reference),
+           tolerance: Double(Tolerance.fp16ChainedReduction),
+           detail: "gate/up groups=\(d / groupSize) down groups=\(f / groupSize)")
+}
+
 // MARK: - Driver
 
 let arguments = CommandLine.arguments
@@ -364,6 +618,13 @@ for groupSize in groupSizes {
     pass.append(try checkRoutedMoE(d: 2816, f: 704, groupSize: groupSize, seed: 0xB1))
     pass.append(try checkLMHeadGreedy(d: 2816, vocab: 2048, draws: 4,
                                       groupSize: groupSize, seed: 0xC1))
+    pass.append(try checkRouter(weightBits: 8, d: 2816, numExperts: 128, draws: 4,
+                                groupSize: groupSize, seed: 0xD1))
+    pass.append(try checkRouter(weightBits: 16, d: 2816, numExperts: 128, draws: 4,
+                                groupSize: groupSize, seed: 0xD2))
+    pass.append(try checkInt8GEMV(m: 128, n: 2112, groupSize: groupSize, seed: 0xE1))
+    pass.append(try checkSharedExpertInt8(d: 2816, f: 2112, groupSize: groupSize,
+                                          seed: 0xE2))
 
     for entry in pass {
         let status = entry.passed ? "PASS" : "FAIL"

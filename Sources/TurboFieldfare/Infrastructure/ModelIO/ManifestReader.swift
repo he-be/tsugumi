@@ -142,18 +142,43 @@ public enum ManifestReader {
         let slots: [(String, ManifestQuantSlot, Set<Int>)] = [
             ("embedding", quant.embedding, [4]),
             ("attention", quant.attention, [4]),
-            ("router", quant.router, [8]),
+            ("router", quant.router, [8, 16]),
             ("sharedExpert", quant.sharedExpert, [4, 8]),
             ("routedExpert", quant.routedExpert, [4]),
         ]
         for (name, slot, allowedBits) in slots {
-            guard allowedBits.contains(slot.weightBits),
-                  slot.scheme.lowercased() == "affine",
-                  slot.scaleType.lowercased() == "bf16",
-                  slot.biasType.lowercased() == "bf16",
-                  slot.groupSize == Quantization.groupSize else {
+            guard allowedBits.contains(slot.weightBits) else {
                 throw ModelError.indexCorrupt(detail: "unsupported quantization for \(name)")
             }
+            if slot.weightBits == 16 {
+                // Unquantized BF16 — the QAT checkpoints ship the router this
+                // way. No affine companions, so scheme/scale/bias must say so.
+                guard slot.scheme.lowercased() == "bf16",
+                      slot.scaleType.lowercased() == "none",
+                      slot.biasType.lowercased() == "none" else {
+                    throw ModelError.indexCorrupt(detail: "unsupported quantization for \(name)")
+                }
+            } else {
+                guard slot.scheme.lowercased() == "affine",
+                      slot.scaleType.lowercased() == "bf16",
+                      slot.biasType.lowercased() == "bf16" else {
+                    throw ModelError.indexCorrupt(detail: "unsupported quantization for \(name)")
+                }
+            }
+        }
+        // The affine group size is a whole-model property: the shader library is
+        // compiled with one baked-in value (`MetalContext.affineGroupSize`), and
+        // `Model.affineGroupSize` reads the embedding slot on behalf of all of
+        // them. Reject a manifest whose slots disagree. The BF16 router carries
+        // the model's base group size but does not use it.
+        let groupSize = quant.embedding.groupSize
+        guard Quantization.supportedGroupSizes.contains(groupSize) else {
+            throw ModelError.indexCorrupt(
+                detail: "unsupported affine group size \(groupSize)")
+        }
+        for (name, slot, _) in slots where slot.groupSize != groupSize {
+            throw ModelError.indexCorrupt(
+                detail: "\(name) group size \(slot.groupSize) disagrees with the model's \(groupSize)")
         }
     }
 

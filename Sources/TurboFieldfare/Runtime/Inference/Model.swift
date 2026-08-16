@@ -35,6 +35,9 @@ public struct Model {
     public var modelID: String { manifest.modelID }
     public var sourceSnapshotHash: String? { manifest.sourceSnapshotHash }
     public var sharedExpertWeightBits: Int { manifest.quant?.sharedExpert.weightBits ?? 8 }
+    /// 8 for an affine INT8 `router.proj.weight`, 16 when the checkpoint leaves
+    /// it unquantized (BF16) — the QAT checkpoints do.
+    public var routerWeightBits: Int { manifest.quant?.router.weightBits ?? 8 }
     /// Affine group size this model's weights are quantized at. Uniform across
     /// every slot — `ManifestReader.validateQuant` rejects a manifest whose
     /// slots disagree — so the embedding slot speaks for the whole model.
@@ -583,6 +586,27 @@ extension Model {
             }
         }
 
+        /// Unquantized BF16 matrix (currently only a QAT `router.proj.weight`).
+        /// Same no-companion contract as `requireBF16`, rank 2 instead of 1.
+        func requireBF16Matrix(_ name: String, rows: Int, columns: Int) throws {
+            guard let entry = residentIndex.entries[name] else {
+                throw ModelError.indexCorrupt(detail: "missing required resident tensor \(name)")
+            }
+            let shape = try dimensions(rows, columns, field: name)
+            let elements = try checkedMultiply(UInt64(rows), UInt64(columns), field: name)
+            let expectedBytes = try checkedMultiply(
+                elements, UInt64(MemoryLayout<UInt16>.size), field: name)
+            guard entry.dtype == GTurboFormatV1.DType.bf16.rawValue,
+                  entry.shape.0 == shape.0, entry.shape.1 == shape.1,
+                  entry.shape.2 == 0, entry.shape.3 == 0,
+                  entry.sizeBytes == expectedBytes,
+                  entry.scaleOffset == 0, entry.scaleSize == 0,
+                  entry.biasOffset == 0, entry.biasSize == 0,
+                  entry.fileOffset % UInt64(MemoryLayout<UInt16>.alignment) == 0 else {
+                throw ModelError.indexCorrupt(detail: "\(name) does not match the required BF16 schema")
+            }
+        }
+
         func affineSizes(rows: Int,
                          columns: Int,
                          slot: ManifestQuantSlot,
@@ -689,9 +713,14 @@ extension Model {
             try requireAffine("\(prefix).mlp.down_proj.weight",
                               rows: config.hiddenSize, columns: config.intermediateSize,
                               slot: quant.sharedExpert)
-            try requireAffine("\(prefix).router.proj.weight",
-                              rows: config.numExperts, columns: config.hiddenSize,
-                              slot: quant.router)
+            if quant.router.weightBits == 16 {
+                try requireBF16Matrix("\(prefix).router.proj.weight",
+                                      rows: config.numExperts, columns: config.hiddenSize)
+            } else {
+                try requireAffine("\(prefix).router.proj.weight",
+                                  rows: config.numExperts, columns: config.hiddenSize,
+                                  slot: quant.router)
+            }
         }
 
         let routedShapes: [(String, Int, Int)] = [
