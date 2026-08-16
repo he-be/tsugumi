@@ -430,6 +430,177 @@ tower は**モデルディレクトリの外** (`<model>.gturbo.vision.partial/`
   resume が後から別のテキスト重みを promote すると、tower が照合していない
   重みと組になってしまう。
 
+### 0-E-5. 実機の既存インストールに走らせた (**実測**、2026-08-17)
+
+§7 ゲート 10 を先に取った。対象は `scratch/gemma4-qat.gturbo` (QAT / 15 GB)。
+
+```
+$ ./.build/release/TurboFieldfareRepack --add-vision \
+      --input-gturbo scratch/gemma4-qat.gturbo
+Added the vision tower to …/scratch/gemma4-qat.gturbo
+Tower: 356 tensors, 1145588832 bytes
+Source: google/gemma-4-26B-A4B-it-qat-q4_0-unquantized @ f1e06dc520982d9b9edd76859fdb7ab209449949
+Downloaded 1145588832 bytes
+Re-verified 38 files (16980804090 bytes)
+      183.15 real        11.58 user        10.84 sys     (exit 0)
+```
+
+| 項目 | 値 |
+| --- | --- |
+| ダウンロード | **1,145,588,832 B** — tower のみ。§1-1 のピンと**厳密一致**、テキスト側は 0 B |
+| 所要 | **183 s** (大半は再検証 = 16.98 GB の SHA-256。ピーク RSS 62 MB) |
+| `model_weights.bin` の (inode, mtime) | 35170185 / 1786853712 → **前後で不変** |
+| `packed_experts/layout.json` の (inode, mtime) | 35170464 / 1786853725 → **前後で不変** |
+| インストール容量 | 15 GB → **16 GB**。実行中のピークも同じ (§0-E の表どおり) |
+| `verified-install.json` | 38 ファイルを再ハッシュして書き直し、exit 0 |
+
+V4 以降の実機確認はこのインストールに対して行う。**15 GB のコピーは 1 度も発生していない。**
+
+---
+
+## 0-F. V3 完了 (2026-08-17、**実測**)
+
+§5 の V3 (tower カーネル + 単体検証 + 性能実測) の出口条件を満たした。
+**26B のロードも実画像も使っていない**ので、以下はすべて合成データ + GPU 実測である。
+
+| 追加したもの | 中身 |
+| --- | --- |
+| `Sources/TurboFieldfare/Metal/Vision/vision.metal` | カーネル 8 本 (§0-F-1)。`MetalContext.shaderModules` に `vision` を追加 |
+| `Sources/TurboFieldfare/Kernels/Vision/VisionKernels.swift` | 6 個のラッパ。形状の前提を `precondition` で落とす |
+| `.../Validation/Support/Reference/Vision/VisionTowerRef.swift` | float32 CPU 参照 (上流ソースから書き起こし) + `BF16Tensor` |
+| `TurboFieldfareKernelCheck` | vision ケース 15 本 + `--vision-only` / `--bench` |
+
+```
+$ ./.build/release/TurboFieldfareKernelCheck          # 41 cases, exit 0
+$ ./.build/release/TurboFieldfareKernelCheck --vision-only --bench
+```
+
+`Scripts/test.sh`: **752 テスト / 133 スイート、12 issue** — V2-a から**数も内訳も変化なし**
+(vision の検証は KernelCheck 側にあるため)。issue は `PREFILL_THROUGHPUT.md` §7-7 の
+陳腐化 5 スイート (QAT ピン / prefill 2048 / 48 スロット / causalQBlock / KV 割当) のまま。
+
+### 0-F-1. §4-4 の 7 項目が 8 本のカーネルになった
+
+| # | §4-4 の予定 | 実装 |
+| --- | --- | --- |
+| 1 | `vision_patch_embed_block` | **2 本に割った** — `vision_patch_prescale_block` と `vision_patch_pos_add_block`。間の GEMM は #2 |
+| 2 | `vision_bf16_qmm_f16_block` | `vision_bf16_qmm_f16` (§0-F-2) |
+| 3 | rmsnorm | 予定どおり**流用** (`prefill_rmsnorm_bf16w_block` / `prefill_rmsnorm_no_scale_perhead_block`)。新規カーネルなし |
+| 4 | `vision_qk_norm_rope2d_block` | 同名。q/k/v を 1 パスで処理する |
+| 5 | `vision_attention_full_tiled` | **`vision_attention_full_seg_d72` (既定) + `_qblock_d96` (フォールバック)** (§0-F-3) |
+| 6 | `vision_mlp_act_block` | 同名 |
+| 7 | `vision_pool_project_block` | **`vision_pool_std_block` だけにした** — no-scale RMSNorm は既存流用、射影は #2 |
+
+### 0-F-2. bf16 QMM — §0-A-2 の見立てどおり int4 版より簡単だった。ただし 1 点違う
+
+`prefill_int4_qmm_simdgroup_f16` から dequant・scale/bias 索き・group 両対応が消え、
+`Bs` は bf16→half の型変換 1 行になった。**ただし K の制約は逆に増えた**:
+
+int4 版は「K は affine group の倍数 ⇒ 32 の倍数」を仮定できたが、
+tower の down 射影は **K = 4304 = 134×32 + 16** で、K タイルに**割り切れない**。
+活性・重みの両ステージングに K 末尾のゼロ埋めを入れた。
+KernelCheck の `t=37 n=1152 k=4304` はこの尾を踏むためのケースで、
+`t=7 n=100 k=72` は T/N/K の 3 軸すべてがタイル途中に落ちる。
+
+### 0-F-3. 新規事実: head_dim 72 では既存の attention レイアウトが 6.6 倍遅い (**実測**)
+
+§4-4 #5 が「headDim 72 は `kElemsPerLane × 32` に載らない。V3 で決める」と
+保留していた点。**まず素直に載せた版を書いて測った**:
+32 レーンで 1 クエリの head 行を持ち、スコア 1 個ごとに `simd_sum` (シャッフル 5 回)。
+テキスト側は headDim 256 なのでシャッフル 5 回につき FMA 8 個ぶんの仕事があるが、
+**72 では 3 個しかない**。結果は **253.4 GFLOP/s、1 層 115.5 ms、27 層で 3.12 s** —
+射影の 1/12 で、塔の実行時間の **78%** を占めた。
+
+72 = 8 × 9 なので、**simdgroup を 8 レーン × 4 セグメントに割り**、
+1 セグメントが 1 つの head 行 (9 要素/レーン) を持つ版を書いた。
+リダクションは `simd_shuffle_xor` 3 回でセグメント内に閉じ、
+4 セグメントが**別のクエリ**を同じキー行に対して回す。
+キー 1 本あたりレーンは 18 FMA + 3 シャッフルで 4 クエリぶんを進む
+(旧: 48 FMA + 40 シャッフル + 8 回の冗長な `exp` で 8 クエリ)。
+
+| attention カーネル | 1 層 (P=2520, 16 head) | 実効 | 27 層 |
+| --- | ---: | ---: | ---: |
+| `_qblock_d96` (テキスト側と同型) | 115.5 ms | 253.4 GFLOP/s | 3.12 s |
+| **`_seg_d72` (既定)** | **17.6 ms** | **1665 GFLOP/s** | **0.47 s** |
+
+両方とも参照に対し **rel 2.5e-4 で一致**する (KernelCheck は毎回**両方**を検査する)。
+`TF_VISION_ATTN=qblock` で切り替えられる。**フォールバックを消していない**のは、
+セグメント版が head_dim 72 専用だからで、この形以外では従来レイアウトに落ちる。
+
+### 0-F-4. 性能実測 — §8 の中止条件は通過、§3-2 の見積りは 1.37 s に更新 (**実測**)
+
+M3 Pro / macOS 15.7.5、S=280 (P=2520)。GPU 時間 (`gpuEndTime - gpuStartTime`)。
+
+| 段 | 1 回 | 実効 | 本数 | 合計 |
+| --- | ---: | ---: | ---: | ---: |
+| q/k/v/o 射影 (1152×1152) | 2.29 ms | 2920 GFLOP/s | 4×27 | 0.25 s |
+| MLP gate/up (4304×1152) | 7.46 ms | 3350 GFLOP/s | 2×27 | 0.40 s |
+| MLP down (1152×4304) | 8.25 ms | 3029 GFLOP/s | 1×27 | 0.22 s |
+| attention (seg) | 17.57 ms | 1665 GFLOP/s | 27 | 0.47 s |
+| qk-norm + 2D RoPE | 0.29 ms | 帯域律速 | 27 | 0.008 s |
+| MLP 活性 | 0.56 ms | 帯域律速 | 27 | 0.015 s |
+| patch embed (1152×768) | 1.26 ms | 3552 GFLOP/s | 1 | 0.001 s |
+| projector (2816×1152) | 0.65 ms | 2812 GFLOP/s | 1 | 0.001 s |
+
+- **bf16 QMM の実測 = 3.15〜3.19 TFLOP/s** (射影だけを合計した 2.75 TFLOP ÷ 0.87 s)。
+  §8 の中止線 **1.0 TFLOP/s を 3.2 倍で通過**。§0-A-2 の「int4 版 (3.53) の資産流用」
+  という見立ては当たっており、差の 10% は K タイル末尾のゼロ埋めと
+  N=4304 のタイル端で説明がつく (**導出**)。
+- **塔 1 枚あたり 3.54 TFLOP / 1.37 s = 2.58 TFLOP/s** (**実測**)。
+  §0-A-4 の「1 s/画像」は**射影だけを数えた値**で、attention を入れると **1.37 s**。
+  見積りは 1.37 倍に外れていた — §3-2 の「3〜10 s」よりは速いが、
+  「ほぼ 1 s」と書いたのは attention を勘定に入れていなかったからである。
+- **この 1.37 s に含まれないもの**: 層ごとの RMSNorm 4 本 (流用カーネルなので
+  KernelCheck から呼べない)、および中間バッファの確保。V4 で組み上げた塔を
+  端から端まで測り直す。上の内訳から見て 0.1 s 前後の上積み (**導出**)。
+- §7 ゲート 4 (「TTFT が 10 s を超えたら既定を 140 に落とす」) は、
+  塔だけなら**発火しない見込み**。判断は V6 で TTFT を実測してから行う。
+
+### 0-F-5. 検出力の裏取り (§6-3 を V3 の範囲で先取り)
+
+「壊すと FAIL する」ことを確認していない検査は入れていない。
+GPU 出力を**わざと間違えた参照**と突き合わせ、その差が閾値を超えることを
+毎回の PASS 条件にしている (`detectionResult`、通常ケースとは合否が逆)。
+
+| わざと壊す | 通常時 rel | 壊した参照との rel | 分離 |
+| --- | ---: | ---: | ---: |
+| 2D RoPE の x/y を入れ替える (§6-3 の 1 行目) | 3.1e-4 | **1.74** | 5600× |
+| pooler の並びを列優先にする (§6-3 の 2 行目) | 3.4e-4 | **1.33** | 3900× |
+| patch 格子を転置する (位置埋め込み) | 4.1e-4 | **1.06** | 2600× |
+
+3 つとも**非正方の格子** (9×5 / 9×6) で測っている。正方だと x/y の取り違えが
+対角線上で消えるので、正方形の fixture だけでは検出力が出ない。
+
+### 0-F-6. shader library が 1 本太ることの代金を測った (**実測**)
+
+`vision.metal` は `MetalContext.shaderModules` に足したので、**テキスト専用の
+プロセスもこのソースを毎回コンパイルする**。§4-1 が「テキスト専用の実行に
+vision の代金を払わせない」ために重みを別ファイルにしたのだから、
+ここも測ってから決めるべきところだった。
+
+vision を遅延コンパイルの別ライブラリにする版を書いて A/B した
+(`--group-size 64` = ライブラリ 14 回コンパイル + 28 ケース、同一ケース集合):
+
+| 構成 | 実測 |
+| --- | ---: |
+| combined (採用) | 1.59 / 1.60 s |
+| vision だけ遅延の別ライブラリ | 1.59 / 1.60 s |
+
+**差は測定ノイズ以下** (13 回ぶんの追加コンパイルで ≤10 ms、1 回あたり 1 ms 未満)。
+別ライブラリは 25 行のコードと 1 つの分岐を増やすだけなので**採らなかった**。
+`load=` への影響は V5 / V6 の §6-4 で改めて確認する。
+
+> **一度は間違えた記録。**最初の A/B は「vision を外した版の方が 0.65 s 速い」と
+> 出た。実際は vision のケースが `missingFunction` で落ちて**測定対象が消えていた**
+> だけで、比較になっていなかった。数字が期待どおりに出たときほど、
+> 同じケース集合を走ったことを確かめる。
+
+### 0-F-7. まだ触っていないもの
+
+`Model` に vision アクセサはまだない (V4)。prefill 統合・双方向マスク・
+scatter も入っていない (V5)。decode 経路・MoE・KV レイアウトは 1 行も変えていない。
+テキスト専用の実行では vision のパイプラインを**1 つも作らない**。
+
 ---
 
 ## 1. ソース側の事実確認 (**実測**、2026-08-16)
@@ -952,7 +1123,7 @@ tower は prefill の前段でしか動かないので、**§5-0 のテキスト
 | **V1** | 前処理 + トークン列 (GPU なし) | 参照 fixture と patch 一致 (許容 §6-1)。画像なしの `<\|image\|>` が**エラーになる** — **完了 (2026-08-17、§0-C)** |
 | **V2** | フォーマット拡張 + repacker | `--include-vision` で `.gturbo` が出来、**旧バイナリが flag で拒否する**。`--include-vision` なしの出力が現行とバイト一致 — **完了 (2026-08-17、§0-D)**。ただし旧バイナリでの実拒否確認は V6 に持ち越し (§0-D-6) |
 | **V2-a** | `--add-vision` (既存インストールへの追記) | 追記後の `manifest.json` と `vision/vision_weights.bin` が `--include-vision` の出力と**バイト一致**、テキスト側の inode が不変 — **完了 (2026-08-17、§0-E)** |
-| **V3** | tower カーネル + 単体検証 + **性能実測** | `TurboFieldfareKernelCheck` に vision ケース追加で全 PASS + **検出力の裏取り**。bf16 QMM の実測 GFLOP/s を記録 |
+| **V3** | tower カーネル + 単体検証 + **性能実測** | `TurboFieldfareKernelCheck` に vision ケース追加で全 PASS + **検出力の裏取り**。bf16 QMM の実測 GFLOP/s を記録 — **完了 (2026-08-17、§0-F)**。15 ケース PASS、bf16 QMM **3.15 TFLOP/s**、塔 **1.37 s/画像** |
 | **V4** | tower 統合 (画像 → soft token) | 参照実装の `pooler_output` と相対誤差 ≤ §6-2 の閾値 |
 | **V5** | prefill 統合 (スパン・マスク・scatter) | 実画像で説明が成立。**テキストのみの回帰 ±1%** (§5-0 相当) |
 | **V6** | CLI / Server の入口 + 受入 | §7 のゲート、`RESULTS_VISION.md` |
@@ -1074,6 +1245,9 @@ footer 全文 / プロトコルからの逸脱すべて)。
 - ~~**V0 の参照ダンプが作れない** → 以降に進まない~~ **解除 (2026-08-17)。**
   §0-B で 6 ケース分の参照ダンプが取れた。「カーネルのバグ」と
   「チェックポイントの素の性能」を分離する手段は確保できている。
+- ~~**V3 の bf16 QMM 実測が 1.0 TFLOP/s を下回る**~~ **解除 (2026-08-17、§0-F-4)。**
+  実測 **3.15 TFLOP/s**。塔全体でも 2.58 TFLOP/s / 1.37 s per image で、
+  設計を戻す理由はない。以下は記録として残す。
 - **V3 の bf16 QMM 実測が ~~0.1~~ 1.0 TFLOP/s を下回る** → S=280 で 3.5 s 超になる。
   カーネル設計を戻すか、既定 soft token を落とすかを決めるまで V4 に進まない。
   **線を 10 倍上げた**のは、比較対象が scalar QMM (0.59 TFLOP/s) ではなく

@@ -29,14 +29,31 @@ struct CaseResult {
     let relativeError: Double
     let tolerance: Double
     let detail: String
+    /// A negative control: the comparison is expected to *fail*, and the case
+    /// passes when the error clears the bar instead of staying under it.
+    let inverted: Bool
 
-    var passed: Bool { relativeError <= tolerance }
+    var passed: Bool { inverted ? relativeError >= tolerance : relativeError <= tolerance }
 }
 
 func result(_ name: String, groupSize: Int, rel: Double, tolerance: Double,
             detail: String = "") -> CaseResult {
     CaseResult(name: name, groupSize: groupSize,
-               relativeError: rel, tolerance: tolerance, detail: detail)
+               relativeError: rel, tolerance: tolerance, detail: detail,
+               inverted: false)
+}
+
+/// A case that proves a comparison has detection power: the same GPU output is
+/// scored against a deliberately wrong reference, and passing means the score
+/// is at least `floor` — comfortably clear of the tolerance the positive case
+/// just met. A check that has never been seen to fail is not evidence
+/// (`PLAN_VISION.md` §6-3).
+func detectionResult(_ name: String, groupSize: Int, rel: Double, floor: Double,
+                     detail: String = "") -> CaseResult {
+    CaseResult(name: name, groupSize: groupSize,
+               relativeError: rel, tolerance: floor,
+               detail: detail.isEmpty ? "must exceed" : "must exceed; " + detail,
+               inverted: true)
 }
 
 // MARK: - Comparison
@@ -662,6 +679,529 @@ func checkPrefillInt4QMM(t: Int, n: Int, k: Int, groupSize: Int,
                    + "kTilesPerGroup=\(groupSize / 32)")
 }
 
+// MARK: - Vision tower
+
+// The tower's weights are BF16, so none of these kernels read a scale, a bias
+// or an affine group: they behave identically at group 32 and group 64 and are
+// therefore checked once rather than per group size.
+//
+// Gemma 4's tower: hidden 1152, 27 layers, 16 heads of 72, MLP 4304, patch 16
+// (768 pixels per patch), 3x3 pooling, RoPE theta 100. The cases below use the
+// production head dimension and hidden size wherever the reference stays cheap
+// enough to compute on the CPU, and shrink only the counts.
+
+let visionHidden = 1152
+let visionHeadDim = 72
+let visionRopeTheta: Float = 100
+let visionEps: Float = 1e-6
+
+func bf16Buffer(_ device: MTLDevice, _ tensor: BF16Tensor) -> MTLBuffer {
+    tensor.bits.withUnsafeBufferPointer { pointer in
+        guard let buffer = device.makeBuffer(
+            bytes: pointer.baseAddress!,
+            length: pointer.count * MemoryLayout<UInt16>.size,
+            options: .storageModeShared) else {
+            fatalError("buffer allocation failed")
+        }
+        return buffer
+    }
+}
+
+func randomBF16(count: Int, range: ClosedRange<Float>, rng: inout SplitMix64) -> BF16Tensor {
+    BF16Tensor((0..<count).map { _ in rng.uniform(range.lowerBound, range.upperBound) })
+}
+
+/// FP16 inputs rounded once on the host, so the reference sees exactly the
+/// values the kernel reads.
+func randomFP16(count: Int, range: ClosedRange<Float>,
+                rng: inout SplitMix64) -> (halves: [Float16], values: [Float]) {
+    let halves = (0..<count).map { _ in Float16(rng.uniform(range.lowerBound, range.upperBound)) }
+    return (halves, halves.map { Float($0) })
+}
+
+func makeFP16Buffer(_ device: MTLDevice, _ halves: [Float16]) -> MTLBuffer {
+    guard let buffer = Fp16Buffer.make(device, halves: halves) else {
+        fatalError("buffer allocation failed")
+    }
+    return buffer
+}
+
+func makeFP16Buffer(_ device: MTLDevice, count: Int) -> MTLBuffer {
+    // A sentinel rather than zeros: a tile that skips its store shows up as the
+    // sentinel instead of a plausible value.
+    makeFP16Buffer(device, [Float16](repeating: Float16(-7.0), count: count))
+}
+
+/// The BF16 QMM at four shapes.
+///
+/// `k = 4304` (the MLP down projection) is the shape the INT4 kernel could
+/// never see: its K was always a multiple of the affine group and therefore of
+/// the 32-wide K tile, while 4304 leaves a 16-element tail. `n = 4304` leaves a
+/// tile tail on the output side, and the small case puts a tail on all three
+/// axes at once with K narrower than a single tile.
+func checkVisionQMM(context: MetalContext, t: Int, n: Int, k: Int,
+                    seed: UInt64) throws -> CaseResult {
+    var rng = SeedTree(seed).key("vision-qmm-t\(t)-n\(n)-k\(k)")
+    let weights = randomBF16(count: n * k, range: -0.5...0.5, rng: &rng)
+    let x = randomFP16(count: t * k, range: -1...1, rng: &rng)
+
+    let kernel = try VisionBF16QMM(context: context)
+    let wBuf = bf16Buffer(context.device, weights)
+    let xBuf = makeFP16Buffer(context.device, x.halves)
+    let yBuf = makeFP16Buffer(context.device, count: t * n)
+    guard let cmd = context.queue.makeCommandBuffer() else {
+        fatalError("command buffer allocation failed")
+    }
+    kernel.encode(commandBuffer: cmd, weights: wBuf, x: xBuf, y: yBuf, t: t, n: n, k: k)
+    waitAndCheck(cmd, "vision-qmm t=\(t) n=\(n) k=\(k)")
+
+    let reference = VisionTowerRef.matmul(weights: weights.values, x: x.values,
+                                          t: t, n: n, k: k)
+    return result("vision-qmm t=\(t) n=\(n) k=\(k)", groupSize: context.affineGroupSize,
+                  rel: relativeError(actual: Fp16Buffer.read(yBuf, count: t * n),
+                                     reference: reference),
+                  tolerance: Double(Tolerance.fp16Reduction),
+                  detail: "tiles=\((t + 63) / 64)x\((n + 63) / 64)x\((k + 31) / 32) "
+                          + "kTail=\(k % 32) nTail=\(n % 64)")
+}
+
+/// Patch embedder: `2(x - 0.5)`, the 768 -> 1152 projection, and the sum of the
+/// two position-table rows. Positions are derived from the patch index inside
+/// the kernel, so a transposed grid would move every patch off the diagonal —
+/// the second case scores the same output against that reference.
+func checkVisionPatchEmbed(context: MetalContext, patchesWide: Int, patchesHigh: Int,
+                           seed: UInt64) throws -> [CaseResult] {
+    var rng = SeedTree(seed).key("vision-patch-embed-\(patchesWide)x\(patchesHigh)")
+    let patchCount = patchesWide * patchesHigh
+    let patchDim = 768
+    let tableLength = 64
+    precondition(patchesWide <= tableLength && patchesHigh <= tableLength)
+
+    let projection = randomBF16(count: visionHidden * patchDim, range: -0.05...0.05, rng: &rng)
+    let table = randomBF16(count: 2 * tableLength * visionHidden, range: -1...1, rng: &rng)
+    let pixels = randomFP16(count: patchCount * patchDim, range: 0...1, rng: &rng)
+
+    let qmm = try VisionBF16QMM(context: context)
+    let embed = try VisionPatchEmbed(context: context)
+    let pixelBuf = makeFP16Buffer(context.device, pixels.halves)
+    let scaledBuf = makeFP16Buffer(context.device, count: patchCount * patchDim)
+    let hBuf = makeFP16Buffer(context.device, count: patchCount * visionHidden)
+    let projBuf = bf16Buffer(context.device, projection)
+    let tableBuf = bf16Buffer(context.device, table)
+    guard let cmd = context.queue.makeCommandBuffer() else {
+        fatalError("command buffer allocation failed")
+    }
+    embed.encodePrescale(commandBuffer: cmd, x: pixelBuf, out: scaledBuf,
+                         count: patchCount * patchDim)
+    qmm.encode(commandBuffer: cmd, weights: projBuf, x: scaledBuf, y: hBuf,
+               t: patchCount, n: visionHidden, k: patchDim)
+    embed.encodePositionAdd(commandBuffer: cmd, h: hBuf, table: tableBuf,
+                            patchCount: patchCount, d: visionHidden,
+                            patchesWide: patchesWide, tableLength: tableLength)
+    waitAndCheck(cmd, "vision-patch-embed \(patchesWide)x\(patchesHigh)")
+
+    let actual = Fp16Buffer.read(hBuf, count: patchCount * visionHidden)
+    let reference = VisionTowerRef.patchEmbed(
+        pixels: pixels.values, projection: projection.values,
+        positionTable: table.values, patchCount: patchCount, patchDim: patchDim,
+        hidden: visionHidden, patchesWide: patchesWide, tableLength: tableLength)
+    let transposed = VisionTowerRef.patchEmbed(
+        pixels: pixels.values, projection: projection.values,
+        positionTable: table.values, patchCount: patchCount, patchDim: patchDim,
+        hidden: visionHidden, patchesWide: patchesHigh, tableLength: tableLength)
+
+    return [
+        result("vision-patch-embed \(patchesWide)x\(patchesHigh)",
+               groupSize: context.affineGroupSize,
+               rel: relativeError(actual: actual, reference: reference),
+               tolerance: Double(Tolerance.fp16Reduction),
+               detail: "P=\(patchCount) tableLen=\(tableLength)"),
+        detectionResult("vision-patch-embed/grid-transposed",
+                        groupSize: context.affineGroupSize,
+                        rel: relativeError(actual: actual, reference: transposed),
+                        floor: 0.05),
+    ]
+}
+
+/// Q/K per-head RMSNorm, scale-less V RMSNorm, and the 2D RoPE.
+///
+/// The x and y halves of a head use identical frequencies, so exchanging the
+/// two positions is invisible on the grid diagonal and nowhere else. The
+/// negative control scores the same output against the swapped reference; a
+/// non-square patch grid makes sure the mistake cannot cancel.
+func checkVisionQKNormRoPE(context: MetalContext, patchesWide: Int, patchesHigh: Int,
+                           numHeads: Int, seed: UInt64) throws -> [CaseResult] {
+    var rng = SeedTree(seed).key("vision-qk-rope-\(patchesWide)x\(patchesHigh)-h\(numHeads)")
+    let patchCount = patchesWide * patchesHigh
+    let elements = patchCount * numHeads * visionHeadDim
+
+    let q = randomFP16(count: elements, range: -1...1, rng: &rng)
+    let k = randomFP16(count: elements, range: -1...1, rng: &rng)
+    let v = randomFP16(count: elements, range: -1...1, rng: &rng)
+    let qWeight = randomBF16(count: visionHeadDim, range: 0.5...1.5, rng: &rng)
+    let kWeight = randomBF16(count: visionHeadDim, range: 0.5...1.5, rng: &rng)
+
+    let kernel = try VisionQKNormRoPE2D(context: context)
+    let qBuf = makeFP16Buffer(context.device, q.halves)
+    let kBuf = makeFP16Buffer(context.device, k.halves)
+    let vBuf = makeFP16Buffer(context.device, v.halves)
+    guard let cmd = context.queue.makeCommandBuffer() else {
+        fatalError("command buffer allocation failed")
+    }
+    kernel.encode(commandBuffer: cmd, q: qBuf, k: kBuf, v: vBuf,
+                  qWeight: bf16Buffer(context.device, qWeight),
+                  kWeight: bf16Buffer(context.device, kWeight),
+                  patchCount: patchCount, headDim: visionHeadDim, numHeads: numHeads,
+                  patchesWide: patchesWide, theta: visionRopeTheta, eps: visionEps)
+    waitAndCheck(cmd, "vision-qk-rope \(patchesWide)x\(patchesHigh)")
+
+    let actual = Fp16Buffer.read(qBuf, count: elements)
+        + Fp16Buffer.read(kBuf, count: elements)
+        + Fp16Buffer.read(vBuf, count: elements)
+
+    func reference(_ variant: VisionTowerRef.Variant) -> [Float] {
+        let out = VisionTowerRef.qkNormRoPE2D(
+            q: q.values, k: k.values, v: v.values,
+            qWeight: qWeight.values, kWeight: kWeight.values,
+            patchCount: patchCount, headDim: visionHeadDim, numHeads: numHeads,
+            patchesWide: patchesWide, theta: visionRopeTheta, eps: visionEps,
+            variant: variant)
+        return out.q + out.k + out.v
+    }
+
+    return [
+        result("vision-qk-rope2d \(patchesWide)x\(patchesHigh) heads=\(numHeads)",
+               groupSize: context.affineGroupSize,
+               rel: relativeError(actual: actual, reference: reference(.upstream)),
+               tolerance: Double(Tolerance.fp16Reduction),
+               detail: "headDim=\(visionHeadDim) theta=\(visionRopeTheta)"),
+        detectionResult("vision-qk-rope2d/axes-swapped",
+                        groupSize: context.affineGroupSize,
+                        rel: relativeError(actual: actual, reference: reference(.ropeAxesSwapped)),
+                        floor: 0.05),
+    ]
+}
+
+/// Non-causal attention over every patch, at the tower's head dimension of 72.
+///
+/// 72 is not a multiple of the 32-lane simdgroup, so the kernel masks its
+/// per-lane slice instead of dividing it exactly; a patch count that is not a
+/// whole number of query blocks (8 per simdgroup, 8 simdgroups per group)
+/// exercises the block tail at the same time.
+/// Both specialisations are checked at every shape: the fallback is what runs
+/// if the segmented kernel is ever disabled, and a fallback that has drifted
+/// out of agreement would only show up as degraded output.
+func checkVisionAttention(context: MetalContext, patchCount: Int, numHeads: Int,
+                          seed: UInt64) throws -> [CaseResult] {
+    var rng = SeedTree(seed).key("vision-attention-p\(patchCount)-h\(numHeads)")
+    let elements = patchCount * numHeads * visionHeadDim
+    let q = randomFP16(count: elements, range: -1...1, rng: &rng)
+    let k = randomFP16(count: elements, range: -1...1, rng: &rng)
+    let v = randomFP16(count: elements, range: -1...1, rng: &rng)
+
+    let kernel = try VisionAttentionFull(context: context)
+    let qBuf = makeFP16Buffer(context.device, q.halves)
+    let kBuf = makeFP16Buffer(context.device, k.halves)
+    let vBuf = makeFP16Buffer(context.device, v.halves)
+    let reference = VisionTowerRef.attentionFull(
+        q: q.values, k: k.values, v: v.values,
+        patchCount: patchCount, headDim: visionHeadDim, numHeads: numHeads, scale: 1.0)
+
+    var cases: [CaseResult] = []
+    for wanted in [VisionAttentionFull.Path.segment8, .qBlock] {
+        let outBuf = makeFP16Buffer(context.device, count: elements)
+        guard let cmd = context.queue.makeCommandBuffer() else {
+            fatalError("command buffer allocation failed")
+        }
+        let ran = kernel.encode(commandBuffer: cmd, q: qBuf, k: kBuf, v: vBuf,
+                                out: outBuf,
+                                patchCount: patchCount, headDim: visionHeadDim,
+                                numHeads: numHeads, forcePath: wanted)
+        waitAndCheck(cmd, "vision-attention P=\(patchCount) \(wanted.rawValue)")
+        guard ran == wanted else {
+            fatalError("vision-attention: asked for \(wanted.rawValue), ran \(ran.rawValue)")
+        }
+        cases.append(
+            result("vision-attention/\(wanted.rawValue) P=\(patchCount) heads=\(numHeads)",
+                   groupSize: context.affineGroupSize,
+                   rel: relativeError(actual: Fp16Buffer.read(outBuf, count: elements),
+                                      reference: reference),
+                   tolerance: Double(Tolerance.fp16ChainedReduction),
+                   detail: "scale=1.0 groups="
+                           + "\((patchCount + VisionAttentionFull.queriesPerGroup - 1) / VisionAttentionFull.queriesPerGroup) "
+                           + "tail=\(patchCount % VisionAttentionFull.queriesPerGroup)"))
+    }
+    return cases
+}
+
+func checkVisionMLPActivation(context: MetalContext, count: Int,
+                              seed: UInt64) throws -> CaseResult {
+    var rng = SeedTree(seed).key("vision-mlp-act-\(count)")
+    let gate = randomFP16(count: count, range: -4...4, rng: &rng)
+    let up = randomFP16(count: count, range: -2...2, rng: &rng)
+
+    let kernel = try VisionMLPActivation(context: context)
+    let outBuf = makeFP16Buffer(context.device, count: count)
+    guard let cmd = context.queue.makeCommandBuffer() else {
+        fatalError("command buffer allocation failed")
+    }
+    kernel.encode(commandBuffer: cmd,
+                  gate: makeFP16Buffer(context.device, gate.halves),
+                  up: makeFP16Buffer(context.device, up.halves),
+                  out: outBuf, count: count)
+    waitAndCheck(cmd, "vision-mlp-act \(count)")
+
+    return result("vision-mlp-act n=\(count)", groupSize: context.affineGroupSize,
+                  rel: relativeError(
+                    actual: Fp16Buffer.read(outBuf, count: count),
+                    reference: VisionTowerRef.geluMultiply(gate: gate.values, up: up.values)),
+                  tolerance: Double(Tolerance.fp16Reduction),
+                  detail: "gelu_pytorch_tanh")
+}
+
+/// 3x3 average pool, `* sqrt(1152)`, then `(x - std_bias) * std_scale`.
+///
+/// The pooled grid is emitted row-major; the negative control scores the same
+/// output against a column-major reference on a non-square grid, where the two
+/// orders disagree everywhere off the diagonal.
+func checkVisionPoolStandardize(context: MetalContext, patchesWide: Int, patchesHigh: Int,
+                                seed: UInt64) throws -> [CaseResult] {
+    var rng = SeedTree(seed).key("vision-pool-\(patchesWide)x\(patchesHigh)")
+    let d = 128
+    let patchCount = patchesWide * patchesHigh
+    let kernelSize = 3
+    let cells = (patchesWide / kernelSize) * (patchesHigh / kernelSize)
+
+    let hidden = randomFP16(count: patchCount * d, range: -1...1, rng: &rng)
+    let stdScale = randomBF16(count: d, range: 0.5...1.5, rng: &rng)
+    let stdBias = randomBF16(count: d, range: -0.5...0.5, rng: &rng)
+
+    let kernel = try VisionPoolStandardize(context: context)
+    let outBuf = makeFP16Buffer(context.device, count: cells * d)
+    guard let cmd = context.queue.makeCommandBuffer() else {
+        fatalError("command buffer allocation failed")
+    }
+    kernel.encode(commandBuffer: cmd,
+                  h: makeFP16Buffer(context.device, hidden.halves),
+                  out: outBuf,
+                  stdScale: bf16Buffer(context.device, stdScale),
+                  stdBias: bf16Buffer(context.device, stdBias),
+                  d: d, patchesWide: patchesWide, patchesHigh: patchesHigh,
+                  kernelSize: kernelSize, rootHidden: Float(d).squareRoot(),
+                  standardize: true)
+    waitAndCheck(cmd, "vision-pool \(patchesWide)x\(patchesHigh)")
+
+    let actual = Fp16Buffer.read(outBuf, count: cells * d)
+    func reference(_ variant: VisionTowerRef.Variant) -> [Float] {
+        VisionTowerRef.poolStandardize(
+            hidden: hidden.values, d: d,
+            patchesWide: patchesWide, patchesHigh: patchesHigh, kernelSize: kernelSize,
+            stdScale: stdScale.values, stdBias: stdBias.values, standardize: true,
+            variant: variant)
+    }
+
+    return [
+        result("vision-pool-std \(patchesWide)x\(patchesHigh)",
+               groupSize: context.affineGroupSize,
+               rel: relativeError(actual: actual, reference: reference(.upstream)),
+               tolerance: Double(Tolerance.fp16Reduction),
+               detail: "cells=\(cells) d=\(d)"),
+        detectionResult("vision-pool-std/column-major",
+                        groupSize: context.affineGroupSize,
+                        rel: relativeError(actual: actual, reference: reference(.poolColumnMajor)),
+                        floor: 0.05),
+    ]
+}
+
+// MARK: - Vision throughput
+
+/// `PLAN_VISION.md` §8 makes the BF16 QMM's measured throughput the gate on the
+/// tower design: below 1.0 TFLOP/s the 3.54 TFLOP of a 280-soft-token image
+/// costs more than 3.5 s and the default soft-token count has to come down.
+/// This measures it at the tower's real shapes rather than deriving it.
+struct BenchRow {
+    let name: String
+    let flops: Double
+    let seconds: Double
+    let count: Int
+
+    var gflopsPerSecond: Double { flops / seconds / 1e9 }
+}
+
+/// GPU time for `iterations` back-to-back dispatches in one command buffer,
+/// after a warm-up buffer. `gpuEndTime - gpuStartTime` excludes the host-side
+/// encode and the queue wait, which at these shapes would otherwise dominate.
+func gpuSeconds(context: MetalContext, iterations: Int,
+                label: String,
+                encode: (MTLCommandBuffer) -> Void) -> Double {
+    guard let warmup = context.queue.makeCommandBuffer() else {
+        fatalError("command buffer allocation failed")
+    }
+    encode(warmup)
+    waitAndCheck(warmup, "\(label) warmup")
+
+    guard let cmd = context.queue.makeCommandBuffer() else {
+        fatalError("command buffer allocation failed")
+    }
+    for _ in 0..<iterations { encode(cmd) }
+    waitAndCheck(cmd, label)
+    return (cmd.gpuEndTime - cmd.gpuStartTime) / Double(iterations)
+}
+
+func benchVisionQMM(context: MetalContext, name: String, t: Int, n: Int, k: Int,
+                    count: Int, iterations: Int) throws -> BenchRow {
+    var rng = SeedTree(0x5115).key("bench-qmm-\(t)-\(n)-\(k)")
+    let weights = randomBF16(count: n * k, range: -0.5...0.5, rng: &rng)
+    let x = randomFP16(count: t * k, range: -1...1, rng: &rng)
+    let kernel = try VisionBF16QMM(context: context)
+    let wBuf = bf16Buffer(context.device, weights)
+    let xBuf = makeFP16Buffer(context.device, x.halves)
+    let yBuf = makeFP16Buffer(context.device, count: t * n)
+
+    let seconds = gpuSeconds(context: context, iterations: iterations,
+                             label: "bench \(name)") { cmd in
+        kernel.encode(commandBuffer: cmd, weights: wBuf, x: xBuf, y: yBuf,
+                      t: t, n: n, k: k)
+    }
+    return BenchRow(name: name, flops: 2.0 * Double(t) * Double(n) * Double(k),
+                    seconds: seconds, count: count)
+}
+
+func benchVisionAttention(context: MetalContext, patchCount: Int, numHeads: Int,
+                          path: VisionAttentionFull.Path,
+                          iterations: Int) throws -> BenchRow {
+    var rng = SeedTree(0x5116).key("bench-attn-\(patchCount)")
+    let elements = patchCount * numHeads * visionHeadDim
+    let q = randomFP16(count: elements, range: -1...1, rng: &rng)
+    let kernel = try VisionAttentionFull(context: context)
+    let qBuf = makeFP16Buffer(context.device, q.halves)
+    let outBuf = makeFP16Buffer(context.device, count: elements)
+
+    let seconds = gpuSeconds(context: context, iterations: iterations,
+                             label: "bench attention \(path.rawValue)") { cmd in
+        kernel.encode(commandBuffer: cmd, q: qBuf, k: qBuf, v: qBuf, out: outBuf,
+                      patchCount: patchCount, headDim: visionHeadDim,
+                      numHeads: numHeads, forcePath: path)
+    }
+    // QK^T and the value accumulation, both P x P x headDim per head.
+    let flops = 4.0 * Double(patchCount) * Double(patchCount)
+        * Double(visionHeadDim) * Double(numHeads)
+    return BenchRow(name: "attention/\(path.rawValue)", flops: flops,
+                    seconds: seconds, count: 1)
+}
+
+/// The two memory-bound passes between the projections. They carry no useful
+/// FLOP count, so they are reported in milliseconds and folded into the tower
+/// total rather than into any throughput figure.
+func benchVisionEpilogues(context: MetalContext, patchCount: Int, numHeads: Int,
+                          intermediate: Int,
+                          iterations: Int) throws -> [BenchRow] {
+    var rng = SeedTree(0x5117).key("bench-epilogue-\(patchCount)")
+    let elements = patchCount * numHeads * visionHeadDim
+    let data = randomFP16(count: elements, range: -1...1, rng: &rng)
+    let weight = randomBF16(count: visionHeadDim, range: 0.5...1.5, rng: &rng)
+    let epilogue = try VisionQKNormRoPE2D(context: context)
+    let qBuf = makeFP16Buffer(context.device, data.halves)
+    let kBuf = makeFP16Buffer(context.device, data.halves)
+    let vBuf = makeFP16Buffer(context.device, data.halves)
+    let weightBuf = bf16Buffer(context.device, weight)
+    let epilogueSeconds = gpuSeconds(context: context, iterations: iterations,
+                                     label: "bench qk-norm-rope") { cmd in
+        epilogue.encode(commandBuffer: cmd, q: qBuf, k: kBuf, v: vBuf,
+                        qWeight: weightBuf, kWeight: weightBuf,
+                        patchCount: patchCount, headDim: visionHeadDim,
+                        numHeads: numHeads, patchesWide: patchCount / 9,
+                        theta: visionRopeTheta, eps: visionEps)
+    }
+
+    let actCount = patchCount * intermediate
+    let gate = randomFP16(count: actCount, range: -4...4, rng: &rng)
+    let activation = try VisionMLPActivation(context: context)
+    let gateBuf = makeFP16Buffer(context.device, gate.halves)
+    let outBuf = makeFP16Buffer(context.device, count: actCount)
+    let actSeconds = gpuSeconds(context: context, iterations: iterations,
+                                label: "bench mlp-act") { cmd in
+        activation.encode(commandBuffer: cmd, gate: gateBuf, up: gateBuf, out: outBuf,
+                          count: actCount)
+    }
+
+    return [BenchRow(name: "qk-norm+rope2d", flops: 0, seconds: epilogueSeconds, count: 1),
+            BenchRow(name: "mlp act", flops: 0, seconds: actSeconds, count: 1)]
+}
+
+func runVisionBench(context: MetalContext, softTokens: Int) throws {
+    let patches = softTokens * 9
+    let heads = visionHidden / visionHeadDim
+    let intermediate = 4304
+    let layers = 27
+
+    print("=== vision tower throughput (S=\(softTokens), P=\(patches)) ===")
+    var perLayer: [BenchRow] = []
+    perLayer.append(try benchVisionQMM(context: context, name: "q/k/v/o proj",
+                                       t: patches, n: visionHidden, k: visionHidden,
+                                       count: 4, iterations: 20))
+    perLayer.append(try benchVisionQMM(context: context, name: "mlp gate/up",
+                                       t: patches, n: intermediate, k: visionHidden,
+                                       count: 2, iterations: 10))
+    perLayer.append(try benchVisionQMM(context: context, name: "mlp down",
+                                       t: patches, n: visionHidden, k: intermediate,
+                                       count: 1, iterations: 10))
+    perLayer.append(try benchVisionAttention(context: context, patchCount: patches,
+                                             numHeads: heads, path: .segment8,
+                                             iterations: 5))
+    perLayer.append(contentsOf: try benchVisionEpilogues(context: context,
+                                                         patchCount: patches,
+                                                         numHeads: heads,
+                                                         intermediate: intermediate,
+                                                         iterations: 20))
+    // The fallback, measured for the record but not counted into the tower.
+    let attentionFallback = try benchVisionAttention(context: context, patchCount: patches,
+                                                     numHeads: heads, path: .qBlock,
+                                                     iterations: 3)
+
+    let once: [BenchRow] = [
+        try benchVisionQMM(context: context, name: "patch embed",
+                           t: patches, n: visionHidden, k: 768,
+                           count: 1, iterations: 20),
+        try benchVisionQMM(context: context, name: "projector",
+                           t: softTokens, n: 2816, k: visionHidden,
+                           count: 1, iterations: 20),
+    ]
+
+    func show(_ row: BenchRow, multiplier: Int) {
+        let ms = row.seconds * 1e3
+        let rate = row.flops > 0
+            ? String(format: "%8.1f GFLOP/s  (%.1f GFLOP)", row.gflopsPerSecond,
+                     row.flops / 1e9)
+            : "       — GFLOP/s  (memory bound)"
+        print(String(format: "  %-18s x%-3d  %8.3f ms  %@",
+                     (row.name as NSString).utf8String!, multiplier, ms, rate))
+    }
+
+    for row in perLayer { show(row, multiplier: row.count * layers) }
+    for row in once { show(row, multiplier: 1) }
+    show(attentionFallback, multiplier: 0)
+
+    let projectionRows = perLayer.filter { $0.flops > 0 && !$0.name.hasPrefix("attention") }
+    let projectionFlops = projectionRows.reduce(0.0) { $0 + $1.flops * Double($1.count) }
+        * Double(layers)
+    let projectionSeconds = projectionRows.reduce(0.0) { $0 + $1.seconds * Double($1.count) }
+        * Double(layers)
+    let towerFlops = perLayer.reduce(0.0) { $0 + $1.flops * Double($1.count) } * Double(layers)
+        + once.reduce(0.0) { $0 + $1.flops }
+    let towerSeconds = perLayer.reduce(0.0) { $0 + $1.seconds * Double($1.count) } * Double(layers)
+        + once.reduce(0.0) { $0 + $1.seconds }
+
+    print("")
+    print(String(format: "  BF16 QMM (projections only): %.2f TFLOP / %.2f s = %.2f TFLOP/s",
+                 projectionFlops / 1e12, projectionSeconds, projectionFlops / projectionSeconds / 1e12))
+    print(String(format: "  whole tower, one image:      %.2f TFLOP / %.2f s = %.2f TFLOP/s",
+                 towerFlops / 1e12, towerSeconds, towerFlops / towerSeconds / 1e12))
+    let gate = projectionFlops / projectionSeconds / 1e12
+    print(String(format: "  PLAN_VISION §8 gate (BF16 QMM >= 1.0 TFLOP/s): %@ (%.2f)",
+                 gate >= 1.0 ? "PASS" : "FAIL", gate))
+}
+
 // MARK: - Driver
 
 let arguments = CommandLine.arguments
@@ -671,8 +1211,29 @@ if let index = arguments.firstIndex(of: "--group-size"),
    let value = Int(arguments[index + 1]) {
     groupSizes = [value]
 }
+// `--vision-only` skips the INT4 suite; `--bench` adds the tower's throughput
+// measurement, which takes tens of seconds and is not a pass/fail check.
+let visionOnly = arguments.contains("--vision-only")
+let runBench = arguments.contains("--bench")
+var benchSoftTokens = 280
+if let index = arguments.firstIndex(of: "--bench-soft-tokens"),
+   index + 1 < arguments.count,
+   let value = Int(arguments[index + 1]) {
+    benchSoftTokens = value
+}
 
 var results: [CaseResult] = []
+
+func printCases(_ cases: [CaseResult]) {
+    for entry in cases {
+        let status = entry.passed ? "PASS" : "FAIL"
+        let rel = String(format: "%.3e", entry.relativeError)
+        let tol = String(format: "%.1e", entry.tolerance)
+        print("  \(status)  \(entry.name)  rel=\(rel) tol=\(tol)  \(entry.detail)")
+    }
+}
+
+if !visionOnly {
 
 for groupSize in groupSizes {
     print("=== affine group size \(groupSize) ===")
@@ -702,19 +1263,53 @@ for groupSize in groupSizes {
     pass.append(try checkPrefillInt4QMM(t: 7, n: 64, k: 128,
                                         groupSize: groupSize, seed: 0xF3))
 
-    for entry in pass {
-        let status = entry.passed ? "PASS" : "FAIL"
-        let rel = String(format: "%.3e", entry.relativeError)
-        let tol = String(format: "%.1e", entry.tolerance)
-        print("  \(status)  \(entry.name)  rel=\(rel) tol=\(tol)  \(entry.detail)")
-    }
+    printCases(pass)
     results.append(contentsOf: pass)
+}
+}
+
+// The tower's weights are BF16 and its kernels never read an affine group, so
+// this suite runs once. It is checked at the first requested group size only to
+// share one compiled shader library with the run above.
+do {
+    let context = try makeContext(groupSize: groupSizes[0])
+    print("=== vision tower (BF16; independent of the affine group size) ===")
+    var pass: [CaseResult] = []
+    // Whole tiles, then the three tails the tower actually produces: N = 4304
+    // (MLP gate/up), K = 4304 (MLP down, 16 short of a whole K tile), and a
+    // small shape whose T, N and K all fall mid-tile with K under one tile.
+    pass.append(try checkVisionQMM(context: context, t: 64, n: 1152, k: 1152, seed: 0x71))
+    pass.append(try checkVisionQMM(context: context, t: 131, n: 4304, k: 1152, seed: 0x72))
+    pass.append(try checkVisionQMM(context: context, t: 37, n: 1152, k: 4304, seed: 0x73))
+    pass.append(try checkVisionQMM(context: context, t: 7, n: 100, k: 72, seed: 0x74))
+    // Non-square grids throughout: a square one hides an x/y transposition.
+    pass.append(contentsOf: try checkVisionPatchEmbed(context: context,
+                                                      patchesWide: 9, patchesHigh: 5,
+                                                      seed: 0x75))
+    pass.append(contentsOf: try checkVisionQKNormRoPE(context: context,
+                                                      patchesWide: 9, patchesHigh: 5,
+                                                      numHeads: 4, seed: 0x76))
+    pass.append(contentsOf: try checkVisionAttention(context: context, patchCount: 48,
+                                                     numHeads: 3, seed: 0x77))
+    pass.append(contentsOf: try checkVisionAttention(context: context, patchCount: 200,
+                                                     numHeads: 2, seed: 0x78))
+    pass.append(try checkVisionMLPActivation(context: context, count: 4304 * 7, seed: 0x79))
+    pass.append(contentsOf: try checkVisionPoolStandardize(context: context,
+                                                           patchesWide: 9, patchesHigh: 6,
+                                                           seed: 0x7A))
+    printCases(pass)
+    results.append(contentsOf: pass)
+
+    if runBench {
+        print("")
+        try runVisionBench(context: context, softTokens: benchSoftTokens)
+    }
 }
 
 let failures = results.filter { !$0.passed }
 print("")
 if failures.isEmpty {
-    print("PASS  \(results.count) cases across group sizes \(groupSizes)")
+    print("PASS  \(results.count) cases (group sizes \(visionOnly ? [] : groupSizes) + vision)")
     exit(0)
 }
 print("FAIL  \(failures.count)/\(results.count) cases")
