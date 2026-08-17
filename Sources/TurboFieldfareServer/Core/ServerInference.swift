@@ -250,12 +250,19 @@ struct StructuredOutputFailure: Error, CustomDebugStringConvertible, Sendable {
 public struct ServerPreparedRequest: Sendable {
     public let request: ValidatedChatRequest
     fileprivate let promptIDs: [Int32]?
+    /// Set when the request carried images. Built here rather than at generation
+    /// time so the resize and patchify run before the coordinator's single
+    /// generation slot is taken, not while holding it.
+    fileprivate let vision: VisionPrefillInput?
 
     public var promptTokenCount: Int? { promptIDs?.count }
 
-    init(request: ValidatedChatRequest, promptIDs: [Int32]? = nil) {
+    init(request: ValidatedChatRequest,
+         promptIDs: [Int32]? = nil,
+         vision: VisionPrefillInput? = nil) {
         self.request = request
         self.promptIDs = promptIDs
+        self.vision = vision
     }
 }
 
@@ -384,13 +391,15 @@ public actor ServerModelSession: ServerInferenceBackend {
     private let maxContext: Int
     private let promptCacheMode: ServerPromptCacheMode
     private let promptCacheDomain: ServerPromptCacheDomain
+    private let imagePolicy: ServerImagePolicy
     private var promptCache = ServerPromptCache()
 
     public static func load(modelDirectory: URL,
                             maxContext: Int,
                             promptCacheMode: ServerPromptCacheMode = .singlePrefix,
                             runtimeConfiguration: RuntimeConfiguration,
-                            integrityPolicy: ModelIntegrityPolicy = .fullSha256) async throws -> ServerModelSession {
+                            integrityPolicy: ModelIntegrityPolicy = .fullSha256,
+                            imagePolicy: ServerImagePolicy = .default) async throws -> ServerModelSession {
         let tokenizerFolder = GFTokenizer.tokenizerFolder(forModelDirectory: modelDirectory)
         guard let tokenizerFolder else {
             throw GFTokenizerError.missingToolTemplate
@@ -443,7 +452,8 @@ public actor ServerModelSession: ServerInferenceBackend {
                                   prefillConfig: runtime.prefillConfig,
                                   maxContext: maxContext,
                                   promptCacheMode: promptCacheMode,
-                                  promptCacheDomain: promptCacheDomain)
+                                  promptCacheDomain: promptCacheDomain,
+                                  imagePolicy: imagePolicy)
     }
 
     private init(context: MetalContext,
@@ -454,7 +464,8 @@ public actor ServerModelSession: ServerInferenceBackend {
                  prefillConfig: PrefillRuntimeConfig,
                  maxContext: Int,
                  promptCacheMode: ServerPromptCacheMode,
-                 promptCacheDomain: ServerPromptCacheDomain) {
+                 promptCacheDomain: ServerPromptCacheDomain,
+                 imagePolicy: ServerImagePolicy) {
         self.context = context
         self.model = model
         self.tokenizer = tokenizer
@@ -464,6 +475,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         self.maxContext = maxContext
         self.promptCacheMode = promptCacheMode
         self.promptCacheDomain = promptCacheDomain
+        self.imagePolicy = imagePolicy
     }
 
     public func generate(
@@ -474,8 +486,25 @@ public actor ServerModelSession: ServerInferenceBackend {
         return try await generate(prepared, onEvent: onEvent)
     }
 
+    /// Whether the prompt cache may read from or write to this generation.
+    ///
+    /// An image request is excluded on both sides. The cache is keyed on the
+    /// *text* of the messages (`ServerPromptCache.match`), so two requests with
+    /// the same words and different pictures are indistinguishable to it — a
+    /// hit would answer about the wrong image, and a published entry would let a
+    /// later text-only turn continue from KV that an image wrote. A served
+    /// prefix would also shift every image span, which `runRawCompletion`
+    /// refuses outright (PLAN_VISION §4-6).
+    static func promptCacheParticipates(mode: ServerPromptCacheMode,
+                                        vision: VisionPrefillInput?) -> Bool {
+        mode == .singlePrefix && vision == nil
+    }
+
     public func prepare(_ request: ValidatedChatRequest) async throws -> ServerPreparedRequest {
-        ServerPreparedRequest(request: request, promptIDs: try renderPrompt(request))
+        let rendered = try renderPrompt(request)
+        return ServerPreparedRequest(request: request,
+                                     promptIDs: rendered.promptIDs,
+                                     vision: rendered.vision)
     }
 
     public func generate(
@@ -491,11 +520,23 @@ public actor ServerModelSession: ServerInferenceBackend {
             }
         }
         let needsToolTemplate = usesToolTemplate(request)
-        let promptIDs = try prepared.promptIDs ?? renderPrompt(request)
+        let promptIDs: [Int32]
+        let vision: VisionPrefillInput?
+        if let alreadyRendered = prepared.promptIDs {
+            promptIDs = alreadyRendered
+            vision = prepared.vision
+        } else {
+            let rendered = try renderPrompt(request)
+            promptIDs = rendered.promptIDs
+            vision = rendered.vision
+        }
 
         let effectivePromptIDs: [Int32]
         let completionStart: RawCompletionStart
-        if promptCacheMode == .singlePrefix {
+        // Falling into the else branch for an image request is required rather
+        // than incidental: it invalidates whatever was cached, and this
+        // generation is about to overwrite that KV.
+        if Self.promptCacheParticipates(mode: promptCacheMode, vision: vision) {
             switch promptCache.match(
                 domain: promptCacheDomain,
                 request: request,
@@ -546,6 +587,7 @@ public actor ServerModelSession: ServerInferenceBackend {
             context: context,
             scratch: scratch,
             prefillConfig: prefillConfig,
+            vision: vision,
             start: completionStart,
             shouldStop: { shouldStop }) { progress in
                 guard decodingError == nil else { return }
@@ -641,7 +683,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         } else {
             reason = "stop"
         }
-        if promptCacheMode == .singlePrefix {
+        if Self.promptCacheParticipates(mode: promptCacheMode, vision: vision) {
             promptCache.publish(
                 domain: promptCacheDomain,
                 request: request,
@@ -661,9 +703,16 @@ public actor ServerModelSession: ServerInferenceBackend {
                                cachedTokens: result.cachedPromptTokens))
     }
 
-    private func renderPrompt(_ request: ValidatedChatRequest) throws -> [Int32] {
+    private func renderPrompt(
+        _ request: ValidatedChatRequest
+    ) throws -> (promptIDs: [Int32], vision: VisionPrefillInput?) {
         let promptIDs: [Int32]
-        if usesToolTemplate(request) {
+        var vision: VisionPrefillInput?
+        if let requested = request.vision {
+            let prepared = try renderVisionPrompt(requested)
+            promptIDs = prepared.tokens
+            vision = prepared.vision
+        } else if usesToolTemplate(request) {
             promptIDs = try tokenizer.encodeToolChat(
                 messages: request.messages,
                 tools: request.tools)
@@ -677,7 +726,58 @@ public actor ServerModelSession: ServerInferenceBackend {
                 param: "messages",
                 code: "context_length_exceeded")
         }
-        return promptIDs
+        return (promptIDs, vision)
+    }
+
+    /// Decode, resize, and patchify the attached images, then widen each
+    /// `<|image|>` placeholder to the span the tower will fill.
+    ///
+    /// Every failure here is the caller's request being unsatisfiable — an
+    /// undecodable JPEG, a model with no tower, prefill turned off — so each is
+    /// mapped to a typed request error. Letting a `VisionError` escape would
+    /// report a 400 as a 500.
+    private func renderVisionPrompt(
+        _ requested: ValidatedVisionRequest
+    ) throws -> (tokens: [Int32], vision: VisionPrefillInput) {
+        guard model.hasVisionTower else {
+            throw ServerRequestError.invalid(
+                message: "this model was installed without a vision tower; add one with "
+                    + "`TurboFieldfareRepack --add-vision --input-gturbo <model.gturbo>`",
+                param: "messages",
+                code: "vision_not_installed")
+        }
+        // The unchunked replay path embeds one token at a time and has nowhere
+        // to scatter a soft token into (`RawCompletion`), so an image would fail
+        // deep inside prefill. Refuse it here, where the message can name the
+        // flag that caused it.
+        guard prefillConfig.mode == .chunked else {
+            throw ServerRequestError.invalid(
+                message: "images require chunked prefill; this server was started with --prefill off",
+                param: "messages",
+                code: "vision_prefill_disabled")
+        }
+        do {
+            let config = try VisionPreprocessorConfig(maxSoftTokens: imagePolicy.maxSoftTokens)
+            let images = try requested.images.map {
+                try VisionImagePreprocessor.preprocess(data: $0.data, config: config)
+            }
+            let rendered = try tokenizer.applyChatTemplate(multimodal: requested.messages)
+            let tokens = tokenizer.encode(rendered, addBOS: false)
+            let ids = try VisionMediaTokenIDs(tokenizer: tokenizer)
+            return try VisionPromptAssembler.makePrefillPrompt(tokens: tokens,
+                                                               images: images,
+                                                               ids: ids)
+        } catch let error as VisionError {
+            throw ServerRequestError.invalid(
+                message: "\(error)",
+                param: "messages",
+                code: "invalid_image")
+        } catch let error as GFTokenizerError {
+            throw ServerRequestError.invalid(
+                message: "\(error)",
+                param: "messages",
+                code: "invalid_message")
+        }
     }
 
     private func usesToolTemplate(_ request: ValidatedChatRequest) -> Bool {

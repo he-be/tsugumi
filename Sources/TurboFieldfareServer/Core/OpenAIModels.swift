@@ -20,21 +20,47 @@ public struct OpenAIErrorEnvelope: Codable, Equatable, Sendable {
     }
 }
 
-public struct OpenAITextPart: Codable, Equatable, Sendable {
+public struct OpenAIImageURL: Codable, Equatable, Sendable {
+    public let url: String
+    /// OpenAI's resolution hint. Accepted and ignored: the soft-token count
+    /// follows the image's aspect ratio here (PLAN_VISION §2-1), so there is
+    /// nothing for `low`/`high` to select. Rejecting it would break clients that
+    /// send the field by default.
+    public let detail: String?
+
+    public init(url: String, detail: String? = nil) {
+        self.url = url
+        self.detail = detail
+    }
+}
+
+public struct OpenAIContentPart: Codable, Equatable, Sendable {
     public let type: String
     public let text: String?
+    public let imageURL: OpenAIImageURL?
+
+    enum CodingKeys: String, CodingKey {
+        case type, text
+        case imageURL = "image_url"
+    }
+
+    public init(type: String, text: String? = nil, imageURL: OpenAIImageURL? = nil) {
+        self.type = type
+        self.text = text
+        self.imageURL = imageURL
+    }
 }
 
 public enum OpenAIMessageContent: Codable, Equatable, Sendable {
     case text(String)
-    case parts([OpenAITextPart])
+    case parts([OpenAIContentPart])
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let text = try? container.decode(String.self) {
             self = .text(text)
         } else {
-            self = .parts(try container.decode([OpenAITextPart].self))
+            self = .parts(try container.decode([OpenAIContentPart].self))
         }
     }
 
@@ -46,18 +72,56 @@ public enum OpenAIMessageContent: Codable, Equatable, Sendable {
         }
     }
 
-    func textValue() throws -> String {
+    /// The parts of this body, in order, with each image resolved to bytes.
+    ///
+    /// `imageIndex` is the running per-request image number so the error
+    /// messages can name which image was refused; it is advanced by one per
+    /// image part.
+    func resolvedParts(policy: ServerImagePolicy,
+                       imageIndex: inout Int,
+                       images: inout [ServerImageAttachment]) throws -> [GFTokenizer.ContentPart] {
         switch self {
         case .text(let text):
-            return text
+            return [.text(text)]
         case .parts(let parts):
-            guard parts.allSatisfy({ $0.type == "text" && $0.text != nil }) else {
-                throw ServerRequestError.invalid(
-                    message: "only text content parts are supported",
-                    param: "messages",
-                    code: "unsupported_content")
+            var resolved: [GFTokenizer.ContentPart] = []
+            for part in parts {
+                switch part.type {
+                case "text":
+                    guard let text = part.text else {
+                        throw ServerRequestError.invalid(
+                            message: "text content part is missing \"text\"",
+                            param: "messages",
+                            code: "unsupported_content")
+                    }
+                    resolved.append(.text(text))
+                case "image_url":
+                    guard let imageURL = part.imageURL else {
+                        throw ServerRequestError.invalid(
+                            message: "image_url content part is missing \"image_url\"",
+                            param: "messages",
+                            code: "unsupported_content")
+                    }
+                    guard images.count < policy.maxImagesPerRequest else {
+                        throw ServerRequestError.payloadTooLarge(
+                            message: "a request may attach at most "
+                                + "\(policy.maxImagesPerRequest) images",
+                            param: "messages",
+                            code: "too_many_images")
+                    }
+                    images.append(try ServerImageDecoder.attachment(fromImageURL: imageURL.url,
+                                                                    policy: policy,
+                                                                    index: imageIndex))
+                    imageIndex += 1
+                    resolved.append(.image)
+                default:
+                    throw ServerRequestError.invalid(
+                        message: "unsupported content part type \(part.type)",
+                        param: "messages",
+                        code: "unsupported_content")
+                }
             }
-            return parts.compactMap(\.text).joined()
+            return resolved
         }
     }
 }
@@ -226,12 +290,16 @@ public struct OpenAIModelList: Codable, Equatable, Sendable {
 
 public enum ServerRequestError: Error, Equatable, Sendable {
     case invalid(message: String, param: String?, code: String)
+    /// Refused for size rather than for shape — answered with 413, not 400.
+    case payloadTooLarge(message: String, param: String?, code: String)
     case unknownModel
     case queueFull
 
     public var envelope: OpenAIErrorEnvelope {
         switch self {
         case .invalid(let message, let param, let code):
+            OpenAIErrorEnvelope(message: message, param: param, code: code)
+        case .payloadTooLarge(let message, let param, let code):
             OpenAIErrorEnvelope(message: message, param: param, code: code)
         case .unknownModel:
             OpenAIErrorEnvelope(message: "requested model is not available",
@@ -243,13 +311,49 @@ public enum ServerRequestError: Error, Equatable, Sendable {
     }
 }
 
+/// The image side of a validated request: the turns as parts, and the bytes.
+///
+/// Present only when the request actually carries an image. Its presence is what
+/// turns off the prompt cache and switches rendering to the multimodal template,
+/// so a text-only request keeps every byte of its old path.
+public struct ValidatedVisionRequest: Sendable {
+    public let messages: [GFTokenizer.MultimodalMessage]
+    public let images: [ServerImageAttachment]
+
+    public init(messages: [GFTokenizer.MultimodalMessage],
+                images: [ServerImageAttachment]) {
+        self.messages = messages
+        self.images = images
+    }
+}
+
 public struct ValidatedChatRequest: Sendable {
+    /// The text projection of the conversation. When `vision != nil` the image
+    /// parts are *not* in here — rendering goes through `vision.messages`
+    /// instead, and the prompt cache (which keys on this array) is off.
     public let messages: [GFTokenizer.Message]
     public let tools: [GFTokenizer.FunctionDefinition]
     public let stream: Bool
     public let includeUsage: Bool
     public let generationConfig: GenerationConfig
     public let maximumCompletionTokens: Int
+    public let vision: ValidatedVisionRequest?
+
+    public init(messages: [GFTokenizer.Message],
+                tools: [GFTokenizer.FunctionDefinition],
+                stream: Bool,
+                includeUsage: Bool,
+                generationConfig: GenerationConfig,
+                maximumCompletionTokens: Int,
+                vision: ValidatedVisionRequest? = nil) {
+        self.messages = messages
+        self.tools = tools
+        self.stream = stream
+        self.includeUsage = includeUsage
+        self.generationConfig = generationConfig
+        self.maximumCompletionTokens = maximumCompletionTokens
+        self.vision = vision
+    }
 }
 
 private enum OpenAIToolName {
@@ -278,7 +382,8 @@ private enum OpenAIToolName {
 
 public enum OpenAIRequestValidator {
     public static func validate(_ request: OpenAIChatRequest,
-                                modelID: String) throws -> ValidatedChatRequest {
+                                modelID: String,
+                                imagePolicy: ServerImagePolicy = .default) throws -> ValidatedChatRequest {
         guard request.model == modelID else { throw ServerRequestError.unknownModel }
         guard request.n == nil || request.n == 1 else {
             throw invalid("only n=1 is supported", "n", "unsupported_value")
@@ -338,7 +443,19 @@ public enum OpenAIRequestValidator {
         }
 
         let tools = try (includeTools ? request.tools ?? [] : []).map(validateTool)
-        let messages = try validateMessages(request.messages)
+        let validated = try validateMessages(request.messages, imagePolicy: imagePolicy)
+        if validated.vision != nil {
+            guard tools.isEmpty else {
+                throw invalid("images cannot be combined with tools",
+                              "messages", "unsupported_content")
+            }
+            guard !validated.messages.contains(where: {
+                $0.role == .tool || $0.role == .developer || !$0.toolCalls.isEmpty
+            }) else {
+                throw invalid("images cannot be combined with tool calls or developer turns",
+                              "messages", "unsupported_content")
+            }
+        }
         let config = GenerationConfig(maxNewTokens: maximum,
                                       temperature: temperature,
                                       topK: topK,
@@ -346,12 +463,13 @@ public enum OpenAIRequestValidator {
                                       repetitionPenalty: repetitionPenalty,
                                       seed: request.seed,
                                       stopStrings: request.stop?.values ?? [])
-        return ValidatedChatRequest(messages: messages,
+        return ValidatedChatRequest(messages: validated.messages,
                                     tools: tools,
                                     stream: request.stream ?? false,
                                     includeUsage: request.streamOptions?.includeUsage ?? false,
                                     generationConfig: config,
-                                    maximumCompletionTokens: maximum)
+                                    maximumCompletionTokens: maximum,
+                                    vision: validated.vision)
     }
 
     private static func validateTool(_ tool: OpenAITool) throws -> GFTokenizer.FunctionDefinition {
@@ -410,12 +528,23 @@ public enum OpenAIRequestValidator {
         }
     }
 
-    private static func validateMessages(_ input: [OpenAIChatMessage]) throws -> [GFTokenizer.Message] {
+    private struct ValidatedMessages {
+        let messages: [GFTokenizer.Message]
+        let vision: ValidatedVisionRequest?
+    }
+
+    private static func validateMessages(
+        _ input: [OpenAIChatMessage],
+        imagePolicy: ServerImagePolicy
+    ) throws -> ValidatedMessages {
         guard !input.isEmpty else {
             throw invalid("messages must not be empty", "messages", "invalid_message")
         }
         var knownCalls: [String: (name: String, resolved: Bool)] = [:]
         var result: [GFTokenizer.Message] = []
+        var multimodal: [GFTokenizer.MultimodalMessage] = []
+        var images: [ServerImageAttachment] = []
+        var imageIndex = 0
         var sawConversationMessage = false
         for message in input {
             guard let role = GFTokenizer.Role(rawValue: message.role) else {
@@ -430,7 +559,21 @@ public enum OpenAIRequestValidator {
             } else {
                 sawConversationMessage = true
             }
-            let content = try message.content?.textValue()
+            let parts = try message.content?.resolvedParts(policy: imagePolicy,
+                                                           imageIndex: &imageIndex,
+                                                           images: &images)
+            let turnImages = parts?.reduce(into: 0) { $0 += ($1 == .image ? 1 : 0) } ?? 0
+            guard turnImages == 0 || role == .user else {
+                throw invalid("images may only appear in user turns",
+                              "messages", "unsupported_content")
+            }
+            multimodal.append(GFTokenizer.MultimodalMessage(role: role, parts: parts ?? []))
+            let content = parts.map { parts in
+                parts.compactMap { part -> String? in
+                    if case .text(let text) = part { return text }
+                    return nil
+                }.joined()
+            }
             let calls: [GFTokenizer.HistoricalToolCall] = try (message.toolCalls ?? []).map { call in
                 guard role == .assistant, call.type == "function",
                       !call.id.isEmpty, knownCalls[call.id] == nil else {
@@ -479,7 +622,12 @@ public enum OpenAIRequestValidator {
                                               toolCallID: message.toolCallID,
                                               name: message.name))
         }
-        return result
+        guard !images.isEmpty else {
+            return ValidatedMessages(messages: result, vision: nil)
+        }
+        return ValidatedMessages(
+            messages: result,
+            vision: ValidatedVisionRequest(messages: multimodal, images: images))
     }
 
     private static func invalid(_ message: String,

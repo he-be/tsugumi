@@ -5,14 +5,30 @@ import NIOPosix
 import Synchronization
 import TurboFieldfare
 
+extension ServerRequestError {
+    /// The status each refusal is answered with. Kept next to the HTTP layer
+    /// because the error type itself is transport-agnostic.
+    var httpStatus: HTTPResponseStatus {
+        switch self {
+        case .unknownModel: .notFound
+        case .queueFull: .tooManyRequests
+        case .payloadTooLarge: .payloadTooLarge
+        case .invalid: .badRequest
+        }
+    }
+}
+
 public actor TurboFieldfareHTTPServer {
-    public static let maximumBodyBytes = 1_048_576
+    /// The text-only body ceiling. Kept as the name it always had; a server
+    /// configured for images raises its own ceiling from `ServerImagePolicy`.
+    public static let maximumBodyBytes = ServerImagePolicy.textBodyBytes
 
     private let group: MultiThreadedEventLoopGroup
     private let modelID: String
     private let backend: any ServerInferenceBackend
     private let coordinator: ServerCoordinator
     private let heartbeatInterval: TimeAmount
+    private let imagePolicy: ServerImagePolicy
     private let childChannels = ChildChannelRegistry()
     private var channel: Channel?
     private var shutdownTask: Task<Void, any Error>?
@@ -21,12 +37,14 @@ public actor TurboFieldfareHTTPServer {
                 queueLimit: Int,
                 backend: any ServerInferenceBackend,
                 heartbeatInterval: TimeAmount = .seconds(5),
+                imagePolicy: ServerImagePolicy = .default,
                 group: MultiThreadedEventLoopGroup = .init(numberOfThreads: 1)) {
         self.group = group
         self.modelID = modelID
         self.backend = backend
         self.coordinator = ServerCoordinator(queueLimit: queueLimit)
         self.heartbeatInterval = heartbeatInterval
+        self.imagePolicy = imagePolicy
     }
 
     public func start(port: Int) async throws -> Channel {
@@ -34,6 +52,7 @@ public actor TurboFieldfareHTTPServer {
         let backend = self.backend
         let coordinator = self.coordinator
         let heartbeatInterval = self.heartbeatInterval
+        let imagePolicy = self.imagePolicy
         let childChannels = self.childChannels
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 16)
@@ -49,6 +68,7 @@ public actor TurboFieldfareHTTPServer {
                         backend: backend,
                         coordinator: coordinator,
                         heartbeatInterval: heartbeatInterval,
+                        imagePolicy: imagePolicy,
                         childChannels: childChannels))
                 }
             }
@@ -117,6 +137,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private let backend: any ServerInferenceBackend
     private let coordinator: ServerCoordinator
     private let heartbeatInterval: TimeAmount
+    private let imagePolicy: ServerImagePolicy
+    private let maximumBodyBytes: Int
     private let childChannels: ChildChannelRegistry
     private var head: HTTPRequestHead?
     private var body = ByteBuffer()
@@ -127,11 +149,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
          backend: any ServerInferenceBackend,
          coordinator: ServerCoordinator,
          heartbeatInterval: TimeAmount,
+         imagePolicy: ServerImagePolicy,
          childChannels: ChildChannelRegistry) {
         self.modelID = modelID
         self.backend = backend
         self.coordinator = coordinator
         self.heartbeatInterval = heartbeatInterval
+        self.imagePolicy = imagePolicy
+        self.maximumBodyBytes = imagePolicy.maximumBodyBytes
         self.childChannels = childChannels
     }
 
@@ -142,7 +167,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             body.clear()
             oversized = false
         case .body(var part):
-            if body.readableBytes + part.readableBytes > TurboFieldfareHTTPServer.maximumBodyBytes {
+            if body.readableBytes + part.readableBytes > maximumBodyBytes {
                 oversized = true
             } else {
                 body.writeBuffer(&part)
@@ -208,7 +233,9 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         do {
             let bytes = body.getBytes(at: body.readerIndex, length: body.readableBytes) ?? []
             let decoded = try JSONDecoder().decode(OpenAIChatRequest.self, from: Data(bytes))
-            let request = try OpenAIRequestValidator.validate(decoded, modelID: modelID)
+            let request = try OpenAIRequestValidator.validate(decoded,
+                                                             modelID: modelID,
+                                                             imagePolicy: imagePolicy)
             let responseID = "chatcmpl-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
             let created = Int(Date().timeIntervalSince1970)
             let contextBox = SendableContext(context)
@@ -298,9 +325,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 }
             }
         } catch let error as ServerRequestError {
-            writeError(context,
-                       status: error == .unknownModel ? .notFound : .badRequest,
-                       error.envelope)
+            writeError(context, status: error.httpStatus, error.envelope)
         } catch {
             writeError(context, status: .badRequest,
                        OpenAIErrorEnvelope(message: "malformed JSON request",
@@ -467,7 +492,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         let envelope: OpenAIErrorEnvelope
         let status: HTTPResponseStatus
         if let requestError = error as? ServerRequestError {
-            status = requestError == .queueFull ? .tooManyRequests : .badRequest
+            status = requestError.httpStatus
             envelope = requestError.envelope
         } else {
             status = .internalServerError

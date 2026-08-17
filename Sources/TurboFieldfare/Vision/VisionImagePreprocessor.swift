@@ -39,6 +39,28 @@ public enum VisionImagePreprocessor {
         return try preprocess(image: image, config: config)
     }
 
+    /// Pixel dimensions from the container's header, without decoding it.
+    ///
+    /// A caller that accepts images from the network needs the size *before* it
+    /// commits to a decode: a few hundred kilobytes of PNG can expand to
+    /// hundreds of megabytes of pixels, and the resize below would run on all of
+    /// them before throwing anything away. `CGImageSourceCopyPropertiesAtIndex`
+    /// reads the header only.
+    public static func pixelSize(data: Data) throws -> (width: Int, height: Int) {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {
+            throw VisionError.imageDecodeFailed(path: "<data>", detail: "unrecognised container")
+        }
+        guard CGImageSourceGetCount(source) > 0,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil)
+                as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int,
+              let height = properties[kCGImagePropertyPixelHeight] as? Int,
+              width > 0, height > 0 else {
+            throw VisionError.imageDecodeFailed(path: "<data>", detail: "no readable pixel size")
+        }
+        return (width, height)
+    }
+
     public static func preprocess(data: Data,
                                   config: VisionPreprocessorConfig) throws -> VisionPreprocessedImage {
         guard let source = CGImageSourceCreateWithData(data as CFData, nil) else {

@@ -485,25 +485,25 @@ references lead to the supporting code and tests.
 
 ## Scope and limitations
 
-The current runtime supports text-only generation with the pinned Gemma 4
-26B-A4B instruction checkpoint. The source model supports image input, and
-TurboFieldfare does not yet run its vision tower: **no image reaches the model
-today.** Work toward that is under way and tracked in
-[`PLAN_VISION.md`](../PLAN_VISION.md); phases V0 (reference fixtures) and V1
-(preprocessing and prompt assembly, both CPU-only) have landed, and the
-`Sources/TurboFieldfare/Vision/` directory is that groundwork rather than a
-working path. Nothing in it is wired into `RealForwardRunner`.
+The current runtime generates text from text and from images. The vision tower
+is optional at install time and runs in `RealForwardRunner` ahead of the prefill
+chunk loop; the whole path, its measured accuracy against the reference
+implementation, and its acceptance evidence are in
+[`PLAN_VISION.md`](../PLAN_VISION.md) and
+[`RESULTS_VISION.md`](../RESULTS_VISION.md). An image costs up to 280 prompt
+tokens (the count follows its aspect ratio) and about 1.9 s of GPU time before
+the first token; a model installed without the tower refuses image input rather
+than ignoring it. Audio and video are refused.
 
-One user-visible change did land with V1: the multimodal marker tokens
-(`<|image|>`, `<|audio|>`, `<|video|>`, and their openers and closers) are now
-**rejected** when they appear as literal text in a prompt. Previously those ids
-were embedded as ordinary tokens, which produced a fluent answer about an image
-nobody supplied.
+The marker tokens (`<|image|>`, `<|audio|>`, `<|video|>`, and their openers and
+closers) are **rejected** when they appear as literal text in a prompt.
+Previously those ids were embedded as ordinary tokens, which produced a fluent
+answer about an image nobody supplied.
 
 The Mac app offers 4K, 8K, 16K, 32K, and 64K context lengths. Published app
-and CLI acceptance evidence covers up to 4K. Vision input, training,
-fine-tuning, server batching, remote serving, and general model support are
-outside the current scope. The optional HTTP server is loopback-only, owns one
+and CLI acceptance evidence covers up to 4K. The Mac app has no image input.
+Audio and video input, training, fine-tuning, server batching, remote serving,
+and general model support are outside the current scope. The optional HTTP server is loopback-only, owns one
 warm model, serializes generation, and retains one verified conversational KV
 prefix by default. It retains only that prefix. See the
 [local server guide](OPENAI_SERVER.md).

@@ -930,6 +930,93 @@ decode 経路・MoE・KV レイアウトは V5 でも 1 行も変えていない
 
 ---
 
+## 0-I. V6 完了 (2026-08-17、**実測**)
+
+§5 の V6 (Server の入口 + 受入) の出口条件を満たした。
+**受入 10 ゲートは全部合格し、記録は `RESULTS_VISION.md` にある。**
+本 PLAN はこれで完了である。
+
+| 追加したもの | 中身 |
+| --- | --- |
+| `OpenAIContentPart` (旧 `OpenAITextPart`) | `image_url` を受ける。OpenAI の `detail` は**受けて無視する** (§0-I-2) |
+| `ServerImagePolicy` / `ServerImageDecoder` (`ServerImageInput.swift`) | `data:` URI の解釈と 3 つの上限。`http(s)`/`file` はスキームで断る |
+| `ValidatedVisionRequest` | 検証済みリクエストの画像側 (parts 版のメッセージ + バイト列)。**これが nil でないことが**「テンプレートを multimodal に切り替える」「プロンプトキャッシュを止める」のスイッチ |
+| `ServerRequestError.payloadTooLarge` + `httpStatus` | 413 と 400 を型で分ける。status の対応表は HTTP 層に置いた |
+| `ServerModelSession.renderVisionPrompt` | 前処理 → テンプレート → スパン展開。`VisionError` / `GFTokenizerError` を**型付きの 400 に翻訳する** (500 にしない) |
+| `ServerModelSession.promptCacheParticipates` | 参照と publish の**両方**が通る 1 つの述語 (§0-I-1) |
+| `--image-tokens` / `--max-images` / `--max-image-bytes` / `--max-image-pixels` | 上限は設定可能。本文サイズの上限もこれに追随する (§0-I-3) |
+| `VisionImagePreprocessor.pixelSize(data:)` | コンテナのヘッダだけ読む。**デコード前**に画素数を断れる |
+| テスト +19 本 (`ServerImageRequestTests`) | 検証 16 + HTTP 経由 3 |
+
+`Scripts/test.sh`: **803 テスト / 138 スイート、11 issue** (784 → 803)。
+issue の内訳は V5 と**完全に同じ 4 スイート**で、新しい失敗はない。
+
+### 0-I-1. プロンプトキャッシュを切る場所は 1 箇所にした
+
+§4-6 は「画像があればキャッシュしない・publish もしない」と書いていた。
+これを 2 箇所の `if` に散らすと、片方だけ直された未来が来る。
+`promptCacheParticipates(mode:vision:)` という述語 1 つにして、
+参照側と publish 側の両方がそれを通る。**テストはこの述語を直接引く。**
+
+実サーバでの確認 (`RESULTS_VISION.md` §5) は、同じ実行の中で
+**テキストのみの 2 ターン目が `cached_tokens=25` を返すこと**も見ている。
+そうしないと「画像だから 0」と「キャッシュが死んでいるから 0」が区別できない。
+
+### 0-I-2. `detail` を拒否しなかった判断
+
+OpenAI の `image_url.detail` (`low`/`high`/`auto`) には、こちらに対応物がない —
+soft token 数は画像のアスペクト比で決まる (§2-1) ので、解像度を選ぶ余地がない。
+**受けて無視する。**拒否すると、既定で `detail` を送るクライアントが
+全滅する。無視して困るのは「`low` を指定したのに大きい」場合だが、
+そもそも 280 が上限で、この runtime は常にその上限で走る。
+
+### 0-I-3. 本文 1 MiB の上限は画像と両立しない
+
+`TurboFieldfareHTTPServer.maximumBodyBytes` は 1 MiB 固定で、
+**base64 の写真はこれを普通に超える。**上限をポリシーから導くようにした
+(`textBodyBytes + maxImages × ceil(maxImageBytes × 4/3)`)。
+既定 (4 枚 × 8 MiB) では約 45 MB になる。loopback 専用・単一利用者の
+サーバなので上限そのものは危険ではないが、**`--max-images 0` 相当の設定では
+従来どおり 1 MiB のまま**であることをテストで固定した。
+
+順序も大事で、**base64 の長さで先に断る**。デコードしてから
+「大きすぎた」と言うのでは、防ぎたかった確保がもう起きている。
+
+### 0-I-4. 画像と両立しないものは黙って落とさず断る
+
+| 組み合わせ | 応答 |
+| --- | --- |
+| 画像 + `tools` / tool 履歴 / developer ターン | 400 `unsupported_content`。ツールテンプレートは文字列 content しか描画できない |
+| user 以外のターンの画像 | 400 `unsupported_content` |
+| tower なしのモデル | 400 `vision_not_installed`、`--add-vision` のコマンドを名指しする |
+| `--prefill off` で起動したサーバ | 400 `vision_prefill_disabled` |
+| `http(s)://` / `file://` の `image_url` | 400 `unsupported_image_url`、**取りに行かない** |
+| 画像でない base64 / 非 base64 の `data:` | 400 `invalid_image_data` |
+| 上限超過 (バイト / 画素 / 枚数) | **413** `image_too_large` / `too_many_images` |
+
+いずれも**プロンプトを 1 トークンも組まないうちに**返る。
+`--prefill off` の 2 つ (CLI は起動時、サーバはリクエスト時) だけは
+経路が違うので、それぞれの場所で断っている。
+
+### 0-I-5. ゲート 4 の条件付き判断は発火しなかった
+
+「TTFT が 10 s を超えたら既定 soft token を 140 に落とす」は**行わない**。
+S=280 の TTFT は **4.13〜4.16 s** (`trusted-install`) である
+(`RESULTS_VISION.md` §4)。`full-sha256` の 9.17 s は初回の層検証 6.09 s と
+tower の SHA-256 0.49 s を含み、どちらもプロセスにつき 1 回で塔とは関係がない。
+
+### 0-I-6. 触っていないもの / 残した限界
+
+- Mac GUI (`TurboFieldfareApp`) は対象外のまま。ビルドは通る。
+- decode 経路・MoE・KV レイアウトは V6 でも 1 行も変えていない
+  (差分はサーバ側 + テキスト経路が呼ばない静的関数 1 本、`RESULTS_VISION.md` §3)。
+- 画像つき会話の 2 ターン目以降は毎回フル prefill (§0-H-7 のまま)。
+  キャッシュキーに画像を含める設計は**本 PLAN のスコープ外**。
+- 413 系の実サーバでの再確認は行っていない (テスト経由のみ、**未確認**)。
+- 音声・動画は拒否のみ (§9)。
+
+---
+
 ## 1. ソース側の事実確認 (**実測**、2026-08-16)
 
 ### 1-1. vision 重みの所在と内訳
@@ -1453,7 +1540,7 @@ tower は prefill の前段でしか動かないので、**§5-0 のテキスト
 | **V3** | tower カーネル + 単体検証 + **性能実測** | `TurboFieldfareKernelCheck` に vision ケース追加で全 PASS + **検出力の裏取り**。bf16 QMM の実測 GFLOP/s を記録 — **完了 (2026-08-17、§0-F)**。15 ケース PASS、bf16 QMM **3.15 TFLOP/s**、塔 **1.37 s/画像** |
 | **V4** | tower 統合 (画像 → soft token) | 参照実装の `pooler_output` と相対誤差 ≤ §6-1 層 B の閾値 — **完了 (2026-08-17、§0-G)**。6 fixture 全通過、閾値は**実測して 2 本立てに確定** (max 8e-2 / rms 2e-3)、塔 **1.392 s/画像** (P=2520) |
 | **V5** | prefill 統合 (スパン・マスク・scatter) | 実画像で説明が成立。**テキストのみの回帰 ±1%** (§5-0 相当) — **完了 (2026-08-17、§0-H)**。8 枚が別サーバの同一チェックポイントと同じものを説明し、同一機 A/B で decode ±1.1% / pp 231.8 対 230.1。CLI の入口は前倒し (§0-H-5) |
-| **V6** | Server の入口 + 受入 | §7 のゲート、`RESULTS_VISION.md`。CLI 入口は V5 で入った |
+| **V6** | Server の入口 + 受入 | §7 のゲート、`RESULTS_VISION.md` — **完了 (2026-08-17、§0-I)**。10 ゲート全合格、`image_url` は `data:` のみ、TTFT 4.16 s (S=280)、peak 7.01 GB |
 
 ### 5-V0. 参照系の固定 (**これを飛ばさない**)
 
@@ -1548,6 +1635,10 @@ tower は off-path なので、動いたら実装ミス)。
 ---
 
 ## 7. 受入ゲート (V6)
+
+> **結果 (2026-08-17): 10 ゲート全合格。**記録は `RESULTS_VISION.md`
+> (ゲート番号は下表と同じ)。ゲート 4 の条件付き判断 (280 → 140) は
+> 発火しなかった (§0-I-5)。
 
 | # | ゲート | 基準 |
 | --- | --- | --- |

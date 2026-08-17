@@ -51,3 +51,13 @@ ja-story	2	96	384	16.70	12.39	31.005	1.992	1.992	3.93	98.5	7.09	temp=0 topk=64 t
 ja-haiku	3	510	384	24.64	12.45	30.852	9.860	9.860	2.33	99.2	7.09	temp=0 topk=64 topp=0.95 seed=3 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install
 ja-math	3	43	384	17.29	13.48	28.480	1.517	1.517	6.64	97.4	7.07	temp=0 topk=64 topp=0.95 seed=3 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install
 ja-story	3	96	384	16.84	12.53	30.645	1.989	1.989	4.31	98.5	7.05	temp=0 topk=64 topp=0.95 seed=3 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install
+ja-warmup	0	510	384	19.06	11.79	32.556	4.942	4.942	1.74	99.2	7.08	temp=0 topk=64 topp=0.95 seed=0 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install
+ja-haiku	1	510	384	18.69	11.73	32.737	4.683	4.683	1.70	99.2	7.08	temp=0 topk=64 topp=0.95 seed=1 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install
+ja-math	1	43	384	17.05	13.48	28.495	1.274	1.274	6.83	97.3	7.12	temp=0 topk=64 topp=0.95 seed=1 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install
+ja-story	1	96	384	15.93	12.27	31.299	1.349	1.349	4.01	98.4	7.02	temp=0 topk=64 topp=0.95 seed=1 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install
+ja-haiku	2	510	384	19.42	12.22	31.432	4.904	4.904	2.07	99.2	7.11	temp=0 topk=64 topp=0.95 seed=2 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install
+ja-math	2	43	384	16.89	13.31	28.849	1.275	1.275	6.42	97.3	7.09	temp=0 topk=64 topp=0.95 seed=2 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install
+ja-story	2	96	384	15.92	12.24	31.371	1.370	1.370	3.93	98.4	7.06	temp=0 topk=64 topp=0.95 seed=2 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install
+ja-haiku	3	510	384	19.10	11.92	32.226	4.888	4.888	1.78	99.2	7.08	temp=0 topk=64 topp=0.95 seed=3 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install
+ja-math	3	43	384	16.79	13.23	29.035	1.304	1.304	6.36	97.3	7.02	temp=0 topk=64 topp=0.95 seed=3 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install
+ja-story	3	96	384	15.88	12.18	31.523	1.371	1.371	3.89	98.4	7.04	temp=0 topk=64 topp=0.95 seed=3 --expert-cache-slots 64 --prefill on --prefill-chunk-tokens 128 --rdadvise off --verification trusted-install

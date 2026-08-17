@@ -14,6 +14,7 @@ public struct ServerArguments: Equatable, Sendable {
     public let prefillChunkTokens: Int
     public let rdadvisePolicy: RDAdvicePolicyMode
     public let verification: ModelIntegrityPolicy
+    public let imagePolicy: ServerImagePolicy
 
     public static let usage = """
     usage: TurboFieldfareServer --model <completed .gturbo directory> [options]
@@ -43,6 +44,17 @@ public struct ServerArguments: Equatable, Sendable {
                                  (default full-sha256). trusted-install checks sizes
                                  against verified-install.json instead of rehashing
                                  every layer file on first touch.
+      --image-tokens <n>         Soft-token budget per image: 70, 140, or 280
+                                 (default 280). An upper bound, not the count — the
+                                 count follows the image's aspect ratio. Images arrive
+                                 as image_url content parts holding a data: URI;
+                                 http(s) URLs are refused, never fetched. Requires a
+                                 model installed with a vision tower and --prefill on.
+      --max-images <n>           Images accepted per request (default 4).
+      --max-image-bytes <n>      Decoded bytes accepted per image (default 8388608).
+                                 Raises the request-body ceiling to match.
+      --max-image-pixels <n>     Pixels accepted per image (default 50000000), read
+                                 from the container header before any decode.
       --help                     Show this help.
     """
 
@@ -93,6 +105,10 @@ public struct ServerArguments: Equatable, Sendable {
         var prefillChunkTokens = RuntimeConfiguration.production.prefillChunkTokens
         var rdadvisePolicy = RDAdvicePolicyMode.off
         var verification = ModelIntegrityPolicy.fullSha256
+        var imageTokens = ServerImagePolicy.default.maxSoftTokens
+        var maxImages = ServerImagePolicy.default.maxImagesPerRequest
+        var maxImageBytes = ServerImagePolicy.default.maxImageBytes
+        var maxImagePixels = ServerImagePolicy.default.maxImagePixels
         var index = 0
         while index < input.count {
             let flag = input[index]
@@ -173,6 +189,30 @@ public struct ServerArguments: Equatable, Sendable {
                         "--verification must be full-sha256 or trusted-install")
                 }
                 verification = parsed
+            case "--image-tokens":
+                guard let parsed = Int(value),
+                      VisionPreprocessorConfig.supportedSoftTokens.contains(parsed) else {
+                    throw ServerArgumentError.invalid(
+                        "--image-tokens must be one of "
+                        + VisionPreprocessorConfig.supportedSoftTokens
+                            .map(String.init).joined(separator: ", "))
+                }
+                imageTokens = parsed
+            case "--max-images":
+                guard let parsed = Int(value), parsed > 0 else {
+                    throw ServerArgumentError.invalid("--max-images must be positive")
+                }
+                maxImages = parsed
+            case "--max-image-bytes":
+                guard let parsed = Int(value), parsed > 0 else {
+                    throw ServerArgumentError.invalid("--max-image-bytes must be positive")
+                }
+                maxImageBytes = parsed
+            case "--max-image-pixels":
+                guard let parsed = Int(value), parsed > 0 else {
+                    throw ServerArgumentError.invalid("--max-image-pixels must be positive")
+                }
+                maxImagePixels = parsed
             default:
                 throw ServerArgumentError.invalid("unknown flag: \(flag)")
             }
@@ -189,7 +229,12 @@ public struct ServerArguments: Equatable, Sendable {
                                prefillPolicy: prefillPolicy,
                                prefillChunkTokens: prefillChunkTokens,
                                rdadvisePolicy: rdadvisePolicy,
-                               verification: verification)
+                               verification: verification,
+                               imagePolicy: ServerImagePolicy(
+                                   maxSoftTokens: imageTokens,
+                                   maxImagesPerRequest: maxImages,
+                                   maxImageBytes: maxImageBytes,
+                                   maxImagePixels: maxImagePixels))
     }
 }
 

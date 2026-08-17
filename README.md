@@ -282,6 +282,9 @@ the default) and a model that carries the tower; both are checked before
 anything runs. Writing `<|image|>` into the text is an error rather than a
 silently ignored token.
 
+The [local server](docs/OPENAI_SERVER.md#images) takes the same images as
+OpenAI-style `image_url` content parts holding a `data:` URI.
+
 Common generation options include `--max-context`, `--temperature`, `--top-k`,
 `--top-p`, `--repetition-penalty`, `--seed`, and repeatable `--stop` strings.
 Runtime options include `--expert-cache-slots`, `--expert-cache-policy`,
@@ -307,12 +310,14 @@ swift build -c release --product TurboFieldfareServer
 ```
 
 It listens on `http://127.0.0.1:8080/v1` and supports Chat Completions,
-streaming, function tools, and single-prefix prompt reuse. The client must
+streaming, function tools, `image_url` content parts holding a `data:` URI, and
+single-prefix prompt reuse for text-only turns. The client must
 authorize and run every tool call. Keep the server on loopback; it has no
 remote authentication or TLS.
 
 See [Local server](docs/OPENAI_SERVER.md) for a test request, Python and
-OpenCode setup, prompt reuse, tool handling, and the supported API subset.
+OpenCode setup, image limits, prompt reuse, tool handling, and the supported API
+subset.
 
 ## Test and contribute
 
