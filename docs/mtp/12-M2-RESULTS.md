@@ -11,7 +11,7 @@
 
 | # | 出口条件 (04-PHASES M2) | 結果 |
 | --- | --- | --- |
-| 1 | 参照実装との突き合わせ (合成入力) | **成立 (実測)。**3 ケース × 8 ステージ、`TurboFieldfareKernelCheck --draft` が 74/74 PASS (§2) |
+| 1 | 参照実装との突き合わせ (合成入力) | **成立 (実測)。**3 ケース × 8 ステージ、`TurboFieldfareKernelCheck --draft` が 57/57 PASS (fixture 51 + 検出力 6、§2) |
 | 2 | 閾値は測って決める | **決定 (実測)。**参照自身の FP16 床を `Scripts/mtp/fp16_error_floor.py` で測り、その内側に収めている (§2) |
 | 3 | 検出力 3 件 (壊した参照が閾値を超える) | **成立 (実測)。**ropeOffByOne / qNormDropped / attentionScaleClassic が 6/6 超え (§3) |
 | 4 | (副次) argmax の一致 | **3/3 完全一致** (§2) |

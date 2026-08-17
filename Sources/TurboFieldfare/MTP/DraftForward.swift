@@ -129,6 +129,11 @@ public final class DraftForward {
     ///     hidden for the bonus position.
     ///   - slidingK/V, fullK/V: decode-layout `[position+1, kvHeads, headDim]`
     ///     FP16 views of the target's shared-KV layers.
+    ///   - slidingRingCapacity: physical slot count of the sliding layer's
+    ///     cache when it is a ring (production KV past `capacity`), 0 for the
+    ///     linear layout the M2 fixtures use. Same contract as the decode
+    ///     path's `Attention.encodeSWA(ringCapacity:)`: the full-attention
+    ///     layer is always linear, so it needs no counterpart.
     ///   - position: absolute RoPE position of the bonus token; the reference
     ///     holds it constant across every draft step of a round.
     ///   - outLastHidden: `[backboneHidden]` FP16 — `post_projection` output.
@@ -143,7 +148,9 @@ public final class DraftForward {
                        slidingV: MTLBuffer, slidingVOffset: Int = 0,
                        fullK: MTLBuffer, fullKOffset: Int = 0,
                        fullV: MTLBuffer, fullVOffset: Int = 0,
+                       slidingRingCapacity: UInt32 = 0,
                        position: UInt32,
+                       kvLength: UInt32? = nil,
                        fault: Fault = .none,
                        outLastHidden: MTLBuffer,
                        outToken: MTLBuffer?,
@@ -183,13 +190,18 @@ public final class DraftForward {
             copy(cb, from: hidden, to: probe, count: hiddenSize)
         }
 
-        let seqLen = position + 1
+        // The bonus token's own K/V is normally in the cache (the target ran a
+        // forward on it), which is the `position == kvLen - 1` convention the
+        // M2 fixtures pin. `kvLength` exists for the other reading — query one
+        // slot past the cache — so the two can be compared by measurement.
+        let seqLen = kvLength ?? (position + 1)
         for L in 0..<c.numLayers {
             try encodeLayer(cb, layer: L, seqLen: seqLen, position: position,
                             slidingK: slidingK, slidingKOffset: slidingKOffset,
                             slidingV: slidingV, slidingVOffset: slidingVOffset,
                             fullK: fullK, fullKOffset: fullKOffset,
                             fullV: fullV, fullVOffset: fullVOffset,
+                            slidingRingCapacity: slidingRingCapacity,
                             fault: fault, eps: eps)
             if let probe = DraftProbes.Stage(rawValue: L + 1).flatMap({ probes?.buffer($0) }) {
                 copy(cb, from: hidden, to: probe, count: hiddenSize)
@@ -255,6 +267,7 @@ public final class DraftForward {
                              slidingV: MTLBuffer, slidingVOffset: Int,
                              fullK: MTLBuffer, fullKOffset: Int,
                              fullV: MTLBuffer, fullVOffset: Int,
+                             slidingRingCapacity: UInt32,
                              fault: Fault,
                              eps: Float) throws {
         let c = config
@@ -337,7 +350,9 @@ public final class DraftForward {
                                 numKVHeads: UInt32(numKVL),
                                 seqLen: seqLen,
                                 window: UInt32(c.slidingWindow),
-                                scale: scale)
+                                scale: scale,
+                                ringCapacity: seqLen > slidingRingCapacity
+                                    ? slidingRingCapacity : 0)
         }
 
         let o = try weights.oProj(layer: L)

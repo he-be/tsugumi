@@ -269,6 +269,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private var rdadviseAdaptiveState: RDAdviceAdaptivePolicyState
     private var rdadviseAdaptivePosition: Int = -1
     private var rdadviseAdaptivePositionBytes: UInt64 = 0
+
+    /// M3's acceptance-rate diagnostic (`docs/mtp/04-PHASES.md` §2), off unless
+    /// `TF_DRAFT_PROBE` is set. Resolved once at init so the decode path pays
+    /// an optional-nil test, and the 236 MB drafter is only loaded if a decode
+    /// step actually runs.
+    private let draftProbeSettings: (path: String, drafts: Int, mode: DraftAcceptanceProbe.Mode)?
+    private var draftProbe: DraftAcceptanceProbe?
     public init(model: Model, context: MetalContext, maxContext: Int,
                 runtimeConfiguration: RuntimeConfiguration = .production) throws {
         self.model = model
@@ -303,6 +310,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                 byteCap: Self.rdadviseAdaptiveByteCap,
                 slowCallNanos: Self.rdadviseAdaptiveSlowCallNanos))
         self.rdadviseEnabled = runtimeConfiguration.rdadviseEnabled
+        self.draftProbeSettings = DraftAcceptanceProbe.settings()
         self.kv = try KVCacheManager(device: context.device,
                                      config: cfg,
                                      maxContext: maxContext,
@@ -461,6 +469,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     }
 
     private func resetTransientState() {
+        // A reset or a continuation breaks the (hidden, next token) chain the
+        // probe pairs up, and ends one generation's worth of rounds.
+        draftProbe?.flushSummary()
         prefillChunkState.reset()
         rdadviseSkipUntilPosition = -1
         rdadviseAdaptiveState.reset()
@@ -757,6 +768,38 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         visionTower = tower
         visionScatter = scatter
         return tower
+    }
+
+    /// Built on the first decode step of a probing run — never during a plain
+    /// run, and never before the drafter is actually needed (D1's lazy load).
+    private func ensureDraftProbe() throws -> DraftAcceptanceProbe? {
+        guard let settings = draftProbeSettings else { return nil }
+        if let draftProbe { return draftProbe }
+        guard model.hasDraft else {
+            throw DraftError.notInstalled(path: model.directoryURL.path)
+        }
+        let weights = try model.draftWeights()
+        try weights.config.crossCheck(against: cfg)
+        // The drafter is packed at a different affine group size than the
+        // target (64 vs 32 for the pinned pair), and that size is baked into
+        // the shader library, so it needs a context of its own.
+        let draftContext: MetalContext
+        if weights.config.quantGroupSize == ctx.affineGroupSize {
+            draftContext = ctx
+        } else {
+            draftContext = try MetalContext(sharingDeviceWith: ctx)
+            try draftContext.setAffineGroupSize(weights.config.quantGroupSize)
+        }
+        let probe = try DraftAcceptanceProbe(context: ctx,
+                                             draftContext: draftContext,
+                                             weights: weights,
+                                             embedTable: model.embedding,
+                                             backboneHiddenSize: cfg.hiddenSize,
+                                             path: settings.path,
+                                             drafts: settings.drafts,
+                                             mode: settings.mode)
+        draftProbe = probe
+        return probe
     }
 
     @discardableResult
@@ -1618,6 +1661,14 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             for i in 0..<slots.count { ptr[i] = slots[i] }
         }
 
+        // The M3 probe checks the rounds it has open against this step's input
+        // token before the target touches anything; it drafts at the end of the
+        // step, once this position's K/V and hidden exist. It writes neither
+        // the KV cache nor any buffer the target reads.
+        if draftProbeSettings != nil, let probe = try ensureDraftProbe() {
+            probe.observe(token: token, position: position)
+        }
+
         // Embed lookup + sqrt(H) fused.
         let emb = model.embedding
         do {
@@ -2066,6 +2117,20 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                 d: D, vocab: UInt32(self.cfg.vocabSize),
                 rmsEps: eps)
         }
+        // 02-RUNTIME-FIT §N3: the head applies the final RMSNorm inside its own
+        // kernel, so the post-norm hidden the drafter needs exists nowhere.
+        // One extra 2816-wide norm produces it — only when probing. The round
+        // then runs on this position's own (token, hidden, KV) triple, before
+        // `advance()`, so the cache ends exactly at the bonus token.
+        if let probe = draftProbe, let kv {
+            try runSync { cb in
+                self.rms.encodeBF16W(commandBuffer: cb, x: self.hidden,
+                                     weight: fNorm.buffer, weightOffset: Int(fNorm.offset),
+                                     out: probe.hiddenCaptureBuffer, d: D, eps: eps)
+            }
+            try probe.draft(bonusToken: token, position: position, kv: kv)
+        }
+
         if emitHead {
             let useFusedHeadForThisToken = useFusedGreedyHead && outputMode == .greedyIfAvailable
             let tHead = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)

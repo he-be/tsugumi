@@ -4,10 +4,12 @@ QAT ウェイト対応・Vision 対応に続く 3 つ目の大改修。
 `google/gemma-4-26B-A4B-it-qat-…-assistant` ドラフターを使った
 propose-and-verify (投機デコード) を本ランタイムに入れる。
 
-**現在地: M2 完了 ([12-M2-RESULTS.md](12-M2-RESULTS.md))。次は M3 (受理率の実測、go/no-go)。**
-ランタイムは decode 経路に 1 行も触れずにドラフター forward を持った
-(`DraftForward`、`KernelCheck --draft` で参照突合済み)。decode 経路に
-入っているのは既定オフの診断 1 本だけ (`AcceptanceProbe`、M0 §7)。
+**現在地: M3 完了 ([13-M3-RESULTS.md](13-M3-RESULTS.md))。実ドラフターの受理率を測り、
+[04-PHASES §4](04-PHASES.md) の中止条件に当たったので、no-go を推奨して判断待ち。**
+日本語の長文生成 (ゴールに最も近い性格) で速度比 0.91〜1.12 倍、数式系で 1.4 倍まで。
+ゴールの 1.48 倍には届かない。ランタイムは decode 経路に 1 行も触れておらず、
+入っているのは既定オフの診断 2 本だけ (`AcceptanceProbe` = M0 §7、
+`DraftAcceptanceProbe` = M3)。
 
 ## ゴール (2026-08-17 に確定)
 
@@ -32,6 +34,7 @@ GUI は対象外。**主眼は wall time で、t/s は目安**。
 | 6 | [10-M0-RESULTS.md](10-M0-RESULTS.md) | **M0 の実測。**速度上限の式、expert 和集合、タスク別の受理上限、ゴール条件のベースライン |
 | 7 | [11-M1-RESULTS.md](11-M1-RESULTS.md) | **M1 の実測。**フォーマット拡張と repacker、ピンの再確認、`--add-draft` の実行、旧ランタイム拒否 |
 | 8 | [12-M2-RESULTS.md](12-M2-RESULTS.md) | **M2 の実測。**ドラフター forward 単体、参照実装確定 (transformers 5.10.4)、FP16 誤差床、検出力 3 件 |
+| 9 | [13-M3-RESULTS.md](13-M3-RESULTS.md) | **M3 の実測。**実ドラフターの受理率 (bs=2/3/4、temp 0/1.0)、入力規約の決着、group サイズ 32/64 の衝突、**no-go の推奨** |
 
 事実の出所は 2 系統ある。**リモート (HF) 側**はドラフター重みの調査 (2026-08-17 取得。
 テンソル全数・SHA-256 一致・config・参照実装ソースは `scratch/mtp-ref/` に取得済み)、

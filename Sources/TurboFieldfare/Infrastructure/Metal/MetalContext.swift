@@ -95,6 +95,21 @@ public final class MetalContext: @unchecked Sendable {
         self.queue   = q
     }
 
+    /// A second context on the *same device* — its own queue, its own shader
+    /// library, its own affine group size.
+    ///
+    /// The "one process, one group size" rule above holds per model, and the
+    /// MTP drafter breaks it from inside one file: the 26B target is packed at
+    /// group 32 and the pinned drafter at group 64 (`manifest.draft.quant`),
+    /// so their kernels cannot come from one specialized library. Buffers are
+    /// device-scoped, so the two contexts pass buffers freely; ordering across
+    /// the two queues is the caller's business.
+    public init(sharingDeviceWith other: MetalContext) throws {
+        guard let q = other.device.makeCommandQueue() else { throw MetalError.noQueue }
+        self.device = other.device
+        self.queue  = q
+    }
+
     /// The affine group size the shader library is (or will be) compiled for.
     public var affineGroupSize: Int {
         libraryLock.lock()

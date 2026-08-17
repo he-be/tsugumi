@@ -116,7 +116,7 @@ Mac アプリ `0.2`、`bench.sh ja` は `TEMP=0`。**受入は temp 0 と 1.0 �
 | 4 層 (共有 KV) | 既存 decode attention を**ターゲット層 28/29 の KV ビューに向けて**呼ぶ。q は自前 |
 | `post_projection` GEMV | [2816, 1024] int4 |
 | ドラフター lm head | 埋め込み [262144, 1024] を線形として使う GEMV |
-| **post-norm hidden の取り出し** | `LMHeadChainInt4.encodeGreedyDecode` (`LMHeadChainInt4.swift:56-70`) は `hidden` と `normWeight` の両方を取り、RMSNorm を**カーネル内部**で行う。呼び出し側 (`RealForwardRunner.swift:1517-1546`、`:2058`) が渡すのは**正規化前**の hidden で、`model.norm` 後の hidden はどのバッファにも残らない。ドラフターに渡すには rmsnorm を 1 本追加するか、正規化済み hidden も書き出す変種が要る (2816 要素なのでコストは無視できる) |
+| **post-norm hidden の取り出し** | `LMHeadChainInt4.encodeGreedyDecode` (`LMHeadChainInt4.swift:56-70`) は `hidden` と `normWeight` の両方を取り、RMSNorm を**カーネル内部**で行う。呼び出し側 (`RealForwardRunner.swift:1517-1546`、`:2058`) が渡すのは**正規化前**の hidden で、`model.norm` 後の hidden はどのバッファにも残らない。ドラフターに渡すには rmsnorm を 1 本追加するか、正規化済み hidden も書き出す変種が要る (2816 要素なのでコストは無視できる)。**M3 で前者を実装済み** — `produceToken` の head 直前で probe 有効時だけ 1 本足す ([13-M3-RESULTS.md](13-M3-RESULTS.md) §7) |
 
 ### N4. ループと受理規則
 
