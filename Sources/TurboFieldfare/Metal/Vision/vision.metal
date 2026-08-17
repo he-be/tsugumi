@@ -669,3 +669,35 @@ kernel void vision_pool_std_block(
     }
     out[cell * D + d] = half(value);
 }
+
+/// Overwrite the image rows of a prefill chunk's embedding block with the
+/// tower's soft tokens.
+///
+/// `prefill_embed_lookup_int4_block` has already written every row of the
+/// chunk, image positions included, and scaled all of them by sqrt(hidden).
+/// Upstream scales only the *text* embeddings that way and then
+/// `masked_scatter`s the projector's output in unscaled (PLAN_VISION §2-6), so
+/// these rows are replaced rather than blended: whatever row 258880 of the
+/// embedding table holds is not part of the answer, and a soft token that
+/// picked up the sqrt(2816) factor would be 53x too large.
+/// `scale` is 1 in every real run. It exists so the harness can apply the
+/// sqrt(hidden) the text embeddings get and show that the output degrades
+/// (PLAN_VISION §6-3): a scatter that is never seen to be wrong when it is
+/// wrong is not evidence that it is right.
+kernel void vision_scatter_soft_tokens_block(
+    device half*       hidden          [[buffer(0)]],
+    device const half* soft            [[buffer(1)]],
+    constant uint&     D               [[buffer(2)]],
+    constant uint&     hidden_row      [[buffer(3)]],
+    constant uint&     soft_row        [[buffer(4)]],
+    constant uint&     row_count       [[buffer(5)]],
+    constant uint&     hidden_stride   [[buffer(6)]],
+    constant float&    scale           [[buffer(7)]],
+    uint2              gid             [[thread_position_in_grid]]
+) {
+    const uint d = gid.x;
+    const uint row = gid.y;
+    if (d >= D || row >= row_count) return;
+    const float value = float(soft[(soft_row + row) * D + d]);
+    hidden[(hidden_row + row) * hidden_stride + d] = half(value * scale);
+}

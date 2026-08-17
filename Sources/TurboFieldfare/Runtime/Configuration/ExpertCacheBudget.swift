@@ -11,6 +11,12 @@ import Metal
 public struct ExpertCacheBudget: Sendable, Equatable {
     /// `model_weights.bin` resident section, mapped once.
     public let residentBytes: UInt64
+    /// `vision/vision_weights.bin`, when the model carries a tower. Counted
+    /// even for a run that never passes an image: the mapping is lazy but the
+    /// guard is a one-time startup decision, and a configuration that only fits
+    /// while the tower is untouched is not a configuration that fits
+    /// (`PLAN_VISION.md` §3-1). Zero for a text-only model.
+    public let visionResidentBytes: UInt64
     /// `numLayers * slotCount * expertStride`.
     public let expertCacheBytes: UInt64
     /// K and V buffers as `KVCacheManager` allocates them.
@@ -25,7 +31,8 @@ public struct ExpertCacheBudget: Sendable, Equatable {
     public let slotCount: Int
 
     public var totalBytes: UInt64 {
-        residentBytes &+ expertCacheBytes &+ kvCacheBytes &+ prefillScratchBytes
+        residentBytes &+ visionResidentBytes &+ expertCacheBytes
+            &+ kvCacheBytes &+ prefillScratchBytes
     }
 
     public var fitsRecommendedWorkingSet: Bool {
@@ -34,8 +41,9 @@ public struct ExpertCacheBudget: Sendable, Equatable {
 
     public var summary: String {
         func gb(_ bytes: UInt64) -> String { String(format: "%.2f GB", Double(bytes) / 1e9) }
+        let vision = visionResidentBytes == 0 ? "" : " + vision \(gb(visionResidentBytes))"
         return """
-            resident \(gb(residentBytes)) + experts \(gb(expertCacheBytes)) \
+            resident \(gb(residentBytes))\(vision) + experts \(gb(expertCacheBytes)) \
             (\(slotCount) slots) + kv \(gb(kvCacheBytes)) \
             + prefill scratch \(gb(prefillScratchBytes)) = \(gb(totalBytes)); \
             device recommends at most \(gb(recommendedWorkingSetBytes))
@@ -84,6 +92,7 @@ extension Model {
             : 0
         return ExpertCacheBudget(
             residentBytes: residentIndex.header.residentSize,
+            visionResidentBytes: manifest.vision?.payloadBytes ?? 0,
             expertCacheBytes: UInt64(packedExpertsLayout.numLayers)
                 &* UInt64(slotCount)
                 &* packedExpertsLayout.expertStride,

@@ -369,3 +369,51 @@ package final class VisionPoolStandardize {
         enc.endEncoding()
     }
 }
+
+/// Writes one image's soft tokens over the image rows of a prefill chunk's
+/// embedding block (`PLAN_VISION.md` §4-5-c).
+package final class VisionSoftTokenScatter {
+    private let pso: MTLComputePipelineState
+
+    package init(context: MetalContext) throws {
+        self.pso = try context.pipeline("vision_scatter_soft_tokens_block")
+    }
+
+    /// - Parameters:
+    ///   - hiddenRow: first row *within this chunk* to overwrite.
+    ///   - softRow: first soft token to take, for an image the chunk holds only
+    ///     part of.
+    package func encode(commandBuffer: MTLCommandBuffer,
+                        hidden: MTLBuffer, hiddenOffset: Int = 0,
+                        soft: MTLBuffer, softOffset: Int = 0,
+                        d: Int,
+                        hiddenRow: Int,
+                        softRow: Int,
+                        rowCount: Int,
+                        hiddenStrideElements: Int,
+                        scale: Float = 1.0) {
+        precondition(d > 0, "hidden size must be positive")
+        precondition(rowCount > 0, "row count must be positive")
+        precondition(hiddenRow >= 0 && softRow >= 0, "row offsets must be non-negative")
+        precondition(hiddenStrideElements >= d, "hidden stride is too small")
+        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        enc.setComputePipelineState(pso)
+        enc.setBuffer(hidden, offset: hiddenOffset, index: 0)
+        enc.setBuffer(soft, offset: softOffset, index: 1)
+        var dVar = UInt32(d)
+        var hiddenRowVar = UInt32(hiddenRow)
+        var softRowVar = UInt32(softRow)
+        var rowCountVar = UInt32(rowCount)
+        var strideVar = UInt32(hiddenStrideElements)
+        var scaleVar = scale
+        enc.setBytes(&dVar, length: MemoryLayout<UInt32>.size, index: 2)
+        enc.setBytes(&hiddenRowVar, length: MemoryLayout<UInt32>.size, index: 3)
+        enc.setBytes(&softRowVar, length: MemoryLayout<UInt32>.size, index: 4)
+        enc.setBytes(&rowCountVar, length: MemoryLayout<UInt32>.size, index: 5)
+        enc.setBytes(&strideVar, length: MemoryLayout<UInt32>.size, index: 6)
+        enc.setBytes(&scaleVar, length: MemoryLayout<Float>.size, index: 7)
+        enc.dispatchThreads(MTLSize(width: d, height: rowCount, depth: 1),
+                            threadsPerThreadgroup: MTLSize(width: 64, height: 4, depth: 1))
+        enc.endEncoding()
+    }
+}

@@ -1200,7 +1200,34 @@ struct PrefillAttentionParams {
     uint qTokenStrideElements;
     uint oTokenStrideElements;
     float scale;
+    /// Non-zero when buffer(5) carries a per-query visible end, which is how an
+    /// image span attends bidirectionally (PLAN_VISION §4-5-b).
+    uint hasSpanMask;
 };
+
+/// Exclusive end of the keys query `t` may see.
+///
+/// Causal rows end at their own position. A row inside an image span ends at
+/// the span's end instead, so every soft token of one image sees all the
+/// others — upstream's `token_type_ids_mask_function`, which it ORs into the
+/// causal mask of the *sliding* layers only (PLAN_VISION §2-7). The span is at
+/// most 280 tokens and the window is 1024, so opening the future direction is
+/// the whole of it: the window's lower edge already covers the span's start.
+///
+/// `span_end[t] == 0` means "ordinary causal row", so a text-only chunk with
+/// the mask enabled behaves exactly as it does with the mask off.
+static inline uint prefill_attention_visible_end(
+    constant PrefillAttentionParams& p,
+    device const uint* span_end,
+    uint t,
+    uint abs_q
+) {
+    uint last = abs_q + 1u;
+    if (p.hasSpanMask != 0u) {
+        last = max(last, span_end[t]);
+    }
+    return min(p.kvValidCount, last);
+}
 
 static inline uint prefill_kv_slot(uint logical) {
     return (is_function_constant_defined(FC_PREFILL_KV_RING_CAP) &&
@@ -1254,6 +1281,7 @@ kernel void attention_prefill_causal_tiled(
     device const half* V [[buffer(2)]],
     device half* O [[buffer(3)]],
     constant PrefillAttentionParams& p [[buffer(4)]],
+    device const uint* span_end [[buffer(5)]],
     uint3 tg [[threadgroup_position_in_grid]],
     uint3 tid [[thread_position_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]],
@@ -1275,7 +1303,7 @@ kernel void attention_prefill_causal_tiled(
     if (p.slidingWindow != 0u && abs_q + 1u > p.slidingWindow) {
         first = abs_q + 1u - p.slidingWindow;
     }
-    const uint last_exclusive = min(p.kvValidCount, abs_q + 1u);
+    const uint last_exclusive = prefill_attention_visible_end(p, span_end, t, abs_q);
 
     device const half* q_row = Q + t * p.qTokenStrideElements + qh * p.headDim;
     float row_max = -INFINITY;
@@ -1337,6 +1365,7 @@ static inline void attention_prefill_causal_qblock_impl(
     device const half* V,
     device half* O,
     constant PrefillAttentionParams& p,
+    device const uint* span_end,
     uint3 tg,
     uint lane,
     uint simd_group,
@@ -1383,7 +1412,11 @@ static inline void attention_prefill_causal_qblock_impl(
             first = abs_q + 1u - p.slidingWindow;
         }
         window_first[j] = first;
-        window_last[j] = active ? min(p.kvValidCount, abs_q + 1u) : 0u;
+        // `block_last` picks up the span's end through this, so the key loop
+        // widens on its own and its structure is untouched.
+        window_last[j] = active
+            ? prefill_attention_visible_end(p, span_end, t, abs_q)
+            : 0u;
         if (active) {
             block_first = min(block_first, first);
             block_last = max(block_last, window_last[j]);
@@ -1442,13 +1475,14 @@ kernel void attention_prefill_causal_qblock_d256(
     device const half* V [[buffer(2)]],
     device half* O [[buffer(3)]],
     constant PrefillAttentionParams& p [[buffer(4)]],
+    device const uint* span_end [[buffer(5)]],
     uint3 tg [[threadgroup_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]],
     uint simd_group [[simdgroup_index_in_threadgroup]],
     uint simdgroups [[simdgroups_per_threadgroup]]
 ) {
     attention_prefill_causal_qblock_impl<8u, 4u>(
-        Q, K, V, O, p, tg, lane, simd_group, simdgroups);
+        Q, K, V, O, p, span_end, tg, lane, simd_group, simdgroups);
 }
 
 // Same kernel at headDim 512, which is the full-attention layers.
@@ -1465,13 +1499,14 @@ kernel void attention_prefill_causal_qblock_d512(
     device const half* V [[buffer(2)]],
     device half* O [[buffer(3)]],
     constant PrefillAttentionParams& p [[buffer(4)]],
+    device const uint* span_end [[buffer(5)]],
     uint3 tg [[threadgroup_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]],
     uint simd_group [[simdgroup_index_in_threadgroup]],
     uint simdgroups [[simdgroups_per_threadgroup]]
 ) {
     attention_prefill_causal_qblock_impl<16u, 2u>(
-        Q, K, V, O, p, tg, lane, simd_group, simdgroups);
+        Q, K, V, O, p, span_end, tg, lane, simd_group, simdgroups);
 }
 
 #if defined(__HAVE_TENSOR__)

@@ -57,6 +57,16 @@ public struct Model {
     let streamersBox: StreamersBox
     let streamersQueue: DispatchQueue
 
+    /// The vision tower, mapped on the first image and never before
+    /// (`PLAN_VISION.md` §4-1). Its own box and queue rather than the streamers'
+    /// so a 1.15 GB verification cannot sit in front of a routed-expert open.
+    let visionBox: VisionWeightsBox
+    let visionQueue: DispatchQueue
+
+    final class VisionWeightsBox: @unchecked Sendable {
+        var weights: VisionWeights?
+    }
+
     /// Routed-expert instrumentation. A reference type so every copy of this
     /// struct — the runner's, the prefill kernels' — accumulates into one set of
     /// counters.
@@ -96,7 +106,35 @@ public struct Model {
         self.modelDirectory = modelDirectory
         self.streamersBox = StreamersBox(numLayers: packedExpertsLayout.numLayers)
         self.streamersQueue = DispatchQueue(label: "turbo-fieldfare.expert-streamers")
+        self.visionBox = VisionWeightsBox()
+        self.visionQueue = DispatchQueue(label: "turbo-fieldfare.vision-weights")
         self.telemetry = telemetry
+    }
+
+    // MARK: - Vision tower (lazy)
+
+    /// Whether this install carries a vision tower. False for every model built
+    /// without `--include-vision` / `--add-vision`.
+    public var hasVisionTower: Bool { manifest.vision != nil }
+
+    /// Bytes the tower's weight file declares, or zero without one.
+    public var visionPayloadBytes: UInt64 { manifest.vision?.payloadBytes ?? 0 }
+
+    /// Map and validate the tower, once per process.
+    ///
+    /// Called on the first image, not at load: under `.fullSha256` this hashes
+    /// 1.15 GB, and a text-only run must not pay for it (§4-1).
+    public func visionWeights() throws -> VisionWeights {
+        try visionQueue.sync {
+            if let loaded = visionBox.weights { return loaded }
+            let loaded = try VisionWeights.load(directoryURL: directoryURL,
+                                                manifest: manifest,
+                                                config: config,
+                                                device: device,
+                                                integrityPolicy: integrityPolicy)
+            visionBox.weights = loaded
+            return loaded
+        }
     }
 
     // MARK: - Resident accessors

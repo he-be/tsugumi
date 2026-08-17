@@ -66,14 +66,19 @@ import TurboFieldfare
 
     @Test func helpListsExactlyThePublicOptions() {
         let expected: Set<String> = [
-            "--model", "--prompt", "--messages-file", "--max-new", "--max-context",
+            "--model", "--prompt", "--messages-file", "--image", "--image-tokens",
+            "--max-new", "--max-context",
             "--temperature", "--top-k", "--top-p", "--repetition-penalty",
             "--seed", "--stop", "--quiet", "--expert-cache-slots",
             "--expert-cache-policy", "--prefill", "--prefill-chunk-tokens",
-            "--rdadvise", "--help",
+            "--rdadvise", "--verification", "--thinking", "--dump-expert-trace",
+            "--help",
         ]
         let words = Args.usage.split { $0.isWhitespace || $0 == "(" || $0 == ")" }
-        let options = Set(words.map(String.init).filter { $0.hasPrefix("--") })
+        // Prose mentions flags mid-sentence ("spends --max-new."), so the
+        // trailing punctuation is not part of the flag.
+        let options = Set(words.map { String($0).trimmingCharacters(in: ["."]) }
+            .filter { $0.hasPrefix("--") })
         #expect(options == expected)
     }
 
@@ -213,6 +218,60 @@ import TurboFieldfare
         ])
         #expect(arguments.prompt == nil)
         #expect(arguments.messagesFile == "chat.json")
+    }
+
+    // MARK: - Images (PLAN_VISION §4-6)
+
+    @Test func imagesAttachToAMessagesFileAndDefaultToTheFullBudget() throws {
+        let arguments = try Args.parse([
+            "--model", "m.gturbo", "--messages-file", "chat.json",
+            "--image", "a.jpg", "--image", "b.png",
+        ])
+        #expect(arguments.images == ["a.jpg", "b.png"])
+        #expect(arguments.imageTokens == 280)
+    }
+
+    /// A raw completion is passed through verbatim: there is no turn to attach
+    /// an image to, and silently inventing one would change what the model is
+    /// asked.
+    @Test func imagesRequireAMessagesFile() {
+        #expect(throws: ArgsError.mutuallyExclusive("--image", "--prompt")) {
+            _ = try Args.parse([
+                "--model", "m.gturbo", "--prompt", "hi", "--image", "a.jpg",
+            ])
+        }
+    }
+
+    /// Scalar replay has nowhere to put a soft token, so an image with prefill
+    /// off is rejected at parse time rather than deep inside the runner.
+    @Test func imagesRequireChunkedPrefill() {
+        #expect(throws: ArgsError.invalidValue(flag: "--prefill", value: "off with --image")) {
+            _ = try Args.parse([
+                "--model", "m.gturbo", "--messages-file", "chat.json",
+                "--image", "a.jpg", "--prefill", "off",
+            ])
+        }
+    }
+
+    @Test(arguments: [70, 140, 280])
+    func supportedImageTokenBudgetsParse(_ budget: Int) throws {
+        let arguments = try Args.parse([
+            "--model", "m.gturbo", "--messages-file", "chat.json",
+            "--image-tokens", "\(budget)",
+        ])
+        #expect(arguments.imageTokens == budget)
+    }
+
+    /// 560 and 1120 are budgets upstream accepts and this runtime does not; the
+    /// rejection has to be explicit rather than a silently clamped 280.
+    @Test(arguments: ["0", "100", "560", "1120"])
+    func unsupportedImageTokenBudgetsAreRejected(_ value: String) {
+        #expect(throws: ArgsError.invalidValue(flag: "--image-tokens", value: value)) {
+            _ = try Args.parse([
+                "--model", "m.gturbo", "--messages-file", "chat.json",
+                "--image-tokens", value,
+            ])
+        }
     }
 
     @Test func promptAndMessagesFileAreMutuallyExclusive() {

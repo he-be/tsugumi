@@ -136,6 +136,30 @@ internal enum PrefillProjectionDispatchPolicy {
     }
 }
 
+/// A deliberate deviation in how a prompt's image rows are prefilled.
+///
+/// `VisionTowerFault` does the same job inside the tower; these two are the
+/// mistakes that live *outside* it, in the two places PLAN_VISION §6-3 predicts
+/// a plausible-looking wrong answer rather than a crash. Selected by
+/// `TF_VISION_PREFILL_FAULT` and never by a normal run.
+enum VisionPrefillFault: String, Sendable, CaseIterable {
+    case none = ""
+    /// Soft tokens multiplied by sqrt(text hidden), the scaling that belongs to
+    /// the text embedding lookup alone (§2-6). 53x too large.
+    case softTokensScaled = "soft-tokens-scaled"
+    /// No bidirectional span: every soft token sees only the ones before it.
+    case causalOnly = "causal-only"
+
+    static let selected: VisionPrefillFault = {
+        let raw = ProcessInfo.processInfo.environment["TF_VISION_PREFILL_FAULT"] ?? ""
+        guard let fault = VisionPrefillFault(rawValue: raw) else {
+            preconditionFailure("unknown TF_VISION_PREFILL_FAULT \(raw); "
+                                + "expected one of \(VisionPrefillFault.allCases.map(\.rawValue))")
+        }
+        return fault
+    }()
+}
+
 public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporting, ContinuableLogitProducer, @unchecked Sendable {
     private struct LayerSharedExpertProjections {
         let gate: SharedExpertInt8Proj
@@ -205,6 +229,18 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private var prefillChunkState = PrefillChunkCommitState()
     private var prefillScratch: PrefillChunkScratchBuffers?
     private var prefillGPUProfile = PrefillGPUProfile()
+
+    /// Vision state, built on the first image and never for a text-only run:
+    /// the tower owns 83 MB of scratch and its weights are 1.15 GB, so a prompt
+    /// without an image must not construct either (`PLAN_VISION.md` §4-1).
+    private var visionTower: VisionTower?
+    private var visionScatter: VisionSoftTokenScatter?
+    /// Wall seconds the tower has spent on this runner, and images it ran on.
+    /// Reported in the CLI footer: the tower is the whole of the vision cost and
+    /// it lands on TTFT (§7 gate 4).
+    public private(set) var visionTowerSeconds: Double = 0
+    public private(set) var visionTowerImages: Int = 0
+    public private(set) var visionLoadSeconds: Double = 0
 
     private static let rdadviseBoundedMissCap = 12
     private static let rdadviseBoundedMaxCallNanos: UInt64 = 250_000
@@ -519,6 +555,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                startPosition: Int,
                                outputMode: PrefillOutputMode,
                                config: PrefillRuntimeConfig,
+                               vision: VisionPrefillInput? = nil,
                                into logits: MTLBuffer,
                                onProgress: (Int) -> Void) async throws -> PrefillResult {
         try prefillChunkState.requireClean(operation: "prefillChunked")
@@ -544,9 +581,17 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         }
 
         let scratch = try ensurePrefillScratch(config: config)
+        // The tower runs to completion before the first chunk is encoded: it is
+        // one 3.5 TFLOP pass per image and it does not belong inside the chunk
+        // loop, where it would run again for every chunk that touched the image
+        // (PLAN_VISION §4-4).
+        let images = try runVisionTower(vision: vision, chunkTokens: config.chunkTokens,
+                                        tokenCount: tokens.count)
+        let imageSpans = vision?.spans ?? []
         let spans = PrefillChunkPlanner.spans(tokenCount: tokens.count,
                                               startPosition: startPosition,
-                                              config: config)
+                                              chunkTokens: config.chunkTokens,
+                                              imageSpans: imageSpans)
         for (spanIndex, span) in spans.enumerated() {
             let lower = tokens.index(tokens.startIndex, offsetBy: span.tokenOffset)
             let upper = tokens.index(lower, offsetBy: span.tokenCount)
@@ -558,6 +603,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                 logits: logits,
                 scratch: scratch,
                 config: config,
+                vision: VisionChunkPlan(chunkTokenOffset: span.tokenOffset,
+                                        tokenCount: span.tokenCount,
+                                        promptStartPosition: startPosition,
+                                        spans: imageSpans,
+                                        softTokens: images),
                 writeFinalHead: spanIndex == spans.count - 1)
             onProgress(span.completedCount)
         }
@@ -571,6 +621,142 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         }
         return PrefillResult(newPosition: startPosition + tokens.count,
                              seed: .logitsWritten)
+    }
+
+    /// What one prefill chunk has to do about images: which of its rows are
+    /// soft tokens, and which of its queries attend bidirectionally.
+    ///
+    /// A chunk boundary never falls inside an image span (`PrefillChunkPlanner`
+    /// arranges that), so an image is either wholly inside this chunk or wholly
+    /// outside it. The intersection is still computed rather than assumed —
+    /// this is the code that would write into the wrong rows if that invariant
+    /// ever broke, and clamping makes it write nothing instead.
+    private struct VisionChunkPlan {
+        let chunkTokenOffset: Int
+        let tokenCount: Int
+        let promptStartPosition: Int
+        let spans: [VisionImageSpan]
+        let softTokens: [VisionTowerOutput]
+
+        static var none: VisionChunkPlan {
+            VisionChunkPlan(chunkTokenOffset: 0,
+                            tokenCount: 0,
+                            promptStartPosition: 0,
+                            spans: [],
+                            softTokens: [])
+        }
+
+        struct Scatter {
+            let soft: MTLBuffer
+            let hiddenRow: Int
+            let softRow: Int
+            let rowCount: Int
+        }
+
+        var scatters: [Scatter] {
+            var out: [Scatter] = []
+            let chunkEnd = chunkTokenOffset + tokenCount
+            for (index, span) in spans.enumerated() where index < softTokens.count {
+                let first = Swift.max(span.tokenOffset, chunkTokenOffset)
+                let last = Swift.min(span.tokenEnd, chunkEnd)
+                guard first < last else { continue }
+                out.append(Scatter(soft: softTokens[index].softTokens,
+                                   hiddenRow: first - chunkTokenOffset,
+                                   softRow: first - span.tokenOffset,
+                                   rowCount: last - first))
+            }
+            return out
+        }
+
+        /// Exclusive visible end per query row, or nil when no image touches
+        /// this chunk — in which case the mask stays off and the attention
+        /// kernels take the path they took before vision existed.
+        var spanEnds: [UInt32]? {
+            let chunkEnd = chunkTokenOffset + tokenCount
+            var ends = [UInt32](repeating: 0, count: tokenCount)
+            var touched = false
+            for span in spans {
+                let first = Swift.max(span.tokenOffset, chunkTokenOffset)
+                let last = Swift.min(span.tokenEnd, chunkEnd)
+                guard first < last else { continue }
+                touched = true
+                let end = UInt32(promptStartPosition + last)
+                for row in first..<last {
+                    ends[row - chunkTokenOffset] = end
+                }
+            }
+            return touched ? ends : nil
+        }
+    }
+
+    /// Turn the attached images into soft tokens, once, before any chunk runs.
+    private func runVisionTower(vision: VisionPrefillInput?,
+                                chunkTokens: Int,
+                                tokenCount: Int) throws -> [VisionTowerOutput] {
+        guard let vision, !vision.isEmpty else { return [] }
+        if let reason = PrefillChunkPlanner.imageSpanRejection(imageSpans: vision.spans,
+                                                              tokenCount: tokenCount,
+                                                              chunkTokens: chunkTokens) {
+            throw PrefillError.chunkedUnsupported(reason)
+        }
+        // Opening the future direction is only equivalent to full bidirectional
+        // visibility while the span fits inside the sliding window; past that,
+        // the window's lower edge would cut the span's own head off (§2-7).
+        if let longest = vision.spans.map(\.tokenCount).max(), longest > cfg.slidingWindow {
+            throw PrefillError.chunkedUnsupported(
+                "image span of \(longest) tokens exceeds the \(cfg.slidingWindow)-token "
+                + "sliding window, so it cannot be made bidirectional")
+        }
+
+        let tower = try ensureVisionTower()
+        var outputs: [VisionTowerOutput] = []
+        outputs.reserveCapacity(vision.images.count)
+        for image in vision.images {
+            guard tower.accepts(image.geometry) else {
+                throw VisionError.patchBudgetExceeded(width: image.geometry.targetWidth,
+                                                      height: image.geometry.targetHeight,
+                                                      patches: image.geometry.patchCount,
+                                                      budget: tower.maxPatchCount)
+            }
+            let byteCount = image.patches.count * MemoryLayout<Float16>.size
+            guard let pixels = image.patches.withUnsafeBytes({ raw in
+                ctx.device.makeBuffer(bytes: raw.baseAddress!,
+                                      length: byteCount,
+                                      options: .storageModeShared)
+            }) else {
+                throw ModelError.residentBufferWrapFailed
+            }
+            pixels.label = "vision.pixels"
+            guard let cb = ctx.queue.makeCommandBuffer() else {
+                throw ModelError.residentBufferWrapFailed
+            }
+            let start = Date()
+            let output = try tower.encode(commandBuffer: cb,
+                                          pixels: pixels,
+                                          geometry: image.geometry)
+            cb.commit()
+            waitUntilCompleted(cb)
+            try checkCommandBufferError(cb.error)
+            visionTowerSeconds += Date().timeIntervalSince(start)
+            visionTowerImages += 1
+            outputs.append(output)
+        }
+        return outputs
+    }
+
+    private func ensureVisionTower() throws -> VisionTower {
+        if let visionTower { return visionTower }
+        guard model.hasVisionTower else {
+            throw VisionError.towerNotInstalled(path: model.directoryURL.path)
+        }
+        let start = Date()
+        let weights = try model.visionWeights()
+        let tower = try VisionTower(context: ctx, weights: weights)
+        let scatter = try VisionSoftTokenScatter(context: ctx)
+        visionLoadSeconds += Date().timeIntervalSince(start)
+        visionTower = tower
+        visionScatter = scatter
+        return tower
     }
 
     @discardableResult
@@ -590,6 +776,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                      logits: MTLBuffer,
                                      scratch: PrefillChunkScratchBuffers,
                                      config: PrefillRuntimeConfig,
+                                     vision: VisionChunkPlan = .none,
                                      writeFinalHead: Bool) async throws {
         guard !tokens.isEmpty else { return }
         guard kv != nil else {
@@ -836,7 +1023,41 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                             t: UInt32(t),
                             d: UInt32(D),
                             outScale: sqrtHidden)
+        // Image rows are replaced, not scaled: `outScale` above is the text
+        // embedding's sqrt(hidden), and upstream does not apply it to soft
+        // tokens (PLAN_VISION §2-6).
+        for scatter in vision.scatters {
+            guard let visionScatter else {
+                throw PrefillError.chunkedUnsupported(
+                    "a prefill chunk carries image rows but no vision scatter kernel")
+            }
+            visionScatter.encode(commandBuffer: cb,
+                                 hidden: scratch.hidden,
+                                 soft: scatter.soft,
+                                 d: D,
+                                 hiddenRow: scatter.hiddenRow,
+                                 softRow: scatter.softRow,
+                                 rowCount: scatter.rowCount,
+                                 hiddenStrideElements: D,
+                                 scale: VisionPrefillFault.selected == .softTokensScaled
+                                     ? sqrtHidden : 1.0)
+        }
         try cutProfiled(.embed)
+
+        // One `[queryCount]` upload per chunk that holds an image, and none at
+        // all otherwise (`spanEnds` is nil then, and every attention dispatch
+        // below takes the same path it took before vision existed).
+        let spanEnds = VisionPrefillFault.selected == .causalOnly ? nil : vision.spanEnds
+        let spanEndBuffer: MTLBuffer? = try spanEnds.map { ends in
+            guard let buffer = ctx.device.makeBuffer(
+                bytes: ends,
+                length: ends.count * MemoryLayout<UInt32>.stride,
+                options: .storageModeShared) else {
+                throw ModelError.residentBufferWrapFailed
+            }
+            buffer.label = "prefill.spanEnd"
+            return buffer
+        }
 
         for L in 0..<cfg.numLayers {
             model.beginOpeningRoutedExpertStreamer(layer: L)
@@ -923,6 +1144,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                          bytesPerToken: bytes / t)
             }
             try cutProfiled(.kvCopy)
+            // Upstream ORs the image mask into the *sliding* layers only and
+            // leaves the five full-attention layers causal (PLAN_VISION §2-7).
+            // That is upstream's shape, possibly its bug, and it is what the
+            // reference we compare against does.
+            let layerSpanEnd = isFull ? nil : spanEndBuffer
             let params = PrefillAttentionParams(
                     startPosition: UInt32(startPosition),
                     queryCount: UInt32(t),
@@ -934,7 +1160,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     kvTokenStrideElements: UInt32(kvDim),
                     qTokenStrideElements: UInt32(qDim),
                     oTokenStrideElements: UInt32(qDim),
-                    scale: 1.0)
+                    scale: 1.0,
+                    spanMaskEnabled: layerSpanEnd != nil)
             if let kv {
                     let keyBuffer = kv.keyBuffer(layer: L, validTokenCount: startPosition + t)
                     let valueBuffer = kv.valueBuffer(layer: L, validTokenCount: startPosition + t)
@@ -948,6 +1175,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                                   v: valueBuffer,
                                                   out: scratch.attentionOutput,
                                                   params: params,
+                                                  spanEnd: layerSpanEnd,
                                                   kvRingCapacity: activeRingCapacity,
                                                   path: prefillAttentionPath)
             } else {

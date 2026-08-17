@@ -88,6 +88,7 @@ public func runRawCompletion(producer: any LogitProducer,
                              context: MetalContext,
                              scratch: RawCompletionScratch,
                              prefillConfig: PrefillRuntimeConfig = .defaultChunked,
+                             vision: VisionPrefillInput? = nil,
                              start: RawCompletionStart = .reset,
                              shouldStop: () -> Bool = { false },
                              onProgress: (RawDecodeProgress) -> Void) async throws -> RawDecodeResult {
@@ -110,6 +111,14 @@ public func runRawCompletion(producer: any LogitProducer,
         guard count > 0, count < promptIds.count else {
             throw GeneratorError.invalidContinuation(
                 "cached prompt token count must be greater than zero and less than the effective prompt")
+        }
+        // Image spans are offsets into the slice that is actually prefilled, so
+        // a served prefix would shift every one of them. The prompt cache is
+        // disabled for image requests upstream of here (PLAN_VISION §4-6); this
+        // is the check that makes that a contract rather than a convention.
+        guard vision == nil else {
+            throw GeneratorError.invalidContinuation(
+                "a cached prompt prefix cannot be combined with attached images")
         }
         guard producer is any ContinuableLogitProducer else {
             throw GeneratorError.invalidContinuation(
@@ -149,6 +158,7 @@ public func runRawCompletion(producer: any LogitProducer,
                                                       startPosition: position,
                                                       outputMode: mode,
                                                       config: prefillConfig,
+                                                      vision: vision,
                                                       into: scratch.logits) { done in
             onProgress(.prefill(done: cachedPromptTokens + done, total: promptIds.count))
         }
@@ -167,6 +177,13 @@ public func runRawCompletion(producer: any LogitProducer,
         throw PrefillError.chunkedUnsupported(
             PrefillError.chunkedRequiresChunkedRunnerReason)
     case .off:
+        // The scalar replay path has nowhere to put a soft token: it embeds one
+        // token at a time through the text lookup. Refusing is the only honest
+        // answer — running it would answer about an image it never saw.
+        guard vision == nil else {
+            throw PrefillError.chunkedUnsupported(
+                "images require chunked prefill; run with --prefill on")
+        }
         for t in prefillTokens {
             try Task.checkCancellation()
             try await producer.produce(token: t, position: position, into: scratch.logits)

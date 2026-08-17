@@ -9,6 +9,7 @@ public enum VisionError: Error, Equatable, CustomStringConvertible {
     case unattachedMediaToken(String)
     case unsupportedMedia(String)
     case towerNotInstalled(path: String)
+    case spanImageMismatch(String)
 
     public var description: String {
         switch self {
@@ -33,6 +34,8 @@ public enum VisionError: Error, Equatable, CustomStringConvertible {
                 the model at \(path) was installed without a vision tower; \
                 add one with `TurboFieldfareRepack --add-vision --input-gturbo \(path)`
                 """
+        case let .spanImageMismatch(detail):
+            return "image spans do not describe the attached images: \(detail)"
         }
     }
 }

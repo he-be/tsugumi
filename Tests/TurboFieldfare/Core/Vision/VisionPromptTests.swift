@@ -102,6 +102,58 @@ struct VisionPromptTests {
     }
 }
 
+/// `VisionPrefillInput` is the contract between the prompt and the tower: the
+/// spans say where the soft tokens go, the images say how many there are. It
+/// exists to refuse the combinations that would scatter the wrong rows.
+@Suite("VisionPrefillInput")
+struct VisionPrefillInputTests {
+    private func image(_ softTokens: Int) -> VisionPreprocessedImage {
+        // Only the geometry is read here; the patch payload is irrelevant.
+        VisionPreprocessedImage(
+            geometry: VisionImageGeometry(targetWidth: 48 * softTokens,
+                                          targetHeight: 48,
+                                          patchesWide: 3 * softTokens,
+                                          patchesHigh: 3,
+                                          softTokenCount: softTokens),
+            patches: [])
+    }
+
+    private func span(_ offset: Int, _ count: Int, index: Int = 0) -> VisionImageSpan {
+        VisionImageSpan(imageIndex: index, tokenOffset: offset, tokenCount: count)
+    }
+
+    @Test("Matching spans and images are accepted")
+    func accepted() throws {
+        let input = try VisionPrefillInput(
+            spans: [span(2, 4, index: 0), span(9, 7, index: 1)],
+            images: [image(4), image(7)])
+        #expect(!input.isEmpty)
+        #expect(input.spans.count == 2)
+    }
+
+    @Test("A span length that disagrees with the image is refused")
+    func lengthMismatch() {
+        #expect(throws: VisionError.self) {
+            try VisionPrefillInput(spans: [span(2, 280)], images: [image(266)])
+        }
+    }
+
+    @Test("Count, order, and overlap are all refused")
+    func structuralMismatch() {
+        #expect(throws: VisionError.self) {
+            try VisionPrefillInput(spans: [span(2, 4)], images: [image(4), image(4)])
+        }
+        #expect(throws: VisionError.self) {
+            try VisionPrefillInput(spans: [span(9, 4, index: 0), span(2, 4, index: 1)],
+                                   images: [image(4), image(4)])
+        }
+        #expect(throws: VisionError.self) {
+            try VisionPrefillInput(spans: [span(2, 4, index: 0), span(4, 4, index: 1)],
+                                   images: [image(4), image(4)])
+        }
+    }
+}
+
 @Suite("VisionMediaTokenIDs")
 struct VisionMediaTokenIDsTests {
     /// Binds the marker strings to the ids `config.json` declares. If a
@@ -116,6 +168,47 @@ struct VisionMediaTokenIDsTests {
         #expect(ids.endImage == 258_882)
         #expect(ids.audio == 258_881)
         #expect(ids.video == 258_884)
+    }
+
+    /// The image placeholder has to survive the round trip through the chat
+    /// template and the tokenizer as *one* id. If `<|image|>` encoded as
+    /// ordinary text instead, the expansion would find no placeholder and the
+    /// prompt would carry an image nobody could see.
+    @Test("A multimodal turn renders and encodes to one image id per image")
+    func multimodalTemplateEncodesPlaceholders() async throws {
+        let tokenizer = try await GFTokenizer.load()
+        let ids = try VisionMediaTokenIDs(tokenizer: tokenizer)
+        let rendered = try tokenizer.applyChatTemplate(multimodal: [
+            GFTokenizer.MultimodalMessage(role: .user,
+                                          parts: [.text("describe this"), .image]),
+        ])
+        #expect(rendered.contains("<|turn>user\ndescribe this<|image|><turn|>"))
+
+        let tokens = tokenizer.encode(rendered, addBOS: false)
+        #expect(tokens.filter { $0 == ids.image }.count == 1)
+
+        let prompt = try VisionPromptAssembler.expandImagePlaceholders(
+            tokens: tokens, softTokenCounts: [5], ids: ids)
+        #expect(prompt.spans.count == 1)
+        #expect(prompt.tokens.count == tokens.count + 6)   // 5 soft tokens + boi + eoi - 1
+        #expect(prompt.tokens[prompt.spans[0].tokenOffset - 1] == ids.beginImage)
+        #expect(prompt.tokens[prompt.spans[0].tokenEnd] == ids.endImage)
+    }
+
+    /// A text-only message must render exactly as it did before content parts
+    /// existed — the multimodal path is the same renderer.
+    @Test("Text-only messages render identically through both entry points")
+    func textOnlyRenderingIsUnchanged() async throws {
+        let tokenizer = try await GFTokenizer.load()
+        let viaMessages = try tokenizer.applyChatTemplate([
+            GFTokenizer.Message(role: .system, content: " you are terse "),
+            GFTokenizer.Message(role: .user, content: "  hello\n"),
+        ], enableThinking: true)
+        let viaParts = try tokenizer.applyChatTemplate(multimodal: [
+            GFTokenizer.MultimodalMessage(role: .system, parts: [.text(" you are terse ")]),
+            GFTokenizer.MultimodalMessage(role: .user, parts: [.text("  hello\n")]),
+        ], enableThinking: true)
+        #expect(viaMessages == viaParts)
     }
 
     @Test("The chat template refuses a prompt carrying a literal marker")

@@ -4,6 +4,11 @@ public struct Args: Equatable, Sendable {
     public var model: String
     public var prompt: String?
     public var messagesFile: String?
+    /// Images attached to the last user turn, in the order given.
+    public var images: [String]
+    /// Soft-token budget per image. Upstream's `max_soft_tokens`: an upper
+    /// bound, not the count — the count follows the aspect ratio.
+    public var imageTokens: Int
     public var maxNew: Int
     public var maxContext: Int
     public var temperature: Float
@@ -27,6 +32,8 @@ public struct Args: Equatable, Sendable {
     public init(model: String,
                 prompt: String? = nil,
                 messagesFile: String? = nil,
+                images: [String] = [],
+                imageTokens: Int = 280,
                 maxNew: Int = 1_024,
                 maxContext: Int = 4096,
                 temperature: Float = 1.0,
@@ -47,6 +54,8 @@ public struct Args: Equatable, Sendable {
         self.model = model
         self.prompt = prompt
         self.messagesFile = messagesFile
+        self.images = images
+        self.imageTokens = imageTokens
         self.maxNew = maxNew
         self.maxContext = maxContext
         self.temperature = temperature
@@ -99,8 +108,19 @@ extension Args {
       --model <dir>             Path to a .gturbo model directory.
       --prompt <string>         Raw-completion prompt.
       --messages-file <path>    JSON chat messages with role and content fields.
+                                content may also be a list of parts:
+                                [{"type":"text","text":"..."},
+                                 {"type":"image","path":"photo.jpg"}]
 
     options:
+      --image <path>             Attach an image to the last user turn
+                                 (repeatable, --messages-file only). Requires a
+                                 model installed with a vision tower and
+                                 --prefill on. Images are appended after that
+                                 turn's text, in the order given.
+      --image-tokens <n>         Soft-token budget per image: 70, 140, or 280
+                                 (default 280). An upper bound, not the count —
+                                 the count follows the image's aspect ratio.
       --max-new <int>            Generated-token limit (default 1024).
       --max-context <int>        Context limit in tokens (default 4096).
       --temperature <float>      Sampling temperature (default 1.0, the model-recommended
@@ -168,6 +188,8 @@ extension Args {
         var model: String?
         var prompt: String?
         var messagesFile: String?
+        var images: [String] = []
+        var imageTokens = 280
         var maxNew = 1_024
         var maxContext = 4096
         var temperature: Float = 1.0
@@ -202,6 +224,15 @@ extension Args {
                 prompt = try takeValue(argv, &index, flag: flag)
             case "--messages-file":
                 messagesFile = try takeValue(argv, &index, flag: flag)
+            case "--image":
+                images.append(try takeValue(argv, &index, flag: flag))
+            case "--image-tokens":
+                let value = try takeValue(argv, &index, flag: flag)
+                guard let parsed = Int(value),
+                      VisionPreprocessorConfig.supportedSoftTokens.contains(parsed) else {
+                    throw ArgsError.invalidValue(flag: flag, value: value)
+                }
+                imageTokens = parsed
             case "--max-new":
                 let value = try takeValue(argv, &index, flag: flag)
                 guard let parsed = Int(value), parsed > 0 else {
@@ -304,6 +335,14 @@ extension Args {
             throw ArgsError.mutuallyExclusive("--prompt", "--messages-file")
         }
         if prompt == nil && messagesFile == nil { throw ArgsError.modeMissing }
+        // A raw completion is passed through verbatim, so there is no turn to
+        // attach an image to and no place the soft tokens could legitimately go.
+        if !images.isEmpty && messagesFile == nil {
+            throw ArgsError.mutuallyExclusive("--image", "--prompt")
+        }
+        if !images.isEmpty && prefillPolicy == .off {
+            throw ArgsError.invalidValue(flag: "--prefill", value: "off with --image")
+        }
         if temperature > 0, topK == nil, let topP, topP < 1 {
             throw ArgsError.invalidValue(
                 flag: "--top-p",
@@ -312,6 +351,8 @@ extension Args {
         let arguments = Args(model: model,
                              prompt: prompt,
                              messagesFile: messagesFile,
+                             images: images,
+                             imageTokens: imageTokens,
                              maxNew: maxNew,
                              maxContext: maxContext,
                              temperature: temperature,

@@ -101,6 +101,7 @@ import TurboFieldfareValidationSupport
                             startPosition: Int,
                             outputMode: PrefillOutputMode,
                             config: PrefillRuntimeConfig,
+                            vision: VisionPrefillInput?,
                             into logits: MTLBuffer,
                             onProgress: (Int) -> Void) async throws -> PrefillResult {
             chunkedCalls += 1

@@ -2,9 +2,126 @@ import Foundation
 import Metal
 import TurboFieldfare
 
+/// A chat message from `--messages-file`.
+///
+/// `content` is either a string, as it has always been, or a list of parts so a
+/// turn can carry images (PLAN_VISION §4-6). An image part names a file rather
+/// than a data URI: this is a local CLI, and a path is what a shell has.
 private struct MessageJSON: Decodable {
+    enum Part {
+        case text(String)
+        case image(path: String)
+    }
+
     let role: String
-    let content: String
+    let parts: [Part]
+
+    private enum CodingKeys: String, CodingKey { case role, content }
+
+    private struct PartJSON: Decodable {
+        let type: String
+        let text: String?
+        let path: String?
+    }
+
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.role = try container.decode(String.self, forKey: .role)
+        if let text = try? container.decode(String.self, forKey: .content) {
+            self.parts = [.text(text)]
+            return
+        }
+        let rawParts = try container.decode([PartJSON].self, forKey: .content)
+        self.parts = try rawParts.map { part in
+            switch part.type {
+            case "text":
+                guard let text = part.text else {
+                    throw GFTokenizerError.invalidChatTemplate("text part without \"text\"")
+                }
+                return .text(text)
+            case "image":
+                guard let path = part.path else {
+                    throw GFTokenizerError.invalidChatTemplate("image part without \"path\"")
+                }
+                return .image(path: path)
+            default:
+                throw GFTokenizerError.invalidChatTemplate(
+                    "unsupported content part type \(part.type)")
+            }
+        }
+    }
+}
+
+/// The prompt, plus the images whose soft tokens sit inside it.
+private struct PreparedPrompt {
+    let ids: [Int32]
+    let vision: VisionPrefillInput?
+    let softTokenCounts: [Int]
+}
+
+private func preparePrompt(args: Args, tokenizer: GFTokenizer) throws -> PreparedPrompt {
+    if let rawPrompt = args.prompt {
+        return PreparedPrompt(ids: tokenizer.encode(rawPrompt, addBOS: true),
+                              vision: nil,
+                              softTokenCounts: [])
+    }
+    guard let messagesFile = args.messagesFile else {
+        throw ArgsError.modeMissing
+    }
+    let data = try Data(contentsOf: URL(fileURLWithPath: messagesFile),
+                        options: [.mappedIfSafe])
+    let rows = try JSONDecoder().decode([MessageJSON].self, from: data)
+
+    var messages: [GFTokenizer.MultimodalMessage] = []
+    var imagePaths: [String] = []
+    for row in rows {
+        guard let role = GFTokenizer.Role(rawValue: row.role) else {
+            throw GFTokenizerError.invalidChatTemplate("unsupported role \(row.role)")
+        }
+        var parts: [GFTokenizer.ContentPart] = []
+        for part in row.parts {
+            switch part {
+            case .text(let text):
+                parts.append(.text(text))
+            case .image(let path):
+                parts.append(.image)
+                imagePaths.append(path)
+            }
+        }
+        messages.append(GFTokenizer.MultimodalMessage(role: role, parts: parts))
+    }
+
+    // `--image` attaches to the last user turn, after its text.
+    if !args.images.isEmpty {
+        guard let last = messages.lastIndex(where: { $0.role == .user }) else {
+            throw GFTokenizerError.invalidChatTemplate(
+                "--image needs a user turn in \(messagesFile) to attach to")
+        }
+        messages[last] = GFTokenizer.MultimodalMessage(
+            role: .user,
+            parts: messages[last].parts + args.images.map { _ in .image })
+        imagePaths.append(contentsOf: args.images)
+    }
+
+    let rendered = try tokenizer.applyChatTemplate(multimodal: messages,
+                                                   enableThinking: args.thinking)
+    let tokens = tokenizer.encode(rendered, addBOS: false)
+    guard !imagePaths.isEmpty else {
+        return PreparedPrompt(ids: tokens, vision: nil, softTokenCounts: [])
+    }
+
+    let preprocessorConfig = try VisionPreprocessorConfig(maxSoftTokens: args.imageTokens)
+    let images = try imagePaths.map { path in
+        try VisionImagePreprocessor.preprocess(contentsOf: URL(fileURLWithPath: path),
+                                               config: preprocessorConfig)
+    }
+    let ids = try VisionMediaTokenIDs(tokenizer: tokenizer)
+    let prompt = try VisionPromptAssembler.makePrefillPrompt(tokens: tokens,
+                                                             images: images,
+                                                             ids: ids)
+    return PreparedPrompt(ids: prompt.tokens,
+                          vision: prompt.vision,
+                          softTokenCounts: images.map(\.geometry.softTokenCount))
 }
 
 public struct RunResult: Equatable, Sendable {
@@ -18,25 +135,8 @@ public func run(args: Args,
     do {
         let modelURL = URL(fileURLWithPath: args.model)
         let tokenizer = try await GFTokenizer.load(forModelDirectory: modelURL)
-        let promptIds: [Int32]
-        if let rawPrompt = args.prompt {
-            promptIds = tokenizer.encode(rawPrompt, addBOS: true)
-        } else if let messagesFile = args.messagesFile {
-            let data = try Data(contentsOf: URL(fileURLWithPath: messagesFile),
-                                options: [.mappedIfSafe])
-            let rows = try JSONDecoder().decode([MessageJSON].self, from: data)
-            let messages = try rows.map { row -> GFTokenizer.Message in
-                guard let role = GFTokenizer.Role(rawValue: row.role) else {
-                    throw GFTokenizerError.invalidChatTemplate("unsupported role \(row.role)")
-                }
-                return GFTokenizer.Message(role: role, content: row.content)
-            }
-            let rendered = try tokenizer.applyChatTemplate(messages,
-                                                           enableThinking: args.thinking)
-            promptIds = tokenizer.encode(rendered, addBOS: false)
-        } else {
-            return errored(stderr, "one of --prompt or --messages-file is required", 2)
-        }
+        let prepared = try preparePrompt(args: args, tokenizer: tokenizer)
+        let promptIds = prepared.ids
         guard !promptIds.isEmpty else { return errored(stderr, "empty prompt", 2) }
         guard promptIds.count < args.maxContext else {
             return errored(
@@ -97,7 +197,8 @@ public func run(args: Args,
             config: config,
             context: context,
             scratch: scratch,
-            prefillConfig: runtime.prefillConfig) { progress in
+            prefillConfig: runtime.prefillConfig,
+            vision: prepared.vision) { progress in
                 switch progress {
                 case .prefill:
                     break
@@ -116,7 +217,8 @@ public func run(args: Args,
             footer += statsFooter(loadSeconds: loadSeconds,
                                   stats: stats,
                                   telemetry: model.telemetry.snapshot(),
-                                  runner: runner)
+                                  runner: runner,
+                                  softTokenCounts: prepared.softTokenCounts)
             stderr.write(Data(footer.utf8))
         }
         return RunResult(exitCode: 0)
@@ -133,7 +235,8 @@ public func run(args: Args,
 private func statsFooter(loadSeconds: Double,
                          stats: RawDecodeResult,
                          telemetry: ExpertTelemetrySnapshot,
-                         runner: RealForwardRunner) -> String {
+                         runner: RealForwardRunner,
+                         softTokenCounts: [Int] = []) -> String {
     func s(_ value: Double) -> String { String(format: "%.3f", value) }
     func ms(_ nanos: UInt64, per count: Int) -> String {
         guard count > 0 else { return "n/a" }
@@ -160,6 +263,13 @@ private func statsFooter(loadSeconds: Double,
     lines += " io=\(s(Double(p.fetchNanos) / 1e9))s"
     lines += " | decode hit=\(pct(d.hitRate))% \(d.hits)/\(d.experts)"
     lines += " io=\(s(Double(d.fetchNanos) / 1e9))s]\n"
+
+    if runner.visionTowerImages > 0 {
+        lines += "[vision images=\(runner.visionTowerImages)"
+        lines += " soft=\(softTokenCounts.map(String.init).joined(separator: ","))"
+        lines += " tower=\(s(runner.visionTowerSeconds))s"
+        lines += " towerLoad=\(s(runner.visionLoadSeconds))s]\n"
+    }
 
     lines += "[decode/tok io=\(ms(runner.totalIoNanos, per: newTokens))ms"
     lines += " cb1=\(ms(runner.totalCb1Nanos, per: newTokens))ms"

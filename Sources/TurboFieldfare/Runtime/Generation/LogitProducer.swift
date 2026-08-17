@@ -41,10 +41,15 @@ public struct PrefillResult: Sendable, Equatable {
 
 protocol ChunkedPrefillRunner: LogitProducer {
     /// Prefill a prompt slice using the chunked production runtime.
+    ///
+    /// `vision` carries the images whose soft tokens are scattered into the
+    /// prompt; nil is the text path, which runs exactly as it did before image
+    /// spans existed.
     func prefillChunked(tokens: ArraySlice<Int32>,
                         startPosition: Int,
                         outputMode: PrefillOutputMode,
                         config: PrefillRuntimeConfig,
+                        vision: VisionPrefillInput?,
                         into logits: MTLBuffer,
                         onProgress: (Int) -> Void) async throws -> PrefillResult
 }

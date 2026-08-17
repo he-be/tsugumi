@@ -75,6 +75,43 @@ public struct VisionImageSpan: Sendable, Equatable {
     }
 }
 
+/// The image side of one prefill request: what to run the tower on, and where
+/// the result goes.
+///
+/// `spans` are offsets into the token slice handed to `prefillChunked`, not
+/// into the original prompt. The two coincide unless a prefix was served from a
+/// cache — which is why a cached prefix and an image are refused together
+/// (`PLAN_VISION.md` §4-6): the offsets would silently point at the wrong rows.
+public struct VisionPrefillInput: Sendable {
+    public let spans: [VisionImageSpan]
+    public let images: [VisionPreprocessedImage]
+
+    public init(spans: [VisionImageSpan], images: [VisionPreprocessedImage]) throws {
+        guard spans.count == images.count else {
+            throw VisionError.spanImageMismatch(
+                "\(spans.count) image spans for \(images.count) images")
+        }
+        var previousEnd = 0
+        for (index, span) in spans.enumerated() {
+            let expected = images[index].geometry.softTokenCount
+            guard span.tokenCount == expected else {
+                throw VisionError.spanImageMismatch(
+                    "image \(index) occupies \(span.tokenCount) prompt tokens but its "
+                    + "geometry yields \(expected) soft tokens")
+            }
+            guard span.tokenOffset >= previousEnd else {
+                throw VisionError.spanImageMismatch(
+                    "image spans are out of order or overlap at image \(index)")
+            }
+            previousEnd = span.tokenEnd
+        }
+        self.spans = spans
+        self.images = images
+    }
+
+    public var isEmpty: Bool { spans.isEmpty }
+}
+
 /// A prompt with its image spans resolved.
 public struct VisionPrompt: Sendable {
     public let tokens: [Int32]
@@ -151,5 +188,24 @@ public enum VisionPromptAssembler {
             imageIndex += 1
         }
         return (out, spans)
+    }
+
+    /// Expand the placeholders for `images` and pair the result with the images
+    /// themselves, which is everything prefill needs.
+    ///
+    /// The soft-token counts come from each image's own geometry, so the number
+    /// of `<|image|>` tokens in the prompt and the number of rows the tower
+    /// produces are the same number by construction rather than by agreement.
+    public static func makePrefillPrompt(
+        tokens: [Int32],
+        images: [VisionPreprocessedImage],
+        ids: VisionMediaTokenIDs
+    ) throws -> (tokens: [Int32], vision: VisionPrefillInput) {
+        let expanded = try expandImagePlaceholders(
+            tokens: tokens,
+            softTokenCounts: images.map(\.geometry.softTokenCount),
+            ids: ids)
+        return (expanded.tokens,
+                try VisionPrefillInput(spans: expanded.spans, images: images))
     }
 }

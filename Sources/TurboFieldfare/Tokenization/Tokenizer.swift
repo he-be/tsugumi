@@ -306,6 +306,32 @@ public struct GFTokenizer: @unchecked Sendable {
         }
     }
 
+    /// One piece of a message body. `image` is a placeholder the caller has
+    /// attached a real image to; it renders as the single `<|image|>` token the
+    /// bundled template emits for an `image` content part, and
+    /// `VisionPromptAssembler.expandImagePlaceholders` later widens it to
+    /// `<|image>` + n soft tokens + `<image|>`.
+    public enum ContentPart: Sendable, Equatable {
+        case text(String)
+        case image
+    }
+
+    /// A message whose body is a sequence of parts. `Message` is the text-only
+    /// special case of this and renders identically.
+    public struct MultimodalMessage: Sendable, Equatable {
+        public let role: Role
+        public let parts: [ContentPart]
+
+        public init(role: Role, parts: [ContentPart]) {
+            self.role = role
+            self.parts = parts
+        }
+
+        public var imageCount: Int {
+            parts.reduce(into: 0) { $0 += ($1 == .image ? 1 : 0) }
+        }
+    }
+
     /// Text-only, no-tool rendering of the pinned IT checkpoint's bundled
     /// `chat_template.jinja`. Keeping this narrow makes unsupported tool/media
     /// behavior explicit instead of approximating it.
@@ -323,6 +349,38 @@ public struct GFTokenizer: @unchecked Sendable {
     ///   want it hidden route it through `StructuredAssistantDecoder`.
     public func applyChatTemplate(_ messages: [Message],
                                   enableThinking: Bool = false) throws -> String {
+        let multimodal = try messages.map { message -> MultimodalMessage in
+            guard let content = message.content else {
+                throw GFTokenizerError.invalidChatTemplate("text-only messages require content")
+            }
+            return MultimodalMessage(role: message.role, parts: [.text(content)])
+        }
+        return try applyChatTemplate(multimodal: multimodal, enableThinking: enableThinking)
+    }
+
+    /// The same rendering with image placeholders allowed in the bodies.
+    ///
+    /// Each text part is trimmed on its own and the parts are concatenated with
+    /// no separator, which is what the bundled template does with a sequence
+    /// `content` (`chat_template.jinja`: `item['text'] | trim`, then
+    /// `'<|image|>'` for an image item). A message of one text part therefore
+    /// renders byte for byte as the text-only path above.
+    public func applyChatTemplate(multimodal messages: [MultimodalMessage],
+                                  enableThinking: Bool = false) throws -> String {
+        func render(_ parts: [ContentPart]) throws -> String {
+            var body = ""
+            for part in parts {
+                switch part {
+                case .text(let text):
+                    try VisionPromptAssembler.rejectMediaMarkers(in: text)
+                    body += text.trimmingCharacters(in: .whitespacesAndNewlines)
+                case .image:
+                    body += VisionMediaTokenIDs.imageToken
+                }
+            }
+            return body
+        }
+
         var s = Self.bosMark
         var rest = messages[...]
         // The template emits a system turn whenever thinking is on, even with
@@ -330,25 +388,17 @@ public struct GFTokenizer: @unchecked Sendable {
         if enableThinking {
             var body = ""
             if let first = messages.first, first.role == .system {
-                guard let content = first.content else {
-                    throw GFTokenizerError.invalidChatTemplate("text-only messages require content")
-                }
-                try VisionPromptAssembler.rejectMediaMarkers(in: content)
-                body = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                body = try render(first.parts)
                 rest = messages.dropFirst()
             }
             s += Self.turnOpen + "system\n" + Self.thinkMark + "\n" + body
                 + Self.turnClose + "\n"
         }
         for (index, message) in rest.enumerated() {
-            guard let rawContent = message.content else {
-                throw GFTokenizerError.invalidChatTemplate("text-only messages require content")
-            }
-            try VisionPromptAssembler.rejectMediaMarkers(in: rawContent)
-            let content = rawContent.trimmingCharacters(in: .whitespacesAndNewlines)
             if message.role == .system && index != 0 {
                 throw GFTokenizerError.invalidChatTemplate("system message must be first")
             }
+            let content = try render(message.parts)
             let role = message.role == .assistant ? "model" : message.role.rawValue
             s += Self.turnOpen + role + "\n" + content + Self.turnClose + "\n"
         }

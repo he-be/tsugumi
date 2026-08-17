@@ -13,6 +13,10 @@ struct PrefillAttentionParams: Sendable, Equatable {
     var qTokenStrideElements: UInt32
     var oTokenStrideElements: UInt32
     var scale: Float
+    /// Non-zero when the `spanEnd` buffer is bound and carries a per-query
+    /// visible end (`PLAN_VISION.md` §4-5-b). Zero is the text-only path, which
+    /// is bit-identical to the kernel before image spans existed.
+    var spanMaskEnabled: UInt32
 
     init(startPosition: UInt32,
                 queryCount: UInt32,
@@ -24,7 +28,8 @@ struct PrefillAttentionParams: Sendable, Equatable {
                 kvTokenStrideElements: UInt32,
                 qTokenStrideElements: UInt32,
                 oTokenStrideElements: UInt32,
-                scale: Float) {
+                scale: Float,
+                spanMaskEnabled: Bool = false) {
         self.startPosition = startPosition
         self.queryCount = queryCount
         self.headDim = headDim
@@ -36,6 +41,7 @@ struct PrefillAttentionParams: Sendable, Equatable {
         self.qTokenStrideElements = qTokenStrideElements
         self.oTokenStrideElements = oTokenStrideElements
         self.scale = scale
+        self.spanMaskEnabled = spanMaskEnabled ? 1 : 0
     }
 }
 
@@ -76,16 +82,26 @@ final class PrefillAttention {
                              v: MTLBuffer, vOffset: Int = 0,
                              out: MTLBuffer, outOffset: Int = 0,
                              params: PrefillAttentionParams,
+                             spanEnd: MTLBuffer? = nil,
+                             spanEndOffset: Int = 0,
                              kvRingCapacity: UInt32 = 0,
                              path: RuntimePrefillAttentionPath = .causalTiled) {
         validate(params)
+        precondition((params.spanMaskEnabled != 0) == (spanEnd != nil),
+                     "the span mask flag and the span-end buffer must agree")
 
         let requestsTensorOps = path == .fullTensorOps2DPreferred
             || path == .fullTensorOps2DValidityV2
         // The pinned model uses 512/16/2 only for full attention; its
         // sliding-window layers use 256/16/8. A future model that reuses this
         // shape for sliding attention must add a full-visibility check here.
+        //
+        // The TensorOps kernel has no span mask: it is a causal-only path, and
+        // letting it serve a masked dispatch would silently drop the image
+        // span's bidirectional visibility on Apple10 hardware (PLAN_VISION
+        // §4-5-b). Excluded by shape, not trusted to be unreachable.
         let tensorOpsShape = requestsTensorOps
+            && params.spanMaskEnabled == 0
             && kvRingCapacity == 0
             && params.headDim == 512
             && params.numQHeads == 16
@@ -133,6 +149,9 @@ final class PrefillAttention {
         enc.setBuffer(out, offset: outOffset, index: 3)
         var p = params
         enc.setBytes(&p, length: MemoryLayout<PrefillAttentionParams>.stride, index: 4)
+        // Bound only when the mask is on; the kernels read it under the same
+        // flag, so an unbound slot is never dereferenced.
+        enc.setBuffer(spanEnd, offset: spanEnd == nil ? 0 : spanEndOffset, index: 5)
         let groups: MTLSize
         switch variant {
         case .tensorOps:
