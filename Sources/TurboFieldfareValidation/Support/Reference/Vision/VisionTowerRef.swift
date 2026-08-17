@@ -65,6 +65,29 @@ public enum VisionTowerRef {
         case ropeAxesSwapped
         /// Pooling cells emitted column-major instead of row-major.
         case poolColumnMajor
+        /// The normalized branch output replaces the residual stream instead of
+        /// being added to it — what a wrong buffer binding on the fused
+        /// norm-and-add would produce.
+        case residualDropped
+    }
+
+    /// `hidden[t] += rmsnorm(x[t]) * weight`, the tower layer's residual joins.
+    public static func normResidualAdd(hidden: [Float], x: [Float], weight: [Float],
+                                       t: Int, d: Int, eps: Float,
+                                       variant: Variant = .upstream) -> [Float] {
+        precondition(hidden.count == t * d && x.count == t * d && weight.count == d,
+                     "shape mismatch")
+        var out = hidden
+        for row in 0..<t {
+            let range = (row * d)..<((row + 1) * d)
+            let normed = rmsNorm(Array(x[range]), weight: weight, eps: eps)
+            for i in 0..<d {
+                out[row * d + i] = variant == .residualDropped
+                    ? normed[i]
+                    : hidden[row * d + i] + normed[i]
+            }
+        }
+        return out
     }
 
     /// Per-head Q/K RMSNorm + 2D RoPE, and V's scale-less RMSNorm.

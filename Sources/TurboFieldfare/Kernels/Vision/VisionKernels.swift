@@ -260,6 +260,40 @@ package final class VisionAttentionFull {
     }
 }
 
+/// `hidden += rmsnorm(x) * weight`: the post-attention and post-MLP joins.
+package final class VisionNormResidualAdd {
+    private let pso: MTLComputePipelineState
+
+    package init(context: MetalContext) throws {
+        self.pso = try context.pipeline("vision_norm_residual_add_block")
+    }
+
+    package func encode(commandBuffer: MTLCommandBuffer,
+                        hidden: MTLBuffer, hiddenOffset: Int = 0,
+                        x: MTLBuffer, xOffset: Int = 0,
+                        weight: MTLBuffer, weightOffset: Int = 0,
+                        t: Int, d: Int, eps: Float) {
+        precondition(t > 0 && d > 0, "shape must be positive")
+        precondition(hidden !== x || hiddenOffset != xOffset,
+                     "the residual and the branch output must not be the same rows")
+        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        enc.setComputePipelineState(pso)
+        enc.setBuffer(hidden, offset: hiddenOffset, index: 0)
+        enc.setBuffer(x, offset: xOffset, index: 1)
+        enc.setBuffer(weight, offset: weightOffset, index: 2)
+        var tVar = UInt32(t)
+        var dVar = UInt32(d)
+        var epsVar = eps
+        enc.setBytes(&tVar, length: MemoryLayout<UInt32>.size, index: 3)
+        enc.setBytes(&dVar, length: MemoryLayout<UInt32>.size, index: 4)
+        enc.setBytes(&epsVar, length: MemoryLayout<Float>.size, index: 5)
+        let threads = min(pso.maxTotalThreadsPerThreadgroup, 256)
+        enc.dispatchThreadgroups(MTLSize(width: t, height: 1, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
+        enc.endEncoding()
+    }
+}
+
 /// `out = gelu_tanh(gate) * up` over the tower MLP's intermediate block.
 package final class VisionMLPActivation {
     private let pso: MTLComputePipelineState

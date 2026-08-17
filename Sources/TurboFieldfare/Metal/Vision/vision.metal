@@ -21,6 +21,9 @@ constant constexpr uint kVisionQMMThreads = 128;
 // Three elements per lane over a 32-lane simdgroup: the Q/K/V epilogue covers
 // head dimensions up to 96, and Gemma 4's tower is 72.
 constant constexpr uint kVisionMaxHeadDim = 96;
+// 256 threads is the widest block used here, so eight simdgroups is the ceiling
+// for the partial sums of a block-wide RMS reduction.
+constant constexpr uint kVisionRmsMaxSimdGroups = 8;
 constant constexpr float kVisionGeluSqrt2OverPi = 0.7978845608028654f;
 constant constexpr float kVisionGeluCubicCoeff = 0.044715f;
 
@@ -546,6 +549,66 @@ kernel void vision_attention_full_qblock_d96(
 ) {
     vision_attention_full_qblock_impl<3u, 8u>(
         Q, K, V, O, p, tg, lane, simd_group, simdgroups);
+}
+
+/// `hidden += rmsnorm(x) * weight`, the tower layer's two residual joins.
+///
+/// Both halves of the Gemma 4 sandwich end the same way — the branch output is
+/// normalized and then added back to the stream it came from
+/// (`post_attention_layernorm` after attention, `post_feedforward_layernorm`
+/// after the MLP) — so the norm and the add are one pass rather than a
+/// `prefill_rmsnorm_bf16w_block` writing a temporary that a second kernel
+/// immediately reads back. At P = 2520 that saves two 5.8 MB round trips per
+/// join, 54 times per image.
+///
+/// `hidden` is read-modify-write and `x` is read-only; they must not alias.
+/// The reduction is shared with the text path (`prefill_rms_block_inv` has the
+/// same shape) but is kept here because that helper is private to
+/// `prefill.metal` and the tower has no other reason to include it.
+[[kernel, max_total_threads_per_threadgroup(256)]]
+void vision_norm_residual_add_block(
+    device half*         hidden  [[buffer(0)]],
+    device const half*   x       [[buffer(1)]],
+    device const bfloat* weight  [[buffer(2)]],
+    constant uint&       T       [[buffer(3)]],
+    constant uint&       D       [[buffer(4)]],
+    constant float&      eps     [[buffer(5)]],
+    uint                 row     [[threadgroup_position_in_grid]],
+    uint                 lid     [[thread_position_in_threadgroup]],
+    uint                 lsize   [[threads_per_threadgroup]],
+    uint                 lane    [[thread_index_in_simdgroup]],
+    uint                 sg      [[simdgroup_index_in_threadgroup]],
+    uint                 sgs     [[simdgroups_per_threadgroup]]
+) {
+    if (row >= T) return;
+    threadgroup float partial[kVisionRmsMaxSimdGroups];
+
+    device const half* xr = x + row * D;
+    device half* hr = hidden + row * D;
+
+    float acc = 0.0f;
+    for (uint i = lid; i < D; i += lsize) {
+        const float v = float(xr[i]);
+        acc = fma(v, v, acc);
+    }
+    acc = simd_sum(acc);
+    if (lane == 0u) {
+        partial[sg] = acc;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (sg == 0u) {
+        float v = (lane < sgs) ? partial[lane] : 0.0f;
+        v = simd_sum(v);
+        if (lane == 0u) {
+            partial[0] = rsqrt(v / float(D) + eps);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const float inv = partial[0];
+
+    for (uint i = lid; i < D; i += lsize) {
+        hr[i] = half(float(hr[i]) + float(xr[i]) * inv * float(weight[i]));
+    }
 }
 
 /// `out = gelu_tanh(gate) * up`, the tower MLP's activation. Same expression as

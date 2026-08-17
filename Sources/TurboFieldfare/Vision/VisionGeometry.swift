@@ -8,6 +8,7 @@ public enum VisionError: Error, Equatable, CustomStringConvertible {
     case imageDecodeFailed(path: String, detail: String)
     case unattachedMediaToken(String)
     case unsupportedMedia(String)
+    case towerNotInstalled(path: String)
 
     public var description: String {
         switch self {
@@ -27,6 +28,11 @@ public enum VisionError: Error, Equatable, CustomStringConvertible {
                 """
         case let .unsupportedMedia(kind):
             return "\(kind) input is not supported by this runtime"
+        case let .towerNotInstalled(path):
+            return """
+                the model at \(path) was installed without a vision tower; \
+                add one with `TurboFieldfareRepack --add-vision --input-gturbo \(path)`
+                """
         }
     }
 }

@@ -959,6 +959,51 @@ func checkVisionMLPActivation(context: MetalContext, count: Int,
                   detail: "gelu_pytorch_tanh")
 }
 
+/// `hidden += rmsnorm(x) * weight`, the fused residual join used twice a layer.
+///
+/// The negative control is a reference that overwrites the residual instead of
+/// adding to it: the join is the one place in the tower where reading the wrong
+/// buffer still produces well-scaled output, so it needs a control that says
+/// the residual is really there.
+func checkVisionNormResidualAdd(context: MetalContext, t: Int, d: Int,
+                                seed: UInt64) throws -> [CaseResult] {
+    var rng = SeedTree(seed).key("vision-norm-residual-\(t)x\(d)")
+    let hidden = randomFP16(count: t * d, range: -3...3, rng: &rng)
+    let x = randomFP16(count: t * d, range: -2...2, rng: &rng)
+    let weight = randomBF16(count: d, range: 0.5...1.5, rng: &rng)
+
+    let kernel = try VisionNormResidualAdd(context: context)
+    let hiddenBuf = makeFP16Buffer(context.device, hidden.halves)
+    guard let cmd = context.queue.makeCommandBuffer() else {
+        fatalError("command buffer allocation failed")
+    }
+    kernel.encode(commandBuffer: cmd,
+                  hidden: hiddenBuf,
+                  x: makeFP16Buffer(context.device, x.halves),
+                  weight: bf16Buffer(context.device, weight),
+                  t: t, d: d, eps: visionEps)
+    waitAndCheck(cmd, "vision-norm-residual t=\(t) d=\(d)")
+
+    let actual = Fp16Buffer.read(hiddenBuf, count: t * d)
+    func reference(_ variant: VisionTowerRef.Variant) -> [Float] {
+        VisionTowerRef.normResidualAdd(hidden: hidden.values, x: x.values,
+                                       weight: weight.values,
+                                       t: t, d: d, eps: visionEps, variant: variant)
+    }
+    return [
+        result("vision-norm-residual-add t=\(t) d=\(d)",
+               groupSize: context.affineGroupSize,
+               rel: relativeError(actual: actual, reference: reference(.upstream)),
+               tolerance: Double(Tolerance.fp16Reduction),
+               detail: "in-place residual"),
+        detectionResult("vision-norm-residual-add/residual-dropped",
+                        groupSize: context.affineGroupSize,
+                        rel: relativeError(actual: actual,
+                                           reference: reference(.residualDropped)),
+                        floor: 0.05),
+    ]
+}
+
 /// 3x3 average pool, `* sqrt(1152)`, then `(x - std_bias) * std_scale`.
 ///
 /// The pooled grid is emitted row-major; the negative control scores the same
@@ -1221,6 +1266,18 @@ if let index = arguments.firstIndex(of: "--bench-soft-tokens"),
    let value = Int(arguments[index + 1]) {
     benchSoftTokens = value
 }
+// `--vision-tower <model.gturbo>` adds the assembled-tower comparison against
+// the reference fixtures (PLAN_VISION §6-1 layer B). It needs an installed
+// tower and the `scratch/vision-fixtures` dump, so it is opt-in rather than
+// part of the default run.
+var visionTowerModel: String?
+if let index = arguments.firstIndex(of: "--vision-tower"), index + 1 < arguments.count {
+    visionTowerModel = arguments[index + 1]
+}
+var visionFixtureRoot = VisionFixtures.defaultRoot
+if let index = arguments.firstIndex(of: "--vision-fixtures"), index + 1 < arguments.count {
+    visionFixtureRoot = arguments[index + 1]
+}
 
 var results: [CaseResult] = []
 
@@ -1294,6 +1351,9 @@ do {
     pass.append(contentsOf: try checkVisionAttention(context: context, patchCount: 200,
                                                      numHeads: 2, seed: 0x78))
     pass.append(try checkVisionMLPActivation(context: context, count: 4304 * 7, seed: 0x79))
+    // Production hidden size; a row count that is not a whole warp of rows.
+    pass.append(contentsOf: try checkVisionNormResidualAdd(context: context,
+                                                           t: 37, d: 1152, seed: 0x7B))
     pass.append(contentsOf: try checkVisionPoolStandardize(context: context,
                                                            patchesWide: 9, patchesHigh: 6,
                                                            seed: 0x7A))
@@ -1303,6 +1363,16 @@ do {
     if runBench {
         print("")
         try runVisionBench(context: context, softTokens: benchSoftTokens)
+    }
+
+    if let modelPath = visionTowerModel {
+        print("")
+        let towerCases = try runVisionTowerChecks(context: context,
+                                                  modelPath: modelPath,
+                                                  fixtureRoot: visionFixtureRoot,
+                                                  bench: runBench)
+        printCases(towerCases)
+        results.append(contentsOf: towerCases)
     }
 }
 
