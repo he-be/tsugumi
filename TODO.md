@@ -1,117 +1,79 @@
 # TODO
 
-## macOS 15 フォールバックの性能影響を実機で確認する
+## pi (コーディングエージェント) の対話モードで画像が使えない
 
-### 状況
+### 状況 (2026-08-17、**実測**)
 
-`103bfbc Lower the deployment target to macOS 15` で、macOS 26 必須だったビルドが
-Sequoia でも起動するようになった。代償として macOS 15 では MSL 4.0 テンソルカーネルが
-シェーダライブラリから落ちる。この Mac (M3 Pro / 18GB / macOS 15.7.5) で
-実際にどれだけ遅くなるかは **未測定**。まず手動で動かしてから判断する。
+`~/.pi/agent/models.json` の `local-turbofieldfare` プロバイダ
+(`http://127.0.0.1:8091/v1`、`scratch/gemma4-qat.gturbo` を配信) は
+テキスト・画像とも非対話 (`pi --print --no-tools`) では動作を確認済み。
 
-### 実機の状態
+対話モード (既定、tools 有効) で画像を送ると **400 `unsupported_content`**
+(`images cannot be combined with tools`) になる。pi は対話セッションの
+毎リクエストに built-in tools (`read`/`bash`/`edit`/`write`) を宣言するため、
+`Sources/TurboFieldfareServer/Core/OpenAIModels.swift:445-450` の
+「画像 + tools は拒否する」検証 (`PLAN_VISION.md` §0-I-4 で明示的に決めた仕様。
+tool-calling 用チャットテンプレートが画像 content part を描画できないことが理由) に
+必ず引っかかる。
 
-| 項目 | 値 |
-| --- | --- |
-| チップ | Apple M3 Pro (CPU 12 コア / GPU 18 コア) |
-| メモリ | 18 GB |
-| OS | macOS 15.7.5 (24G624) |
-| GPU family | apple9 = true, **apple10 = false** |
-| シェーダ | MSL 3.2 でコンパイル (44 関数、テンソルカーネルなし) |
-| モデル | **未インストール** (`scratch/` に install.lock のみ) |
+pi 側に「画像を含むターンだけ `tool_choice: none` を送る」機構はない
+(`cli/args.js` / `core/sdk.js` を確認、`tool_choice` を露出する経路自体が存在しない)。
+現状の回避策は **セッション全体で `--no-tools` (`-nt`) を付けて起動する**ことのみで、
+その場合は pi の bash/read/edit/write が使えなくなる。
 
-### 影響の切り分け
+### 選択肢 (未着手)
 
-3 つを混同しないこと。
-
-| 対象 | 効果 | 入手方法 |
+| 案 | 内容 | コスト |
 | --- | --- | --- |
-| MPP 行列カーネル (`mpp_prefill_affine_threadgroup_f16`) | prefill 約 12% | **macOS 26 に上げれば戻る (無料)** |
-| TensorOps attention (`attention_prefill_full_tensorops_2d_validity_v2`) | 長文 prefill で最大 2.4x | **M5 以降のハードが必要。M3 Pro は apple10 非対応なので macOS 26 にしても有効にならない** |
-| decode | 影響なし | — |
+| 現状維持 | ツール使用と画像閲覧を別セッションに分ける運用で妥協する | 0 (今のワークフロー) |
+| サーバー側を緩和 | tools 宣言があっても画像を許可する。ただし tool-calling 用チャットテンプレートを画像混在に対応させる改修が要る (`PLAN_VISION.md` がスコープ外と明示した領域) | 中〜大。Gemma4 のツール用テンプレート自体の検証が要る |
+| pi 側の対応を待つ/出す | 画像を含むターンで `tool_choice: none` を自動送出する機能を pi に入れる (upstream 要望) | 中。pi 側の変更で、こちらのリポジトリの手が届く範囲外 |
 
-- MPP パスは GPU family ゲートがなく、パイプライン生成の成否だけで決まる
-  (`Kernels/TensorCore/MPPPrefillInt4QMM.swift:16-31`)。macOS 15 では関数が
-  ライブラリに存在しないので `pipeline = nil` になり `.unavailable` を返す。
-- TensorOps attention は `device.supportsFamily(.apple10)` で明示的にゲートされている
-  (`Kernels/Attention/PrefillAttention.swift:51`)。**この Mac では macOS 26 で
-  動かしていても最初から使われていなかった**。今回のコミットによる損失ではない。
-- 影響を受けるのは `tokenCount >= 32` かつ `.q / .kv / .o` の投影のみ
-  (`Runtime/Inference/RealForwardRunner.swift:646`)。shared/routed expert、MoE、
-  router、attention 本体、LM head、decode 全体は影響なし。
-- フォールバック先は Q が `.repeatedGEMV`、KV/O が `.qmm`。
+まだどれも着手していない。次にやるならまず「サーバー側を緩和」の実現可能性
+(テンプレートが画像 + tool schema を両方描画できるか) を先に調べる。
 
-### 12% の根拠
+## サーバーで Reasoning (thinking) on / 128k context を使いたい
 
-`docs/experiments/summaries/06-prefill.md` の PF-12（MPP を production に入れた実験）:
+### 状況 (2026-08-17、**調査済み・未着手**)
 
-- M128 投影ワーク加重: 約 73.8% 改善
-- 512 トークン prefill: 11.421% 改善 / TTFT: 10.947% 改善
+どちらも `TurboFieldfareServer` には現状実装がない。CLI 側にのみ部分的に存在する。
 
-逆算して prefill・TTFT が約 12〜13% 遅い計算。**ただしこれは PF-12 を測った機体の値で、
-M3 Pro での再測定ではない。**
+**Reasoning (thinking) on:**
 
-### README ベンチの読み方の注意
+- `ServerArguments.swift` に `--thinking` 相当のフラグが存在しない。
+  `ServerInference.swift:716-764` は `tokenizer.encodeToolChat(...)` /
+  `applyChatTemplate(...)` を `enableThinking` を渡さずに呼ぶため常に `false` 扱い。
+  OpenAI 互換のリクエストボディにも `reasoning` / `reasoning_effort` フィールドは
+  未実装 (`OpenAIModels.swift` に該当なし)。`docs/OPENAI_SERVER.md:132-139` の pi 向け
+  サンプル設定でも `"supportsReasoningEffort": false` と明記。
+- tools 宣言付きリクエストは `encodeToolChat` を通るが、`Tokenizer.swift:453` で
+  `enable_thinking: false` がハードコードされている。仮にサーバーに thinking
+  フラグを足しても、tool 呼び出しがある限り無効化される
+  (上の「pi で画像が使えない」問題と根が同じ: tools 宣言時のテンプレート制約)。
+- 使えるのは CLI (`TurboFieldfareCLI --messages-file <path> --thinking on`,
+  `Args.swift:151-156,319-325`, `Run.swift:106-107`) のみ。
+  `--messages-file` 経由限定 (`--prompt` には効かない)。
 
-「8GB M2 = 5.1-6.3 tok/s」「24GB M5 Pro = 31-35 tok/s」はチップ世代と RAM 量が
-同時に変わっているので、M3 Pro の予測には使えない。M2 側の内訳は 1 トークン 162.8ms の
-うち **83.1ms が SSD からの expert 読み込み**で、半分以上が GPU ではなくストレージ待ち。
-18GB あればウォームアップ後は大半がファイルキャッシュに乗るため、M2 の数字は当てはまらない。
+**128k context:**
 
-## 手順
+- サーバーの `--max-context` は `[4096, 8192, 16384, 32768, 65536]` のホワイトリスト
+  固定 (`ServerArguments.swift:136`、デフォルト 16384)。131072 を渡すと
+  `"--max-context is not supported"` で即エラー。Mac アプリの設定 UI
+  (`AppContextLengthOption.swift`) も同じ 5 段階まで。
+- 128k という上限はコード中どこにも存在しない (`131072`/`128k` で全文検索してもヒットなし)。
+- CLI だけは `> 0` しかチェックしない (`Args.swift:242-247`) ので
+  `--max-context 131072` は起動時の引数検証は通る。成否は
+  `ExpertCacheBudget.swift:55-100` が FP16 KV サイズ見積もりとデバイスの
+  メモリ予算を照合して判定する (未実測)。
+- `ArchConfig.gemma4_26B_A4B` (`ModelTypes.swift:78-92`) の
+  `fullRopeTheta: 1_000_000.0` は Gemma 系の長文脈 (~128K) チェックポイントで
+  よく使われる RoPE スケーリング値なので、重み自体は 128k を想定している
+  可能性が高いが、ランタイムの配線がそこまで対応していない。
 
-- [ ] モデルをインストールする（約 15GB ダウンロード）
+### 必要な変更 (未着手)
 
-  ```bash
-  swift run -c release TurboFieldfareRepack \
-    --discard-partial \
-    --output scratch/gemma4.gturbo
-  ```
-
-  終わったら検証:
-
-  ```bash
-  swift run -c release TurboFieldfareRepack \
-    --verify-install \
-    --input-gturbo scratch/gemma4.gturbo
-  ```
-
-- [ ] macOS 15 のまま CLI でベースラインを測る。タイミングは stderr に出る。
-      短い / 中くらい / 長いプロンプトの 3 点を、それぞれ新しいプロセスで。
-      ウォームアップを 1 回先に走らせてから 3 回測って中央値を取る
-      （`docs/BENCHMARKS.md` の M5 と同じ手順）。
-
-  ```bash
-  swift run -c release TurboFieldfareCLI \
-    --model scratch/gemma4.gturbo \
-    --messages-file messages.json
-  ```
-
-  記録するもの: prompt トークン数 / prefill / TTFT / decode tok/s / peak RSS
-
-- [ ] 体感を確認する。prefill の 12% が実際に気になるかどうかが判断材料。
-
-- [ ] 気になるなら **macOS 26 にアップグレード**して同じ 3 点を測り直す。
-      MPP パスが戻るので prefill が改善するはず。TensorOps attention は
-      apple10 ゲートなので M3 Pro では戻らない。
-
-- [ ] ここまでの実測を見てから M5 Pro 買い替えを検討する。M5 が本当に効くのは
-      数千〜数万トークンの長いプロンプトを日常的に投げる場合。短い会話用途なら
-      差はメモリ帯域幅ぶんに留まる。
-
-## 測ったら埋める
-
-| プロンプト / 生成 | prefill | TTFT | decode | peak RSS |
-| --- | ---: | ---: | ---: | ---: |
-| | | | | |
-| | | | | |
-| | | | | |
-
-## 検討事項（測定後）
-
-- `PrefillProjectionDispatchPolicy.selectedDispatch` で `.q` が `.repeatedGEMV` に
-  なっているのは MPP 導入以前の測定に基づく選択
-  (`Runtime/Inference/RealForwardRunner.swift:118-131`)。macOS 15 を常用するなら
-  Q 投影を `.qmm` にしたほうが速い可能性がある。要測定。
-- 測った M3 Pro の値は `docs/COMMUNITY_BENCHMARKS.md` に投稿できる。
-  現状 M3 Pro / macOS 15 のデータポイントは存在しない。
+| やりたいこと | 変更箇所 |
+| --- | --- |
+| サーバーで reasoning on | `ServerArguments.swift` に `--thinking` フラグ追加 + `ServerInference.swift` の `applyChatTemplate` 呼び出しに `enableThinking` を配線。tools 宣言時は `Tokenizer.swift:453` の `enable_thinking: false` ハードコードとどう両立させるか要検討 |
+| サーバーで 128k context | `ServerArguments.swift:136` のホワイトリストに `131072` を追加 (usage 文言 `:25` も更新)。`ExpertCacheBudget` でのメモリ実測が必要 |
+| CLI で 128k context (実験) | 変更不要、`--max-context 131072` を試してメモリ判定の挙動を確認するだけ |
