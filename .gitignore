@@ -50,3 +50,5 @@ bench/trace*.tsv
 __pycache__/
 *.pyc
 .venv/
+sample_imgs/*.JPG
+sample_imgs/*.png
