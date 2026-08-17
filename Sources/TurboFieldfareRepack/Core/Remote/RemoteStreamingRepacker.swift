@@ -29,6 +29,12 @@ public struct RemoteStreamingRepackOptions: Sendable {
     /// Vision pin to install. Separate from `includeVision` so a test can bind
     /// a synthetic tower without reaching the network.
     public let visionPin: VisionSourcePin
+    /// Also install the MTP drafter from its own pinned repository. Off by
+    /// default, for the same reason `includeVision` is.
+    public let includeDraft: Bool
+    /// Drafter pin to install. Separate from `includeDraft` so a test can bind a
+    /// synthetic drafter without reaching the network.
+    public let draftPin: DraftSourcePin
 
     public init(repoID: String,
                 revision: String,
@@ -47,7 +53,9 @@ public struct RemoteStreamingRepackOptions: Sendable {
                 rangeRetryAttempts: Int = 4,
                 retryBaseDelayNs: UInt64 = 1_000_000_000,
                 includeVision: Bool = false,
-                visionPin: VisionSourcePin = VisionModelSource.pin) {
+                visionPin: VisionSourcePin = VisionModelSource.pin,
+                includeDraft: Bool = false,
+                draftPin: DraftSourcePin = DraftModelSource.pin) {
         self.repoID = repoID
         self.revision = revision
         self.outputDir = outputDir
@@ -67,6 +75,8 @@ public struct RemoteStreamingRepackOptions: Sendable {
         self.sourceSnapshotDirectory = nil
         self.includeVision = includeVision
         self.visionPin = visionPin
+        self.includeDraft = includeDraft
+        self.draftPin = draftPin
     }
 
     /// Repacks from a snapshot already staged on disk. The text weights have no
@@ -85,6 +95,8 @@ public struct RemoteStreamingRepackOptions: Sendable {
                 dryRunSpaceCheck: Bool = false,
                 includeVision: Bool = false,
                 visionPin: VisionSourcePin = VisionModelSource.pin,
+                includeDraft: Bool = false,
+                draftPin: DraftSourcePin = DraftModelSource.pin,
                 downloadSession: RemoteDownloadSession = RemoteDownloadSession(),
                 baseURL: URL = URL(string: "https://huggingface.co")!,
                 token: String? = nil,
@@ -104,11 +116,14 @@ public struct RemoteStreamingRepackOptions: Sendable {
         self.dryRunSpaceCheck = dryRunSpaceCheck
         self.downloadSession = downloadSession
         self.baseURL = baseURL
-        self.rangeRetryAttempts = includeVision ? rangeRetryAttempts : 0
-        self.retryBaseDelayNs = includeVision ? retryBaseDelayNs : 0
+        let needsNetwork = includeVision || includeDraft
+        self.rangeRetryAttempts = needsNetwork ? rangeRetryAttempts : 0
+        self.retryBaseDelayNs = needsNetwork ? retryBaseDelayNs : 0
         self.sourceSnapshotDirectory = sourceSnapshotDirectory
         self.includeVision = includeVision
         self.visionPin = visionPin
+        self.includeDraft = includeDraft
+        self.draftPin = draftPin
     }
 }
 
@@ -258,6 +273,16 @@ public final class RemoteStreamingRepacker {
                 shardHeaders: vision.shardHeaders)
             try await verifyVisionParity(vision: vision, source: source)
         }
+        let draft = try await bindDraftSource(paths: paths, source: source)
+        if let draft {
+            plan.draft = try DraftRepackPlanner.plan(
+                path: ((paths.partialDirectory as NSString)
+                    .appendingPathComponent("draft") as NSString)
+                    .appendingPathComponent("draft_weights.bin"),
+                pin: draft.pin,
+                shardHeaders: draft.shardHeaders)
+            try requireDraftFitsTarget(draft: draft, arch: source.arch)
+        }
         let rangePlan = try RangeCopyPlanner.plan(repackPlan: plan,
                                                   rangeChunkBytes: options.rangeChunkBytes,
                                                   layoutMode: "identity",
@@ -327,6 +352,14 @@ public final class RemoteStreamingRepacker {
             audit.visionTensorCount = visionPlan.tensorCount
             audit.visionPayloadBytes = visionPlan.payloadBytes
         }
+        if let draftPlan = plan.draft, let draft {
+            audit.draftRepoID = draft.pin.repoID
+            audit.draftResolvedCommit = draft.resolvedCommit
+            audit.draftTensorCount = draftPlan.tensorCount
+            audit.draftPayloadBytes = draftPlan.payloadBytes
+            audit.draftProvenanceTensors =
+                draft.pin.provenanceTensors.map(\.repoName).sorted()
+        }
 
         if options.dryRunSpaceCheck {
             if saved == nil {
@@ -355,7 +388,7 @@ public final class RemoteStreamingRepacker {
                 parentDirectory: paths.parentDirectory)
         }
 
-        let provider: SourceByteProvider
+        var provider: SourceByteProvider = source.provider
         if let vision {
             provider = RoutingSourceByteProvider(
                 prefix: BoundVisionSource.shardIDPrefix,
@@ -364,9 +397,17 @@ public final class RemoteStreamingRepacker {
                     files: vision.files,
                     writeTileBytes: options.writeTileBytes,
                     shardIDPrefix: BoundVisionSource.shardIDPrefix),
-                rest: source.provider)
-        } else {
-            provider = source.provider
+                rest: provider)
+        }
+        if let draft {
+            provider = RoutingSourceByteProvider(
+                prefix: BoundDraftSource.shardIDPrefix,
+                prefixed: HTTPRangeSourceByteProvider(
+                    remote: draft.remote,
+                    files: draft.files,
+                    writeTileBytes: options.writeTileBytes,
+                    shardIDPrefix: BoundDraftSource.shardIDPrefix),
+                rest: provider)
         }
         let reusedBytes = checkpoint.completedRanges.reduce(UInt64(0)) {
             $0 + $1.sourceBytes
@@ -403,6 +444,11 @@ public final class RemoteStreamingRepacker {
         if let visionPlan = plan.vision {
             try recordOutputFile(relativePath: GTurboFormatV1.visionWeightsPath,
                                  path: visionPlan.resident.path,
+                                 progress: progress)
+        }
+        if let draftPlan = plan.draft {
+            try recordOutputFile(relativePath: GTurboFormatV1.draftWeightsPath,
+                                 path: draftPlan.resident.path,
                                  progress: progress)
         }
         for layer in plan.layers where layer.expertsPerLayer > 0 {
@@ -575,6 +621,68 @@ public final class RemoteStreamingRepacker {
             audit: audit)
     }
 
+    /// Binds the pinned drafter repository, or nil when this install does not
+    /// want one. Like the tower, it never comes from the checkpoint being
+    /// installed: it is its own 236 MB repository, fetched over ranges.
+    private func bindDraftSource(paths: RemoteInstallPaths,
+                                 source: BoundSource) async throws -> BoundDraftSource? {
+        guard options.includeDraft else { return nil }
+        if options.requireKnownSource {
+            guard source.repoID == DraftModelSource.requiredTextRepoID else {
+                throw RepackError.configurationInvalid(detail: """
+                    --include-draft requires the \(DraftModelSource.requiredTextRepoID) \
+                    text checkpoint; this install is \(source.repoID)
+                    """)
+            }
+        }
+        return try await DraftSourceLoader.load(
+            pin: options.draftPin,
+            token: options.token,
+            downloadSession: options.downloadSession,
+            baseURL: options.baseURL,
+            tempDirectory: paths.partialDirectory,
+            retryPolicy: RemoteRetryPolicy(attempts: options.rangeRetryAttempts,
+                                           baseDelayNs: options.retryBaseDelayNs),
+            metadataDirectory: paths.metadataDirectory,
+            audit: audit)
+    }
+
+    /// The drafter borrows the target's K/V rather than computing its own, so a
+    /// disagreement about head geometry, window or RoPE is not a slower model
+    /// but a wrong one. The manifest codec enforces the same conditions; failing
+    /// here makes the refusal name the mismatch before the payload is copied.
+    private func requireDraftFitsTarget(draft: BoundDraftSource,
+                                        arch: ArchInfo) throws {
+        let config = draft.pin.config
+        let checks: [(String, Int, Int)] = [
+            ("backbone_hidden_size", config.backboneHiddenSize, arch.hiddenSize),
+            ("vocab_size", config.vocabSize, arch.vocabSize),
+            ("sliding_window", config.slidingWindow, arch.slidingWindow),
+            ("head_dim", config.headDim, arch.headDim),
+            ("global_head_dim", config.fullHeadDim, arch.fullHeadDim),
+            ("num_key_value_heads", config.numKVHeads, arch.numKVHeads),
+            ("num_global_key_value_heads", config.numFullKVHeads, arch.numFullKVHeads),
+        ]
+        for (field, drafter, target) in checks where drafter != target {
+            throw RepackError.configurationInvalid(detail: """
+                drafter \(field) is \(drafter) but the text checkpoint uses \(target); \
+                the drafter reads the target's K/V and cannot be paired with it
+                """)
+        }
+        let ropes: [(String, Double, Double)] = [
+            ("rope_theta", config.ropeTheta, arch.ropeTheta),
+            ("full rope_theta", config.fullRopeTheta, arch.fullRopeTheta),
+            ("partial_rotary_factor", config.partialRotaryFactor,
+             arch.partialRotaryFactor),
+        ]
+        for (field, drafter, target) in ropes where drafter != target {
+            throw RepackError.configurationInvalid(detail: """
+                drafter \(field) is \(drafter) but the text checkpoint uses \(target); \
+                the drafter reads the target's K/V and cannot be paired with it
+                """)
+        }
+    }
+
     /// Proves the tower and the text weights derive from the same checkpoint by
     /// hashing tensors that exist unquantized in both, on both sides, against a
     /// pinned digest (`PLAN_VISION.md` §1-2). Without this, pairing a tower with
@@ -694,6 +802,13 @@ public final class RemoteStreamingRepacker {
             try Posix.fsync(visionFD, path: vision.resident.path)
             close(visionFD)
         }
+        if let draft = plan.draft {
+            let draftFD = try ResidentWriter.createAndWriteIndex(
+                plan: draft.resident,
+                audit: audit)
+            try Posix.fsync(draftFD, path: draft.resident.path)
+            close(draftFD)
+        }
         for layer in plan.layers where layer.expertsPerLayer > 0 {
             try Task.checkCancellation()
             let descriptor = try Posix.openCreateRW(layer.path)
@@ -717,7 +832,10 @@ public final class RemoteStreamingRepacker {
             }
         }
 
-        for residentPlan in [plan.resident] + (plan.vision.map { [$0.resident] } ?? []) {
+        let residentPlans = [plan.resident]
+            + (plan.vision.map { [$0.resident] } ?? [])
+            + (plan.draft.map { [$0.resident] } ?? [])
+        for residentPlan in residentPlans {
             guard try indexPageMatches(residentPlan) else { return false }
         }
         return true

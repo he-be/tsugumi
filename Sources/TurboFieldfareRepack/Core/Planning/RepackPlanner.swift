@@ -94,6 +94,9 @@ struct RepackPlan: Sendable {
     /// Vision tower weights, when the install was asked for them. A separate
     /// resident file so a text-only run never reads or hashes its bytes.
     var vision: VisionFilePlan? = nil
+    /// MTP drafter weights, when the install was asked for them. Separate for
+    /// the same reason the tower is.
+    var draft: DraftFilePlan? = nil
 }
 
 /// The vision tower's resident file plus the provenance the manifest records
@@ -102,6 +105,16 @@ struct RepackPlan: Sendable {
 struct VisionFilePlan: Sendable {
     let resident: ResidentFilePlan
     let source: VisionSourcePin
+    let payloadBytes: UInt64
+    var tensorCount: Int { resident.entries.count }
+}
+
+/// The MTP drafter's resident file plus the provenance the manifest records for
+/// it. Like the tower, it comes from a repository of its own and carries its own
+/// source identity (`docs/mtp/03-DESIGN.md` D1).
+struct DraftFilePlan: Sendable {
+    let resident: ResidentFilePlan
+    let source: DraftSourcePin
     let payloadBytes: UInt64
     var tensorCount: Int { resident.entries.count }
 }

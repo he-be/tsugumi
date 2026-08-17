@@ -106,6 +106,8 @@ gemma4.gturbo/
     layer_29.bin
   vision/
     vision_weights.bin              # only with --include-vision / --add-vision
+  draft/
+    draft_weights.bin               # only with --include-draft / --add-draft
 ```
 
 `model_weights.bin` contains the embedding/head, attention projections,
@@ -150,6 +152,18 @@ The tower file is staged outside the model directory and moved in only once it
 is complete, so an interrupted run leaves the text-only model untouched. The
 whole install is re-verified afterwards, because the receipt it writes asserts
 that every file was checked.
+
+`--include-draft` and `--add-draft` add the MTP drafter (the assistant model
+used for speculative decoding) on exactly the same terms, in a `draft` section
+guarded by an `mtpDraft` flag, with `draft/draft_weights.bin` alongside the text
+weights. The drafter has no key/value projections of its own — it attends to the
+target's last sliding and last full attention layers — so its head geometry,
+sliding window and RoPE constants are not free parameters but the target's,
+restated. The manifest codec checks them against `arch` and refuses a drafter
+that does not fit, and the installer verifies that the tensors MLX left
+unquantized still hash to Google's BF16 QAT assistant before writing anything.
+The runtime does not use the drafter yet; installing it is what M1 of
+[the MTP plan](mtp/README.md) delivers.
 
 [`TurboFieldfareFormat`](../Sources/TurboFieldfareFormat) defines the v1 JSON
 files and resident index used by the installer, verifier, and runtime. This

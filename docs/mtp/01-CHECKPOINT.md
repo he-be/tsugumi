@@ -1,7 +1,8 @@
 # 01. ドラフターの事実と、未解決の仕様質問
 
 リモート側の事実は 2026-08-17 に HF API / Range 取得 / 参照ソース取得で直接読んだもの
-(**実測**)。revision とハッシュは上流で変わりうる (M1 で再確認)。
+(**実測**)。**M1 で再確認済み** ([11-M1-RESULTS.md](11-M1-RESULTS.md) §1) で、
+ピンは `Sources/TurboFieldfareRepack/Core/Remote/DraftModelSource.swift` が持つ。
 
 ---
 

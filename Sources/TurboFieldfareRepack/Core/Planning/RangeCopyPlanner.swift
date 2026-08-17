@@ -84,6 +84,32 @@ public enum RangeCopyPlanner {
             }
         }
 
+        // The drafter is int4 with affine companions, so up to three copies per
+        // tensor, exactly like the text resident file.
+        if let draft = repackPlan.draft {
+            for entry in draft.resident.entries {
+                copies.append(RangeCopy(shardID: entry.sourceWeight.shardPath,
+                                        sourceOffset: entry.sourceWeight.absoluteOffset,
+                                        size: entry.sizeBytes,
+                                        destinationPath: draft.resident.path,
+                                        destinationOffset: entry.fileOffset))
+                if let scales = entry.sourceScales {
+                    copies.append(RangeCopy(shardID: scales.shardPath,
+                                            sourceOffset: scales.absoluteOffset,
+                                            size: entry.scaleSize,
+                                            destinationPath: draft.resident.path,
+                                            destinationOffset: entry.scaleOffset))
+                }
+                if let biases = entry.sourceBiases {
+                    copies.append(RangeCopy(shardID: biases.shardPath,
+                                            sourceOffset: biases.absoluteOffset,
+                                            size: entry.biasSize,
+                                            destinationPath: draft.resident.path,
+                                            destinationOffset: entry.biasOffset))
+                }
+            }
+        }
+
         for layer in repackPlan.layers where layer.expertsPerLayer > 0 {
             for expert in 0..<layer.expertsPerLayer {
                 let blobBase = UInt64(layer.physicalRank(for: expert)) * layer.expertStride
@@ -109,6 +135,9 @@ public enum RangeCopyPlanner {
         let visionIndexSha = try repackPlan.vision.map {
             hashData(try ResidentWriter.encodeIndex(plan: $0.resident))
         }
+        let draftIndexSha = try repackPlan.draft.map {
+            hashData(try ResidentWriter.encodeIndex(plan: $0.resident))
+        }
         let fingerprint = try canonicalFingerprint(
             copies: coalesced,
             outputRoot: outputRoot(for: repackPlan),
@@ -117,6 +146,7 @@ public enum RangeCopyPlanner {
             layoutOrderSha256: layoutOrderSha256,
             residentIndexSha256: indexSha,
             visionIndexSha256: visionIndexSha,
+            draftIndexSha256: draftIndexSha,
             expectedOutputs: expectedOutputs)
         let downloaded = coalesced.reduce(UInt64(0)) { $0 + $1.size }
         let copied = copies.reduce(UInt64(0)) { $0 + $1.size }
@@ -226,6 +256,11 @@ public enum RangeCopyPlanner {
                 relativePath: "vision/" + (vision.resident.path as NSString).lastPathComponent,
                 size: vision.resident.totalSize))
         }
+        if let draft = plan.draft {
+            outputs.append(RemoteExpectedOutput(
+                relativePath: "draft/" + (draft.resident.path as NSString).lastPathComponent,
+                size: draft.resident.totalSize))
+        }
         outputs.append(contentsOf: plan.layers
             .filter { $0.expertsPerLayer > 0 }
             .map {
@@ -268,6 +303,7 @@ public enum RangeCopyPlanner {
         layoutOrderSha256: String?,
         residentIndexSha256: String,
         visionIndexSha256: String? = nil,
+        draftIndexSha256: String? = nil,
         expectedOutputs: [RemoteExpectedOutput]
     ) throws -> String {
         var writer = FingerprintWriter(domain: "TurboFieldfare.RemoteInstallPlan.v1")
@@ -280,6 +316,10 @@ public enum RangeCopyPlanner {
         if let visionIndexSha256 {
             writer.append("vision")
             writer.append(visionIndexSha256)
+        }
+        if let draftIndexSha256 {
+            writer.append("draft")
+            writer.append(draftIndexSha256)
         }
         writer.append(UInt64(expectedOutputs.count))
         for output in expectedOutputs {

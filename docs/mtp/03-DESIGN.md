@@ -7,11 +7,15 @@
 
 ## D1. 重みの置き場所 — vision と同じ型
 
-- ドラフター重みは**別ファイル** (`draft_weights.bin`) に置く。テキスト側の
+**M1 で実装済み** ([11-M1-RESULTS.md](11-M1-RESULTS.md))。
+
+- ドラフター重みは**別ファイル** (`draft/draft_weights.bin`) に置く。テキスト側の
   `model_weights.bin` / `packed_experts/` には 1 バイトも触らない。
-- `manifest.json` に optional な `draft` セクション + `flags.mtpDraft` + `versionMinor` ゲート。
-  vision と同じ「フラグとセクションは 1 つの事実を 2 回書く。片方だけなら invalid」検証を書く
-  (`GTurboManifestV1.swift:342-401` の写像)。
+- `manifest.json` に optional な `draft` セクション + `flags.mtpDraft` +
+  `versionMinor = 2` ゲート。vision と同じ「フラグとセクションは 1 つの事実を 2 回書く。
+  片方だけなら invalid」検証に加え、**ターゲット arch との一致検査**を置く
+  (`GTurboManifestCodec.validateDraftSection`)。ドラフターは自前 KV を持たず
+  層 28/29 の KV を読むので、head 構成・窓・RoPE 定数は自由変数ではない。
 - **int4 版 (236 MB) をそのまま採用する。**bf16 (839 MB) は持たない。再量子化もしない。
 - ロードは遅延。`Model.hasDraft` / `Model.draftWeights()` を `hasVisionTower` /
   `visionWeights()` (`Model.swift:118-140`) と同じ形で足す。**ドラフターを使わない実行の
@@ -123,9 +127,11 @@ verify:   ドラフト列を verifyBlock で 1 回流す
 
 | 面 | 追加 | 既定 |
 | --- | --- | --- |
-| CLI | `--draft-block-size <0\|2\|3\|4>` (0 = 無効) | **当面 0**。M5 の実測が出るまで既定を変えない |
+| CLI | `--draft-block-size <0\|2..8>` (0 = 無効) | **当面 0**。M5 の実測が出るまで既定を変えない |
 | Server | 同名フラグ。リクエストごとの切り替えは**しない** | 0 |
 | Mac アプリ | M6 まで露出しない | ― |
+
+最適な k はタスクで 5〜8 に動く (10-M0 §3) ので、上限を 4 で切らない。
 
 無効化して素直に落ちる条件 (設計時点で決めておく):
 

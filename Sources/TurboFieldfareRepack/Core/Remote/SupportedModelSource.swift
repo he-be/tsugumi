@@ -14,7 +14,8 @@ public enum SupportedModelSource {
                                       overwrite: Bool,
                                       token: String?,
                                       resume: Bool = false,
-                                      includeVision: Bool = false)
+                                      includeVision: Bool = false,
+                                      includeDraft: Bool = false)
         -> RemoteStreamingRepackOptions {
         RemoteStreamingRepackOptions(
             repoID: repoID,
@@ -25,7 +26,8 @@ public enum SupportedModelSource {
             minFreeReserveBytes: reserveBytes,
             overwrite: overwrite,
             resume: resume,
-            includeVision: includeVision)
+            includeVision: includeVision,
+            includeDraft: includeDraft)
     }
 }
 

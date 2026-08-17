@@ -88,6 +88,76 @@ private enum FormatFixture {
             sourceRepo: "google/fixture", sourceRevision: "f1e06dc5")
     }
 
+    /// A manifest that also carries the MTP drafter. The target arch gets a
+    /// second layer so it has both a sliding and a full attention layer for the
+    /// drafter to share K/V with.
+    static func draftManifest(
+        draft: GTurboManifestDraftV1? = FormatFixture.draft(),
+        flagged: Bool = true,
+        minor: Int = GTurboFormatV1.versionMinorDraft
+    ) -> GTurboManifestV1 {
+        let base = manifest()
+        var flags = base.flags
+        if flagged { flags["mtpDraft"] = true }
+        var files = base.files
+        files[GTurboFormatV1.draftWeightsPath] =
+            GTurboManifestFileV1(size: 16_384 + 4_096, sha256: zeroSHA)
+        let arch = base.arch
+        return GTurboManifestV1(
+            versionMinor: minor,
+            flags: flags,
+            modelID: base.modelID,
+            sourceSnapshotHash: base.sourceSnapshotHash,
+            arch: GTurboManifestArchV1(
+                hiddenSize: arch.hiddenSize, ffnIntermediate: arch.ffnIntermediate,
+                moeIntermediateSize: arch.moeIntermediateSize,
+                numHeads: arch.numHeads, numKVHeads: arch.numKVHeads,
+                numFullKVHeads: arch.numFullKVHeads, headDim: arch.headDim,
+                fullHeadDim: arch.fullHeadDim, vocabSize: arch.vocabSize,
+                slidingWindow: arch.slidingWindow,
+                finalLogitSoftcap: arch.finalLogitSoftcap,
+                ropeTheta: arch.ropeTheta, fullRopeTheta: arch.fullRopeTheta,
+                partialRotaryFactor: arch.partialRotaryFactor,
+                numLayers: 2, numExperts: arch.numExperts,
+                topKExperts: arch.topKExperts,
+                tieWordEmbeddings: arch.tieWordEmbeddings,
+                attentionKEqV: arch.attentionKEqV,
+                hiddenActivation: arch.hiddenActivation,
+                fullAttentionLayerMask: [0, 1]),
+            quant: base.quant,
+            draft: draft,
+            files: files,
+            expertsPerLayer: base.expertsPerLayer,
+            numLayers: 2,
+            expertStride: base.expertStride,
+            bitWidthOverridesHonored: base.bitWidthOverridesHonored)
+    }
+
+    /// Geometry the drafter has to restate from the target arch above.
+    static func draft(headDim: Int = 16,
+                      backboneHiddenSize: Int = 64,
+                      tieWordEmbeddings: Bool = true,
+                      sharedSlidingKVLayer: Int = 0,
+                      sharedFullKVLayer: Int = 1,
+                      weightsPath: String = GTurboFormatV1.draftWeightsPath,
+                      payloadBytes: UInt64 = 4_096) -> GTurboManifestDraftV1 {
+        GTurboManifestDraftV1(
+            hiddenSize: 1024, numLayers: 4, numHeads: 16, numKVHeads: 2,
+            numFullKVHeads: 1, headDim: headDim, fullHeadDim: 32,
+            intermediateSize: 8192, backboneHiddenSize: backboneHiddenSize,
+            vocabSize: 1024, slidingWindow: 128,
+            ropeTheta: 10_000, fullRopeTheta: 1_000_000,
+            partialRotaryFactor: 0.25, rmsNormEps: 1e-6,
+            hiddenActivation: "gelu_pytorch_tanh",
+            tieWordEmbeddings: tieWordEmbeddings, attentionKEqV: true,
+            fullAttentionLayerMask: [0, 0, 0, 1],
+            sharedSlidingKVLayer: sharedSlidingKVLayer,
+            sharedFullKVLayer: sharedFullKVLayer,
+            quant: quantSlot, weightsPath: weightsPath, tensorCount: 48,
+            payloadBytes: payloadBytes,
+            sourceRepo: "mlx-community/fixture", sourceRevision: "bb94eae1")
+    }
+
     static let quantSlot = GTurboManifestQuantSlotV1(
         weightBits: 4, scheme: "affine", scaleType: "BF16",
         biasType: "BF16", groupSize: 64)
@@ -275,6 +345,103 @@ private enum FormatFixture {
             try GTurboManifestCodec.encode(FormatFixture.visionManifest(
                 vision: FormatFixture.vision(imageTokenID: 255999)))
         }
+    }
+
+    @Test func textOnlyManifestOmitsTheDraftSectionEntirely() throws {
+        let encoded = try GTurboManifestCodec.encode(FormatFixture.manifest())
+        let root = try #require(
+            JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        // Byte-identity of an install without a drafter depends on this key
+        // never appearing (`docs/mtp/04-PHASES.md` M1).
+        #expect(root["draft"] == nil)
+        #expect(try GTurboManifestCodec.decode(encoded).draft == nil)
+        let flags = try #require(root["flags"] as? [String: Any])
+        #expect(flags["mtpDraft"] == nil)
+    }
+
+    @Test func roundTripsTheDraftSection() throws {
+        let manifest = FormatFixture.draftManifest()
+        let encoded = try GTurboManifestCodec.encode(manifest)
+        let decoded = try GTurboManifestCodec.decode(encoded)
+        #expect(decoded == manifest)
+        #expect(decoded.draft?.tensorCount == 48)
+        #expect(decoded.flags["mtpDraft"] == true)
+    }
+
+    @Test func rejectsDraftSectionWithoutItsFlag() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.draftManifest(flagged: false))
+        }
+    }
+
+    @Test func rejectsDraftFlagWithoutASection() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.draftManifest(draft: nil))
+        }
+    }
+
+    @Test func rejectsDraftBelowItsMinorVersion() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(
+                FormatFixture.draftManifest(minor: GTurboFormatV1.versionMinorVision))
+        }
+    }
+
+    @Test func rejectsDraftWeightsPathThatIsNotDeclaredInFiles() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.draftManifest(
+                draft: FormatFixture.draft(weightsPath: "draft/other.bin")))
+        }
+    }
+
+    @Test func rejectsDraftPayloadLargerThanItsFile() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.draftManifest(
+                draft: FormatFixture.draft(payloadBytes: 1 << 40)))
+        }
+    }
+
+    /// The drafter reads the target's K/V, so a head dimension of its own is not
+    /// a tuning choice — it is a contradiction the manifest must not carry.
+    @Test func rejectsDraftGeometryThatDisagreesWithTheTargetArch() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.draftManifest(
+                draft: FormatFixture.draft(headDim: 17)))
+        }
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.draftManifest(
+                draft: FormatFixture.draft(backboneHiddenSize: 65)))
+        }
+    }
+
+    @Test func rejectsSharedKVLayersOfTheWrongKind() throws {
+        // Layer 0 of the fixture target is sliding, layer 1 is full.
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.draftManifest(
+                draft: FormatFixture.draft(sharedSlidingKVLayer: 1)))
+        }
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.draftManifest(
+                draft: FormatFixture.draft(sharedFullKVLayer: 0)))
+        }
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.draftManifest(
+                draft: FormatFixture.draft(sharedFullKVLayer: 7)))
+        }
+    }
+
+    @Test func rejectsADraftWhoseLMHeadIsNotTied() throws {
+        #expect(throws: GTurboFormatError.self) {
+            try GTurboManifestCodec.encode(FormatFixture.draftManifest(
+                draft: FormatFixture.draft(tieWordEmbeddings: false)))
+        }
+    }
+
+    /// The gate a runtime that predates MTP relies on: `mtpDraft` is a known v1
+    /// flag now, so a build that does not know it rejects the whole model rather
+    /// than running without the drafter it advertises.
+    @Test func draftFlagIsAKnownV1Flag() {
+        #expect(GTurboFormatV1.knownFlags.contains("mtpDraft"))
     }
 
     @Test func rejectsUnknownFlagsIncludingTypos() throws {

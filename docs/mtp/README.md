@@ -4,7 +4,19 @@ QAT ウェイト対応・Vision 対応に続く 3 つ目の大改修。
 `google/gemma-4-26B-A4B-it-qat-…-assistant` ドラフターを使った
 propose-and-verify (投機デコード) を本ランタイムに入れる。
 
-**現在地: 設計のみ。実装は 1 行も入っていない。M0 未着手。**
+**現在地: M1 完了 ([11-M1-RESULTS.md](11-M1-RESULTS.md))。次は M2 (ドラフター forward 単体)。**
+ドラフター重みは `.gturbo` に入るようになった (`--include-draft` / `--add-draft`) が、
+**ランタイムはまだ 1 バイトも読まない。**decode 経路に入っているのは既定オフの診断
+1 本だけ (`AcceptanceProbe`、M0 §7)。
+
+## ゴール (2026-08-17 に確定)
+
+QAT ウェイト・Vision・MTP の 3 改修が揃った状態として、**Server** で
+**単発の Vision タスクを Reasoning ON で** `pp ≥ 200 t/s` / `tg ≥ 30 t/s` で回す。
+GUI は対象外。**主眼は wall time で、t/s は目安**。
+受理率はタスク依存なので、**cpp / haiku / math / story / vis の 5 本**で測り、
+先読み長 k のトレードオフを併せて記録する。
+現在地とゴールの距離は M0 §4。`pp 200` は tower 固定費のため構造的に未達 (M0 §0-5)。
 
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
@@ -17,6 +29,8 @@ propose-and-verify (投機デコード) を本ランタイムに入れる。
 | 3 | [03-DESIGN.md](03-DESIGN.md) | 設計判断 D1〜D8。フォーマット・verify API・KV 巻き戻し・受理規則・ループ配置・CLI/Server |
 | 4 | [04-PHASES.md](04-PHASES.md) | M0〜M6 の分解、出口条件、受入 10 ゲート、中止条件 |
 | 5 | [05-RISKS.md](05-RISKS.md) | リスクと未確認事項の一覧 |
+| 6 | [10-M0-RESULTS.md](10-M0-RESULTS.md) | **M0 の実測。**速度上限の式、expert 和集合、タスク別の受理上限、ゴール条件のベースライン |
+| 7 | [11-M1-RESULTS.md](11-M1-RESULTS.md) | **M1 の実測。**フォーマット拡張と repacker、ピンの再確認、`--add-draft` の実行、旧ランタイム拒否 |
 
 事実の出所は 2 系統ある。**リモート (HF) 側**はドラフター重みの調査 (2026-08-17 取得。
 テンソル全数・SHA-256 一致・config・参照実装ソースは `scratch/mtp-ref/` に取得済み)、

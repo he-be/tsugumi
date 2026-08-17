@@ -46,6 +46,13 @@ public final class RepackAudit {
     /// Tensors whose bytes were proven identical in the text checkpoint and the
     /// vision repository. Empty for a text-only install.
     public var visionParityTensors: [String] = []
+    public var draftRepoID: String?
+    public var draftResolvedCommit: String?
+    public var draftTensorCount: Int = 0
+    public var draftPayloadBytes: UInt64 = 0
+    /// Drafter tensors whose bytes were proven identical to Google's BF16 QAT
+    /// assistant release. Empty for an install without a drafter.
+    public var draftProvenanceTensors: [String] = []
 
     public init() {}
 
@@ -143,6 +150,9 @@ public final class RepackAudit {
             "vision_tensor_count": visionTensorCount,
             "vision_payload_bytes": visionPayloadBytes,
             "vision_parity_tensors": visionParityTensors,
+            "draft_tensor_count": draftTensorCount,
+            "draft_payload_bytes": draftPayloadBytes,
+            "draft_provenance_tensors": draftProvenanceTensors,
             "output_files": filesArr
         ]
         if let visionRepoID {
@@ -150,6 +160,12 @@ public final class RepackAudit {
         }
         if let visionResolvedCommit {
             dict["vision_resolved_commit"] = visionResolvedCommit
+        }
+        if let draftRepoID {
+            dict["draft_repo_id"] = draftRepoID
+        }
+        if let draftResolvedCommit {
+            dict["draft_resolved_commit"] = draftResolvedCommit
         }
         if let packedExpertLayoutOrderPath {
             dict["packed_expert_layout_order_path"] = packedExpertLayoutOrderPath

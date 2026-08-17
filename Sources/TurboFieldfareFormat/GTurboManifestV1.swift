@@ -170,6 +170,96 @@ package struct GTurboManifestVisionV1: Codable, Equatable, Sendable {
     }
 }
 
+/// MTP drafter description. Optional and additive in the same way the vision
+/// section is: a manifest without a drafter omits it entirely, and one that
+/// carries it also carries `flags.mtpDraft` so a runtime that predates
+/// speculation refuses the model instead of ignoring the extra file.
+///
+/// Most of these fields are not free parameters — the drafter has no K/V
+/// projections of its own and reads the target's, so its head geometry, window
+/// and RoPE constants have to equal the target's. `validateDraftSection` checks
+/// that against `arch` rather than trusting the installer that wrote it.
+package struct GTurboManifestDraftV1: Codable, Equatable, Sendable {
+    package let hiddenSize: Int
+    package let numLayers: Int
+    package let numHeads: Int
+    package let numKVHeads: Int
+    package let numFullKVHeads: Int
+    package let headDim: Int
+    package let fullHeadDim: Int
+    package let intermediateSize: Int
+    /// Hidden size of the target this drafter was trained against. Equals
+    /// `arch.hiddenSize`; the `pre_projection` input is twice this.
+    package let backboneHiddenSize: Int
+    package let vocabSize: Int
+    package let slidingWindow: Int
+    package let ropeTheta: Double
+    package let fullRopeTheta: Double
+    package let partialRotaryFactor: Double
+    package let rmsNormEps: Double
+    package let hiddenActivation: String
+    package let tieWordEmbeddings: Bool
+    package let attentionKEqV: Bool
+    /// One entry per drafter layer: 1 = full attention, 0 = sliding.
+    package let fullAttentionLayerMask: [Int]
+    /// Target layers whose K/V the drafter attends to. Its sliding layers read
+    /// the target's last sliding layer, its full layer the last full one.
+    package let sharedSlidingKVLayer: Int
+    package let sharedFullKVLayer: Int
+    /// Quantization of the drafter's own weights. It is converted separately
+    /// from the text checkpoint, so this need not match `quant`.
+    package let quant: GTurboManifestQuantSlotV1
+    /// Relative path of the drafter weights inside the model directory. Also
+    /// present in `files`, which is what carries its size and digest.
+    package let weightsPath: String
+    package let tensorCount: Int
+    package let payloadBytes: UInt64
+    /// The drafter's own provenance; it comes from a different repository than
+    /// the text weights, so `sourceSnapshotHash` does not describe it.
+    package let sourceRepo: String
+    package let sourceRevision: String
+
+    package init(hiddenSize: Int, numLayers: Int, numHeads: Int, numKVHeads: Int,
+                 numFullKVHeads: Int, headDim: Int, fullHeadDim: Int,
+                 intermediateSize: Int, backboneHiddenSize: Int, vocabSize: Int,
+                 slidingWindow: Int, ropeTheta: Double, fullRopeTheta: Double,
+                 partialRotaryFactor: Double, rmsNormEps: Double,
+                 hiddenActivation: String, tieWordEmbeddings: Bool,
+                 attentionKEqV: Bool, fullAttentionLayerMask: [Int],
+                 sharedSlidingKVLayer: Int, sharedFullKVLayer: Int,
+                 quant: GTurboManifestQuantSlotV1, weightsPath: String,
+                 tensorCount: Int, payloadBytes: UInt64,
+                 sourceRepo: String, sourceRevision: String) {
+        self.hiddenSize = hiddenSize
+        self.numLayers = numLayers
+        self.numHeads = numHeads
+        self.numKVHeads = numKVHeads
+        self.numFullKVHeads = numFullKVHeads
+        self.headDim = headDim
+        self.fullHeadDim = fullHeadDim
+        self.intermediateSize = intermediateSize
+        self.backboneHiddenSize = backboneHiddenSize
+        self.vocabSize = vocabSize
+        self.slidingWindow = slidingWindow
+        self.ropeTheta = ropeTheta
+        self.fullRopeTheta = fullRopeTheta
+        self.partialRotaryFactor = partialRotaryFactor
+        self.rmsNormEps = rmsNormEps
+        self.hiddenActivation = hiddenActivation
+        self.tieWordEmbeddings = tieWordEmbeddings
+        self.attentionKEqV = attentionKEqV
+        self.fullAttentionLayerMask = fullAttentionLayerMask
+        self.sharedSlidingKVLayer = sharedSlidingKVLayer
+        self.sharedFullKVLayer = sharedFullKVLayer
+        self.quant = quant
+        self.weightsPath = weightsPath
+        self.tensorCount = tensorCount
+        self.payloadBytes = payloadBytes
+        self.sourceRepo = sourceRepo
+        self.sourceRevision = sourceRevision
+    }
+}
+
 package struct GTurboManifestV1: Codable, Equatable, Sendable {
     package let magic: String
     package let versionMajor: Int
@@ -180,6 +270,7 @@ package struct GTurboManifestV1: Codable, Equatable, Sendable {
     package let arch: GTurboManifestArchV1
     package let quant: GTurboManifestQuantV1?
     package let vision: GTurboManifestVisionV1?
+    package let draft: GTurboManifestDraftV1?
     package let files: [String: GTurboManifestFileV1]
     package let expertsPerLayer: Int
     package let numLayers: Int
@@ -193,6 +284,7 @@ package struct GTurboManifestV1: Codable, Equatable, Sendable {
                  sourceSnapshotHash: String?, arch: GTurboManifestArchV1,
                  quant: GTurboManifestQuantV1?,
                  vision: GTurboManifestVisionV1? = nil,
+                 draft: GTurboManifestDraftV1? = nil,
                  files: [String: GTurboManifestFileV1],
                  expertsPerLayer: Int, numLayers: Int, expertStride: UInt64,
                  bitWidthOverridesHonored: Int?) {
@@ -205,6 +297,7 @@ package struct GTurboManifestV1: Codable, Equatable, Sendable {
         self.arch = arch
         self.quant = quant
         self.vision = vision
+        self.draft = draft
         self.files = files
         self.expertsPerLayer = expertsPerLayer
         self.numLayers = numLayers
@@ -298,6 +391,7 @@ package enum GTurboManifestCodec {
             }
         }
         try validateVisionSection(manifest)
+        try validateDraftSection(manifest)
         let reservedFiles: Set<String> = ["manifest.json", "verified-install.json"]
         let filePaths = manifest.files.keys.sorted()
         var canonicalPaths: [String: String] = [:]
@@ -399,6 +493,100 @@ package enum GTurboManifestCodec {
             throw GTurboFormatError.invalid(
                 field: "manifest.vision.payloadBytes",
                 reason: "payload \(vision.payloadBytes) does not fit in \(entry.size) bytes")
+        }
+    }
+
+    /// The drafter section and its flag are one fact written twice, exactly as
+    /// the vision pair is. Beyond that pairing, the drafter borrows the target's
+    /// K/V instead of computing its own, so a mismatch in head geometry, window
+    /// or RoPE constants is not a slower model but a wrong one — those fields
+    /// are checked against `arch` here rather than at first use.
+    private static func validateDraftSection(_ manifest: GTurboManifestV1) throws {
+        let flagged = manifest.flags["mtpDraft"] == true
+        guard let draft = manifest.draft else {
+            guard !flagged else {
+                throw GTurboFormatError.invalid(
+                    field: "manifest.draft",
+                    reason: "flags.mtpDraft is set but the draft section is absent")
+            }
+            return
+        }
+        guard flagged else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.flags.mtpDraft",
+                reason: "draft section present but the flag is not set")
+        }
+        guard manifest.versionMinor >= GTurboFormatV1.versionMinorDraft else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.version",
+                reason: "draft requires minor >= \(GTurboFormatV1.versionMinorDraft)")
+        }
+        guard draft.hiddenSize > 0, draft.numLayers > 0, draft.numHeads > 0,
+              draft.intermediateSize > 0, draft.tensorCount > 0,
+              draft.payloadBytes > 0,
+              draft.rmsNormEps.isFinite, draft.rmsNormEps > 0,
+              !draft.hiddenActivation.isEmpty,
+              !draft.sourceRepo.isEmpty, !draft.sourceRevision.isEmpty,
+              draft.fullAttentionLayerMask.count == draft.numLayers,
+              draft.fullAttentionLayerMask.allSatisfy({ $0 == 0 || $0 == 1 }) else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.draft", reason: "invalid draft values")
+        }
+        let arch = manifest.arch
+        // The drafter reads the target's K/V, so these are not independent
+        // settings: they are the target's, restated.
+        let shared: [(String, Bool)] = [
+            ("backboneHiddenSize", draft.backboneHiddenSize == arch.hiddenSize),
+            ("vocabSize", draft.vocabSize == arch.vocabSize),
+            ("slidingWindow", draft.slidingWindow == arch.slidingWindow),
+            ("headDim", draft.headDim == arch.headDim),
+            ("fullHeadDim", draft.fullHeadDim == arch.fullHeadDim),
+            ("numKVHeads", draft.numKVHeads == arch.numKVHeads),
+            ("numFullKVHeads", draft.numFullKVHeads == arch.numFullKVHeads),
+            ("ropeTheta", draft.ropeTheta == arch.ropeTheta),
+            ("fullRopeTheta", draft.fullRopeTheta == arch.fullRopeTheta),
+            ("partialRotaryFactor",
+             draft.partialRotaryFactor == arch.partialRotaryFactor),
+            ("attentionKEqV", draft.attentionKEqV == arch.attentionKEqV),
+        ]
+        for (field, agrees) in shared where !agrees {
+            throw GTurboFormatError.invalid(
+                field: "manifest.draft.\(field)",
+                reason: "drafter shares the target's K/V but disagrees with manifest.arch.\(field)")
+        }
+        guard draft.tieWordEmbeddings else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.draft.tieWordEmbeddings",
+                reason: "the drafter's LM head is tied to its embedding table")
+        }
+        guard draft.sharedSlidingKVLayer >= 0,
+              draft.sharedSlidingKVLayer < arch.numLayers,
+              draft.sharedFullKVLayer >= 0,
+              draft.sharedFullKVLayer < arch.numLayers,
+              arch.fullAttentionLayerMask[draft.sharedSlidingKVLayer] == 0,
+              arch.fullAttentionLayerMask[draft.sharedFullKVLayer] == 1 else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.draft.sharedFullKVLayer",
+                reason: "shared K/V layers must name a sliding and a full target layer")
+        }
+        guard draft.quant.weightBits > 0, draft.quant.weightBits <= 32,
+              draft.quant.groupSize > 0,
+              !draft.quant.scheme.isEmpty, !draft.quant.scaleType.isEmpty,
+              !draft.quant.biasType.isEmpty else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.draft.quant", reason: "invalid quantization values")
+        }
+        try GTurboPathValidator.validateRelativePath(draft.weightsPath,
+                                                     field: "manifest.draft.weightsPath")
+        guard let entry = manifest.files[draft.weightsPath] else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.draft.weightsPath",
+                reason: "\(draft.weightsPath) is not declared in manifest.files")
+        }
+        guard entry.size > draft.payloadBytes else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.draft.payloadBytes",
+                reason: "payload \(draft.payloadBytes) does not fit in \(entry.size) bytes")
         }
     }
 }
