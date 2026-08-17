@@ -82,7 +82,7 @@ public final class DraftForward {
     private let hidden: MTLBuffer         // drafter hiddenSize
     private let normed: MTLBuffer         // hiddenSize
     private let qScratch: MTLBuffer       // numHeads * fullHeadDim (worst layer)
-    private let attnOut: MTLBuffer        // hiddenSize
+    private let attnOut: MTLBuffer        // numHeads * fullHeadDim (worst layer)
     private let mlpScratchA: MTLBuffer    // intermediateSize
     private let mlpScratchB: MTLBuffer    // intermediateSize
     private let mlpOut: MTLBuffer         // hiddenSize
@@ -112,7 +112,12 @@ public final class DraftForward {
         self.hidden = try buffer(c.hiddenSize)
         self.normed = try buffer(c.hiddenSize)
         self.qScratch = try buffer(c.numHeads * c.fullHeadDim)
-        self.attnOut = try buffer(c.hiddenSize)
+        // Attention writes `numHeads * headDim` (16x512 on the full layer), not
+        // `hiddenSize` — o_proj is what narrows it back to 1024. Sizing this by
+        // `hiddenSize` overran the allocation by 8x and scribbled over whatever
+        // followed it, which is how the probe's captured target hidden was being
+        // destroyed between the runner's norm and the drafter's read.
+        self.attnOut = try buffer(c.numHeads * c.fullHeadDim)
         self.mlpScratchA = try buffer(c.intermediateSize)
         self.mlpScratchB = try buffer(c.intermediateSize)
         self.mlpOut = try buffer(c.hiddenSize)

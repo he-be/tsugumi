@@ -64,6 +64,13 @@ final class DraftAcceptanceProbe {
     /// `TF_DRAFT_PROBE=<path>` turns it on; `TF_DRAFT_PROBE_DRAFTS=<k>` sets
     /// the draft depth (default 3, i.e. bs = 2/3/4 in one run);
     /// `TF_DRAFT_PROBE_MODE` picks the convention above (default `prev-bonus`).
+    ///
+    /// M3.5 adds two free knobs on top of the mode, so the convention can be
+    /// swept instead of argued about: `TF_DRAFT_PROBE_ROPE_DELTA` shifts the
+    /// query's RoPE position, `TF_DRAFT_PROBE_KV_DELTA` shifts how many cached
+    /// rows the drafter attends to (`TF_DRAFT_PROBE_KV_LEN` sets it outright —
+    /// `1` reduces attention to the BOS row, which measures how much the shared
+    /// K/V contributes at all).
     static func settings(_ env: [String: String] = ProcessInfo.processInfo.environment)
         -> (path: String, drafts: Int, mode: Mode)? {
         guard let path = env["TF_DRAFT_PROBE"], !path.isEmpty else { return nil }
@@ -71,6 +78,36 @@ final class DraftAcceptanceProbe {
         guard drafts >= 1 else { return nil }
         let mode = env["TF_DRAFT_PROBE_MODE"].flatMap(Mode.init(rawValue:)) ?? .prevBonus
         return (path, min(drafts, 16), mode)
+    }
+
+    /// The sweep knobs above, read once at construction.
+    struct Tweaks: Sendable {
+        var ropeDelta = 0
+        var kvDelta = 0
+        var kvLength: Int?
+        /// Overrides `sharedSlidingKVLayer` / `sharedFullKVLayer`: pointing the
+        /// drafter at a layer it was not trained against must cost acceptance,
+        /// or the shared-K/V path is not doing anything.
+        var slidingLayer: Int?
+        var fullLayer: Int?
+
+        static func fromEnvironment(_ env: [String: String] = ProcessInfo.processInfo.environment)
+            -> Tweaks {
+            var t = Tweaks()
+            t.ropeDelta = env["TF_DRAFT_PROBE_ROPE_DELTA"].flatMap { Int($0) } ?? 0
+            t.kvDelta = env["TF_DRAFT_PROBE_KV_DELTA"].flatMap { Int($0) } ?? 0
+            t.kvLength = env["TF_DRAFT_PROBE_KV_LEN"].flatMap { Int($0) }
+            t.slidingLayer = env["TF_DRAFT_PROBE_SLIDING_LAYER"].flatMap { Int($0) }
+            t.fullLayer = env["TF_DRAFT_PROBE_FULL_LAYER"].flatMap { Int($0) }
+            return t
+        }
+
+        var describe: String {
+            "rope_delta=\(ropeDelta) kv_delta=\(kvDelta) "
+                + "kv_len=\(kvLength.map(String.init) ?? "auto") "
+                + "layers=\(slidingLayer.map(String.init) ?? "auto")"
+                + "/\(fullLayer.map(String.init) ?? "auto")"
+        }
     }
 
     private let drafter: DraftForward
@@ -84,6 +121,7 @@ final class DraftAcceptanceProbe {
     private let draftQueue: MTLCommandQueue
     private let drafts: Int
     private let mode: Mode
+    private let tweaks: Tweaks
     private let embedScale: Float
 
     /// The runner writes this step's post-norm final hidden here; `prevHidden`
@@ -99,6 +137,24 @@ final class DraftAcceptanceProbe {
     private let hiddenB: MTLBuffer
     private let embedBuffer: MTLBuffer
     private let tokenBuffer: MTLBuffer
+
+    /// `TF_DRAFT_DUMP=<dir>`: write every round's *real* drafter inputs, plus
+    /// the final shared-K/V slabs, so upstream's `Gemma4AssistantForCausalLM`
+    /// can be replayed on exactly the same numbers in float32. 12-M2's fixtures
+    /// used random K/V, which cannot catch a layout or precision fault that
+    /// only shows on the structured cache the runtime actually has.
+    private let dumpDirectory: String?
+    private var dumpHandle: FileHandle?
+    private var dumpStageEmbed: MTLBuffer?
+    private var dumpStageHidden: MTLBuffer?
+    private var dumpKV: (slidingK: KVView, slidingV: KVView,
+                         fullK: KVView, fullV: KVView, rows: Int)?
+    /// The residual *before* the final norm, ping-ponged like `hiddenCapture`,
+    /// plus the norm's own weight vector (written once).
+    private var preNormCapture: MTLBuffer?
+    private var prevPreNorm: MTLBuffer?
+    private var normWeightStage: MTLBuffer?
+    private var normWeightWritten = false
 
     private let handle: FileHandle
     private var pending: [Round] = []
@@ -124,6 +180,7 @@ final class DraftAcceptanceProbe {
         self.draftQueue = draftContext.queue
         self.drafts = drafts
         self.mode = mode
+        self.tweaks = Tweaks.fromEnvironment()
         self.embedScale = Float(backboneHiddenSize).squareRoot()
         self.acceptedHistogram = [Int](repeating: 0, count: drafts + 1)
 
@@ -143,6 +200,21 @@ final class DraftAcceptanceProbe {
         self.embedBuffer = try buffer(backboneHiddenSize)
         self.tokenBuffer = try buffer(2, shared: true)
 
+        self.dumpDirectory = ProcessInfo.processInfo.environment["TF_DRAFT_DUMP"]
+            .flatMap { $0.isEmpty ? nil : $0 }
+        if let dumpDirectory {
+            try FileManager.default.createDirectory(
+                atPath: dumpDirectory, withIntermediateDirectories: true)
+            let roundsPath = dumpDirectory + "/rounds.bin"
+            FileManager.default.createFile(atPath: roundsPath, contents: nil)
+            self.dumpHandle = try FileHandle(forWritingTo: URL(fileURLWithPath: roundsPath))
+            self.dumpStageEmbed = try buffer(backboneHiddenSize, shared: true)
+            self.dumpStageHidden = try buffer(backboneHiddenSize, shared: true)
+            self.preNormCapture = try buffer(backboneHiddenSize, shared: true)
+            self.prevPreNorm = try buffer(backboneHiddenSize, shared: true)
+            self.normWeightStage = try buffer(backboneHiddenSize, shared: true)
+        }
+
         let url = URL(fileURLWithPath: path)
         try FileManager.default.createDirectory(
             at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -153,6 +225,7 @@ final class DraftAcceptanceProbe {
         handle.write(Data("""
             # turbo-fieldfare draft acceptance probe v1
             # drafts=\(drafts) (covers bs=2..\(drafts + 1)) mode=\(mode.rawValue)
+            # \(tweaks.describe)
             # pos    = target position whose input token anchored the round
             # bonus  = the target's input token at that position
             # accept = length of the matching prefix (0..\(drafts))
@@ -190,17 +263,58 @@ final class DraftAcceptanceProbe {
             ropePosition = position
             kvLength = position + 1
         }
+        let tweakedRope = max(0, ropePosition + tweaks.ropeDelta)
+        // No clamp to `position + 1`: `kv_delta = +2` reads a row the target has
+        // not written, which is the control for "does the extra row help because
+        // it is the bonus token's, or because the count went up".
+        let tweakedKV = max(1, tweaks.kvLength ?? (kvLength + tweaks.kvDelta))
         let proposals = try draftRound(bonusToken: bonusToken, hidden: hidden,
-                                       ropePosition: ropePosition, kvLength: kvLength,
+                                       ropePosition: tweakedRope, kvLength: tweakedKV,
                                        kv: kv)
         pending.append(Round(position: position, bonus: bonusToken, proposals: proposals))
     }
 
+    /// Carry this position's hidden over to the next step.
+    ///
+    /// This used to rotate the two buffers instead of copying. It did not hold:
+    /// the runner encodes the final norm into `hiddenCaptureBuffer` *by
+    /// reference* once per step, so rotating the property underneath it left the
+    /// drafter reading a buffer the norm had not written this step — the fed
+    /// vector correlated with itself at lag 2 and not at lag 1, and it was
+    /// uncorrelated with the norm output the runner had just produced. An
+    /// explicit copy keeps one write target and one carried value.
     private func swapHidden(position: Int) {
-        let captured = hiddenCaptureBuffer
-        hiddenCaptureBuffer = prevHidden
-        prevHidden = captured
+        guard let cb = embedQueue.makeCommandBuffer(),
+              let blit = cb.makeBlitCommandEncoder() else { return }
+        let bytes = config.backboneHiddenSize * MemoryLayout<Float16>.size
+        blit.copy(from: hiddenCaptureBuffer, sourceOffset: 0,
+                  to: prevHidden, destinationOffset: 0, size: bytes)
+        if let pre = preNormCapture, let prev = prevPreNorm {
+            blit.copy(from: pre, sourceOffset: 0, to: prev,
+                      destinationOffset: 0, size: bytes)
+        }
+        blit.endEncoding()
+        cb.commit()
+        cb.waitUntilCompleted()
         prevHiddenPosition = position
+    }
+
+    /// The runner's side of the pre-norm capture: same `hidden` the final norm
+    /// reads, plus the norm weight itself (BF16, written once).
+    func capturePreNorm(commandBuffer cb: MTLCommandBuffer, hidden: MTLBuffer,
+                        normWeight: MTLBuffer, normWeightOffset: Int, count: Int) {
+        guard let blit = cb.makeBlitCommandEncoder() else { return }
+        let bytes = count * MemoryLayout<Float16>.size
+        if let pre = preNormCapture {
+            blit.copy(from: hidden, sourceOffset: 0, to: pre,
+                      destinationOffset: 0, size: bytes)
+        }
+        if let stage = normWeightStage, !normWeightWritten {
+            blit.copy(from: normWeight, sourceOffset: normWeightOffset, to: stage,
+                      destinationOffset: 0, size: count * 2)  // BF16
+            normWeightWritten = true
+        }
+        blit.endEncoding()
     }
 
     /// `drafts` greedy drafter steps from `(embed(bonus), hidden)` against the
@@ -211,8 +325,8 @@ final class DraftAcceptanceProbe {
     private func draftRound(bonusToken: Int32, hidden: MTLBuffer,
                             ropePosition: Int, kvLength: Int,
                             kv: KVCacheManager) throws -> [Int32] {
-        let slidingLayer = config.sharedSlidingKVLayer
-        let fullLayer = config.sharedFullKVLayer
+        let slidingLayer = tweaks.slidingLayer ?? config.sharedSlidingKVLayer
+        let fullLayer = tweaks.fullLayer ?? config.sharedFullKVLayer
         let slidingK = kv.keyView(layer: slidingLayer)
         let slidingV = kv.valueView(layer: slidingLayer)
         let fullK = kv.keyView(layer: fullLayer)
@@ -257,6 +371,13 @@ final class DraftAcceptanceProbe {
             cb.waitUntilCompleted()
             if let error = cb.error { throw error }
 
+            if proposals.isEmpty, let dumpHandle {
+                // Only the round's first step: the chain's later inputs are the
+                // drafter's own output, which the replay recomputes itself.
+                dumpKV = (slidingK, slidingV, fullK, fullV, Int(kvLength))
+                dump(dumpHandle, bonus: bonusToken, position: ropePosition,
+                     kvLength: Int(kvLength), embed: embedBuffer, hidden: input)
+            }
             token = Int32(bitPattern: tokenBuffer.contents().load(as: UInt32.self))
             proposals.append(token)
             input = output
@@ -265,6 +386,72 @@ final class DraftAcceptanceProbe {
         draftNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start
         draftSteps += drafts
         return proposals
+    }
+
+    /// One record per round: the exact numbers the drafter's first step ran on.
+    /// FP16 buffers are widened to f32 here so the replay reads what the kernels
+    /// actually saw, not a re-rounded copy.
+    private func dump(_ handle: FileHandle, bonus: Int32, position: Int,
+                      kvLength: Int, embed: MTLBuffer, hidden: MTLBuffer) {
+        guard let stageEmbed = dumpStageEmbed, let stageHidden = dumpStageHidden,
+              let cb = embedQueue.makeCommandBuffer(),
+              let blit = cb.makeBlitCommandEncoder() else { return }
+        let bytes = config.backboneHiddenSize * MemoryLayout<Float16>.size
+        blit.copy(from: embed, sourceOffset: 0, to: stageEmbed,
+                  destinationOffset: 0, size: bytes)
+        blit.copy(from: hidden, sourceOffset: 0, to: stageHidden,
+                  destinationOffset: 0, size: bytes)
+        blit.endEncoding()
+        cb.commit()
+        cb.waitUntilCompleted()
+
+        var header = [Int32(bonus), Int32(position), Int32(kvLength),
+                      Int32(config.backboneHiddenSize)]
+        handle.write(Data(bytes: &header, count: header.count * 4))
+        // `prevPreNorm` is the pre-norm residual of the same position as
+        // `hidden` (both ping-pong together).
+        for staged in [stageEmbed, stageHidden, prevPreNorm ?? stageHidden] {
+            let src = staged.contents().assumingMemoryBound(to: Float16.self)
+            var out = [Float](repeating: 0, count: config.backboneHiddenSize)
+            for i in 0..<config.backboneHiddenSize { out[i] = Float(src[i]) }
+            out.withUnsafeBytes { handle.write(Data($0)) }
+        }
+    }
+
+    /// The shared K/V slabs, written once: every round's cache is a prefix of
+    /// the final one (no ring wrap below the 1024 window), so the replay can
+    /// slice them per round.
+    private func dumpSharedKV() {
+        guard let dumpDirectory, let kv = dumpKV else { return }
+        for (name, view) in [("k_swa", kv.slidingK), ("v_swa", kv.slidingV),
+                             ("k_full", kv.fullK), ("v_full", kv.fullV)] {
+            let count = kv.rows * view.stride / MemoryLayout<Float16>.size
+            let src = view.buffer.contents()
+                .advanced(by: view.offset)
+                .assumingMemoryBound(to: Float16.self)
+            var out = [Float](repeating: 0, count: count)
+            for i in 0..<count { out[i] = Float(src[i]) }
+            out.withUnsafeBytes {
+                try? Data($0).write(to: URL(fileURLWithPath: "\(dumpDirectory)/\(name).bin"))
+            }
+        }
+        if let stage = normWeightStage {
+            let src = stage.contents().assumingMemoryBound(to: UInt16.self)
+            var out = [Float](repeating: 0, count: config.backboneHiddenSize)
+            for i in 0..<config.backboneHiddenSize {
+                out[i] = Float(bitPattern: UInt32(src[i]) << 16)  // BF16 -> f32
+            }
+            out.withUnsafeBytes {
+                try? Data($0).write(to: URL(fileURLWithPath: "\(dumpDirectory)/final_norm_weight.bin"))
+            }
+        }
+        let meta = """
+            {"rows": \(kv.rows), \
+            "sliding_stride_f16": \(kv.slidingK.stride / MemoryLayout<Float16>.size), \
+            "full_stride_f16": \(kv.fullK.stride / MemoryLayout<Float16>.size), \
+            "backbone": \(config.backboneHiddenSize)}
+            """
+        try? Data(meta.utf8).write(to: URL(fileURLWithPath: "\(dumpDirectory)/meta.json"))
     }
 
     /// Feed the target's actual token to every round still waiting on it, and
@@ -320,6 +507,12 @@ final class DraftAcceptanceProbe {
             \(acceptedHistogram.map(String.init).joined(separator: " "))\n
             """
         if rounds > 0 {
+            // The one number that depends on neither `bs` nor the chain: how
+            // often the drafter's first proposal is the token the target drew.
+            // 13-M3 §11-2 judges M3.5 on this.
+            let first = acceptedHistogram.dropFirst().reduce(0, +)
+            lines += String(format: "# first_draft_accept=%.4f (%d/%d)\n",
+                            Double(first) / Double(rounds), first, rounds)
             for bs in 2...(drafts + 1) {
                 let cap = bs - 1
                 var total = 0
@@ -349,6 +542,8 @@ final class DraftAcceptanceProbe {
     func finish() {
         guard !finished else { return }
         flushSummary()
+        dumpSharedKV()
+        try? dumpHandle?.close()
         finished = true
         try? handle.close()
     }

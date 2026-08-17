@@ -2127,6 +2127,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                 self.rms.encodeBF16W(commandBuffer: cb, x: self.hidden,
                                      weight: fNorm.buffer, weightOffset: Int(fNorm.offset),
                                      out: probe.hiddenCaptureBuffer, d: D, eps: eps)
+                // M3.5: the pre-norm residual and the norm weight go out too, so
+                // the replay can tell "wrong quantity" from "wrong scale".
+                probe.capturePreNorm(commandBuffer: cb, hidden: self.hidden,
+                                     normWeight: fNorm.buffer,
+                                     normWeightOffset: Int(fNorm.offset),
+                                     count: Int(D))
             }
             try probe.draft(bonusToken: token, position: position, kv: kv)
         }
