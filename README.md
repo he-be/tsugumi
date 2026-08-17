@@ -251,6 +251,37 @@ This formats messages in the same way as the Mac app. The CLI response limit
 is set with `--max-new`, which defaults to 1,024 tokens. The Mac app can
 generate until the selected context window is full.
 
+#### Images
+
+A model installed with a vision tower (`--include-vision`, or `--add-vision` on
+an existing install) accepts images on the last user turn:
+
+```bash
+swift run -c release TurboFieldfareCLI \
+  --model scratch/gemma4.gturbo \
+  --messages-file messages.json \
+  --image photo.jpg
+```
+
+`--image` is repeatable and `--messages-file` also accepts a list of content
+parts, which is how an image is placed between paragraphs of a turn:
+
+```json
+[
+  {"role": "user", "content": [
+    {"type": "text", "text": "What is on the second shelf?"},
+    {"type": "image", "path": "shelf.jpg"}
+  ]}
+]
+```
+
+Each image costs up to `--image-tokens` (70, 140, or 280; default 280) prompt
+tokens — the actual number follows the image's aspect ratio — plus about 1.4 s
+of GPU time before the first token. Images need chunked prefill (`--prefill on`,
+the default) and a model that carries the tower; both are checked before
+anything runs. Writing `<|image|>` into the text is an error rather than a
+silently ignored token.
+
 Common generation options include `--max-context`, `--temperature`, `--top-k`,
 `--top-p`, `--repetition-penalty`, `--seed`, and repeatable `--stop` strings.
 Runtime options include `--expert-cache-slots`, `--expert-cache-policy`,

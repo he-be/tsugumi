@@ -267,10 +267,13 @@ flowchart LR
 
 ## Instruction framing
 
-The Mac app and CLI `--messages-file` mode use the pinned text-only Gemma 4 chat
-format. The app wraps one user prompt. `--messages-file` accepts user and
+The Mac app and CLI `--messages-file` mode use the pinned Gemma 4 chat format.
+The app wraps one user prompt. `--messages-file` accepts user and
 assistant messages plus optional leading system guidance. Assistant messages
-render with Gemma's `model` role. The separate loopback server uses the pinned
+render with Gemma's `model` role. A message body may also be a list of content
+parts, which is how the CLI's `--image` attaches images: each image renders as
+one `<|image|>`, which the prompt assembler expands into the opener, that
+image's soft tokens, and the closer. The Mac app stays text-only. The separate loopback server uses the pinned
 upstream Jinja template for developer messages, function declarations,
 assistant tool calls, and tool results.
 
@@ -298,6 +301,17 @@ For each chunk and layer, TurboFieldfare:
   with both tiles fitting in the 16-slot cache;
 - never reuses a slot while queued GPU work still owns it; and
 - combines the resident shared branch and routed branch before the layer tail.
+
+A prompt that carries images runs the vision tower once per image before the
+first chunk, never inside the chunk loop, and keeps each image's soft tokens
+until the chunk that holds them: the embedding lookup writes every row of the
+chunk and the image rows are then overwritten with the tower's output, without
+the sqrt(hidden) factor that belongs to text embeddings. A chunk boundary is
+pulled back to the start of an image rather than cutting through one, so all of
+an image's keys reach the KV cache before any of its queries attend, and the
+sliding-window layers give those queries a visible end at the image's end
+instead of at their own position — the bidirectional span. The full-attention
+layers stay causal, as upstream does.
 
 Eligible 4-bit prefill projections use staged affine Metal Performance
 Primitives (MPP). The runtime unpacks each tile of affine-quantized weights into
