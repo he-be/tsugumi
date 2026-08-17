@@ -87,9 +87,9 @@ transformers `gemma4_assistant` の configuration/modeling と、mlx-vlm の
 | Q1 | ドラフターの logits に **final logit softcap 30.0** を掛けるか | ターゲット側は `ArchConfig.finalLogitSoftcap = 30.0` で `Sampler` も softcap 前提。掛ける/掛けないで提案分布が変わり**受理率が動く** | M0 / M2 |
 | Q2 | ドラフターに渡す hidden は `model.norm` **後**で確定か | 本ランタイムは post-norm hidden を materialize していない (02 §3-N3)。どちらかで追加カーネルの位置が変わる | M0 / M2 |
 | Q3 | ドラフト内部の sampling は greedy 固定か、ターゲットと同じ温度か | 受理率に直結。同温度なら「同じ分布から 2 回引く」ぶん一致確率が下がる (**導出**) | M0 |
-| Q4 | 共有 KV は層 28/29 の K/V をそのまま使うか、追加の norm/RoPE があるか | ターゲット側 KV は k_norm + RoPE 済みでキャッシュされている | M2 |
+| Q4 | 共有 KV は層 28/29 の K/V をそのまま使うか、追加の norm/RoPE があるか | ターゲット側 KV は k_norm + RoPE 済みでキャッシュされている | **M2 で解決** ([12-M2-RESULTS.md](12-M2-RESULTS.md) §5): そのまま。追加処理なし |
 | Q5 | `bs` (block size) の推奨値 | 上流の自己申告は best bs = 3 (batch 4/8、M3 Max)。B=1 での最適は不明 | M5 |
-| Q6 | 埋め込みスケール √2816 はドラフター側でも同じか | mlx-vlm の `bind()` がターゲットの `embed_scale` を読む (**実測**)。再確認のみ | M2 |
+| Q6 | 埋め込みスケール √2816 はドラフター側でも同じか | mlx-vlm の `bind()` がターゲットの `embed_scale` を読む (**実測**)。再確認のみ | **M2 で解決** ([12-M2-RESULTS.md](12-M2-RESULTS.md) §5): スケールはターゲット埋め込み (2816 幅) に掛かる。ドラフター自身の 1024 幅テーブルは tied lm head 専用 |
 
 ## 6. 明示的に対象外
 

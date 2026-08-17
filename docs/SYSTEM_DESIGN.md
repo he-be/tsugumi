@@ -162,8 +162,11 @@ sliding window and RoPE constants are not free parameters but the target's,
 restated. The manifest codec checks them against `arch` and refuses a drafter
 that does not fit, and the installer verifies that the tensors MLX left
 unquantized still hash to Google's BF16 QAT assistant before writing anything.
-The runtime does not use the drafter yet; installing it is what M1 of
-[the MTP plan](mtp/README.md) delivers.
+The runtime loads the drafter lazily (`Model.draftWeights()`, same shape as the
+vision tower) and has a standalone forward for it (`DraftForward`) that M2 of
+[the MTP plan](mtp/README.md) validated against upstream's own reference
+outputs; the decode path itself still does not touch it, and speculation
+integration is the subject of M3–M5.
 
 [`TurboFieldfareFormat`](../Sources/TurboFieldfareFormat) defines the v1 JSON
 files and resident index used by the installer, verifier, and runtime. This

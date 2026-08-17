@@ -4,10 +4,10 @@ QAT ウェイト対応・Vision 対応に続く 3 つ目の大改修。
 `google/gemma-4-26B-A4B-it-qat-…-assistant` ドラフターを使った
 propose-and-verify (投機デコード) を本ランタイムに入れる。
 
-**現在地: M1 完了 ([11-M1-RESULTS.md](11-M1-RESULTS.md))。次は M2 (ドラフター forward 単体)。**
-ドラフター重みは `.gturbo` に入るようになった (`--include-draft` / `--add-draft`) が、
-**ランタイムはまだ 1 バイトも読まない。**decode 経路に入っているのは既定オフの診断
-1 本だけ (`AcceptanceProbe`、M0 §7)。
+**現在地: M2 完了 ([12-M2-RESULTS.md](12-M2-RESULTS.md))。次は M3 (受理率の実測、go/no-go)。**
+ランタイムは decode 経路に 1 行も触れずにドラフター forward を持った
+(`DraftForward`、`KernelCheck --draft` で参照突合済み)。decode 経路に
+入っているのは既定オフの診断 1 本だけ (`AcceptanceProbe`、M0 §7)。
 
 ## ゴール (2026-08-17 に確定)
 
@@ -31,6 +31,7 @@ GUI は対象外。**主眼は wall time で、t/s は目安**。
 | 5 | [05-RISKS.md](05-RISKS.md) | リスクと未確認事項の一覧 |
 | 6 | [10-M0-RESULTS.md](10-M0-RESULTS.md) | **M0 の実測。**速度上限の式、expert 和集合、タスク別の受理上限、ゴール条件のベースライン |
 | 7 | [11-M1-RESULTS.md](11-M1-RESULTS.md) | **M1 の実測。**フォーマット拡張と repacker、ピンの再確認、`--add-draft` の実行、旧ランタイム拒否 |
+| 8 | [12-M2-RESULTS.md](12-M2-RESULTS.md) | **M2 の実測。**ドラフター forward 単体、参照実装確定 (transformers 5.10.4)、FP16 誤差床、検出力 3 件 |
 
 事実の出所は 2 系統ある。**リモート (HF) 側**はドラフター重みの調査 (2026-08-17 取得。
 テンソル全数・SHA-256 一致・config・参照実装ソースは `scratch/mtp-ref/` に取得済み)、

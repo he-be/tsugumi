@@ -58,7 +58,7 @@ transformers / mlx-vlm の `gemma4_assistant` は上流で変わりうる。
 | # | 事項 | いつ解ける |
 | --- | --- | --- |
 | U1 | `decode/tok` 31 ms の未説明部分の正体 | M0 |
-| U2 | Q1 softcap / Q2 hidden の取り出し点 / Q3 ドラフト内 sampling / Q4 共有 KV の前処理 / Q6 embed_scale (`01-CHECKPOINT.md` §5) | M0〜M2 |
+| U2 | Q1 softcap / Q2 hidden の取り出し点 / Q3 ドラフト内 sampling / Q4 共有 KV の前処理 / Q6 embed_scale (`01-CHECKPOINT.md` §5) | **解決。**Q1〜Q3 は M0 ([10-M0-RESULTS.md](10-M0-RESULTS.md) §5)、Q4/Q6 は M2 ([12-M2-RESULTS.md](12-M2-RESULTS.md) §5)。Q1〜Q6 すべて決着 |
 | U3 | B=1・日本語での受理率 (bs / temp 別) | M3 |
 | U4 | 最適な block size | M5 |
 | U5 | mlx-vlm を本機で resident 運用できるか (ターゲット約 15 GB の追加取得が要る) | **やらない前提で設計している** (`04-PHASES.md` §1)。やるならユーザーの明示的許可が要る |

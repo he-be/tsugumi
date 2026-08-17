@@ -72,6 +72,40 @@ public struct ManifestVision: Decodable, Equatable, Sendable {
     public let sourceRevision: String
 }
 
+/// MTP drafter description as the runtime reads it. The codec already
+/// validated every field against the target arch (`validateDraftSection`):
+/// the drafter has no K/V of its own, so its head geometry, window and RoPE
+/// constants are re-statements of the target's rather than free parameters.
+public struct ManifestDraft: Decodable, Equatable, Sendable {
+    public let hiddenSize: Int
+    public let numLayers: Int
+    public let numHeads: Int
+    public let numKVHeads: Int
+    public let numFullKVHeads: Int
+    public let headDim: Int
+    public let fullHeadDim: Int
+    public let intermediateSize: Int
+    public let backboneHiddenSize: Int
+    public let vocabSize: Int
+    public let slidingWindow: Int
+    public let ropeTheta: Double
+    public let fullRopeTheta: Double
+    public let partialRotaryFactor: Double
+    public let rmsNormEps: Double
+    public let hiddenActivation: String
+    public let tieWordEmbeddings: Bool
+    public let attentionKEqV: Bool
+    public let fullAttentionLayerMask: [Int]
+    public let sharedSlidingKVLayer: Int
+    public let sharedFullKVLayer: Int
+    public let quant: ManifestQuantSlot
+    public let weightsPath: String
+    public let tensorCount: Int
+    public let payloadBytes: UInt64
+    public let sourceRepo: String
+    public let sourceRevision: String
+}
+
 public struct Manifest: Decodable, Equatable, Sendable {
     public let magic: String
     public let versionMajor: Int
@@ -82,6 +116,7 @@ public struct Manifest: Decodable, Equatable, Sendable {
     public let arch: ManifestArch
     public let quant: ManifestQuant?
     public let vision: ManifestVision?
+    public let draft: ManifestDraft?
     public let files: [String: ManifestFileEntry]
     public let expertsPerLayer: Int
     public let numLayers: Int
@@ -159,6 +194,9 @@ public enum ManifestReader {
             if m.files[vision.weightsPath] == nil {
                 throw ModelError.missingFile(name: vision.weightsPath)
             }
+        }
+        if let draft = m.draft, m.files[draft.weightsPath] == nil {
+            throw ModelError.missingFile(name: draft.weightsPath)
         }
         if let quant = m.quant {
             try validateQuant(quant)
@@ -364,6 +402,38 @@ private extension ManifestVision {
     }
 }
 
+private extension ManifestDraft {
+    init(wire: GTurboManifestDraftV1) {
+        self.init(hiddenSize: wire.hiddenSize,
+                  numLayers: wire.numLayers,
+                  numHeads: wire.numHeads,
+                  numKVHeads: wire.numKVHeads,
+                  numFullKVHeads: wire.numFullKVHeads,
+                  headDim: wire.headDim,
+                  fullHeadDim: wire.fullHeadDim,
+                  intermediateSize: wire.intermediateSize,
+                  backboneHiddenSize: wire.backboneHiddenSize,
+                  vocabSize: wire.vocabSize,
+                  slidingWindow: wire.slidingWindow,
+                  ropeTheta: wire.ropeTheta,
+                  fullRopeTheta: wire.fullRopeTheta,
+                  partialRotaryFactor: wire.partialRotaryFactor,
+                  rmsNormEps: wire.rmsNormEps,
+                  hiddenActivation: wire.hiddenActivation,
+                  tieWordEmbeddings: wire.tieWordEmbeddings,
+                  attentionKEqV: wire.attentionKEqV,
+                  fullAttentionLayerMask: wire.fullAttentionLayerMask,
+                  sharedSlidingKVLayer: wire.sharedSlidingKVLayer,
+                  sharedFullKVLayer: wire.sharedFullKVLayer,
+                  quant: ManifestQuantSlot(wire: wire.quant),
+                  weightsPath: wire.weightsPath,
+                  tensorCount: wire.tensorCount,
+                  payloadBytes: wire.payloadBytes,
+                  sourceRepo: wire.sourceRepo,
+                  sourceRevision: wire.sourceRevision)
+    }
+}
+
 private extension Manifest {
     init(wire: GTurboManifestV1) {
         self.init(magic: wire.magic,
@@ -375,6 +445,7 @@ private extension Manifest {
                   arch: ManifestArch(wire: wire.arch),
                   quant: wire.quant.map(ManifestQuant.init(wire:)),
                   vision: wire.vision.map(ManifestVision.init(wire:)),
+                  draft: wire.draft.map(ManifestDraft.init(wire:)),
                   files: wire.files.mapValues(ManifestFileEntry.init(wire:)),
                   expertsPerLayer: wire.expertsPerLayer,
                   numLayers: wire.numLayers,

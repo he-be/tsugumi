@@ -67,6 +67,15 @@ public struct Model {
         var weights: VisionWeights?
     }
 
+    /// The MTP drafter, mapped on the first draft and never before — same
+    /// contract as the tower (D1: a run that never drafts pays nothing).
+    let draftBox: DraftWeightsBox
+    let draftQueue: DispatchQueue
+
+    final class DraftWeightsBox: @unchecked Sendable {
+        var weights: DraftWeights?
+    }
+
     /// Routed-expert instrumentation. A reference type so every copy of this
     /// struct — the runner's, the prefill kernels' — accumulates into one set of
     /// counters.
@@ -108,6 +117,8 @@ public struct Model {
         self.streamersQueue = DispatchQueue(label: "turbo-fieldfare.expert-streamers")
         self.visionBox = VisionWeightsBox()
         self.visionQueue = DispatchQueue(label: "turbo-fieldfare.vision-weights")
+        self.draftBox = DraftWeightsBox()
+        self.draftQueue = DispatchQueue(label: "turbo-fieldfare.draft-weights")
         self.telemetry = telemetry
     }
 
@@ -133,6 +144,27 @@ public struct Model {
                                                 device: device,
                                                 integrityPolicy: integrityPolicy)
             visionBox.weights = loaded
+            return loaded
+        }
+    }
+
+    // MARK: - MTP drafter (lazy)
+
+    /// Whether this install carries an MTP drafter. False for every model
+    /// built without `--include-draft` / `--add-draft`.
+    public var hasDraft: Bool { manifest.draft != nil }
+
+    /// Map and validate the drafter, once per process (236 MB, and hashed only
+    /// under `.fullSha256`).
+    public func draftWeights() throws -> DraftWeights {
+        try draftQueue.sync {
+            if let loaded = draftBox.weights { return loaded }
+            let loaded = try DraftWeights.load(directoryURL: directoryURL,
+                                               manifest: manifest,
+                                               arch: config,
+                                               device: device,
+                                               integrityPolicy: integrityPolicy)
+            draftBox.weights = loaded
             return loaded
         }
     }

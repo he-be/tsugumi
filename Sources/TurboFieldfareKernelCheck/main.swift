@@ -1278,6 +1278,16 @@ var visionFixtureRoot = VisionFixtures.defaultRoot
 if let index = arguments.firstIndex(of: "--vision-fixtures"), index + 1 < arguments.count {
     visionFixtureRoot = arguments[index + 1]
 }
+// `--draft <model.gturbo>` adds the assembled-drafter comparison against the
+// M2 reference fixtures. Same opt-in shape as `--vision-tower`.
+var draftModel: String?
+if let index = arguments.firstIndex(of: "--draft"), index + 1 < arguments.count {
+    draftModel = arguments[index + 1]
+}
+var draftFixtureRoot = "scratch/mtp-fixtures"
+if let index = arguments.firstIndex(of: "--draft-fixtures"), index + 1 < arguments.count {
+    draftFixtureRoot = arguments[index + 1]
+}
 
 var results: [CaseResult] = []
 
@@ -1373,6 +1383,15 @@ do {
                                                   bench: runBench)
         printCases(towerCases)
         results.append(contentsOf: towerCases)
+    }
+
+    if let modelPath = draftModel {
+        print("")
+        let draftCases = try runDraftChecks(context: context,
+                                            modelPath: modelPath,
+                                            fixtureRoot: draftFixtureRoot)
+        printCases(draftCases)
+        results.append(contentsOf: draftCases)
     }
 }
 
