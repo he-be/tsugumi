@@ -278,5 +278,9 @@ private func sampleOnce(scratch: RawCompletionScratch, context: MetalContext,
                            outToken: scratch.outToken)
     cb.commit(); cb.waitUntilCompleted()
     try checkCommandBufferError(cb.error)
-    return Int32(bitPattern: scratch.outToken.contents().load(as: UInt32.self))
+    let token = Int32(bitPattern: scratch.outToken.contents().load(as: UInt32.self))
+    AcceptanceProbe.shared?.record(step: position, drawn: token,
+                                   probs: scratch.probs,
+                                   vocab: scratch.sampler.vocab, config: config)
+    return token
 }
