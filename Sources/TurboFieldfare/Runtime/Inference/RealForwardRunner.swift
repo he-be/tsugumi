@@ -160,7 +160,7 @@ enum VisionPrefillFault: String, Sendable, CaseIterable {
     }()
 }
 
-public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporting, ContinuableLogitProducer, @unchecked Sendable {
+public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporting, ContinuableLogitProducer, SpeculativeVerifier, @unchecked Sendable {
     private struct LayerSharedExpertProjections {
         let gate: SharedExpertInt8Proj
         let up: SharedExpertInt8Proj
@@ -228,6 +228,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private let greedyTokenBuf: MTLBuffer // 4 B UInt32 fused-head output
     private var prefillChunkState = PrefillChunkCommitState()
     private var prefillScratch: PrefillChunkScratchBuffers?
+    /// The chunk width this runner was built for. `verifyBlock` reuses it so a
+    /// 4-token block binds the scratch prefill already allocated instead of
+    /// swapping it for a narrower layout every round.
+    private let prefillRuntimeConfig: PrefillRuntimeConfig
     private var prefillGPUProfile = PrefillGPUProfile()
 
     /// Vision state, built on the first image and never for a text-only run:
@@ -248,6 +252,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private static let rdadviseAdaptiveByteCap: UInt64 = 384 * 1_048_576
     private static let rdadviseAdaptiveSlowCallNanos: UInt64 = 1_000_000
     private static let prefillRoutedTileSchedulerConfig = PrefillRoutedTileSchedulerConfig()
+    /// Narrowest chunk that still uses the tiled routed-MoE GEMM. 0 keeps the
+    /// pre-M4 behavior (always tiled).
+    private static let groupedGEMMMinChunkTokens = Int(
+        ProcessInfo.processInfo.environment["TF_PREFILL_MOE_GEMM_MIN_TOKENS"] ?? "") ?? 0
 
     /// Per-layer `router.scale * D^-0.5` pre-folded into one BF16 buffer
     /// allocation per layer. ~168 KB total at 30 layers × 2816 BF16 — bounded
@@ -292,6 +300,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // it: overshooting the working set trades SSD reads for OS compression,
         // which is the opposite of what a large cache is for.
         let prefillConfig = runtimeConfiguration.prefillConfig
+        self.prefillRuntimeConfig = prefillConfig
         let budget = model.expertCacheBudget(
             slotCount: runtimeConfiguration.expertCacheSlots,
             maxContext: maxContext,
@@ -316,7 +325,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                      maxContext: maxContext,
                                      fp16RingEnabled: useFP16Ring,
                                      slidingWindow: cfg.slidingWindow,
-                                     maxPrefillChunkTokens: prefillConfig.chunkTokens)
+                                     maxPrefillChunkTokens: prefillConfig.chunkTokens,
+                                     maxSpeculativeBlockTokens: SpeculativeBlock.maxTokens)
 
         self.embedInt4 = try EmbedLookupInt4(context: context)
         self.rms       = try RMSNorm(context: context)
@@ -562,6 +572,101 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                outputMode: .greedyIfAvailable)
     }
 
+    public var maxSpeculativeBlockTokens: Int { SpeculativeBlock.maxTokens }
+
+    /// Score a block of proposed tokens in one pass (`docs/mtp/03-DESIGN.md` D3).
+    ///
+    /// This is the prefill chunk path with the head widened from "last row" to
+    /// "every row" — no second forward implementation, which is the point: the
+    /// tokens a speculative round accepts have to be the tokens plain decode
+    /// would have produced, and the cheapest way to keep that true is for the
+    /// two paths to share every kernel below the head. That they still agree is
+    /// not assumed; it is the M4 exit condition
+    /// (`TurboFieldfareKernelCheck --verify-block`).
+    public func verifyBlock(tokens: ArraySlice<Int32>,
+                            startPosition: Int,
+                            into logitRows: MTLBuffer,
+                            greedyTokens: MTLBuffer?) async throws {
+        try prefillChunkState.requireClean(operation: "verifyBlock")
+        guard !tokens.isEmpty else { return }
+        guard tokens.count <= SpeculativeBlock.maxTokens else {
+            throw SpeculativeVerifyError.blockTooWide(
+                "verifyBlock got \(tokens.count) tokens, more than the "
+                + "\(SpeculativeBlock.maxTokens)-token block ceiling")
+        }
+        guard let kv else {
+            throw SpeculativeVerifyError.cursorMismatch("verifyBlock requires FP16 KV")
+        }
+        guard kv.position == startPosition else {
+            throw SpeculativeVerifyError.cursorMismatch(
+                "verifyBlock cursor \(kv.position) != startPosition \(startPosition)")
+        }
+        guard startPosition + tokens.count <= maxContext else {
+            throw SpeculativeVerifyError.cursorMismatch(
+                "verifyBlock range [\(startPosition), \(startPosition + tokens.count)) "
+                + "exceeds maxContext \(maxContext)")
+        }
+        // The two heads write different things to different buffers, and a
+        // caller that picked the wrong one would read a buffer nothing wrote —
+        // plausible stale bytes rather than a crash. Name the mismatch instead.
+        let outputMode: PrefillOutputMode
+        if let greedyTokens {
+            guard useFusedGreedyHead else {
+                throw SpeculativeVerifyError.headMismatch(
+                    "verifyBlock was given a greedy-token buffer but this runner "
+                    + "was built with the logits head")
+            }
+            outputMode = .greedyIfAvailable
+            let needed = tokens.count * MemoryLayout<UInt32>.stride
+            guard greedyTokens.length >= needed else {
+                throw SpeculativeVerifyError.bufferTooSmall(
+                    "greedyTokens holds \(greedyTokens.length) bytes, needs \(needed)")
+            }
+        } else {
+            outputMode = .logits
+            let needed = SpeculativeBlock.logitRowsBytes(vocab: cfg.vocabSize,
+                                                         blockTokens: tokens.count)
+            guard logitRows.length >= needed else {
+                throw SpeculativeVerifyError.bufferTooSmall(
+                    "logitRows holds \(logitRows.length) bytes, needs \(needed) for "
+                    + "\(tokens.count) rows of \(cfg.vocabSize)")
+            }
+        }
+
+        let scratch = try ensurePrefillScratch(config: prefillRuntimeConfig)
+        // Verify is generation, not prompt processing: its expert traffic
+        // belongs in the decode column of the telemetry, or the MTP round's
+        // cost lands in a bucket nobody reads during decode.
+        model.telemetry.beginPhase(.decode, step: startPosition)
+        try await executePrefillChunk(tokens: tokens,
+                                      startPosition: startPosition,
+                                      outputMode: outputMode,
+                                      logits: logitRows,
+                                      scratch: scratch,
+                                      config: prefillRuntimeConfig,
+                                      head: .allRows,
+                                      greedyRows: greedyTokens)
+        // A verify block is one chunk, so the profile has to be flushed here or
+        // it accumulates across rounds with nothing to print it.
+        if PrefillGPUProfile.isEnabled {
+            FileHandle.standardError.write(Data((prefillGPUProfile.summary + "\n").utf8))
+            prefillGPUProfile.reset()
+        }
+    }
+
+    /// Drop every KV row at or after `position` (`docs/mtp/03-DESIGN.md` D4).
+    public func rewind(to position: Int) throws {
+        try prefillChunkState.requireClean(operation: "rewind")
+        guard let kv else {
+            throw SpeculativeVerifyError.cursorMismatch("rewind requires FP16 KV")
+        }
+        guard position >= 0, position <= kv.position else {
+            throw SpeculativeVerifyError.cursorMismatch(
+                "rewind target \(position) is outside [0, \(kv.position)]")
+        }
+        kv.rewind(to: position)
+    }
+
     public func prefillChunked(tokens: ArraySlice<Int32>,
                                startPosition: Int,
                                outputMode: PrefillOutputMode,
@@ -619,7 +724,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                         promptStartPosition: startPosition,
                                         spans: imageSpans,
                                         softTokens: images),
-                writeFinalHead: spanIndex == spans.count - 1)
+                head: spanIndex == spans.count - 1 ? .finalRow : .none)
             onProgress(span.completedCount)
         }
         if PrefillGPUProfile.isEnabled {
@@ -813,6 +918,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         return scratch
     }
 
+    /// Which rows of a chunk the lm_head runs on.
+    private enum PrefillHeadRows {
+        case none
+        case finalRow
+        case allRows
+    }
+
     private func executePrefillChunk(tokens: ArraySlice<Int32>,
                                      startPosition: Int,
                                      outputMode: PrefillOutputMode,
@@ -820,7 +932,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                      scratch: PrefillChunkScratchBuffers,
                                      config: PrefillRuntimeConfig,
                                      vision: VisionChunkPlan = .none,
-                                     writeFinalHead: Bool) async throws {
+                                     head: PrefillHeadRows,
+                                     greedyRows: MTLBuffer? = nil) async throws {
         guard !tokens.isEmpty else { return }
         guard kv != nil else {
             throw PrefillError.chunkedUnsupported("chunked prefill attention requires FP16 KV")
@@ -1478,7 +1591,15 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         guard let tileCB = ctx.queue.makeCommandBuffer() else {
                             throw ModelError.residentBufferWrapFailed
                         }
-                        if prefillGroupedMoE.usesExpertGEMMPath(d: D, f: cfg.moeIntermediateSize) {
+                        // The tiled path computes a whole 64-row block per
+                        // expert. A prompt chunk fills those blocks; a 4-token
+                        // speculative verify block leaves ~1 useful row in each,
+                        // so the same answer costs an order of magnitude more
+                        // arithmetic. `TF_PREFILL_MOE_GEMM_MIN_TOKENS` is the
+                        // knob that measurement uses to find where the crossover
+                        // is (docs/mtp/15-M4-RESULTS.md §4).
+                        if t >= Self.groupedGEMMMinChunkTokens,
+                           prefillGroupedMoE.usesExpertGEMMPath(d: D, f: cfg.moeIntermediateSize) {
                             let groupStart = Int(tile.groupStart)
                             _ = prefillGroupedMoE.encodeStreamedTiled(
                                 commandBuffer: tileCB,
@@ -1557,50 +1678,76 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     continue
         }
 
-        if writeFinalHead {
+        // Which rows of this chunk get an lm_head. Prompt prefill wants the last
+        // row of the last chunk and nothing else; a speculative verify block
+        // wants every row, because each one scores a different proposed token
+        // (`docs/mtp/03-DESIGN.md` D3). Everything below the head is identical
+        // either way — that identity is what the M4 comparison checks.
+        let headRows: Range<Int>
+        switch head {
+        case .none:
+            headRows = t..<t
+        case .finalRow:
+            headRows = (t - 1)..<t
+        case .allRows:
+            headRows = 0..<t
+        }
+        if !headRows.isEmpty {
             let finalNorm = model.finalNorm
             let lm = model.lmHead
+            let greedy = outputMode == .greedyIfAvailable && useFusedGreedyHead
             guard let finalCB = ctx.queue.makeCommandBuffer() else {
                 throw ModelError.residentBufferWrapFailed
             }
-            if outputMode == .greedyIfAvailable, useFusedGreedyHead {
-                fusionHead.encodeGreedyDecode(
-                    commandBuffer: finalCB,
-                    hidden: scratch.hidden,
-                    hiddenOffset: (t - 1) * D * MemoryLayout<Float16>.stride,
-                    normWeight: finalNorm.buffer,
-                    normOffset: Int(finalNorm.offset),
-                    weights: lm.buffer,
-                    weightsOffset: Int(lm.offset),
-                    scales: lm.buffer,
-                    scalesOffset: Int(lm.scaleOffset),
-                    biases: lm.buffer,
-                    biasesOffset: Int(lm.biasOffset),
-                    outToken: greedyTokenBuf,
-                    d: UInt32(D),
-                    vocab: UInt32(cfg.vocabSize),
-                    rmsEps: eps)
-            } else {
-                prefillFinalRowHead.encodeLogits(commandBuffer: finalCB,
-                                                 hiddenBlock: scratch.hidden,
-                                                 row: t - 1,
-                                                 rowStrideElements: D,
-                                                 normWeight: finalNorm.buffer,
-                                                 normWeightOffset: Int(finalNorm.offset),
-                                                 weights: lm.buffer,
-                                                 weightsOffset: Int(lm.offset),
-                                                 scales: lm.buffer,
-                                                 scalesOffset: Int(lm.scaleOffset),
-                                                 biases: lm.buffer,
-                                                 biasesOffset: Int(lm.biasOffset),
-                                                 logits: logits,
-                                                 d: UInt32(D),
-                                                 vocab: UInt32(cfg.vocabSize),
-                                                 rmsEps: eps)
+            for row in headRows {
+                let outputRow = row - headRows.lowerBound
+                if greedy {
+                    fusionHead.encodeGreedyDecode(
+                        commandBuffer: finalCB,
+                        hidden: scratch.hidden,
+                        hiddenOffset: row * D * MemoryLayout<Float16>.stride,
+                        normWeight: finalNorm.buffer,
+                        normOffset: Int(finalNorm.offset),
+                        weights: lm.buffer,
+                        weightsOffset: Int(lm.offset),
+                        scales: lm.buffer,
+                        scalesOffset: Int(lm.scaleOffset),
+                        biases: lm.buffer,
+                        biasesOffset: Int(lm.biasOffset),
+                        outToken: greedyRows ?? greedyTokenBuf,
+                        outTokenOffset: greedyRows == nil
+                            ? 0 : outputRow * MemoryLayout<UInt32>.stride,
+                        d: UInt32(D),
+                        vocab: UInt32(cfg.vocabSize),
+                        rmsEps: eps)
+                } else {
+                    prefillFinalRowHead.encodeLogits(commandBuffer: finalCB,
+                                                     hiddenBlock: scratch.hidden,
+                                                     row: row,
+                                                     rowStrideElements: D,
+                                                     normWeight: finalNorm.buffer,
+                                                     normWeightOffset: Int(finalNorm.offset),
+                                                     weights: lm.buffer,
+                                                     weightsOffset: Int(lm.offset),
+                                                     scales: lm.buffer,
+                                                     scalesOffset: Int(lm.scaleOffset),
+                                                     biases: lm.buffer,
+                                                     biasesOffset: Int(lm.biasOffset),
+                                                     logits: logits,
+                                                     logitsOffset: outputRow * cfg.vocabSize
+                                                         * MemoryLayout<Float16>.stride,
+                                                     d: UInt32(D),
+                                                     vocab: UInt32(cfg.vocabSize),
+                                                     rmsEps: eps)
+                }
             }
             finalCB.commit()
             try waitProfiled(.head, finalCB)
-            if outputMode == .greedyIfAvailable, useFusedGreedyHead {
+            if greedy, let greedyRows {
+                lastGreedyToken = greedyRows.contents().load(
+                    fromByteOffset: (headRows.count - 1) * MemoryLayout<UInt32>.stride,
+                    as: UInt32.self)
+            } else if greedy {
                 lastGreedyToken = greedyTokenBuf.contents().load(as: UInt32.self)
             }
         }

@@ -35,31 +35,50 @@
 
 ## D3. verify API — 既存プロトコルを広げず、新しいプロトコルを足す
 
+**M4 で実装済み** ([15-M4-RESULTS.md](15-M4-RESULTS.md))。
+
 ```swift
-protocol SpeculativeVerifier: LogitProducer {
+public protocol SpeculativeVerifier: LogitProducer {
     /// `tokens` を KV に追記しながら、各位置の logits を `logitRows` に書く。
-    /// 行ストライドは vocab。greedy 構成では `logitRows` を書かず、
+    /// 行ストライドは vocab。fused greedy 構成では `logitRows` を書かず、
     /// k 個の argmax を `greedyTokens` に書く。
     func verifyBlock(tokens: ArraySlice<Int32>,
                      startPosition: Int,
                      into logitRows: MTLBuffer,
                      greedyTokens: MTLBuffer?) async throws
+    func rewind(to position: Int) throws
+    var maxSpeculativeBlockTokens: Int { get }
 }
 ```
 
-- 実装は**既存の prefill チャンク経路を k=2〜4 の 1 チャンクとして 1 本流す**。
-  `executePrefillChunk` の `writeFinalHead` を「全行 head」に一般化するのが実体
-  (`RealForwardRunner.swift:1517-1546`)。
-- バッファ: FP16 logits は 512 KiB/行。bs=4 でも 2 MiB。`RawCompletionScratch`
-  (`RawCompletion.swift:42-63`) にブロック用の行バッファを 1 本足す。
+- 実装は**既存の prefill チャンク経路を k=2〜8 の 1 チャンクとして 1 本流す**。
+  `executePrefillChunk` の `writeFinalHead: Bool` を `head: PrefillHeadRows`
+  (`.none` / `.finalRow` / `.allRows`) に一般化したのが実体。
+- バッファ: FP16 logits は 512 KiB/行。bs=4 でも 2 MiB。M5 でループを書くときに
+  `RawCompletionScratch` (`RawCompletion.swift:42-63`) にブロック用の行バッファを
+  1 本足す (M4 では検査ハーネスが自前で確保している)。
 - **prefill 経路をそのまま呼ぶこと自体が回帰リスク**なので、「verify の全位置 logits が
-  1 トークンずつ `produce` した logits と一致する」検査を M4 の出口条件に置く。
+  1 トークンずつ `produce` した logits と一致する」検査を M4 の出口条件に置いた。
+  結果は 15-M4 §2: **argmax は 256/256 一致**、数値は bit 一致ではなく
+  最大 3.8e-2 相対ずれる。**そのずれは verify が作っていない** —
+  投機要素ゼロの k=1 ブロックが同じ値を出すので、正体は「チャンク経路 対
+  スカラー decode 経路」の既存差である。
 
 > `ChunkedPrefillRunner` に生やさない理由: あれはプロンプト前処理の契約
 > (`prefillChunkState.requireClean`、`startPosition == kv.position`) を持っており、
 > 生成中に何度も呼ばれる verify とは寿命が違う。
 
+**この設計の代償が M4 で表に出た** (15-M4 §4)。チャンク経路のカーネルは
+128〜2048 トークンのチャンク向けに組まれており、4 トークンでは routed MoE が
+64 行タイルを 1 行のために回す。実測費用は `verify(k) ≈ 2.6 + 0.86k` decode ステップ
+(k=4 で **7.0**) で、10-M0 §2 が導出した 1.85 の 3.8 倍。
+**「既存経路を借りる」判断は実装量では正しかったが、費用では正しくない。**
+M4.5 で潰す (15-M4 §4-3)。本命は「decode 経路の routed MoE を k 行に一般化する」ことで、
+それはチャンク経路を借りない実装になるので、§2 の数値差も同時に消える。
+
 ## D4. KV 巻き戻し
+
+**M4 で実装済み** ([15-M4-RESULTS.md](15-M4-RESULTS.md) §3)。
 
 ```swift
 extension KVCacheManager {
@@ -69,12 +88,14 @@ extension KVCacheManager {
 }
 ```
 
-- 事前条件を 2 本置く: `0 <= position <= self.position`、および
-  **`capacity(layer:) >= slidingWindow + maxDraftBlock`** を init で検査
-  (`02-RUNTIME-FIT.md` N2 の導出条件)。既定 (chunk 128 → capacity 1152) では自動的に
-  成立するが、`--prefill-chunk-tokens 32` のような設定で margin を超えないことを明示する。
-- 「巻き戻した後の生成が、巻き戻さなかった世界と一致する」検査と、
-  **わざと壊して FAIL する**検査 (rewind をノーオペにする / 1 だけずらす) を M4 に置く。
+- 事前条件を 2 本置いた: `0 <= position <= self.position`、および
+  **`capacity(layer:) >= slidingWindow + maxSpeculativeBlockTokens`** を init で検査
+  (`02-RUNTIME-FIT.md` N2 の導出条件)。既定 (chunk 2048 → capacity 3072) はもちろん、
+  front end が受ける最狭の `--prefill-chunk-tokens 32` (capacity 1056) でも
+  最大ブロック 8 に対して成立する。
+- 「巻き戻した後の生成が、巻き戻さなかった世界と一致する」検査は **16/16 一致**、
+  **わざと壊して FAIL する**検査 (1 だけずらす × 2 方向 / 巻き戻さない) は
+  **3 通りとも 0/16** で分岐した (15-M4 §3)。
 
 ## D5. 受理規則 — same-seed sample-and-compare
 
@@ -148,9 +169,12 @@ verify:   ドラフト列を verifyBlock で 1 回流す
 footer に 1 行足す (`bench.sh` が拾える形):
 
 ```
-[mtp block=3 rounds=128 accepted=241/256 accept=0.94 drafter=1.9ms/step verify=8.4ms/round]
+[mtp block=4 rounds=96 accepted=187/288 accept=0.65 drafter=3.4ms/step verify=267ms/round]
 ```
 
 - `accept` = 受理トークン数 / ドラフト提案数。これが**唯一の意思決定用数値** (05-RISKS R2)。
 - `drafter` / `verify` の内訳がないと「受理率は高いのに速くならない」ときに原因が切れない。
+  M4 がまさにそれで、内訳を取って初めて verify 側が犯人だと分かった (15-M4 §4)。
+  上の `verify=267ms/round` は M4 の実測値 (k=4、decode 38 ms/tok の機械) であって、
+  目標値ではない。
 - 既存の `[decode/tok io=… cb1=… cb2=… head=…]` はそのまま残す。

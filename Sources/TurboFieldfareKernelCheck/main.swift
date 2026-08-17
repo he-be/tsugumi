@@ -1288,6 +1288,32 @@ var draftFixtureRoot = "scratch/mtp-fixtures"
 if let index = arguments.firstIndex(of: "--draft-fixtures"), index + 1 < arguments.count {
     draftFixtureRoot = arguments[index + 1]
 }
+// `--verify-block <model.gturbo>` runs the M4 checks: the speculative verify
+// pass against scalar decode, and the KV rewind against the world that never
+// speculated. It loads the 26B target, so it implies `--model-only` unless the
+// synthetic suites were asked for as well.
+var verifyBlockModel: String?
+if let index = arguments.firstIndex(of: "--verify-block"), index + 1 < arguments.count {
+    verifyBlockModel = arguments[index + 1]
+}
+var verifyBlockTokens = 4
+if let index = arguments.firstIndex(of: "--verify-block-size"), index + 1 < arguments.count,
+   let value = Int(arguments[index + 1]) {
+    verifyBlockTokens = value
+}
+var verifyRounds = 12
+if let index = arguments.firstIndex(of: "--verify-rounds"), index + 1 < arguments.count,
+   let value = Int(arguments[index + 1]) {
+    verifyRounds = value
+}
+var verifyPrompt = VerifyBlockPrompt.default
+if let index = arguments.firstIndex(of: "--verify-prompt"), index + 1 < arguments.count {
+    verifyPrompt = arguments[index + 1]
+}
+// Skip the synthetic kernel suites and run only the checks that need an
+// installed model. `--verify-block` implies it: those suites take minutes and
+// have nothing to say about the pass this run is here to check.
+let modelOnly = arguments.contains("--model-only") || verifyBlockModel != nil
 
 var results: [CaseResult] = []
 
@@ -1300,7 +1326,7 @@ func printCases(_ cases: [CaseResult]) {
     }
 }
 
-if !visionOnly {
+if !visionOnly && !modelOnly {
 
 for groupSize in groupSizes {
     print("=== affine group size \(groupSize) ===")
@@ -1338,7 +1364,7 @@ for groupSize in groupSizes {
 // The tower's weights are BF16 and its kernels never read an affine group, so
 // this suite runs once. It is checked at the first requested group size only to
 // share one compiled shader library with the run above.
-do {
+if !modelOnly {
     let context = try makeContext(groupSize: groupSizes[0])
     print("=== vision tower (BF16; independent of the affine group size) ===")
     var pass: [CaseResult] = []
@@ -1374,7 +1400,13 @@ do {
         print("")
         try runVisionBench(context: context, softTokens: benchSoftTokens)
     }
+}
 
+// Checks that need an installed `.gturbo`. They share one context — and
+// therefore one compiled shader library — but they are not part of the
+// synthetic suites above, so `--model-only` keeps them.
+if visionTowerModel != nil || draftModel != nil {
+    let context = try makeContext(groupSize: groupSizes[0])
     if let modelPath = visionTowerModel {
         print("")
         let towerCases = try runVisionTowerChecks(context: context,
@@ -1395,10 +1427,35 @@ do {
     }
 }
 
+// M4. This one builds its own context: it loads the 26B target, whose manifest
+// picks the affine group size, and `RealForwardRunner` sets it on a context
+// that has not compiled a pipeline yet.
+if let modelPath = verifyBlockModel {
+    print("")
+    let verifyCases = try await runVerifyBlockChecks(
+        modelPath: modelPath,
+        blockTokens: verifyBlockTokens,
+        rounds: verifyRounds,
+        prompt: verifyPrompt,
+        costOnly: arguments.contains("--verify-cost-only"))
+    printCases(verifyCases)
+    results.append(contentsOf: verifyCases)
+}
+
 let failures = results.filter { !$0.passed }
 print("")
 if failures.isEmpty {
-    print("PASS  \(results.count) cases (group sizes \(visionOnly ? [] : groupSizes) + vision)")
+    var scope: [String] = []
+    if !visionOnly && !modelOnly { scope.append("group sizes \(groupSizes)") }
+    if !modelOnly { scope.append("vision") }
+    if visionTowerModel != nil { scope.append("vision tower") }
+    if draftModel != nil { scope.append("drafter") }
+    if verifyBlockModel != nil { scope.append("verify block") }
+    if results.isEmpty {
+        print("no cases ran (\(scope.joined(separator: " + ")))")
+    } else {
+        print("PASS  \(results.count) cases (\(scope.joined(separator: " + ")))")
+    }
     exit(0)
 }
 print("FAIL  \(failures.count)/\(results.count) cases")

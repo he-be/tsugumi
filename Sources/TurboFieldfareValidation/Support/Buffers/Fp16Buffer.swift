@@ -31,12 +31,17 @@ public enum Fp16Buffer {
         )
     }
 
-    public static func read(_ buf: MTLBuffer, count: Int) -> [Float] {
+    /// `byteOffset` selects one row out of a multi-row buffer, such as the
+    /// per-position logits a speculative verify block writes.
+    public static func read(_ buf: MTLBuffer, count: Int, byteOffset: Int = 0) -> [Float] {
+        precondition(byteOffset >= 0, "byteOffset must be non-negative")
+        precondition(byteOffset + count * MemoryLayout<Float16>.size <= buf.length,
+                     "read of \(count) halves at \(byteOffset) exceeds the \(buf.length)-byte buffer")
         var out = [Float](repeating: 0, count: count)
         let base = buf.contents()
         for i in 0..<count {
             let h = base.load(
-                fromByteOffset: i * MemoryLayout<Float16>.size,
+                fromByteOffset: byteOffset + i * MemoryLayout<Float16>.size,
                 as: Float16.self
             )
             out[i] = Float(h)

@@ -53,6 +53,13 @@ package final class LMHeadChainInt4 {
         self.rowSummariesBuffer = rowSummariesBuffer
     }
 
+    /// One row in, one token ID out at `outTokenOffset`.
+    ///
+    /// Several rows may be encoded onto the same command buffer — that is how
+    /// the speculative verify block gets its per-position argmaxes. Each stage
+    /// is its own encoder and encoders run in submission order, so the shared
+    /// `xNormedBuffer` and `rowSummariesBuffer` are never live for two rows at
+    /// once.
     package func encodeGreedyDecode(commandBuffer: MTLCommandBuffer,
                             hidden: MTLBuffer,
                             hiddenOffset: Int = 0,
@@ -65,10 +72,13 @@ package final class LMHeadChainInt4 {
                             biases: MTLBuffer,
                             biasesOffset: Int = 0,
                             outToken: MTLBuffer,
+                            outTokenOffset: Int = 0,
                             d: UInt32,
                             vocab: UInt32,
                             rmsEps: Float = 1e-6) {
         precondition(Int(d) <= maxD, "d=\(d) exceeds wrapper maxD=\(maxD)")
+        precondition(outTokenOffset >= 0 && outTokenOffset % MemoryLayout<UInt32>.stride == 0,
+                     "outTokenOffset must be a non-negative multiple of 4")
         precondition(Int(vocab) <= maxVocab,
                      "vocab=\(vocab) exceeds wrapper maxVocab=\(maxVocab)")
         precondition(Int(d) % affineGroupSize == 0,
@@ -114,7 +124,7 @@ package final class LMHeadChainInt4 {
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
             encoder.setComputePipelineState(rowReducer)
             encoder.setBuffer(rowSummariesBuffer, offset: 0, index: 0)
-            encoder.setBuffer(outToken, offset: 0, index: 1)
+            encoder.setBuffer(outToken, offset: outTokenOffset, index: 1)
             var rowGroupCount = UInt32(rowGroups)
             encoder.setBytes(&rowGroupCount, length: MemoryLayout<UInt32>.size, index: 2)
 

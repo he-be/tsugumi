@@ -68,9 +68,12 @@ public final class KVCacheManager {
                 fp16RingEnabled: Bool = false,
                 slidingWindow: Int? = nil,
                 maxPrefillChunkTokens: Int = 128,
+                maxSpeculativeBlockTokens: Int = 0,
                 fp16RingCapacityOverride: Int? = nil) throws {
         precondition(maxContext > 0, "maxContext must be positive")
         precondition(maxPrefillChunkTokens > 0, "maxPrefillChunkTokens must be positive")
+        precondition(maxSpeculativeBlockTokens >= 0,
+                     "maxSpeculativeBlockTokens must be non-negative")
         self.config = config
         self.maxContext = maxContext
         let ringEnabled = fp16RingEnabled
@@ -78,9 +81,26 @@ public final class KVCacheManager {
 
         let swaStride  = config.numKVHeads     * config.headDim     * Self.fp16Size
         let fullStride = config.numFullKVHeads * config.fullHeadDim  * Self.fp16Size
+        let window = slidingWindow ?? config.slidingWindow
         let swaCapacity = min(maxContext,
                               max(1, fp16RingCapacityOverride
-                                  ?? ((slidingWindow ?? config.slidingWindow) + maxPrefillChunkTokens)))
+                                  ?? (window + maxPrefillChunkTokens)))
+        // A speculative block writes `k` rows past the committed cursor before
+        // the accept rule decides how many of them survive. In the ring, row
+        // `p + k - 1` lands on the slot logical position `p + k - 1 - capacity`
+        // used to own, so the block is only safe while that position has already
+        // fallen out of the window: `capacity >= slidingWindow + k`
+        // (`docs/mtp/03-DESIGN.md` D4, derived in `02-RUNTIME-FIT.md` N2). The
+        // default chunk width satisfies it by a wide margin; a narrow
+        // `--prefill-chunk-tokens` is the configuration that would not.
+        if ringEnabled, maxSpeculativeBlockTokens > 0 {
+            let required = min(maxContext, window + maxSpeculativeBlockTokens)
+            precondition(swaCapacity >= required,
+                         "FP16 KV ring capacity \(swaCapacity) cannot hold a "
+                         + "\(maxSpeculativeBlockTokens)-token speculative block over a "
+                         + "\(window)-token sliding window (needs \(required)); "
+                         + "raise --prefill-chunk-tokens or lower --draft-block-size")
+        }
 
         var ks: [MTLBuffer] = []
         var vs: [MTLBuffer] = []
@@ -206,6 +226,25 @@ public final class KVCacheManager {
         precondition(count >= 0, "advance count must be non-negative")
         precondition(position + count <= maxContext, "advance would exceed maxContext")
         position += count
+    }
+
+    /// Roll the cursor back to `position`, dropping every row written at or
+    /// after it.
+    ///
+    /// Only the cursor moves. The physical slot of a logical position is the
+    /// stateless map `position % capacity(layer:)`, so a row rewritten after a
+    /// rewind lands exactly where the discarded one was, and attention reads
+    /// `[0, validTokenCount)` — nothing downstream can observe the bytes left
+    /// behind (`docs/mtp/03-DESIGN.md` D4). Zeroing them would be work with no
+    /// reader.
+    ///
+    /// The caller owns the invariant that the discarded rows were speculative:
+    /// this cannot tell a rejected draft from a committed token.
+    public func rewind(to position: Int) {
+        precondition(position >= 0, "rewind target must be non-negative")
+        precondition(position <= self.position,
+                     "rewind target \(position) is ahead of the cursor \(self.position)")
+        self.position = position
     }
 
     /// Drop all cached positions and return physical pages to the OS.
