@@ -199,7 +199,15 @@ func runVerifyBlockChecks(modelPath: String,
         throw VerifyBlockCheckError.promptTooShort(promptIds.count)
     }
 
-    let runtime = RuntimeConfiguration()
+    // The expert cache is the verify block's largest single cost
+    // (docs/mtp/18-M4.6-RESULTS.md §2), and its size is the one knob that
+    // changes the bytes rather than their schedule. Env rather than a flag:
+    // this is a measurement knob, like the `TF_MTP_ROWS_*` switches.
+    let runtime = RuntimeConfiguration(
+        expertCacheSlots: Int(ProcessInfo.processInfo
+            .environment["TF_EXPERT_CACHE_SLOTS"] ?? "") ?? 48,
+        expertCachePolicy: ProcessInfo.processInfo
+            .environment["TF_EXPERT_CACHE_POLICY"] == "lru" ? .lru : .lfu)
     let model = try Model.load(directoryURL: directoryURL,
                                device: context.device,
                                streamingMode: .pread(slotCount: runtime.expertCacheSlots),
@@ -212,6 +220,8 @@ func runVerifyBlockChecks(modelPath: String,
     print("=== MTP verify pass + KV rewind (docs/mtp 04-PHASES M4) ===")
     print("  model    \(directoryURL.lastPathComponent)")
     print("  prompt   \(promptIds.count) tok, block k=\(blockTokens), rounds=\(rounds)")
+    print("  cache    \(runtime.expertCacheSlots) slots/layer, "
+          + "\(runtime.modelExpertCachePolicy.rawValue)")
 
     var results: [CaseResult] = []
     // The correctness phases each build their own runner, and a runner owns a
