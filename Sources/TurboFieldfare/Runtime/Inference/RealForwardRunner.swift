@@ -282,6 +282,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private static let rowsHeadEnabled = rowsPathEnabled("HEAD")
     private static let rowsRouterEnabled = rowsPathEnabled("ROUTER")
     private static let rowsAttentionEnabled = rowsPathEnabled("ATTENTION")
+    /// Inside the rows attention path: `1` (default) walks the KV range once
+    /// for the whole block, `0` keeps M5.5's row-at-a-time decode calls, which
+    /// read it `k` times (docs/mtp/25-M5.6-RESULTS.md).
+    private static let rowsSharedAttentionEnabled = rowsPathEnabled("ATTENTION_SHARED")
     private static let blockPipelineEnabled = rowsPathEnabled("PIPELINE")
     private static let blockTileLookaheadEnabled = rowsPathEnabled("LOOKAHEAD")
 
@@ -1518,38 +1522,62 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     // block on decode's kernel instead of near it.
                     if Self.rowsAttentionEnabled, speculativeBlock, layerSpanEnd == nil,
                        t <= SpeculativeBlock.maxTokens {
-                        let rowStride = qDim * MemoryLayout<Float16>.stride
-                        for row in 0..<t {
-                            let seqLen = UInt32(startPosition + row + 1)
-                            if isFull {
-                                attention.encodeFull(commandBuffer: cb,
-                                                     q: scratch.q, qOffset: row * rowStride,
-                                                     k: keyBuffer, kOffset: 0,
-                                                     v: valueBuffer, vOffset: 0,
-                                                     out: scratch.attentionOutput,
-                                                     outOffset: row * rowStride,
-                                                     headDim: UInt32(headDim),
-                                                     numQHeads: UInt32(cfg.numHeads),
-                                                     numKVHeads: UInt32(numKVHeads),
-                                                     seqLen: seqLen,
-                                                     scale: 1.0)
-                            } else {
-                                let rowRing = ringCapacity > 0 && Int(seqLen) > ringCapacity
-                                    ? UInt32(ringCapacity)
-                                    : 0
-                                attention.encodeSWA(commandBuffer: cb,
-                                                    q: scratch.q, qOffset: row * rowStride,
-                                                    k: keyBuffer, kOffset: 0,
-                                                    v: valueBuffer, vOffset: 0,
-                                                    out: scratch.attentionOutput,
-                                                    outOffset: row * rowStride,
-                                                    headDim: UInt32(headDim),
-                                                    numQHeads: UInt32(cfg.numHeads),
-                                                    numKVHeads: UInt32(numKVHeads),
-                                                    seqLen: seqLen,
-                                                    window: UInt32(cfg.slidingWindow),
-                                                    scale: 1.0,
-                                                    ringCapacity: rowRing)
+                        // One dispatch pair for the whole block: the rows
+                        // kernel gives each row its own SIMD group, so the KV
+                        // range is walked once instead of once per row
+                        // (24-M5.5 §7-1). A one-row block stays on the decode
+                        // call itself — same kernel, same numbers as decode.
+                        if Self.rowsSharedAttentionEnabled, t > 1 {
+                            let activeRing = ringCapacity > 0 && startPosition + t > ringCapacity
+                                ? UInt32(ringCapacity)
+                                : 0
+                            attention.encodeRows(commandBuffer: cb,
+                                                 q: scratch.q,
+                                                 k: keyBuffer,
+                                                 v: valueBuffer,
+                                                 out: scratch.attentionOutput,
+                                                 headDim: UInt32(headDim),
+                                                 numQHeads: UInt32(cfg.numHeads),
+                                                 numKVHeads: UInt32(numKVHeads),
+                                                 rows: t,
+                                                 startPosition: startPosition,
+                                                 window: isFull ? 0 : UInt32(cfg.slidingWindow),
+                                                 scale: 1.0,
+                                                 ringCapacity: isFull ? 0 : activeRing)
+                        } else {
+                            let rowStride = qDim * MemoryLayout<Float16>.stride
+                            for row in 0..<t {
+                                let seqLen = UInt32(startPosition + row + 1)
+                                if isFull {
+                                    attention.encodeFull(commandBuffer: cb,
+                                                         q: scratch.q, qOffset: row * rowStride,
+                                                         k: keyBuffer, kOffset: 0,
+                                                         v: valueBuffer, vOffset: 0,
+                                                         out: scratch.attentionOutput,
+                                                         outOffset: row * rowStride,
+                                                         headDim: UInt32(headDim),
+                                                         numQHeads: UInt32(cfg.numHeads),
+                                                         numKVHeads: UInt32(numKVHeads),
+                                                         seqLen: seqLen,
+                                                         scale: 1.0)
+                                } else {
+                                    let rowRing = ringCapacity > 0 && Int(seqLen) > ringCapacity
+                                        ? UInt32(ringCapacity)
+                                        : 0
+                                    attention.encodeSWA(commandBuffer: cb,
+                                                        q: scratch.q, qOffset: row * rowStride,
+                                                        k: keyBuffer, kOffset: 0,
+                                                        v: valueBuffer, vOffset: 0,
+                                                        out: scratch.attentionOutput,
+                                                        outOffset: row * rowStride,
+                                                        headDim: UInt32(headDim),
+                                                        numQHeads: UInt32(cfg.numHeads),
+                                                        numKVHeads: UInt32(numKVHeads),
+                                                        seqLen: seqLen,
+                                                        window: UInt32(cfg.slidingWindow),
+                                                        scale: 1.0,
+                                                        ringCapacity: rowRing)
+                                }
                             }
                         }
                     } else {

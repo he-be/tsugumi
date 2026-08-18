@@ -375,3 +375,120 @@ void attention_decode_combine(
         out_row[i] = half(acc * inv_d);
     }
 }
+
+// ============================================================================
+// Rows split-KV attention — the speculative block's shape.
+//
+// A verify block is k query rows walking one KV history: row r sees
+// [kv_start_r, seq_len + r), one position more than the row before it. Calling
+// the single-row decode kernel k times (docs/mtp/24-M5.5-RESULTS.md §4) reads
+// the whole K/V range k times and pays 2k encoders a layer; at k=4 that is
+// about 10 ms a block against a 1.7 ms bandwidth floor (§7).
+//
+// This kernel walks the range once per (q_head, chunk) threadgroup and gives
+// each row its own SIMD group, so the K/V rows a threadgroup pulls in are
+// consumed by all k rows while they are still in cache, and one dispatch
+// covers the block. One SIMD group per row also means the whole recurrence is
+// simd_sum-only: no threadgroup memory, no barriers, and Q stays in registers.
+//
+//   Q   : [rows, num_q_heads, head_dim]        FP16
+//   K/V : [seq_len_max, num_kv_heads, head_dim] FP16 (ring-addressed as usual)
+//   out : [rows, num_q_heads, head_dim]        FP16
+//
+// The partial scratch is [rows, num_q_heads, num_chunks], which is the decode
+// layout with a leading row axis, so `attention_decode_combine` merges it
+// unchanged at grid width rows * num_q_heads.
+// ============================================================================
+
+// head_dim / simd width, i.e. how many elements one lane owns. The loops below
+// run this many iterations unconditionally so the per-lane arrays stay in
+// registers; a specialized head_dim folds the tail away at compile time.
+constant constexpr uint kAttnRowsPerLane = kAttnMaxHeadDim / 32;
+
+[[kernel, max_total_threads_per_threadgroup(kAttnThreads)]]
+void attention_rows_partial(
+    device const half*  Q             [[buffer(0)]],
+    device const half*  K             [[buffer(1)]],
+    device const half*  V             [[buffer(2)]],
+    device       float* m_out         [[buffer(3)]],   // [rows * num_q_heads * num_chunks]
+    device       float* d_out         [[buffer(4)]],   // [rows * num_q_heads * num_chunks]
+    device       float* o_out         [[buffer(5)]],   // [... * head_dim]
+    constant     uint&  head_dim      [[buffer(6)]],
+    constant     uint&  num_q_heads   [[buffer(7)]],
+    constant     uint&  num_kv_heads  [[buffer(8)]],
+    constant     uint&  seq_len       [[buffer(9)]],   // row 0's history end
+    constant     uint&  kv_start      [[buffer(10)]],  // row 0's window start
+    constant     uint&  chunk_len     [[buffer(11)]],
+    constant     uint&  num_chunks    [[buffer(12)]],
+    constant     float& scale         [[buffer(13)]],
+    constant     uint&  window        [[buffer(14)]],  // 0 = full attention
+    uint tg_id           [[threadgroup_position_in_grid]],
+    uint simd_lane_id    [[thread_index_in_simdgroup]],
+    uint simd_group_id   [[simdgroup_index_in_threadgroup]]
+) {
+    const uint HD = attn_fc_head_dim(head_dim);
+    const uint NQ = attn_fc_num_q_heads(num_q_heads);
+    const uint NKV = attn_fc_num_kv_heads(num_kv_heads);
+    const uint NC = attn_fc_num_chunks(num_chunks);
+
+    // The dispatch sizes the threadgroup at rows * 32 threads, so the SIMD
+    // group index is the row index and no bound check is needed.
+    const uint row     = simd_group_id;
+    const uint q_head  = tg_id / NC;
+    const uint chunk   = tg_id % NC;
+    const uint kv_head = q_head / (NQ / NKV);
+
+    // Row r's visible range. The chunks are cut over the union range
+    // [kv_start, seq_len + rows), so a row's first and last chunk can be
+    // partly outside its own range — clamping the bounds masks it.
+    const uint row_end   = seq_len + row;
+    const uint row_start = (window != 0u && row_end > window) ? (row_end - window) : 0u;
+    const uint p_begin = max(kv_start + chunk * chunk_len, row_start);
+    const uint p_end   = min(kv_start + (chunk + 1u) * chunk_len, row_end);
+
+    device const half* Q_row = Q + (row * NQ + q_head) * HD;
+    float q_local[kAttnRowsPerLane];
+    for (uint j = 0; j < kAttnRowsPerLane; ++j) {
+        const uint i = j * 32u + simd_lane_id;
+        q_local[j] = (i < HD) ? float(Q_row[i]) : 0.0f;
+    }
+    float o_local[kAttnRowsPerLane];
+    for (uint j = 0; j < kAttnRowsPerLane; ++j) { o_local[j] = 0.0f; }
+
+    float m_run = -INFINITY;
+    float d_run = 0.0f;
+
+    // An empty range (a chunk entirely outside this row) leaves (-inf, 0, 0),
+    // which the combine weights to zero via e^{-inf} — same contract as the
+    // decode partial's empty tail chunks.
+    for (uint p = p_begin; p < p_end; ++p) {
+        const uint phys_p = attn_ring_slot(p);
+        device const half* K_row = K + (phys_p * NKV + kv_head) * HD;
+        device const half* V_row = V + (phys_p * NKV + kv_head) * HD;
+
+        float partial = 0.0f;
+        for (uint j = 0; j < kAttnRowsPerLane; ++j) {
+            const uint i = j * 32u + simd_lane_id;
+            if (i < HD) { partial = fma(q_local[j], float(K_row[i]), partial); }
+        }
+        const float s = simd_sum(partial) * attn_fc_scale(scale);
+
+        const float m_new = max(m_run, s);
+        const float alpha = attn_softmax_exp(m_run - m_new);
+        const float p_exp = attn_softmax_exp(s - m_new);
+        d_run = d_run * alpha + p_exp;
+        for (uint j = 0; j < kAttnRowsPerLane; ++j) {
+            const uint i = j * 32u + simd_lane_id;
+            if (i < HD) { o_local[j] = o_local[j] * alpha + p_exp * float(V_row[i]); }
+        }
+        m_run = m_new;
+    }
+
+    const uint base = (row * NQ + q_head) * NC + chunk;
+    if (simd_lane_id == 0) { m_out[base] = m_run; d_out[base] = d_run; }
+    device float* o_row = o_out + base * HD;
+    for (uint j = 0; j < kAttnRowsPerLane; ++j) {
+        const uint i = j * 32u + simd_lane_id;
+        if (i < HD) { o_row[i] = o_local[j]; }
+    }
+}
