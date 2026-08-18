@@ -71,8 +71,8 @@ import TurboFieldfare
             "--temperature", "--top-k", "--top-p", "--repetition-penalty",
             "--seed", "--stop", "--quiet", "--expert-cache-slots",
             "--expert-cache-policy", "--prefill", "--prefill-chunk-tokens",
-            "--rdadvise", "--verification", "--thinking", "--dump-expert-trace",
-            "--help",
+            "--rdadvise", "--verification", "--thinking", "--draft-block-size",
+            "--dump-expert-trace", "--help",
         ]
         let words = Args.usage.split { $0.isWhitespace || $0 == "(" || $0 == ")" }
         // Prose mentions flags mid-sentence ("spends --max-new."), so the
@@ -80,6 +80,33 @@ import TurboFieldfare
         let options = Set(words.map { String($0).trimmingCharacters(in: ["."]) }
             .filter { $0.hasPrefix("--") })
         #expect(options == expected)
+    }
+
+    @Test func draftBlockSizeParsesAndDefaultsToOff() throws {
+        let off = try Args.parse(["--model", "m.gturbo", "--prompt", "hi"])
+        #expect(off.draftBlockSize == 0)
+        let on = try Args.parse(["--model", "m.gturbo", "--prompt", "hi",
+                                 "--draft-block-size", "4"])
+        #expect(on.draftBlockSize == 4)
+    }
+
+    @Test(arguments: ["1", "9", "-1", "two"])
+    func draftBlockSizeOutsideTheBlockCeilingIsRejected(_ value: String) {
+        #expect(throws: ArgsError.self) {
+            try Args.parse(["--model", "m.gturbo", "--prompt", "hi",
+                            "--draft-block-size", value])
+        }
+    }
+
+    @Test func draftBlockSizeNeedsChunkedPrefillAndNoRepetitionPenalty() {
+        #expect(throws: ArgsError.self) {
+            try Args.parse(["--model", "m.gturbo", "--prompt", "hi",
+                            "--draft-block-size", "4", "--prefill", "off"])
+        }
+        #expect(throws: ArgsError.self) {
+            try Args.parse(["--model", "m.gturbo", "--prompt", "hi",
+                            "--draft-block-size", "4", "--repetition-penalty", "1.1"])
+        }
     }
 
     @Test func runtimeOptionsReachTypedConfiguration() throws {

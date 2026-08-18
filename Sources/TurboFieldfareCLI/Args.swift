@@ -27,6 +27,9 @@ public struct Args: Equatable, Sendable {
     /// Mirrors the chat template's `enable_thinking`. Only affects
     /// `--messages-file`; a raw `--prompt` is passed through verbatim.
     public var thinking: Bool
+    /// MTP speculative block width `bs` (`docs/mtp/03-DESIGN.md` D7): 0 disables
+    /// speculation, 2...8 runs one bonus token plus `bs - 1` drafted ones.
+    public var draftBlockSize: Int
     public var dumpExpertTrace: String?
 
     public init(model: String,
@@ -50,6 +53,7 @@ public struct Args: Equatable, Sendable {
                 rdadvisePolicy: RDAdvicePolicyMode = RuntimeConfiguration.production.rdadvisePolicy,
                 verification: ModelIntegrityPolicy = .fullSha256,
                 thinking: Bool = false,
+                draftBlockSize: Int = 0,
                 dumpExpertTrace: String? = nil) {
         self.model = model
         self.prompt = prompt
@@ -72,6 +76,7 @@ public struct Args: Equatable, Sendable {
         self.rdadvisePolicy = rdadvisePolicy
         self.verification = verification
         self.thinking = thinking
+        self.draftBlockSize = draftBlockSize
         self.dumpExpertTrace = dumpExpertTrace
     }
 }
@@ -154,6 +159,12 @@ extension Args {
                                  system turn with <|think|> and lets the model
                                  reason first. Reasoning is generated text, so it
                                  spends --max-new. Applies to --messages-file only.
+      --draft-block-size <n>     MTP speculative block width: 0 (off, the default)
+                                 or 2...8. Needs a model installed with the
+                                 drafter section, chunked prefill, and a
+                                 repetition penalty of 1.0. Accepted tokens are
+                                 the ones the target itself drew, so speculation
+                                 moves the wall clock and not the text.
       --dump-expert-trace <path> Write every routed-expert request to a TSV trace.
       --help                     Show this message.
     """
@@ -207,6 +218,7 @@ extension Args {
         var rdadvisePolicy = runtimeDefaults.rdadvisePolicy
         var verification = ModelIntegrityPolicy.fullSha256
         var thinking = false
+        var draftBlockSize = 0
         var dumpExpertTrace: String?
 
         var index = 0
@@ -275,6 +287,13 @@ extension Args {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 seed = parsed
+            case "--draft-block-size":
+                let value = try takeValue(argv, &index, flag: flag)
+                guard let parsed = Int(value),
+                      parsed == 0 || (2...SpeculativeBlock.maxTokens).contains(parsed) else {
+                    throw ArgsError.invalidValue(flag: flag, value: value)
+                }
+                draftBlockSize = parsed
             case "--stop":
                 stops.append(try takeValue(argv, &index, flag: flag))
             case "--expert-cache-slots":
@@ -369,7 +388,19 @@ extension Args {
                              rdadvisePolicy: rdadvisePolicy,
                              verification: verification,
                              thinking: thinking,
+                             draftBlockSize: draftBlockSize,
                              dumpExpertTrace: dumpExpertTrace)
+        if draftBlockSize > 0 {
+            guard prefillPolicy == .chunked else {
+                throw ArgsError.invalidValue(flag: "--draft-block-size",
+                                             value: "\(draftBlockSize) requires --prefill on")
+            }
+            guard repetitionPenalty == 1.0 else {
+                throw ArgsError.invalidValue(
+                    flag: "--draft-block-size",
+                    value: "\(draftBlockSize) requires --repetition-penalty 1.0")
+            }
+        }
         _ = try arguments.resolvedRuntimeConfiguration(forceLogitsHead: false)
         return arguments
     }

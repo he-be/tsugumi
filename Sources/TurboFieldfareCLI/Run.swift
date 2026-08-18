@@ -190,24 +190,50 @@ public func run(args: Args,
             ])
         }
         defer { model.telemetry.finishTrace() }
-        let stats = try await runRawCompletion(
-            producer: runner,
-            tokenizer: tokenizer,
-            promptIds: promptIds,
-            config: config,
-            context: context,
-            scratch: scratch,
-            prefillConfig: runtime.prefillConfig,
-            vision: prepared.vision) { progress in
-                switch progress {
-                case .prefill:
-                    break
-                case .token(_, _, let delta):
-                    if !delta.isEmpty { stdout.write(Data(delta.utf8)) }
-                case .tail(let tail):
-                    stdout.write(Data(tail.utf8))
-                }
+        let onProgress: (RawDecodeProgress) -> Void = { progress in
+            switch progress {
+            case .prefill:
+                break
+            case .token(_, _, let delta):
+                if !delta.isEmpty { stdout.write(Data(delta.utf8)) }
+            case .tail(let tail):
+                stdout.write(Data(tail.utf8))
             }
+        }
+        let stats: RawDecodeResult
+        var speculativeStats: SpeculativeStats?
+        if args.draftBlockSize > 0 {
+            let speculative = try SpeculativeScratch(
+                context: context,
+                vocab: model.config.vocabSize,
+                hiddenSize: model.config.hiddenSize,
+                blockTokens: args.draftBlockSize,
+                fusedGreedy: runner.usesFusedGreedyHead)
+            let result = try await runSpeculativeCompletion(
+                producer: runner,
+                tokenizer: tokenizer,
+                promptIds: promptIds,
+                config: config,
+                context: context,
+                scratch: scratch,
+                speculative: speculative,
+                prefillConfig: runtime.prefillConfig,
+                vision: prepared.vision,
+                onProgress: onProgress)
+            stats = result.decode
+            speculativeStats = result.speculative
+        } else {
+            stats = try await runRawCompletion(
+                producer: runner,
+                tokenizer: tokenizer,
+                promptIds: promptIds,
+                config: config,
+                context: context,
+                scratch: scratch,
+                prefillConfig: runtime.prefillConfig,
+                vision: prepared.vision,
+                onProgress: onProgress)
+        }
 
         if !args.quiet {
             let tokensPerSecond = stats.decodeSeconds > 0
@@ -218,7 +244,8 @@ public func run(args: Args,
                                   stats: stats,
                                   telemetry: model.telemetry.snapshot(),
                                   runner: runner,
-                                  softTokenCounts: prepared.softTokenCounts)
+                                  softTokenCounts: prepared.softTokenCounts,
+                                  speculative: speculativeStats)
             stderr.write(Data(footer.utf8))
         }
         return RunResult(exitCode: 0)
@@ -236,7 +263,8 @@ private func statsFooter(loadSeconds: Double,
                          stats: RawDecodeResult,
                          telemetry: ExpertTelemetrySnapshot,
                          runner: RealForwardRunner,
-                         softTokenCounts: [Int] = []) -> String {
+                         softTokenCounts: [Int] = [],
+                         speculative: SpeculativeStats? = nil) -> String {
     func s(_ value: Double) -> String { String(format: "%.3f", value) }
     func ms(_ nanos: UInt64, per count: Int) -> String {
         guard count > 0 else { return "n/a" }
@@ -275,6 +303,18 @@ private func statsFooter(loadSeconds: Double,
     lines += " cb1=\(ms(runner.totalCb1Nanos, per: newTokens))ms"
     lines += " cb2=\(ms(runner.totalCb2Nanos, per: newTokens))ms"
     lines += " head=\(ms(runner.totalHeadNanos &+ runner.totalHeadFusedNanos, per: newTokens))ms]\n"
+
+    // MTP diagnostics. 22-GOAL-RESET §6: these say where the time is, they are
+    // not a score — the score is the end-to-end wall clock against a
+    // same-session MTP-off run.
+    if let mtp = speculative {
+        lines += "[mtp bs=\(mtp.blockTokens) rounds=\(mtp.rounds)"
+        lines += " accept=\(String(format: "%.3f", mtp.meanAcceptedLength))"
+        lines += "/\(mtp.blockTokens - 1)"
+        lines += " tok/round=\(String(format: "%.3f", mtp.rounds > 0 ? Double(newTokens) / Double(mtp.rounds) : 0))"
+        lines += " draft=\(s(mtp.draftSeconds))s verify=\(s(mtp.verifySeconds))s"
+        lines += " accepted=\(mtp.acceptedHistogram.map(String.init).joined(separator: ","))]\n"
+    }
 
     return lines
 }

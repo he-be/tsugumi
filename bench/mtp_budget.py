@@ -24,32 +24,39 @@
 
 import argparse
 
-SOURCES = """入力の出典 (すべて実測):
-  F=0.96 M=0.36   21-GOAL-CONDITION §5 の当てはめ (ゴール条件 cold 80 スロット)
-                  verify(2)=1.65 / verify(4)=2.44 (21 §3) を再現する
-  draft=0.098     21 §6 (ドラフター 1 ステップ / decode ステップ)
-  a               21 §6 (vis は本書が初測定)、14-M3.5 §4 (math / m / story)
-  share=0.888     22-GOAL-RESET §4: sample_imgs 8 枚・Reasoning ON・temp 0・
-                  80 スロットの中央値 (decode 45.8 s / wall 51.6 s)
+SOURCES = """入力の出典 (すべて実測。M5 でループ実測に差し替えた):
+  F=1.33 M=0.31   23-M5 §5 の当てはめ。**ループの中で**測った verify(2)=1.95 /
+                  verify(4)=2.53 を 2 点で解いたもの (ゴール条件 8 枚 / 4 枚)
+  draft=0.079     23-M5 §4 (ドラフター 1 ステップ / decode ステップ)
+  a               23-M5 §4 (vis はループ実測)、14-M3.5 §4 (math / m / story は
+                  M3 の probe 実測のまま。vis はループのほうが probe より 19% 高く
+                  出たので、残り 3 本は低めに見積もっている可能性がある)
+  share=0.880     23-M5 §4: ゴールタスク 8 枚 (MTP on) の decode / wall 中央値。
+                  22 §4 の 0.888 (MTP off) と一致する
+
+  差し替え前 (マイクロベンチ): F=0.96 M=0.36 draft=0.098 a(vis,4)=1.596。
+  21 §5 のマイクロ実測で、ループでは費用が 26〜48% 高く出た (23-M5 §4)。
+  22 §6 のルール 4「ズレたらモデルを直して全部機械的に引き直す」の実行。
 """
 
 # 受理長 a[k] — temp 0
 TASKS = {
     "math":  {2: 0.794, 3: 1.430, 4: 1.947},
     "m":     {2: 0.715, 3: 1.222, 4: 1.562},
-    "vis":   {2: 0.739, 3: 1.243, 4: 1.596},
+    # vis は 3 点ともループ実測 (23-M5 §4-§5)。
+    "vis":   {2: 0.817, 3: 1.449, 4: 1.897},
     "story": {2: 0.547, 3: 0.813, 4: 0.937},
 }
 
 # 感度表の行。(名前, F, M, タスク)
 SCENARIOS = [
-    ("現状 F=0.96 M=0.36",        0.96, 0.36, "vis"),
-    ("F 半減 (0.48)",             0.48, 0.36, "vis"),
-    ("F→0.20 (床付近)",           0.20, 0.36, "vis"),
-    ("M 半減 (0.18)",             0.96, 0.18, "vis"),
-    ("F 半減 + M 半減",            0.48, 0.18, "vis"),
-    ("F→0.20 + M→0.18",          0.20, 0.18, "vis"),
-    ("現状費用 + a が math 並み",   0.96, 0.36, "math"),
+    ("現状 F=1.33 M=0.31",        1.33, 0.31, "vis"),
+    ("F 半減 (0.67)",             0.67, 0.31, "vis"),
+    ("F→0.33 (1/4)",             0.33, 0.31, "vis"),
+    ("M 半減 (0.16)",             1.33, 0.16, "vis"),
+    ("F 半減 + M 半減",            0.67, 0.16, "vis"),
+    ("F→0.33 + M→0.16",          0.33, 0.16, "vis"),
+    ("現状費用 + a が math 並み",   1.33, 0.31, "math"),
 ]
 
 
@@ -75,9 +82,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--fixed", type=float, help="F をこの値に固定して 1 行だけ引く")
-    p.add_argument("--marginal", type=float, default=0.36, help="M (--fixed と併用)")
-    p.add_argument("--draft", type=float, default=0.098, help="ドラフター 1 ステップ")
-    p.add_argument("--share", type=float, default=0.888, help="wall のうち decode の割合")
+    p.add_argument("--marginal", type=float, default=0.31, help="M (--fixed と併用)")
+    p.add_argument("--draft", type=float, default=0.079, help="ドラフター 1 ステップ")
+    p.add_argument("--share", type=float, default=0.880, help="wall のうち decode の割合")
     p.add_argument("--target", type=float, default=1.33, help="e2e の目標倍率")
     p.add_argument("--task", default="vis", choices=sorted(TASKS))
     p.add_argument("--tasks", action="store_true",

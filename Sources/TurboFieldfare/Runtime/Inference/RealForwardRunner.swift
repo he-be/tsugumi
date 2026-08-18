@@ -160,7 +160,7 @@ enum VisionPrefillFault: String, Sendable, CaseIterable {
     }()
 }
 
-public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporting, ContinuableLogitProducer, SpeculativeVerifier, @unchecked Sendable {
+public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporting, ContinuableLogitProducer, SpeculativeDrafting, @unchecked Sendable {
     private struct LayerSharedExpertProjections {
         let gate: SharedExpertInt8Proj
         let up: SharedExpertInt8Proj
@@ -297,6 +297,15 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// step actually runs.
     private let draftProbeSettings: (path: String, drafts: Int, mode: DraftAcceptanceProbe.Mode)?
     private var draftProbe: DraftAcceptanceProbe?
+
+    /// M5's production drafter (`docs/mtp/04-PHASES.md` M5), built on the first
+    /// round of a speculative generation and never during a plain run — the
+    /// 236 MB drafter stays unread when `--draft-block-size 0` (D1's lazy load).
+    private var speculativeDrafter: SpeculativeDrafter?
+    /// Set by the speculative loop; see `SpeculativeDrafting`.
+    public var speculativeHiddenRows: MTLBuffer?
+    public private(set) var verifyBlockCount = 0
+    public private(set) var verifyBlockNanos: UInt64 = 0
     public init(model: Model, context: MetalContext, maxContext: Int,
                 runtimeConfiguration: RuntimeConfiguration = .production) throws {
         self.model = model
@@ -653,6 +662,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         model.telemetry.beginPhase(.decode, step: startPosition)
         let expertsBefore = PrefillHostProfile.isEnabled
             ? model.telemetry.snapshot().decode : ExpertPhaseCounters()
+        let verifyStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        defer {
+            verifyBlockNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - verifyStart
+            verifyBlockCount += 1
+        }
         try await executePrefillChunk(tokens: tokens,
                                       startPosition: startPosition,
                                       outputMode: outputMode,
@@ -690,6 +704,63 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                 "rewind target \(position) is outside [0, \(kv.position)]")
         }
         kv.rewind(to: position)
+    }
+
+    // MARK: - SpeculativeDrafting
+
+    public var isDraftInstalled: Bool { model.hasDraft }
+    public var speculativeHiddenRowStride: Int { cfg.hiddenSize }
+    public var draftStepCount: Int { speculativeDrafter?.steps ?? 0 }
+    public var draftNanos: UInt64 { speculativeDrafter?.nanos ?? 0 }
+
+    public func draftProposals(bonusToken: Int32,
+                               position: Int,
+                               hidden: MTLBuffer,
+                               hiddenRow: Int,
+                               count: Int) throws -> [Int32] {
+        guard let kv else {
+            throw SpeculativeVerifyError.cursorMismatch("drafting requires FP16 KV")
+        }
+        guard kv.position == position else {
+            throw SpeculativeVerifyError.cursorMismatch(
+                "draft cursor \(kv.position) != bonus position \(position)")
+        }
+        let drafter = try ensureSpeculativeDrafter()
+        return try drafter.propose(bonusToken: bonusToken,
+                                   position: position,
+                                   hidden: hidden,
+                                   hiddenRow: hiddenRow,
+                                   count: count,
+                                   kv: kv)
+    }
+
+    /// Built on the first speculative round, so a `--draft-block-size 0` run
+    /// never opens the drafter file (D1's lazy load; the acceptance-probe path
+    /// above does the same thing for the same reason).
+    private func ensureSpeculativeDrafter() throws -> SpeculativeDrafter {
+        if let speculativeDrafter { return speculativeDrafter }
+        guard model.hasDraft else {
+            throw DraftError.notInstalled(path: model.directoryURL.path)
+        }
+        let weights = try model.draftWeights()
+        try weights.config.crossCheck(against: cfg)
+        // The drafter is packed at a different affine group size than the
+        // target (64 vs 32 for the pinned pair), and that size is baked into
+        // the shader library, so it needs a context of its own.
+        let draftContext: MetalContext
+        if weights.config.quantGroupSize == ctx.affineGroupSize {
+            draftContext = ctx
+        } else {
+            draftContext = try MetalContext(sharingDeviceWith: ctx)
+            try draftContext.setAffineGroupSize(weights.config.quantGroupSize)
+        }
+        let drafter = try SpeculativeDrafter(context: ctx,
+                                             draftContext: draftContext,
+                                             weights: weights,
+                                             embedTable: model.embedding,
+                                             backboneHiddenSize: cfg.hiddenSize)
+        speculativeDrafter = drafter
+        return drafter
     }
 
     public func prefillChunked(tokens: ArraySlice<Int32>,
@@ -2058,6 +2129,21 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             let greedy = outputMode == .greedyIfAvailable && useFusedGreedyHead
             guard let finalCB = ctx.queue.makeCommandBuffer() else {
                 throw ModelError.residentBufferWrapFailed
+            }
+            // The head applies the final norm inside its own kernel, so the
+            // post-norm hidden the drafter conditions on exists nowhere unless
+            // it is produced here — one hidden-wide norm per head row, and only
+            // while a speculative loop has a buffer bound (D6).
+            if let hiddenRowsOut = speculativeHiddenRows {
+                prefillRMS.encodeBF16W(
+                    commandBuffer: finalCB,
+                    x: scratch.hidden,
+                    xOffset: headRows.lowerBound * D * MemoryLayout<Float16>.stride,
+                    weight: finalNorm.buffer, weightOffset: Int(finalNorm.offset),
+                    out: hiddenRowsOut, outOffset: 0,
+                    t: UInt32(headRows.count),
+                    d: UInt32(D),
+                    eps: eps)
             }
             // A block head reads the 461 MB lm-head table once instead of once
             // per row. At k=4 the per-row loop reads 1.84 GB where the block
