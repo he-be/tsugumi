@@ -82,19 +82,19 @@ struct PrefillGPUProfile {
         let parts = Stage.allCases.compactMap { stage -> String? in
             guard let value = seconds[stage], value > 0 else { return nil }
             let share = total > 0 ? value / total * 100 : 0
-            return String(format: "%@=%.2fs(%.0f%%)", stage.rawValue, value, share)
+            return String(format: "%@=%.3fs(%.0f%%)", stage.rawValue, value, share)
         }
         var line = "[prefill gpu " + parts.joined(separator: " ")
-            + String(format: " total=%.2fs]", total)
+            + String(format: " total=%.3fs]", total)
         guard Self.isDetailed, !detailSeconds.isEmpty else { return line }
         let attentionTotal = detailSeconds.values.reduce(0, +)
         let detailParts = Detail.allCases.compactMap { detail -> String? in
             guard let value = detailSeconds[detail], value > 0 else { return nil }
             let share = attentionTotal > 0 ? value / attentionTotal * 100 : 0
-            return String(format: "%@=%.2fs(%.0f%%)", detail.rawValue, value, share)
+            return String(format: "%@=%.3fs(%.0f%%)", detail.rawValue, value, share)
         }
         line += "\n[prefill gpu attn " + detailParts.joined(separator: " ")
-            + String(format: " total=%.2fs]", attentionTotal)
+            + String(format: " total=%.3fs]", attentionTotal)
         return line
     }
 

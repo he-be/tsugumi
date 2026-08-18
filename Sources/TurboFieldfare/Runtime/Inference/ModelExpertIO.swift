@@ -132,6 +132,58 @@ extension Model {
         return views
     }
 
+    /// Start a routed-expert read and return before it finishes.
+    ///
+    /// `fetchRoutedExperts` starts the read and waits for it in one step, so
+    /// the GPU has nothing queued while the bytes land — and a verify block
+    /// spends about as long reading experts as it spends computing with them
+    /// (docs/mtp/18-M4.6-RESULTS.md §2). A block knows every tile's experts as
+    /// soon as the routing is grouped, so it can issue the next tile's read
+    /// before encoding this one and let the two overlap.
+    ///
+    /// The plan is made by the caller and therefore already owns its slots; the
+    /// caller is responsible for keeping the next plan off the slots a read in
+    /// flight is writing into (`avoidingSlots`).
+    public func startRoutedExpertFetch(plan: RoutedExpertFetchPlan) throws
+        -> RoutedExpertFetchHandle {
+        try ensureLayerOpened(plan.layer)
+        let streamer = streamersQueue.sync { streamersBox.streamers[plan.layer]! }
+        let handle = RoutedExpertFetchHandle()
+        let layer = plan.layer
+        let experts = plan.experts
+        let hits = plan.hits
+        let misses = plan.misses.count
+        let cachePlan = plan.cachePlan
+        let telemetry = self.telemetry
+        // Nothing to read: the slots are already right, and hopping to a queue
+        // to discover that costs more than the work.
+        if misses == 0 {
+            let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+            let buffers = try streamer.executeExpertCachePlan(cachePlan)
+            telemetry.recordFetch(layer: layer, experts: experts, hits: hits, misses: 0,
+                                  nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+            handle.complete(.success(Self.makeExpertViews(buffers,
+                                                          layer: layer,
+                                                          experts: experts)))
+            return handle
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+            do {
+                let buffers = try streamer.executeExpertCachePlan(cachePlan)
+                telemetry.recordFetch(
+                    layer: layer, experts: experts, hits: hits, misses: misses,
+                    nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+                handle.complete(.success(Self.makeExpertViews(buffers,
+                                                              layer: layer,
+                                                              experts: experts)))
+            } catch {
+                handle.complete(.failure(error))
+            }
+        }
+        return handle
+    }
+
     public func fetchRoutedExperts(plan: RoutedExpertFetchPlan) async throws -> [TensorView] {
         try ensureLayerOpened(plan.layer)
         let streamer = streamersQueue.sync { streamersBox.streamers[plan.layer]! }
@@ -204,5 +256,38 @@ extension Model {
                 shape: (UInt32(layer), UInt32(experts[index]), 0, 0),
                 dtype: GTurboFormatV1.DType.u32.rawValue)
         }
+    }
+}
+
+public enum RoutedExpertFetchError: Error, Equatable, CustomStringConvertible {
+    case completedWithoutResult
+
+    public var description: String {
+        "routed expert fetch handle was signalled without a result"
+    }
+}
+
+/// A routed-expert read that has been issued but not waited for.
+///
+/// Deliberately not an `async` task: the caller is a synchronous encode loop
+/// that wants the read running against the GPU work it is about to submit, and
+/// a semaphore says that in one line. `wait()` is called exactly once.
+public final class RoutedExpertFetchHandle: @unchecked Sendable {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var result: Result<[TensorView], Error>?
+
+    fileprivate init() {}
+
+    fileprivate func complete(_ result: Result<[TensorView], Error>) {
+        self.result = result
+        semaphore.signal()
+    }
+
+    public func wait() throws -> [TensorView] {
+        semaphore.wait()
+        guard let result else {
+            throw RoutedExpertFetchError.completedWithoutResult
+        }
+        return try result.get()
     }
 }

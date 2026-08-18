@@ -233,6 +233,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// swapping it for a narrower layout every round.
     private let prefillRuntimeConfig: PrefillRuntimeConfig
     private var prefillGPUProfile = PrefillGPUProfile()
+    private var prefillHostProfile = PrefillHostProfile()
 
     /// Vision state, built on the first image and never for a text-only run:
     /// the tower owns 83 MB of scratch and its weights are 1.15 GB, so a prompt
@@ -267,6 +268,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private static let rowsHeadEnabled = rowsPathEnabled("HEAD")
     private static let rowsRouterEnabled = rowsPathEnabled("ROUTER")
     private static let blockPipelineEnabled = rowsPathEnabled("PIPELINE")
+    private static let blockTileLookaheadEnabled = rowsPathEnabled("LOOKAHEAD")
 
     /// Per-layer `router.scale * D^-0.5` pre-folded into one BF16 buffer
     /// allocation per layer. ~168 KB total at 30 layers × 2816 BF16 — bounded
@@ -649,6 +651,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // belongs in the decode column of the telemetry, or the MTP round's
         // cost lands in a bucket nobody reads during decode.
         model.telemetry.beginPhase(.decode, step: startPosition)
+        let expertsBefore = PrefillHostProfile.isEnabled
+            ? model.telemetry.snapshot().decode : ExpertPhaseCounters()
         try await executePrefillChunk(tokens: tokens,
                                       startPosition: startPosition,
                                       outputMode: outputMode,
@@ -663,6 +667,15 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         if PrefillGPUProfile.isEnabled {
             FileHandle.standardError.write(Data((prefillGPUProfile.summary + "\n").utf8))
             prefillGPUProfile.reset()
+        }
+        if PrefillHostProfile.isEnabled {
+            let after = model.telemetry.snapshot().decode
+            prefillHostProfile.recordExperts(
+                experts: after.experts - expertsBefore.experts,
+                misses: after.misses - expertsBefore.misses,
+                ioNanos: after.fetchNanos - expertsBefore.fetchNanos)
+            FileHandle.standardError.write(Data((prefillHostProfile.summary + "\n").utf8))
+            prefillHostProfile.reset()
         }
     }
 
@@ -742,6 +755,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         if PrefillGPUProfile.isEnabled {
             FileHandle.standardError.write(Data((prefillGPUProfile.summary + "\n").utf8))
             prefillGPUProfile.reset()
+        }
+        if PrefillHostProfile.isEnabled {
+            FileHandle.standardError.write(Data((prefillHostProfile.summary + "\n").utf8))
+            prefillHostProfile.reset()
         }
         if outputMode == .greedyIfAvailable, useFusedGreedyHead {
             return PrefillResult(newPosition: startPosition + tokens.count,
@@ -1179,6 +1196,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                               bytesPerToken: bytesPerToken)
         }
 
+        let callStart = PrefillHostProfile.mark()
+        defer { prefillHostProfile.addCall(since: callStart) }
         prefillChunkState.markDirty(startPosition: startPosition, tokenCount: tokens.count)
 
         // A speculative verify block runs its routed branch as one command
@@ -1194,6 +1213,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         }
         struct PendingBlockLayer {
             let commandBuffer: MTLCommandBuffer
+            let sharedCommandBuffer: MTLCommandBuffer?
             let metadata: PrefillGroupedRoutedMoEStreamedMetadataBuffers
             let tiles: [PendingBlockTile]
         }
@@ -1207,6 +1227,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             try withExtendedLifetime((pending.metadata, pending.tiles)) {
                 for tile in pending.tiles {
                     try waitProfiled(.moe, tile.commandBuffer)
+                }
+                if let shared = pending.sharedCommandBuffer {
+                    try waitProfiled(.shared, shared)
                 }
                 try waitProfiled(.tail, pending.commandBuffer)
             }
@@ -1286,6 +1309,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         }
 
         for L in 0..<cfg.numLayers {
+            let frontStart = PrefillHostProfile.mark()
             model.beginOpeningRoutedExpertStreamer(layer: L)
             let views = layerViews[L]
             let isFull = cfg.fullAttentionLayerMask[L] != 0
@@ -1541,15 +1565,21 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                            eps: eps)
                     cb.commit()
                     sharedCB.commit()
+                    prefillHostProfile.add(.encodeFront, since: frontStart)
+                    let frontWaitStart = PrefillHostProfile.mark()
                     try waitProfiled(.attention, cb, detail: .post)
                     try flushProfiledSegments()
+                    prefillHostProfile.add(.waitFront, since: frontWaitStart)
                     // The previous layer's routed buffer has to be done before
                     // this layer fetches an expert, or a fetch could land in a
                     // slot the GPU is still reading. Draining here rather than
                     // at the top of the layer lets it finish while this layer's
                     // attention runs.
+                    let drainStart = PrefillHostProfile.mark()
                     try drainPendingBlockLayer()
+                    prefillHostProfile.add(.drain, since: drainStart)
 
+                    let routeStart = PrefillHostProfile.mark()
                     let routeCount = t * cfg.topKExperts
                     let idPtr = scratch.routeIDs.contents()
                         .bindMemory(to: UInt32.self, capacity: routeCount)
@@ -1585,14 +1615,85 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         numExperts: cfg.numExperts,
                         tileExpertCount: routeTileExpertCount,
                         expertSortKeys: model.routedExpertPhysicalOffsets(layer: L))
+                    prefillHostProfile.add(.route, since: routeStart)
 
-                    // Already in flight since before the routing readback; by
-                    // now this is a completed-buffer check, not a stall.
-                    try waitProfiled(.shared, sharedCB)
+                    let expertSlotCount = model.routedExpertCacheSlotCount(layer: L)
+                    // Every tile's experts are known as soon as the routing is
+                    // grouped, so a block issues all of the layer's reads here
+                    // and waits for each one only when its tile is encoded.
+                    // The bytes then land while the GPU runs the tiles already
+                    // submitted, which is where half of a block's wall clock
+                    // used to go (docs/mtp/18-M4.6-RESULTS.md §3). Only when
+                    // the layer's whole expert union fits the cache: otherwise
+                    // a tile has to hand slots back mid-layer, and a read in
+                    // flight could be writing into one of them.
+                    let tileLookahead = Self.blockTileLookaheadEnabled && blockPipeline
+                        && (expertSlotCount.map { routes.groups.count <= $0 } ?? false)
+                    struct StartedTileFetch {
+                        let tileIndex: Int
+                        let expertIDs: [Int]
+                        let plan: RoutedExpertFetchPlan
+                        let handle: RoutedExpertFetchHandle
+                    }
+                    func startTileFetch(_ tileIndex: Int,
+                                        avoiding: Set<Int>) throws -> StartedTileFetch? {
+                        guard tileIndex < routes.tiles.count else { return nil }
+                        let expertIDs = try PrefillStreamedTileBinding.expertIDs(
+                            forTile: tileIndex,
+                            routes: routes)
+                        guard let plan = try model.planRoutedExpertsIfPossible(
+                            layer: L,
+                            experts: expertIDs,
+                            avoidingSlots: avoiding) else { return nil }
+                        return StartedTileFetch(
+                            tileIndex: tileIndex,
+                            expertIDs: expertIDs,
+                            plan: plan,
+                            handle: try model.startRoutedExpertFetch(plan: plan))
+                    }
+                    // Every tile at once, not one ahead: the misses of a layer
+                    // are not spread evenly over its tiles, so a single tile of
+                    // lookahead leaves the layer's one expensive read with only
+                    // one tile of GPU work to hide behind. Planned in order
+                    // with an accumulating reservation, so no read lands in a
+                    // slot another read of this layer is filling.
+                    var startedFetches: [StartedTileFetch] = []
+                    if tileLookahead {
+                        var reservedSlots = Set<Int>()
+                        for index in routes.tiles.indices {
+                            guard let started = try startTileFetch(index,
+                                                                   avoiding: reservedSlots)
+                            else { break }
+                            reservedSlots.formUnion(started.plan.assignedSlots)
+                            startedFetches.append(started)
+                        }
+                        // A layer whose union fits the cache always places, so
+                        // this is the impossible case; drain what was issued
+                        // rather than leave reads writing into slots the
+                        // fallback path is about to reuse.
+                        if startedFetches.count != routes.tiles.count {
+                            for started in startedFetches { _ = try started.handle.wait() }
+                            startedFetches.removeAll()
+                        }
+                    }
 
+                    // Nothing on the host needs the shared expert's result —
+                    // the layer tail reads `h1` on the GPU, and it is behind
+                    // this buffer on the same queue. So a block does not stop
+                    // for it here; it is checked with the rest of the layer at
+                    // the next drain, and until then its dispatches are GPU
+                    // work the expert reads below can hide behind.
+                    if !blockPipeline || !tileLookahead {
+                        let sharedWaitStart = PrefillHostProfile.mark()
+                        try waitProfiled(.shared, sharedCB)
+                        prefillHostProfile.add(.waitShared, since: sharedWaitStart)
+                    }
+
+                    let metaStart = PrefillHostProfile.mark()
                     let metadata = try prefillGroupedMoE.makeStreamedMetadataBuffers(
                         device: ctx.device,
                         routes: routes)
+                    prefillHostProfile.add(.meta, since: metaStart)
                     let routedOffsets = model.routedExpertOffsets(layer: L)
                     // A speculative block is narrow enough that a layer's whole
                     // routed branch fits one command buffer: the tiles, the
@@ -1603,7 +1704,6 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     // (docs/mtp/16-M4.5-PLAN.md §4 d).
                     var heldTileState: [PendingBlockTile] = []
                     var blockUsedSlots = Set<Int>()
-                    let expertSlotCount = model.routedExpertCacheSlotCount(layer: L)
                     /// A tile of this layer holds its slots until the layer is
                     /// drained, so a layer whose expert union does not fit the
                     /// cache has to hand some back mid-layer. That costs the
@@ -1613,9 +1713,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         guard !heldTileState.isEmpty else { return }
                         let held = heldTileState
                         heldTileState.removeAll(keepingCapacity: true)
+                        let waitStart = PrefillHostProfile.mark()
                         try withExtendedLifetime(held) {
                             for tile in held { try waitProfiled(.moe, tile.commandBuffer) }
                         }
+                        prefillHostProfile.add(.waitTile, since: waitStart)
                         blockUsedSlots.removeAll(keepingCapacity: true)
                     }
                     struct PendingPrefillTile {
@@ -1629,16 +1731,34 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     func drainOldestPendingTile() throws {
                         guard !pendingTiles.isEmpty else { return }
                         let pending = pendingTiles.removeFirst()
+                        let waitStart = PrefillHostProfile.mark()
                         try withExtendedLifetime((pending.fetch, pending.argumentBuffer)) {
                             try waitProfiled(.moe, pending.commandBuffer)
                         }
+                        prefillHostProfile.add(.waitTile, since: waitStart)
                         if !pending.fetch.plannedMissSlots.isEmpty {
                             try tileLifetime.complete(tileIndex: pending.tileIndex)
                         }
                     }
 
                     let routedTileScheduler = PrefillRoutedTileScheduler(config: schedulerConfig)
-                    for (tileIndex, tile) in routes.tiles.enumerated() {
+                    // Tiles are independent — each writes its own range of
+                    // `routePartials`, and the reduce runs after all of them —
+                    // so a layer is free to encode the tiles whose experts are
+                    // already resident first. That is what gives the reads
+                    // still in flight something to hide behind: without it the
+                    // GPU waits for the layer's one expensive read before it
+                    // has anything at all to run
+                    // (docs/mtp/18-M4.6-RESULTS.md §3).
+                    let tileOrder: [Int] = startedFetches.isEmpty
+                        ? Array(routes.tiles.indices)
+                        : routes.tiles.indices.sorted {
+                            let lhs = startedFetches[$0].plan.misses.count
+                            let rhs = startedFetches[$1].plan.misses.count
+                            return lhs == rhs ? $0 < $1 : lhs < rhs
+                        }
+                    for tileIndex in tileOrder {
+                        let tile = routes.tiles[tileIndex]
                         let expertIDs = try PrefillStreamedTileBinding.expertIDs(
                             forTile: tileIndex,
                             routes: routes)
@@ -1710,18 +1830,41 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                     detail: "routed tile scheduler requested pending action without pending tile")
                             }
                         }
-                        let fetch = try await PrefillStreamedTileBinding.fetchBindingForTile(
-                            model: model,
-                            layer: L,
-                            tileIndex: tileIndex,
-                            routes: routes,
-                            plannedFetch: plannedFetch,
-                            avoidingSlots: blockPipeline
-                                ? blockUsedSlots
-                                : Set(pendingTiles.flatMap(\.fetch.plannedAssignedSlots)))
+                        let fetchStart = PrefillHostProfile.mark()
+                        let fetch: PrefillStreamedTileFetchResult
+                        let started = tileIndex < startedFetches.count
+                            ? startedFetches[tileIndex] : nil
+                        prefillHostProfile.recordTile(lookahead: started != nil)
+                        if let started {
+                            let views = try started.handle.wait()
+                            fetch = PrefillStreamedTileFetchResult(
+                                expertIDs: started.expertIDs,
+                                binding: try PrefillStreamedTileBinding(
+                                    expertIDs: started.expertIDs,
+                                    views: views),
+                                usedPlannedFetch: true,
+                                plannedHits: started.plan.hits,
+                                plannedMissIndices: started.plan.misses,
+                                plannedAssignedSlots: started.plan.assignedSlots,
+                                plannedMissSlots: started.plan.misses.map {
+                                    started.plan.assignedSlots[$0]
+                                })
+                        } else {
+                            fetch = try await PrefillStreamedTileBinding.fetchBindingForTile(
+                                model: model,
+                                layer: L,
+                                tileIndex: tileIndex,
+                                routes: routes,
+                                plannedFetch: plannedFetch,
+                                avoidingSlots: blockPipeline
+                                    ? blockUsedSlots
+                                    : Set(pendingTiles.flatMap(\.fetch.plannedAssignedSlots)))
+                        }
                         try fetch.binding.validateCoversPairs(routes.sortedPairs,
                                                               pairStart: Int(tile.pairStart),
                                                               pairCount: Int(tile.pairCount))
+                        prefillHostProfile.add(.fetch, since: fetchStart)
+                        let moeEncodeStart = PrefillHostProfile.mark()
                         if !blockPipeline, !fetch.plannedMissSlots.isEmpty {
                             try tileLifetime.begin(tileIndex: tileIndex,
                                                    plannedSlots: fetch.plannedMissSlots)
@@ -1817,6 +1960,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                 commandBuffer: tileCB,
                                 fetch: fetch,
                                 argumentBuffer: argumentBuffer))
+                            prefillHostProfile.add(.encodeMoE, since: moeEncodeStart)
                             continue
                         }
                         tileCB.commit()
@@ -1824,6 +1968,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                                                commandBuffer: tileCB,
                                                                fetch: fetch,
                                                                argumentBuffer: argumentBuffer))
+                        prefillHostProfile.add(.encodeMoE, since: moeEncodeStart)
                         while pendingTiles.count > schedulerConfig.maxPendingDepth {
                             try drainOldestPendingTile()
                         }
@@ -1831,6 +1976,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     while !pendingTiles.isEmpty {
                         try drainOldestPendingTile()
                     }
+                    let tailStart = PrefillHostProfile.mark()
                     guard let tailCB = ctx.queue.makeCommandBuffer() else {
                         throw ModelError.residentBufferWrapFailed
                     }
@@ -1868,6 +2014,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         // is for.
                         pendingBlockLayer = PendingBlockLayer(
                             commandBuffer: tailCB,
+                            sharedCommandBuffer: tileLookahead ? sharedCB : nil,
                             metadata: metadata,
                             tiles: heldTileState)
                     } else {
@@ -1875,6 +2022,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                             try waitProfiled(.tail, tailCB)
                         }
                     }
+                    prefillHostProfile.add(.tail, since: tailStart)
                     if L + 1 < cfg.numLayers {
                         guard let nextCB = ctx.queue.makeCommandBuffer() else {
                             throw ModelError.residentBufferWrapFailed
@@ -1889,8 +2037,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // wants every row, because each one scores a different proposed token
         // (`docs/mtp/03-DESIGN.md` D3). Everything below the head is identical
         // either way — that identity is what the M4 comparison checks.
+        let finalDrainStart = PrefillHostProfile.mark()
         try drainPendingBlockLayer()
+        prefillHostProfile.add(.drain, since: finalDrainStart)
 
+        let headStart = PrefillHostProfile.mark()
+        defer { prefillHostProfile.add(.head, since: headStart) }
         let headRows: Range<Int>
         switch head {
         case .none:
