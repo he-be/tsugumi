@@ -234,6 +234,14 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private let prefillRuntimeConfig: PrefillRuntimeConfig
     private var prefillGPUProfile = PrefillGPUProfile()
     private var prefillHostProfile = PrefillHostProfile()
+    /// 28-M8 §3 の果実 B の前提 (層 L の hidden から層 L+d の routing を
+    /// 当てられるか) を実装の前に潰すための計器。`TF_MTP_ROUTER_PREVIEW=1`
+    /// のときだけ動き、出力にも fetch にも触らない。
+    private var routerPreviewProbe = RouterPreviewProbe()
+    /// 予測の書き出し先。距離ごとに 1 本、`maxTokens * topK` の UInt32。
+    /// 計器が有効なときだけ確保する。
+    private var routerPreviewIDs: [MTLBuffer] = []
+    private var routerPreviewWeights: [MTLBuffer] = []
     /// The same busy/idle split for plain decode, so a block's occupancy has
     /// something to be compared against: `verify(k)` is a ratio of two wall
     /// clocks, and it says nothing about whether either side is GPU-bound.
@@ -695,6 +703,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         let expertsBefore = PrefillHostProfile.isEnabled
             ? model.telemetry.snapshot().decode : ExpertPhaseCounters()
         let verifyStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        routerPreviewProbe.beginBlock()
         defer {
             verifyBlockNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - verifyStart
             verifyBlockCount += 1
@@ -722,6 +731,29 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                 ioNanos: after.fetchNanos - expertsBefore.fetchNanos)
             FileHandle.standardError.write(Data((prefillHostProfile.summary + "\n").utf8))
             prefillHostProfile.reset()
+        }
+        if let line = routerPreviewProbe.summary {
+            FileHandle.standardError.write(Data((line + "\n").utf8))
+        }
+    }
+
+    /// 計器用のバッファ。距離ごとに ID と重みを 1 本ずつ、`maxTokens * topK`
+    /// ぶん。8 × 8 × 4 B = 256 B なので、確保しても測定の邪魔にならない。
+    private func ensureRouterPreviewBuffers(topK: Int) throws {
+        guard routerPreviewIDs.count < RouterPreviewProbe.maxDistance else { return }
+        let elements = SpeculativeBlock.maxTokens * topK
+        while routerPreviewIDs.count < RouterPreviewProbe.maxDistance {
+            guard let ids = ctx.device.makeBuffer(
+                    length: elements * MemoryLayout<UInt32>.stride,
+                    options: .storageModeShared),
+                  let weights = ctx.device.makeBuffer(
+                    length: elements * MemoryLayout<Float16>.stride,
+                    options: .storageModeShared)
+            else { throw ModelError.residentBufferWrapFailed }
+            ids.label = "prefill.routerPreviewIDs"
+            weights.label = "prefill.routerPreviewWeights"
+            routerPreviewIDs.append(ids)
+            routerPreviewWeights.append(weights)
         }
     }
 
@@ -1725,6 +1757,36 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         hiddenStrideElements: UInt32(D))
             }
 
+            // 計器 (28-M8 §3 の果実 B): 層 L の router 入力に層 L+d の router
+            // 重みを当てて、層 L+d が選ぶエキスパートを先に出しておく。同じ
+            // command buffer の後ろに積むだけなので `routerLogits` の共用は
+            // 直列で安全で、結果は数えるだけ — 本物のルーティングにも fetch
+            // にも渡さないので出力は 1 バイトも動かない。
+            if RouterPreviewProbe.isEnabled, speculativeBlock,
+               t <= SpeculativeBlock.maxTokens,
+               moe.routerWeightBits == 16, cfg.topKExperts == 8 {
+                try ensureRouterPreviewBuffers(topK: cfg.topKExperts)
+                for distance in 1...RouterPreviewProbe.maxDistance
+                where L + distance < cfg.numLayers {
+                    let ahead = layerViews[L + distance]
+                    moe.encodeRouterGemma4BF16Rows(
+                        commandBuffer: cb,
+                        weights: ahead.router.buffer,
+                        weightsOffset: Int(ahead.router.offset),
+                        hidden: scratch.routerX,
+                        hiddenStrideElements: UInt32(D),
+                        effectiveScale: effectiveScaleBuffers[L + distance],
+                        perExpertScale: ahead.routerPerExpertScale.buffer,
+                        perExpertScaleOffset: Int(ahead.routerPerExpertScale.offset),
+                        outIndices: routerPreviewIDs[distance - 1],
+                        outWeights: routerPreviewWeights[distance - 1],
+                        rowCount: t,
+                        numExperts: UInt32(cfg.numExperts),
+                        d: UInt32(D),
+                        topK: UInt32(cfg.topKExperts))
+                }
+            }
+
                     // The shared expert needs nothing from the router, so it
                     // is encoded and submitted before the host stops to read
                     // the routing back: it runs on the GPU while the host
@@ -1792,6 +1854,48 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                                                    weights: routeWeights,
                                                                    queryCount: t,
                                                                    topK: cfg.topKExperts)
+                    // この層について前もって出しておいた予測を採点し、続けて
+                    // 先の層の予測を控える。順番が要る: `compare` が層 L の
+                    // 予測を消費してから、`record` が L+d 用を積む。
+                    if RouterPreviewProbe.isEnabled, speculativeBlock {
+                        let requested = Array(Set(pairs.map { Int($0.expert) })).sorted()
+                        let resident = try model.routedExpertResidency(layer: L,
+                                                                       experts: requested)
+                        routerPreviewProbe.compare(layer: L,
+                                                   actual: requested,
+                                                   resident: resident)
+                        let previewCount = t * cfg.topKExperts
+                        for distance in 1...RouterPreviewProbe.maxDistance
+                        where L + distance < cfg.numLayers
+                            && distance <= routerPreviewIDs.count {
+                            let ptr = routerPreviewIDs[distance - 1].contents()
+                                .bindMemory(to: UInt32.self, capacity: previewCount)
+                            let wPtr = routerPreviewWeights[distance - 1].contents()
+                                .bindMemory(to: Float16.self, capacity: previewCount)
+                            // 予測の強さ = その層の全行が付けた router 重みの和。
+                            // 複数の行が同じエキスパートを選ぶほど確かになる。
+                            var score = [Int: Float]()
+                            for i in 0..<previewCount {
+                                let expert = Int(min(ptr[i],
+                                                     UInt32(cfg.numExperts - 1)))
+                                score[expert, default: 0] += Float(wPtr[i])
+                            }
+                            let predicted = Set(score.keys)
+                            // 先読みが実際に読むのは「予測のうちまだ載って
+                            // いないもの」だけなので、その時点の常駐を引く。
+                            let order = predicted.sorted()
+                            let ahead = try model.routedExpertResidency(
+                                layer: L + distance, experts: order)
+                            let nonResident = zip(order, ahead)
+                                .filter { !$0.1 }
+                                .map(\.0)
+                                .sorted { (score[$0] ?? 0, $1) > (score[$1] ?? 0, $0) }
+                            routerPreviewProbe.record(fromLayer: L,
+                                                      distance: distance,
+                                                      predicted: predicted,
+                                                      nonResident: nonResident)
+                        }
+                    }
                     let schedulerConfig = Self.prefillRoutedTileSchedulerConfig
                     let routeTileExpertCount: Int
                     if let slotCount = model.routedExpertCacheSlotCount(layer: L) {

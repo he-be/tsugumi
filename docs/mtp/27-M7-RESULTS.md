@@ -292,7 +292,7 @@ router の畳み込みは**行ごとの threadgroup とレーン配置を保つ*
 (`argmax k=4` と `greedy` が **pos 25 で block=2897 / scalar=11442、margin 1.0e-3**、
 `wide-vs-width1` が 3.170 対 tol 3.0)。`logits k=4` の worst も **1.932e-02** で
 25-M5.6 の 1.9e-2 と同じ。**新規失敗ゼロ、数値の移動もゼロ** — 本書の 3 つは
-ブロックの算術を 1 つも触っていない、という §8 の主張の裏取りである。
+ブロックの算術を 1 つも触っていない、という上の主張の裏取りである。
 (25-M5.6 §4 のとおり、この 3 本は**通ったことにしない**。)
 
 | ゲート | 結果 |
@@ -301,7 +301,7 @@ router の畳み込みは**行ごとの threadgroup とレーン配置を保つ*
 | 3. テキスト回帰 (MTP 無効) | **構造的に不変** (**導出**)。3 つとも `speculativeBlock` の中だけ。router の畳み込みは `speculativeBlock && t <= maxTokens` の枝、残り 2 つは `blockPipeline` の枝 |
 | 4. メモリ | peak **5.09 GB** (32 スロット / 8192 context)。新規確保は router logits の 8 KB 化のみ |
 | 8. 巻き戻しの検出力 | **合格** (`rewind/*` 4 本とも PASS) |
-| 10. 退行なし | 下記 |
+| 10. 退行なし | `Scripts/test.sh` **868 テスト / 146 スイート / 11 issues**、25-M5.6・26-M6 と**同じ 4 スイート・同じ 11 件** (`AppContextLengthOptionTests` 1 / `AppModelInstallTests` 7 / `AppRuntimeOptionsTests` 1 / `RuntimeConfigurationTests` 2 — どれも App のピン留め監査と既定値の陳腐化)。**新規失敗ゼロ**。§10 の**新規 7 本**を含む (26-M6 は 860 テスト) |
 
 ## 9. 測り直しの 1 行
 

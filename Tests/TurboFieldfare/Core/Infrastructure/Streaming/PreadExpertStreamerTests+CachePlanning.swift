@@ -17,14 +17,14 @@ extension PreadExpertStreamerTests {
     let streamer = try PreadExpertStreamer(
       layout: Self.makeLayout(path: url.path), device: device, slotCount: 6)
 
-    _ = try streamer.loadExpertsCached(experts: [1, 3])  // two of the six resident
-    let experts = [1, 3, 0, 2, 5]
+    _ = try streamer.loadExpertsCached(experts: [1, 3])  // two of the four resident
+    let experts = [1, 3, 0, 2]
     let plan = RoutedExpertFetchPlan(
       layer: 0, cachePlan: streamer.planExpertsCached(experts: experts))
     #expect(plan.hits == 2)
-    #expect(plan.misses.count == 3)
+    #expect(plan.misses.count == 2)
 
-    let slices = [0..<2, 2..<4, 4..<5].map { plan.slice($0) }
+    let slices = [0..<2, 2..<3, 3..<4].map { plan.slice($0) }
     #expect(slices.flatMap(\.experts) == experts)
     #expect(slices.flatMap(\.assignedSlots) == plan.assignedSlots)
     #expect(slices.map(\.hits).reduce(0, +) == plan.hits)
