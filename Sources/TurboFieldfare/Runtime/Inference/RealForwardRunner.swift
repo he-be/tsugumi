@@ -288,6 +288,19 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private static let rowsSharedAttentionEnabled = rowsPathEnabled("ATTENTION_SHARED")
     private static let blockPipelineEnabled = rowsPathEnabled("PIPELINE")
     private static let blockTileLookaheadEnabled = rowsPathEnabled("LOOKAHEAD")
+    /// One expert-cache plan per layer instead of one per tile
+    /// (`TF_MTP_ROWS_LAYER_PLAN=0` restores the per-tile planning).
+    private static let blockLayerPlanEnabled = rowsPathEnabled("LAYER_PLAN")
+    /// Resident experts first in a block's tile order
+    /// (`TF_MTP_ROWS_RESIDENT_FIRST=0` keeps the physical order for every tile).
+    private static let blockResidentFirstEnabled = rowsPathEnabled("RESIDENT_FIRST")
+    /// The block's router as one dispatch pair instead of one per row
+    /// (`TF_MTP_ROWS_ROUTER_FOLD=0` keeps the row loop).
+    private static let blockRowsRouterFoldEnabled = rowsPathEnabled("ROUTER_FOLD")
+    /// Set on the sort key of an expert that is not in a slot. Above every
+    /// physical offset (a layer's stream is well under 2^40 bytes), so it
+    /// splits the order in two without disturbing either half.
+    private static let nonResidentSortBit: UInt64 = 1 << 40
 
     /// Per-layer `router.scale * D^-0.5` pre-folded into one BF16 buffer
     /// allocation per layer. ~168 KB total at 30 layers × 2816 BF16 — bounded
@@ -1637,7 +1650,26 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             // (docs/mtp/16-M4.5-PLAN.md §4).
             if Self.rowsRouterEnabled, speculativeBlock, t <= SpeculativeBlock.maxTokens,
                moe.routerWeightBits == 16, cfg.topKExperts == 8 {
-                for row in 0..<t {
+                // One dispatch pair for the block when the rows kernels are
+                // there, the row loop when they are not. Both produce the same
+                // logits: the rows kernel gives each row the threadgroup and
+                // lane layout the single-row dispatch gave it.
+                let folded = Self.blockRowsRouterFoldEnabled && moe.encodeRouterGemma4BF16Rows(
+                    commandBuffer: cb,
+                    weights: views.router.buffer,
+                    weightsOffset: Int(views.router.offset),
+                    hidden: scratch.routerX,
+                    hiddenStrideElements: UInt32(D),
+                    effectiveScale: effectiveScaleBuffers[L],
+                    perExpertScale: views.routerPerExpertScale.buffer,
+                    perExpertScaleOffset: Int(views.routerPerExpertScale.offset),
+                    outIndices: scratch.routeIDs,
+                    outWeights: scratch.routeWeights,
+                    rowCount: t,
+                    numExperts: UInt32(cfg.numExperts),
+                    d: UInt32(D),
+                    topK: UInt32(cfg.topKExperts))
+                for row in 0..<(folded ? 0 : t) {
                     moe.encodeRouterGemma4BF16(
                         commandBuffer: cb,
                         weights: views.router.buffer,
@@ -1771,13 +1803,42 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     } else {
                         routeTileExpertCount = schedulerConfig.tileExperts
                     }
+                    // Tiles are cut out of the experts in this order, so the
+                    // order decides which tile has to wait for a read. A
+                    // speculative block sorts the experts it already holds to
+                    // the front and cuts the tiles there: those tiles are pure
+                    // hits, so the GPU can run them — about three quarters of
+                    // the layer's routed work — while the misses are still
+                    // landing. Without it every tile of the layer holds a miss
+                    // or two and the GPU has nothing to do until the slowest
+                    // read of the layer is in (docs/mtp/27-M7-RESULTS.md §4).
+                    // Ties keep the physical order, so a tile's misses are
+                    // still read in file order.
+                    var sortKeys = model.routedExpertPhysicalOffsets(layer: L)
+                    var residentGroupCount: Int?
+                    if blockPipeline && Self.blockResidentFirstEnabled {
+                        let requested = Array(Set(pairs.map { Int($0.expert) })).sorted()
+                        let resident = try model.routedExpertResidency(layer: L,
+                                                                       experts: requested)
+                        for (index, expert) in requested.enumerated() where !resident[index] {
+                            sortKeys[expert] |= Self.nonResidentSortBit
+                        }
+                        let residentCount = resident.filter { $0 }.count
+                        // All resident or none: the cut would fall on a tile
+                        // boundary anyway, and passing it would only pin the
+                        // first tile to a partial width.
+                        residentGroupCount = (residentCount > 0
+                                              && residentCount < requested.count)
+                            ? residentCount : nil
+                    }
                     let routes = try PrefillMoEGrouping.groupTokenExpertPairs(
                         pairs,
                         queryCount: t,
                         topK: cfg.topKExperts,
                         numExperts: cfg.numExperts,
                         tileExpertCount: routeTileExpertCount,
-                        expertSortKeys: model.routedExpertPhysicalOffsets(layer: L))
+                        expertSortKeys: sortKeys,
+                        tileBreakAfterGroup: residentGroupCount)
                     prefillHostProfile.add(.route, since: routeStart)
 
                     let expertSlotCount = model.routedExpertCacheSlotCount(layer: L)
@@ -1814,16 +1875,61 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                             plan: plan,
                             handle: try model.startRoutedExpertFetch(plan: plan))
                     }
+                    /// One plan for the layer, one fetch per tile. Returns an
+                    /// empty array when the layer cannot be placed in one call,
+                    /// which puts the caller back on the per-tile loop.
+                    func startLayerFetches(routes: PrefillMoEGroupedRoutes,
+                                           layer: Int) throws -> [StartedTileFetch] {
+                        var tileExperts: [[Int]] = []
+                        tileExperts.reserveCapacity(routes.tiles.count)
+                        for index in routes.tiles.indices {
+                            tileExperts.append(try PrefillStreamedTileBinding.expertIDs(
+                                forTile: index,
+                                routes: routes))
+                        }
+                        let layerExperts = tileExperts.flatMap { $0 }
+                        guard !layerExperts.isEmpty,
+                              let layerPlan = try model.planRoutedExpertsIfPossible(
+                                layer: layer,
+                                experts: layerExperts)
+                        else { return [] }
+                        var started: [StartedTileFetch] = []
+                        started.reserveCapacity(tileExperts.count)
+                        var cursor = 0
+                        for (index, experts) in tileExperts.enumerated() {
+                            let plan = layerPlan.slice(cursor..<(cursor + experts.count))
+                            cursor += experts.count
+                            started.append(StartedTileFetch(
+                                tileIndex: index,
+                                expertIDs: experts,
+                                plan: plan,
+                                handle: try model.startRoutedExpertFetch(plan: plan)))
+                        }
+                        return started
+                    }
                     // Every tile at once, not one ahead: the misses of a layer
                     // are not spread evenly over its tiles, so a single tile of
                     // lookahead leaves the layer's one expensive read with only
                     // one tile of GPU work to hide behind. Planned in order
                     // with an accumulating reservation, so no read lands in a
                     // slot another read of this layer is filling.
+                    //
+                    // Planned in one call for the whole layer, not once per
+                    // tile: the tiles of a layer hold disjoint experts, so one
+                    // plan places exactly the same slots — except that a
+                    // per-tile plan does not know the experts of the tiles
+                    // behind it and can evict one of them, which the layer then
+                    // reads back from the file (docs/mtp/27-M7-RESULTS.md §3).
+                    // The reads still go one handle per tile, so a tile whose
+                    // experts are all resident can start while the others land.
                     var startedFetches: [StartedTileFetch] = []
                     if tileLookahead {
-                        var reservedSlots = Set<Int>()
-                        for index in routes.tiles.indices {
+                        if Self.blockLayerPlanEnabled {
+                            startedFetches = try startLayerFetches(routes: routes, layer: L)
+                        }
+                        var reservedSlots = Set<Int>(
+                            startedFetches.flatMap(\.plan.assignedSlots))
+                        for index in routes.tiles.indices where index >= startedFetches.count {
                             guard let started = try startTileFetch(index,
                                                                    avoiding: reservedSlots)
                             else { break }

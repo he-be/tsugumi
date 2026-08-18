@@ -196,15 +196,13 @@ kernel void router_gemv_gemma4_bf16_r4(
                                  num_experts, D, 4, tg_idx, sg_idx, lane);
 }
 
-kernel void router_topk_select_k8(
-    device const float* logits [[buffer(0)]],
-    device const bfloat* per_expert_scale [[buffer(1)]],
-    device uint* out_indices [[buffer(2)]],
-    device half* out_weights [[buffer(3)]],
-    constant uint& num_experts [[buffer(4)]],
-    uint tid [[thread_position_in_threadgroup]]
+static inline void router_topk_select_k8_body(
+    device const float* logits,
+    device const bfloat* per_expert_scale,
+    device uint* out_indices,
+    device half* out_weights,
+    constant uint& num_experts
 ) {
-    if (tid != 0) return;
     const uint NE = router_fc_num_experts(num_experts);
     uint top_idx[8];
     float top_score[8];
@@ -247,6 +245,67 @@ kernel void router_topk_select_k8(
         out_weights[i] = half(weight * float(per_expert_scale[expert_idx]));
     }
 }
+
+kernel void router_topk_select_k8(
+    device const float* logits [[buffer(0)]],
+    device const bfloat* per_expert_scale [[buffer(1)]],
+    device uint* out_indices [[buffer(2)]],
+    device half* out_weights [[buffer(3)]],
+    constant uint& num_experts [[buffer(4)]],
+    uint tid [[thread_position_in_threadgroup]]
+) {
+    if (tid != 0) return;
+    router_topk_select_k8_body(logits, per_expert_scale, out_indices,
+                               out_weights, num_experts);
+}
+
+// The same two kernels with the block's rows in the grid's second dimension.
+//
+// A speculative verify block used to dispatch the decode router once per row,
+// which is 8 encoders a layer and 240 a block — nearly all of the `post` stage
+// was the dispatches, not the 720 KB of router weights
+// (docs/mtp/27-M7-RESULTS.md §5). Each row keeps its own threadgroup and its
+// own lane layout, so a row's dot product is summed in exactly the order the
+// per-row dispatch summed it and the expert choice cannot move.
+kernel void router_gemv_gemma4_bf16_rows(
+    device const bfloat* W [[buffer(0)]],
+    device const half* hidden [[buffer(1)]],
+    device const bfloat* effective_scale [[buffer(2)]],
+    device float* out_logits [[buffer(3)]],
+    constant uint& num_experts [[buffer(4)]],
+    constant uint& D [[buffer(5)]],
+    constant uint& hidden_stride_elements [[buffer(6)]],
+    uint2 tgid [[threadgroup_position_in_grid]],
+    uint sg_idx [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    const uint NE = router_fc_num_experts(num_experts);
+    router_gemv_gemma4_bf16_body(W,
+                                 hidden + tgid.y * hidden_stride_elements,
+                                 effective_scale,
+                                 out_logits + tgid.y * NE,
+                                 num_experts, D, 4, tgid.x, sg_idx, lane);
+}
+
+kernel void router_topk_select_k8_rows(
+    device const float* logits [[buffer(0)]],
+    device const bfloat* per_expert_scale [[buffer(1)]],
+    device uint* out_indices [[buffer(2)]],
+    device half* out_weights [[buffer(3)]],
+    constant uint& num_experts [[buffer(4)]],
+    uint2 tgid [[threadgroup_position_in_grid]],
+    uint2 tid [[thread_position_in_threadgroup]]
+) {
+    if (tid.x != 0 || tid.y != 0) return;
+    const uint NE = router_fc_num_experts(num_experts);
+    const uint top_k = 8u;
+    router_topk_select_k8_body(logits + tgid.y * NE,
+                               per_expert_scale,
+                               out_indices + tgid.y * top_k,
+                               out_weights + tgid.y * top_k,
+                               num_experts);
+}
+
 
 // Each SIMD computes one affine INT4 row. Four adjacent groups are loaded as
 // aligned 32-bit chunks; remaining groups use one byte per lane.

@@ -6,6 +6,48 @@ import Testing
 @testable import TurboFieldfare
 
 extension PreadExpertStreamerTests {
+  /// A block plans a layer's whole expert union in one call and then hands each
+  /// tile the slice that is its own (docs/mtp/27-M7-RESULTS.md §3). The slices
+  /// have to add back up to the plan: same experts, same slots, and every miss
+  /// in exactly one slice with an index that points at its own expert.
+  @Test func planSlicesPartitionTheLayerPlan() throws {
+    let url = try Self.writeSyntheticLayer()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let device = try MetalContext().device
+    let streamer = try PreadExpertStreamer(
+      layout: Self.makeLayout(path: url.path), device: device, slotCount: 6)
+
+    _ = try streamer.loadExpertsCached(experts: [1, 3])  // two of the six resident
+    let experts = [1, 3, 0, 2, 5]
+    let plan = RoutedExpertFetchPlan(
+      layer: 0, cachePlan: streamer.planExpertsCached(experts: experts))
+    #expect(plan.hits == 2)
+    #expect(plan.misses.count == 3)
+
+    let slices = [0..<2, 2..<4, 4..<5].map { plan.slice($0) }
+    #expect(slices.flatMap(\.experts) == experts)
+    #expect(slices.flatMap(\.assignedSlots) == plan.assignedSlots)
+    #expect(slices.map(\.hits).reduce(0, +) == plan.hits)
+    #expect(slices.map { $0.misses.count }.reduce(0, +) == plan.misses.count)
+    for slice in slices {
+      for index in slice.misses {
+        #expect(index >= 0 && index < slice.experts.count)
+      }
+      #expect(Set(slice.misses).count == slice.misses.count)
+    }
+    // The first slice is the resident pair, so it reads nothing.
+    #expect(slices[0].misses.isEmpty)
+
+    // Executing the slices separately loads the same bytes the whole plan would.
+    for slice in slices {
+      let buffers = try streamer.executeExpertCachePlan(slice.cachePlan)
+      for (index, buffer) in buffers.enumerated() {
+        let got = Self.bytes(of: buffer.buffer, offset: 0, count: Self.expertStride)
+        #expect(got.allSatisfy { $0 == Self.tagByte(slice.experts[index]) })
+      }
+    }
+  }
+
   @Test func cachedBatchWithoutExecutorLoadsTaggedBytes() throws {
     let url = try Self.writeSyntheticLayer()
     defer { try? FileManager.default.removeItem(at: url) }

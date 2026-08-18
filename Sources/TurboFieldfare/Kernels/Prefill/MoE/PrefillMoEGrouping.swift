@@ -94,7 +94,8 @@ enum PrefillMoEGrouping {
         topK: Int,
         numExperts: Int,
         tileExpertCount: Int = 16,
-        expertSortKeys: [UInt64]? = nil
+        expertSortKeys: [UInt64]? = nil,
+        tileBreakAfterGroup: Int? = nil
     ) throws -> PrefillMoEGroupedRoutes {
         guard queryCount >= 0 else {
             throw PrefillMoEGroupingError.invalidQueryCount(queryCount)
@@ -171,7 +172,15 @@ enum PrefillMoEGrouping {
         var tiles: [PrefillMoETile] = []
         var groupStart = 0
         while groupStart < groups.count {
-            let groupEnd = min(groups.count, groupStart + tileExpertCount)
+            var groupEnd = min(groups.count, groupStart + tileExpertCount)
+            // A forced cut. The caller uses it to keep one kind of group out of
+            // the tiles of another — a speculative block puts the experts it
+            // already holds in front and cuts here, so those tiles carry no
+            // read and can be encoded while the rest of the layer lands
+            // (docs/mtp/27-M7-RESULTS.md §4).
+            if let tileBreakAfterGroup, groupStart < tileBreakAfterGroup {
+                groupEnd = min(groupEnd, tileBreakAfterGroup)
+            }
             let first = groups[groupStart]
             let last = groups[groupEnd - 1]
             let pairStart = first.pairStart

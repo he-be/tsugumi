@@ -202,6 +202,61 @@ import Testing
         }
     }
 
+    /// A speculative block sorts the experts it already holds to the front and
+    /// asks for the tiles to be cut there, so the leading tiles carry no read
+    /// (docs/mtp/27-M7-RESULTS.md §4).
+    @Test func tileBreakCutsTheTileAtTheRequestedGroup() throws {
+        var pairs: [PrefillTokenExpertPair] = []
+        for token in 0..<4 {
+            for rank in 0..<5 {
+                pairs.append(Self.pair(token: UInt32(token),
+                                       expert: UInt32((token * 5 + rank) % 10),
+                                       rank: UInt32(rank),
+                                       weightBits: UInt32(token * 5 + rank)))
+            }
+        }
+        // Experts 0...9 are all requested; say the first 3 in sort order are
+        // the resident ones.
+        let grouped = try PrefillMoEGrouping.groupTokenExpertPairs(
+            pairs,
+            queryCount: 4,
+            topK: 5,
+            numExperts: 10,
+            tileExpertCount: 4,
+            tileBreakAfterGroup: 3)
+
+        #expect(grouped.groups.count == 10)
+        #expect(grouped.tiles.map(\.groupCount) == [3, 4, 3])
+        #expect(grouped.tiles.map(\.groupStart) == [0, 3, 7])
+        // Every pair still lands in exactly one tile, in group order.
+        #expect(grouped.tiles.map(\.pairCount).reduce(0, +)
+                == UInt32(grouped.sortedPairs.count))
+        var expectedStart: UInt32 = 0
+        for tile in grouped.tiles {
+            #expect(tile.pairStart == expectedStart)
+            expectedStart += tile.pairCount
+        }
+    }
+
+    @Test func tileBreakBeyondTheGroupsChangesNothing() throws {
+        var pairs: [PrefillTokenExpertPair] = []
+        for index in 0..<8 {
+            let token = UInt32(index / 2)
+            let expert = UInt32(index % 4)
+            let rank = UInt32(index % 2)
+            pairs.append(Self.pair(token: token,
+                                   expert: expert,
+                                   rank: rank,
+                                   weightBits: UInt32(index)))
+        }
+        let plain = try PrefillMoEGrouping.groupTokenExpertPairs(
+            pairs, queryCount: 4, topK: 2, numExperts: 4, tileExpertCount: 2)
+        let broken = try PrefillMoEGrouping.groupTokenExpertPairs(
+            pairs, queryCount: 4, topK: 2, numExperts: 4, tileExpertCount: 2,
+            tileBreakAfterGroup: 99)
+        #expect(plain.tiles == broken.tiles)
+    }
+
     private static func pair(token: UInt32,
                              expert: UInt32,
                              rank: UInt32,

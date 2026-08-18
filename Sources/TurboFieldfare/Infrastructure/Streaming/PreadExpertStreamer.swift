@@ -375,6 +375,19 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         cursorLock.unlock()
     }
 
+    /// Which of `experts` a plan made now would find in a slot.
+    ///
+    /// A read-only view of the same residency table `makeExpertCachePlan` uses,
+    /// so a caller can order its work by what is already there without taking
+    /// slots (docs/mtp/27-M7-RESULTS.md §4).
+    public func residentExperts(_ experts: [Int]) -> [Bool] {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        return experts.map { expert in
+            expert >= 0 && expert < expertResidency.count && expertResidency[expert] > 0
+        }
+    }
+
     public func adviseExpertMisses(experts: [Int]) -> ExpertIOAdviceResult {
         cacheLock.lock()
         let misses = experts.filter { expert in

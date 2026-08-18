@@ -15,6 +15,7 @@
 | **M5.5** | **ブロックの GPU 律速** | **完了 ([24-M5.5-RESULTS.md](24-M5.5-RESULTS.md))。**GPU 占有率の計器を足し、ブロックが 81% GPU 律速 (decode は 68%)、1 行ブロックの GPU 仕事が decode の 1.5 倍で、差が attention カーネルに集中していることを実測。ブロックの attention を decode の split-KV カーネルに 1 行ずつ渡し、**採点基準 v1 は 1.050 → 1.136** (中止ライン 1.10 の上に復帰)。ゲート 1 の分岐は `bench/m.json` では消えた |
 | **M5.6** | ブロックの attention の行共有 | **完了 ([25-M5.6-RESULTS.md](25-M5.6-RESULTS.md))。**k 行を 1 回の split-KV で通すカーネルで `attn.swa` 約 10 → 約 1.5 ms、ブロックの GPU busy 59 → 50 ms、**採点基準 v1 は 1.136 → 1.336** (22 §5 の目標 1.33 に到達)。`--verify-block` は 9 PASS / 3 FAIL — 増えた 2 本は top-1 マージン 1.0e-3 の 1 位置の argmax 反転 |
 | **M6** | CLI / Server / 受入 | **完了 ([26-M6-RESULTS.md](26-M6-RESULTS.md) / [RESULTS_MTP.md](../../RESULTS_MTP.md))。**サーバーに `--draft-block-size` が入り、pi 形の要求 (tools + streaming + プロンプトキャッシュ) で **1.386 倍**・出力は 1 バイト差なし、**ゲート 9 合格** (`cached_tokens` が on/off で一致)。日本語散文は受理長 1.058 で 1.0 倍 |
+| **M7** | **32 スロット (16GB Mac) の verify** | **完了 ([27-M7-RESULTS.md](27-M7-RESULTS.md))。**demo の運用点 (32 スロット / 8192 context) で **20.8 → 23.6 t/s (+13.4%)**、48 スロットで **24.7 → 28.9 t/s (+17%)**。効いたのは層の expert union を 1 プランで置くこと、**常駐エキスパートのタイルを先頭に切ること** (読み出しの陰で層の routed 仕事の 3/4 が走る)、router の k 行を 1 dispatch に畳むこと。出力は 3 つとも **1 バイトも変わらない**。**32 スロットで 30 t/s は届かない** — ブロック 1 回が SSD から 469 MB 読み、層の依存関係が許す重なりは使い切っている (27 §7) |
 
 ---
 

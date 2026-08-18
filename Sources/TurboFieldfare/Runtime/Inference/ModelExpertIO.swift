@@ -16,6 +16,29 @@ public struct RoutedExpertFetchPlan: Sendable {
         self.layer = layer
         self.cachePlan = cachePlan
     }
+
+    /// The part of this plan that covers `range` of its experts.
+    ///
+    /// A speculative block plans a whole layer's expert union in one call —
+    /// planning it a tile at a time lets one tile evict an expert a later tile
+    /// of the same layer is about to ask for, and the layer then reads it back
+    /// (docs/mtp/27-M7-RESULTS.md §3). The tiles still fetch separately, so the
+    /// GPU can start on the tile whose experts are already resident, and each
+    /// tile needs the slice of the plan that is its own.
+    public func slice(_ range: Range<Int>) -> RoutedExpertFetchPlan {
+        precondition(range.lowerBound >= 0 && range.upperBound <= cachePlan.experts.count,
+                     "routed expert plan slice out of range")
+        let misses = cachePlan.misses
+            .filter { range.contains($0) }
+            .map { $0 - range.lowerBound }
+        return RoutedExpertFetchPlan(
+            layer: layer,
+            cachePlan: ExpertCachePlan(
+                experts: Array(cachePlan.experts[range]),
+                assignedSlots: Array(cachePlan.assignedSlots[range]),
+                misses: misses,
+                hits: range.count - misses.count))
+    }
 }
 
 extension Model {
@@ -60,6 +83,13 @@ extension Model {
         try ensureLayerOpened(layer)
         let streamer = streamersQueue.sync { streamersBox.streamers[layer]! }
         return streamer.adviseExpertMisses(experts: experts)
+    }
+
+    /// Which of `experts` are in a slot right now, in the order given.
+    public func routedExpertResidency(layer: Int, experts: [Int]) throws -> [Bool] {
+        try ensureLayerOpened(layer)
+        let streamer = streamersQueue.sync { streamersBox.streamers[layer]! }
+        return streamer.residentExperts(experts)
     }
 
     public func routedExpertAdviceByteEstimate(layer: Int,

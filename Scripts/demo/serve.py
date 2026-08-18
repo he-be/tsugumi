@@ -54,8 +54,14 @@ DEFAULT_MODEL = "scratch/gemma4-qat.gturbo"
 
 # SERVER_RUNBOOK.md §1(a): the 16K configuration, the fastest one that fits.
 MAX_CONTEXT = 8192
+# 32 slots is the setting a 16 GB machine has room for (peak 5.1 GB). It is also
+# the setting where decode is bound by expert I/O rather than by the GPU: a
+# verify block reads about 470 MB from the file, and 48 slots (peak 6.8 GB)
+# takes the same caption from ~24 to ~29 tok/s (docs/mtp/27-M7-RESULTS.md §7).
+# `--expert-cache-slots 48` tries that without editing this file.
 EXPERT_CACHE_SLOTS = 32
 DRAFT_BLOCK_SIZE = 4
+ALLOWED_EXPERT_CACHE_SLOTS = (8, 16, 24, 32, 48, 64, 80, 96, 112)
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 
@@ -139,10 +145,12 @@ def warmup_png(width: int = 96, height: int = 96) -> bytes:
 class ModelServer:
     """Owns (or attaches to) the TurboFieldfareServer process."""
 
-    def __init__(self, bus: EventBus, model: str, port: int) -> None:
+    def __init__(self, bus: EventBus, model: str, port: int,
+                 expert_cache_slots: int = EXPERT_CACHE_SLOTS) -> None:
         self.bus = bus
         self.model = model
         self.port = port
+        self.expert_cache_slots = expert_cache_slots
         self.process: subprocess.Popen | None = None
         self.owned = False
         self.model_id: str | None = None
@@ -197,7 +205,7 @@ class ModelServer:
                 "--model", str(model_path),
                 "--port", str(self.port),
                 "--max-context", str(MAX_CONTEXT),
-                "--expert-cache-slots", str(EXPERT_CACHE_SLOTS),
+                "--expert-cache-slots", str(self.expert_cache_slots),
                 "--verification", "trusted-install",
                 "--draft-block-size", str(DRAFT_BLOCK_SIZE)]
         self.set_phase("launching", command=" ".join(argv))
@@ -523,7 +531,7 @@ class DemoApp:
             "load_s": self.server.timings.get("load_s"),
             "config": {
                 "max_context": MAX_CONTEXT,
-                "expert_cache_slots": EXPERT_CACHE_SLOTS,
+                "expert_cache_slots": self.server.expert_cache_slots,
                 "draft_block_size": DRAFT_BLOCK_SIZE,
                 "max_images": 4,
                 "image_tokens": 280,
@@ -542,11 +550,16 @@ def main() -> int:
                         help="port for this demo UI (default: 8799)")
     parser.add_argument("--no-open", action="store_true",
                         help="do not open a browser window")
+    parser.add_argument("--expert-cache-slots", type=int, default=EXPERT_CACHE_SLOTS,
+                        choices=ALLOWED_EXPERT_CACHE_SLOTS,
+                        help=f"expert-cache slots (default: {EXPERT_CACHE_SLOTS}; "
+                             "48 is faster and needs about 1.8 GB more)")
     parser.add_argument("--verbose", action="store_true", help="log every HTTP request")
     args = parser.parse_args()
 
     bus = EventBus()
-    model_server = ModelServer(bus, model=args.model, port=args.model_port)
+    model_server = ModelServer(bus, model=args.model, port=args.model_port,
+                               expert_cache_slots=args.expert_cache_slots)
     app = DemoApp(model_server, bus, verbose=args.verbose)
     DemoHandler.app = app
 
