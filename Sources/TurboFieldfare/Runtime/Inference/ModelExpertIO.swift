@@ -106,6 +106,32 @@ extension Model {
         return streamer.adviseExpertCachePlanMisses(plan.cachePlan)
     }
 
+    /// The same fetch for a plan that has nothing to read.
+    ///
+    /// `fetchRoutedExperts` hops to the I/O queue even when every expert is
+    /// already resident, and a speculative verify block issues one fetch per
+    /// tile per layer — about a hundred hops a block, on a path whose expert
+    /// cache hits better than 90% of the time
+    /// (docs/mtp/16-M4.5-PLAN.md §4 d). Returns nil when the plan has misses,
+    /// which is the caller's signal to take the asynchronous path.
+    public func fetchResidentRoutedExperts(plan: RoutedExpertFetchPlan) throws
+        -> [TensorView]? {
+        guard plan.misses.isEmpty else { return nil }
+        try ensureLayerOpened(plan.layer)
+        let streamer = streamersQueue.sync { streamersBox.streamers[plan.layer]! }
+        let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        let buffers = try streamer.executeExpertCachePlan(plan.cachePlan)
+        let views = Self.makeExpertViews(buffers,
+                                         layer: plan.layer,
+                                         experts: plan.experts)
+        telemetry.recordFetch(layer: plan.layer,
+                              experts: plan.experts,
+                              hits: plan.hits,
+                              misses: 0,
+                              nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+        return views
+    }
+
     public func fetchRoutedExperts(plan: RoutedExpertFetchPlan) async throws -> [TensorView] {
         try ensureLayerOpened(plan.layer)
         let streamer = streamersQueue.sync { streamersBox.streamers[plan.layer]! }

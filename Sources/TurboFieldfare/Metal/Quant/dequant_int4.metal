@@ -208,6 +208,130 @@ kernel void dequant_int4_gemv_simd(
                                 rows_per_tg, tg_idx, sg_idx, lane);
 }
 
+// y[t, m] = sum_n W[m, n] * x[t, n] for t < T, T <= kInt4MaxRows.
+//
+// The body above with the activation loop moved inside the weight block: one
+// SIMD group still owns one weight row, but it spends that row on every one of
+// the T activations before moving on, so a weight byte is read once per block
+// instead of once per row. That is the whole of what a speculative verify block
+// needs from the dense projections — the k rows differ only in the activation
+// (docs/mtp/16-M4.5-PLAN.md §1) — and running them as T separate GEMVs reads
+// the model's dense half T times over for no arithmetic reason.
+//
+// The reduction for a given (t, m) is the one-row kernel's, element for element
+// and in the same order, so T=1 is bit-identical to `dequant_int4_gemv_simd`
+// and a wider block keeps decode's numerics rather than a tiled kernel's.
+constant constexpr uint kInt4MaxRows = 8;
+
+static inline void dequant_int4_gemv_rows_simd_body(
+    device const uint8_t* W,
+    device const bfloat*  scales,
+    device const bfloat*  biases,
+    device const half*    x,
+    device half*          y,
+    uint                  M,
+    uint                  N,
+    uint                  T,
+    uint                  x_stride,
+    uint                  y_stride,
+    uint                  rows_per_tg,
+    uint                  tg_idx,
+    uint                  sg_idx,
+    uint                  lane
+) {
+    const uint row = tg_idx * rows_per_tg + sg_idx;
+    if (row >= M) return;
+    const uint n_groups  = N / kGroupSize;
+    const uint row_bytes = N / 2;
+    device const uint8_t* W_row = W      + uint(row) * row_bytes;
+    device const bfloat*  s_row = scales + uint(row) * n_groups;
+    device const bfloat*  b_row = biases + uint(row) * n_groups;
+
+    float acc[kInt4MaxRows];
+    for (uint t = 0; t < kInt4MaxRows; ++t) { acc[t] = 0.0f; }
+
+    const uint full_blocks = n_groups / kGroupsPerBlock;
+    for (uint blk = 0; blk < full_blocks; ++blk) {
+        const uint byte_base = blk * 128u + lane * 4u;
+        device const ushort* wp = (device const ushort*)(W_row + byte_base);
+        const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
+        const uint g  = blk * kGroupsPerBlock + lane / kLanesPerGroup;
+        const float s = float(s_row[g]);
+        const float b = float(b_row[g]);
+        const uint elem = byte_base * 2u;
+        const uint b0 =  w4        & 0xFFu;
+        const uint b1 = (w4 >> 8)  & 0xFFu;
+        const uint b2 = (w4 >> 16) & 0xFFu;
+        const uint b3 = (w4 >> 24) & 0xFFu;
+        for (uint t = 0; t < kInt4MaxRows; ++t) {
+            if (t >= T) break;
+            device const half* x_row = x + t * x_stride;
+            const half4 xa = *((device const half4*)(x_row + elem));
+            const half4 xb = *((device const half4*)(x_row + elem + 4u));
+            const float e0 = float(xa.x), e1 = float(xa.y), e2 = float(xa.z), e3 = float(xa.w);
+            const float e4 = float(xb.x), e5 = float(xb.y), e6 = float(xb.z), e7 = float(xb.w);
+            float dot = 0.0f;
+            dot = fma(float(b0 & 0x0Fu), e0, dot); dot = fma(float(b0 >> 4), e1, dot);
+            dot = fma(float(b1 & 0x0Fu), e2, dot); dot = fma(float(b1 >> 4), e3, dot);
+            dot = fma(float(b2 & 0x0Fu), e4, dot); dot = fma(float(b2 >> 4), e5, dot);
+            dot = fma(float(b3 & 0x0Fu), e6, dot); dot = fma(float(b3 >> 4), e7, dot);
+            const float sum = e0 + e1 + e2 + e3 + e4 + e5 + e6 + e7;
+            acc[t] = fma(s, dot, acc[t]);
+            acc[t] = fma(b, sum, acc[t]);
+        }
+    }
+    for (uint g = full_blocks * kGroupsPerBlock; g < n_groups; ++g) {
+        // Only the first kTailLanes lanes hold a byte of this group.
+        if (lane >= kTailLanes) break;
+        const float s = float(s_row[g]);
+        const float b = float(b_row[g]);
+        const uint8_t byte = W_row[g * (kGroupSize / 2) + lane];
+        for (uint t = 0; t < kInt4MaxRows; ++t) {
+            if (t >= T) break;
+            device const half* x_row = x + t * x_stride;
+            const float x0 = float(x_row[g * kGroupSize + lane * 2u]);
+            const float x1 = float(x_row[g * kGroupSize + lane * 2u + 1u]);
+            float dot = fma(float(uint(byte & 0x0Fu)), x0, 0.0f);
+            dot = fma(float(uint(byte >> 4)), x1, dot);
+            const float sum = x0 + x1;
+            acc[t] = fma(s, dot, acc[t]);
+            acc[t] = fma(b, sum, acc[t]);
+        }
+    }
+    // `T` is uniform across the SIMD group, so every lane reaches each of these
+    // reductions together.
+    for (uint t = 0; t < kInt4MaxRows; ++t) {
+        if (t >= T) break;
+        const float total = simd_sum(acc[t]);
+        if (lane == 0) {
+            y[t * y_stride + row] = half(total);
+        }
+    }
+}
+
+kernel void dequant_int4_gemv_rows_simd(
+    device const uint8_t* W        [[buffer(0)]],
+    device const bfloat*  scales   [[buffer(1)]],
+    device const bfloat*  biases   [[buffer(2)]],
+    device const half*    x        [[buffer(3)]],
+    device half*          y        [[buffer(4)]],
+    constant uint&        M        [[buffer(5)]],
+    constant uint&        N        [[buffer(6)]],
+    constant uint&        T        [[buffer(7)]],
+    constant uint&        x_stride [[buffer(8)]],
+    constant uint&        y_stride [[buffer(9)]],
+    uint                  tg_idx   [[threadgroup_position_in_grid]],
+    uint                  sg_idx   [[simdgroup_index_in_threadgroup]],
+    uint                  lane     [[thread_index_in_simdgroup]]
+) {
+    constexpr uint rows_per_tg = 8;
+    const uint MM = int4_fc_m(M);
+    const uint NN = int4_fc_n(N);
+    dequant_int4_gemv_rows_simd_body(W, scales, biases, x, y, MM, NN, T,
+                                     x_stride, y_stride,
+                                     rows_per_tg, tg_idx, sg_idx, lane);
+}
+
 
 kernel void dequant_int4_qkv_gemv_simd(
     device const uint8_t* qW      [[buffer(0)]],

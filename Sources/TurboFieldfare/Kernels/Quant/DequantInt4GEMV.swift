@@ -18,7 +18,11 @@ package final class DequantInt4GEMV {
         Shape(m: 2816, n: 8192),
     ]
 
+    /// Rows one `encodeRows` dispatch may carry. Matches `kInt4MaxRows`.
+    package static let maxRows = 8
+
     private let pipeline: MTLComputePipelineState
+    private let rowsPipeline: MTLComputePipelineState
     private let specializedPipelines: [Shape: MTLComputePipelineState]
 
     private let affineGroupSize: Int
@@ -27,6 +31,10 @@ package final class DequantInt4GEMV {
         self.affineGroupSize = context.affineGroupSize
         self.pipeline = try context.pipeline(
             "dequant_int4_gemv_simd",
+            constants: [],
+            maxTotalThreadsPerThreadgroup: 512)
+        self.rowsPipeline = try context.pipeline(
+            "dequant_int4_gemv_rows_simd",
             constants: [],
             maxTotalThreadsPerThreadgroup: 512)
 
@@ -80,6 +88,67 @@ package final class DequantInt4GEMV {
             width: 32 * Self.rowsPerThreadgroup,
             height: 1,
             depth: 1)
+        let threadgroupCount = MTLSize(
+            width: (Int(m) + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup,
+            height: 1,
+            depth: 1)
+        encoder.dispatchThreadgroups(threadgroupCount,
+                                     threadsPerThreadgroup: threadgroupSize)
+        encoder.endEncoding()
+    }
+
+    /// `t` activation rows against the same weights in one dispatch.
+    ///
+    /// `encode` called in a loop reads `W` once per row; this reads it once for
+    /// the whole block, which is what makes a k-token speculative verify cost
+    /// the bytes of one forward instead of k (docs/mtp/16-M4.5-PLAN.md §4 c).
+    /// Per output element the arithmetic is `encode`'s, in the same order, so
+    /// `t == 1` is bit-identical to it.
+    package func encodeRows(commandBuffer: MTLCommandBuffer,
+                            weights: MTLBuffer,
+                            weightsOffset: Int = 0,
+                            scales: MTLBuffer,
+                            scalesOffset: Int = 0,
+                            biases: MTLBuffer,
+                            biasesOffset: Int = 0,
+                            x: MTLBuffer,
+                            xOffset: Int = 0,
+                            xStrideElements: Int,
+                            y: MTLBuffer,
+                            yOffset: Int = 0,
+                            yStrideElements: Int,
+                            t: Int,
+                            m: UInt32,
+                            n: UInt32) {
+        precondition(n % UInt32(affineGroupSize) == 0,
+                     "N must be a multiple of \(affineGroupSize)")
+        precondition(weightsOffset % 2 == 0,
+                     "dequant_int4_gemv_rows_simd needs a 2-aligned weightsOffset, got \(weightsOffset)")
+        precondition(t >= 1 && t <= Self.maxRows,
+                     "row count \(t) is outside 1...\(Self.maxRows)")
+        precondition(xStrideElements >= Int(n), "x stride must cover N")
+        precondition(yStrideElements >= Int(m), "y stride must cover M")
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        encoder.setComputePipelineState(rowsPipeline)
+        encoder.setBuffer(weights, offset: weightsOffset, index: 0)
+        encoder.setBuffer(scales, offset: scalesOffset, index: 1)
+        encoder.setBuffer(biases, offset: biasesOffset, index: 2)
+        encoder.setBuffer(x, offset: xOffset, index: 3)
+        encoder.setBuffer(y, offset: yOffset, index: 4)
+        var mValue = m
+        var nValue = n
+        var tValue = UInt32(t)
+        var xStride = UInt32(xStrideElements)
+        var yStride = UInt32(yStrideElements)
+        encoder.setBytes(&mValue, length: MemoryLayout<UInt32>.size, index: 5)
+        encoder.setBytes(&nValue, length: MemoryLayout<UInt32>.size, index: 6)
+        encoder.setBytes(&tValue, length: MemoryLayout<UInt32>.size, index: 7)
+        encoder.setBytes(&xStride, length: MemoryLayout<UInt32>.size, index: 8)
+        encoder.setBytes(&yStride, length: MemoryLayout<UInt32>.size, index: 9)
+
+        let threadgroupSize = MTLSize(width: 32 * Self.rowsPerThreadgroup,
+                                      height: 1,
+                                      depth: 1)
         let threadgroupCount = MTLSize(
             width: (Int(m) + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup,
             height: 1,

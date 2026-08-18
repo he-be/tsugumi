@@ -183,13 +183,19 @@ package final class MoE {
 
     /// BF16 (unquantized) router weights. Same logits and top-k contract as
     /// `encodeRouterGemma4`, minus the scale/bias buffers.
+    /// The offsets exist for the speculative verify block, which routes k rows
+    /// through this kernel one row at a time so that its routing decisions are
+    /// decode's rather than a second implementation's: the two reduce the same
+    /// dot product in a different order, and a near-tie between two experts
+    /// resolves differently on either side (docs/mtp/16-M4.5-PLAN.md §4).
+    /// Plain decode passes zeros and is unaffected.
     package func encodeRouterGemma4BF16(commandBuffer: MTLCommandBuffer,
                                 weights: MTLBuffer, weightsOffset: Int = 0,
-                                hidden: MTLBuffer,
+                                hidden: MTLBuffer, hiddenOffset: Int = 0,
                                 effectiveScale: MTLBuffer, effectiveScaleOffset: Int = 0,
                                 perExpertScale: MTLBuffer, perExpertScaleOffset: Int = 0,
-                                outIndices: MTLBuffer,
-                                outWeights: MTLBuffer,
+                                outIndices: MTLBuffer, outIndicesOffset: Int = 0,
+                                outWeights: MTLBuffer, outWeightsOffset: Int = 0,
                                 numExperts: UInt32,
                                 d: UInt32,
                                 topK: UInt32) {
@@ -206,7 +212,7 @@ package final class MoE {
             encoder.setComputePipelineState(
                 useSpecialized ? routerGemvSpecializedPSO : routerGemvPSO)
             encoder.setBuffer(weights, offset: weightsOffset, index: 0)
-            encoder.setBuffer(hidden, offset: 0, index: 1)
+            encoder.setBuffer(hidden, offset: hiddenOffset, index: 1)
             encoder.setBuffer(effectiveScale, offset: effectiveScaleOffset, index: 2)
             encoder.setBuffer(routerLogits, offset: 0, index: 3)
             encoder.setBytes(&expertCount, length: MemoryLayout<UInt32>.stride, index: 4)
@@ -221,7 +227,9 @@ package final class MoE {
                            perExpertScale: perExpertScale,
                            perExpertScaleOffset: perExpertScaleOffset,
                            outIndices: outIndices,
+                           outIndicesOffset: outIndicesOffset,
                            outWeights: outWeights,
+                           outWeightsOffset: outWeightsOffset,
                            numExperts: numExperts,
                            useSpecialized: useSpecialized)
     }
@@ -230,7 +238,9 @@ package final class MoE {
                                     perExpertScale: MTLBuffer,
                                     perExpertScaleOffset: Int,
                                     outIndices: MTLBuffer,
+                                    outIndicesOffset: Int = 0,
                                     outWeights: MTLBuffer,
+                                    outWeightsOffset: Int = 0,
                                     numExperts: UInt32,
                                     useSpecialized: Bool) {
         var expertCount = numExperts
@@ -239,8 +249,8 @@ package final class MoE {
                 useSpecialized ? routerSelectK8SpecializedPSO : routerSelectK8PSO)
             encoder.setBuffer(routerLogits, offset: 0, index: 0)
             encoder.setBuffer(perExpertScale, offset: perExpertScaleOffset, index: 1)
-            encoder.setBuffer(outIndices, offset: 0, index: 2)
-            encoder.setBuffer(outWeights, offset: 0, index: 3)
+            encoder.setBuffer(outIndices, offset: outIndicesOffset, index: 2)
+            encoder.setBuffer(outWeights, offset: outWeightsOffset, index: 3)
             encoder.setBytes(&expertCount, length: MemoryLayout<UInt32>.stride, index: 4)
             encoder.dispatchThreadgroups(
                 MTLSize(width: 1, height: 1, depth: 1),

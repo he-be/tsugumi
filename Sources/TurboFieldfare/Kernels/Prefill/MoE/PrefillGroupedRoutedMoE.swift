@@ -14,8 +14,9 @@ enum PrefillGroupedRoutedMoEBufferIndex {
     static let mode = 11
 }
 
-/// One 64-row slice of one expert's route pairs, as the tiled GEMM sees it.
-/// Matches `PrefillRoutedGEMMBlockMSL`.
+/// One slice of one expert's route pairs: up to 64 rows for the tiled GEMM,
+/// up to `rowsMaxPerExpert` for the rows path. Matches
+/// `PrefillRoutedGEMMBlockMSL`.
 struct PrefillRoutedGEMMBlock: Equatable, Sendable {
     var localSlot: UInt32
     var pairStart: UInt32
@@ -328,7 +329,12 @@ public struct PrefillStreamedTileBinding: Sendable, Equatable {
                 throw PrefillGroupedRoutedMoEError.invalidStreamedTileBinding(
                     "preplanned fetch does not match tile \(tileIndex)")
             }
-            views = try await model.fetchRoutedExperts(plan: plan)
+            // A tile whose experts are all resident needs no I/O queue hop.
+            if let resident = try model.fetchResidentRoutedExperts(plan: plan) {
+                views = resident
+            } else {
+                views = try await model.fetchRoutedExperts(plan: plan)
+            }
             usedPlannedFetch = true
             plannedHits = plan.hits
             plannedMissIndices = plan.misses
@@ -421,6 +427,11 @@ final class PrefillGroupedRoutedMoE {
     static let gemmTileN = 64
     static let gemmTileK = 32
     static let gemmThreadsPerGroup = 128
+    /// Route rows one `encodeStreamedRows` block may carry. Matches
+    /// `kPrefillMoERowsMax`; an expert can hold at most one row per token, so
+    /// this is also the widest speculative block the path serves.
+    static let rowsMaxPerExpert = 8
+    static let rowsPerThreadgroup = 8
 
     /// `TF_PREFILL_MOE=scalar` forces the per-pair GEMV kernels, so the two
     /// paths can be measured against each other without a rebuild. It is also
@@ -429,11 +440,21 @@ final class PrefillGroupedRoutedMoE {
     /// `PrefillInt4QMM`). Anything else, including unset, takes the tiled path.
     private static let forcedPath = ProcessInfo.processInfo.environment["TF_PREFILL_MOE"]
 
+    /// Reused staging, indexed the way a chunk uses it: one sorted-pair buffer
+    /// per layer and one argument buffer per tile position. A layer's routed
+    /// work is always drained before the next layer refills these, so reuse is
+    /// safe — and it takes about 150 buffer allocations out of a verify block,
+    /// which is host time the GPU spends idle (docs/mtp/16-M4.5-PLAN.md §4 d).
+    private var sortedPairsScratch: MTLBuffer?
+    private var argumentBufferPool: [MTLBuffer] = []
+
     private let affineGroupSize: Int
     private let batchedPhase1PSO: MTLComputePipelineState
     private let batchedDownPSO: MTLComputePipelineState
     private let gemmPSO: MTLComputePipelineState?
     private let geluMulPSO: MTLComputePipelineState?
+    private let rowsGateUpPSO: MTLComputePipelineState?
+    private let rowsDownPSO: MTLComputePipelineState?
     private let streamedArgEncoder: MTLArgumentEncoder
 
     func makeStreamedArgumentBuffer(device: MTLDevice,
@@ -468,6 +489,16 @@ final class PrefillGroupedRoutedMoE {
             self.gemmPSO = usable ? candidate : nil
             self.geluMulPSO = usable ? try? context.pipeline("prefill_moe_gate_up_gelu_mul") : nil
         }
+        // The rows path is a GEMV, so it stands on its own: `TF_PREFILL_MOE=scalar`
+        // turns off the tiled kernel's FP16 weight staging, which this path
+        // never had.
+        let rowsThreads = 32 * Self.rowsPerThreadgroup
+        let rowsGateUp = try? context.pipeline("prefill_moe_rows_gate_up_act")
+        let rowsDown = try? context.pipeline("prefill_moe_rows_down")
+        let rowsUsable = (rowsGateUp?.maxTotalThreadsPerThreadgroup ?? 0) >= rowsThreads
+            && (rowsDown?.maxTotalThreadsPerThreadgroup ?? 0) >= rowsThreads
+        self.rowsGateUpPSO = rowsUsable ? rowsGateUp : nil
+        self.rowsDownPSO = rowsUsable ? rowsDown : nil
         guard let streamedFn = try context.library.makeFunction(name: "prefill_grouped_routed_moe_batched_phase1") else {
             throw MetalError.missingFunction("prefill_grouped_routed_moe_batched_phase1")
         }
@@ -491,14 +522,48 @@ final class PrefillGroupedRoutedMoE {
         routes: PrefillMoEGroupedRoutes
     ) throws -> PrefillGroupedRoutedMoEStreamedMetadataBuffers {
         let bytes = routes.sortedPairs.count * MemoryLayout<PrefillTokenExpertPair>.stride
+        if let scratch = sortedPairsScratch, scratch.length >= bytes, bytes > 0 {
+            routes.sortedPairs.withUnsafeBufferPointer { ptr in
+                scratch.contents().copyMemory(from: ptr.baseAddress!, byteCount: bytes)
+            }
+            return PrefillGroupedRoutedMoEStreamedMetadataBuffers(sortedPairs: scratch)
+        }
         guard let sortedPairs = routes.sortedPairs.withUnsafeBufferPointer({ ptr in
             device.makeBuffer(bytes: ptr.baseAddress!,
-                              length: bytes,
+                              length: max(bytes, 1),
                               options: .storageModeShared)
         }) else {
             throw PrefillGroupedRoutedMoEError.allocationFailed("prefill sorted route pairs")
         }
+        sortedPairs.label = "prefill.groupedMoe.sortedPairs"
+        sortedPairsScratch = sortedPairs
         return PrefillGroupedRoutedMoEStreamedMetadataBuffers(sortedPairs: sortedPairs)
+    }
+
+    /// `makeStreamedArgumentBuffer` against a pooled buffer. `index` is the
+    /// tile's position in its layer, so the same buffer serves the same tile
+    /// position of every layer.
+    func streamedArgumentBuffer(device: MTLDevice,
+                                index: Int,
+                                binding: PrefillStreamedTileBinding) throws
+        -> PrefillStreamedTileArgumentBuffer {
+        precondition(index >= 0, "tile index must be non-negative")
+        while argumentBufferPool.count <= index {
+            guard let buffer = device.makeBuffer(length: streamedArgEncoder.encodedLength,
+                                                 options: .storageModeShared) else {
+                throw PrefillGroupedRoutedMoEError.allocationFailed(
+                    "prefill streamed expert argument buffer")
+            }
+            buffer.label = "prefill.groupedMoe.streamedArgumentBuffer.\(argumentBufferPool.count)"
+            argumentBufferPool.append(buffer)
+        }
+        let buffer = argumentBufferPool[index]
+        streamedArgEncoder.setArgumentBuffer(buffer, offset: 0)
+        for viewIndex in binding.views.indices {
+            let view = binding.views[viewIndex]
+            streamedArgEncoder.setBuffer(view.buffer, offset: Int(view.offset), index: viewIndex)
+        }
+        return PrefillStreamedTileArgumentBuffer(buffer: buffer)
     }
 
     @discardableResult
@@ -576,6 +641,107 @@ final class PrefillGroupedRoutedMoE {
             microbatchCount += 1
         }
         return microbatchCount
+    }
+
+    /// Whether the rows path can serve a tile whose widest expert holds
+    /// `maxPairsPerExpert` route rows.
+    ///
+    /// The reduction is the decode GEMV's, which needs no alignment beyond the
+    /// affine group the weights are packed with; the ceiling is the row count
+    /// the kernel keeps in registers.
+    func usesExpertRowsPath(maxPairsPerExpert: Int) -> Bool {
+        rowsGateUpPSO != nil && rowsDownPSO != nil
+            && maxPairsPerExpert >= 1 && maxPairsPerExpert <= Self.rowsMaxPerExpert
+    }
+
+    /// Runs a tile as one GEMV per (expert, output row), carrying all of that
+    /// expert's route rows at once.
+    ///
+    /// One block per live expert — an expert holds at most one row per token,
+    /// so a k-token block never needs more than k rows and never splits. Two
+    /// dispatches: gate/up with the non-linearity folded in (the two halves
+    /// share their activation loads, as they do in decode), then down scattered
+    /// into `routePartials`. `routePartials` is written once per pair, so the
+    /// token-major reduction downstream is unchanged.
+    ///
+    /// `groups` are the tile's expert groups in binding order — group `i` is
+    /// `binding.expertIDs[i]`.
+    @discardableResult
+    func encodeStreamedRows(commandBuffer: MTLCommandBuffer,
+                            hidden: MTLBuffer,
+                            hiddenOffset: Int = 0,
+                            sortedPairs: MTLBuffer,
+                            sortedPairsOffset: Int = 0,
+                            routePartials: MTLBuffer,
+                            routePartialsOffset: Int = 0,
+                            gateUpActScratch: MTLBuffer,
+                            gateUpActScratchOffset: Int = 0,
+                            argumentBuffer: PrefillStreamedTileArgumentBuffer,
+                            binding: PrefillStreamedTileBinding,
+                            groups: [PrefillMoEGroup],
+                            params: PrefillGroupedRoutedMoEStreamedParams,
+                            maxRows: Int) -> Int {
+        guard let rowsGateUpPSO, let rowsDownPSO,
+              params.liveExpertCount == UInt32(binding.views.count),
+              groups.count == binding.views.count,
+              !groups.isEmpty else { return 0 }
+
+        var blocks: [PrefillRoutedGEMMBlock] = []
+        blocks.reserveCapacity(groups.count)
+        var rows = 0
+        for (slot, group) in groups.enumerated() {
+            let count = Int(group.pairCount)
+            guard count >= 1, count <= Self.rowsMaxPerExpert else { return 0 }
+            blocks.append(PrefillRoutedGEMMBlock(localSlot: UInt32(slot),
+                                                 pairStart: group.pairStart,
+                                                 rowCount: UInt32(count),
+                                                 localRow: UInt32(rows)))
+            rows += count
+        }
+        // The activation staging is `[rows, F]` inside the scratch the chunk
+        // was sized for; a tile wider than that belongs on another path.
+        guard rows <= maxRows else { return 0 }
+
+        var p = params
+        p.pairStart = 0
+        p.pairCount = UInt32(rows)
+        let blockBytes = blocks.count * MemoryLayout<PrefillRoutedGEMMBlock>.stride
+        let threadgroup = MTLSize(width: 32 * Self.rowsPerThreadgroup, height: 1, depth: 1)
+
+        func encode(_ pso: MTLComputePipelineState, outputRows: Int, down: Bool) {
+            guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+            enc.setComputePipelineState(pso)
+            if !down {
+                enc.setBuffer(hidden, offset: hiddenOffset,
+                              index: PrefillGroupedRoutedMoEBufferIndex.hidden)
+            }
+            enc.setBuffer(sortedPairs, offset: sortedPairsOffset,
+                          index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
+            enc.setBytes(&blocks, length: blockBytes,
+                         index: PrefillGroupedRoutedMoEBufferIndex.blocks)
+            if down {
+                enc.setBuffer(routePartials, offset: routePartialsOffset,
+                              index: PrefillGroupedRoutedMoEBufferIndex.routePartials)
+            }
+            enc.setBuffer(gateUpActScratch, offset: gateUpActScratchOffset,
+                          index: PrefillGroupedRoutedMoEBufferIndex.gateUpActScratch)
+            enc.setBuffer(argumentBuffer.buffer, offset: 0,
+                          index: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
+            enc.setBytes(&p,
+                         length: MemoryLayout<PrefillGroupedRoutedMoEStreamedParams>.stride,
+                         index: PrefillGroupedRoutedMoEBufferIndex.params)
+            for view in binding.views {
+                enc.useResource(view.buffer, usage: .read)
+            }
+            let tiles = (outputRows + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup
+            enc.dispatchThreadgroups(MTLSize(width: tiles, height: blocks.count, depth: 1),
+                                     threadsPerThreadgroup: threadgroup)
+            enc.endEncoding()
+        }
+
+        encode(rowsGateUpPSO, outputRows: Int(params.routedIntermediate), down: false)
+        encode(rowsDownPSO, outputRows: Int(params.d), down: true)
+        return blocks.count
     }
 
     /// Runs a tile as one GEMM per expert-row-block instead of one GEMV per
