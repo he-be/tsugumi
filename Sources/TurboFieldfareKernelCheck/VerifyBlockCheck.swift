@@ -166,10 +166,53 @@ private func makeRunner(model: Model,
         runtimeConfiguration: RuntimeConfiguration(forceLogitsHead: forceLogitsHead))
 }
 
+/// The prompt the probe walks, with its image spans resolved.
+private struct BuiltPrompt {
+    let ids: [Int32]
+    let vision: VisionPrefillInput?
+    let softTokens: Int
+}
+
+/// Text-only completion by default — that keeps every earlier number in
+/// `docs/mtp` comparable. With images or `thinking`, the prompt is rendered
+/// through the chat template instead, exactly as `TurboFieldfareCLI` renders
+/// it, so the probe walks the positions the goal condition actually walks.
+private func buildVerifyPrompt(tokenizer: GFTokenizer,
+                               prompt: String,
+                               images: [String],
+                               thinking: Bool,
+                               imageTokens: Int) throws -> BuiltPrompt {
+    guard !images.isEmpty || thinking else {
+        return BuiltPrompt(ids: tokenizer.encode(prompt, addBOS: true),
+                           vision: nil, softTokens: 0)
+    }
+    let parts: [GFTokenizer.ContentPart] = [.text(prompt)] + images.map { _ in .image }
+    let rendered = try tokenizer.applyChatTemplate(
+        multimodal: [GFTokenizer.MultimodalMessage(role: .user, parts: parts)],
+        enableThinking: thinking)
+    let tokens = tokenizer.encode(rendered, addBOS: false)
+    guard !images.isEmpty else {
+        return BuiltPrompt(ids: tokens, vision: nil, softTokens: 0)
+    }
+    let config = try VisionPreprocessorConfig(maxSoftTokens: imageTokens)
+    let preprocessed = try images.map { path in
+        try VisionImagePreprocessor.preprocess(contentsOf: URL(fileURLWithPath: path),
+                                               config: config)
+    }
+    let ids = try VisionMediaTokenIDs(tokenizer: tokenizer)
+    let assembled = try VisionPromptAssembler.makePrefillPrompt(tokens: tokens,
+                                                                images: preprocessed,
+                                                                ids: ids)
+    return BuiltPrompt(ids: assembled.tokens,
+                       vision: assembled.vision,
+                       softTokens: preprocessed.reduce(0) { $0 + $1.geometry.softTokenCount })
+}
+
 /// Prefill the prompt and return the cursor it leaves behind.
 @discardableResult
 private func prefillPrompt(runner: RealForwardRunner,
                            promptIds: [Int32],
+                           vision: VisionPrefillInput? = nil,
                            into logits: MTLBuffer) async throws -> Int {
     runner.reset()
     let result = try await runner.prefillChunked(
@@ -177,7 +220,7 @@ private func prefillPrompt(runner: RealForwardRunner,
         startPosition: 0,
         outputMode: runner.usesFusedGreedyHead ? .greedyIfAvailable : .logits,
         config: .production(chunkTokens: 2048),
-        vision: nil,
+        vision: vision,
         into: logits) { _ in }
     return result.newPosition
 }
@@ -188,13 +231,27 @@ func runVerifyBlockChecks(modelPath: String,
                           blockTokens: Int,
                           rounds: Int,
                           prompt: String,
+                          images: [String] = [],
+                          thinking: Bool = false,
+                          imageTokens: Int = 280,
+                          cold: Bool = false,
                           costOnly: Bool = false) async throws -> [CaseResult] {
     precondition(blockTokens >= 2 && blockTokens <= SpeculativeBlock.maxTokens,
                  "block tokens must be in 2...\(SpeculativeBlock.maxTokens)")
     let directoryURL = URL(fileURLWithPath: modelPath)
     let context = try MetalContext()
     let tokenizer = try await GFTokenizer.load(forModelDirectory: directoryURL)
-    let promptIds = tokenizer.encode(prompt, addBOS: true)
+    // The goal condition is a chat turn with an image in it and reasoning on
+    // (docs/mtp/10-M0-RESULTS.md §4), not a bare completion. `--verify-image` /
+    // `--verify-thinking` build exactly that prompt, through the same assembler
+    // the CLI uses, so the cost probe can be run where MTP is supposed to pay.
+    let built = try buildVerifyPrompt(tokenizer: tokenizer,
+                                      prompt: prompt,
+                                      images: images,
+                                      thinking: thinking,
+                                      imageTokens: imageTokens)
+    let promptIds = built.ids
+    let vision = built.vision
     guard promptIds.count >= 2 else {
         throw VerifyBlockCheckError.promptTooShort(promptIds.count)
     }
@@ -219,7 +276,13 @@ func runVerifyBlockChecks(modelPath: String,
 
     print("=== MTP verify pass + KV rewind (docs/mtp 04-PHASES M4) ===")
     print("  model    \(directoryURL.lastPathComponent)")
-    print("  prompt   \(promptIds.count) tok, block k=\(blockTokens), rounds=\(rounds)")
+    print("  prompt   \(promptIds.count) tok, block k=\(blockTokens), rounds=\(rounds)"
+          + (built.softTokens > 0 ? ", vision \(images.count) img/\(built.softTokens) soft" : "")
+          + (thinking ? ", thinking" : ""))
+    if costOnly {
+        print("  probe    \(cold ? "cold" : "warm") cache, "
+              + "\(CostProbePlan.tokens) positions per phase")
+    }
     print("  cache    \(runtime.expertCacheSlots) slots/layer, "
           + "\(runtime.modelExpertCachePolicy.rawValue)")
 
@@ -230,22 +293,22 @@ func runVerifyBlockChecks(modelPath: String,
     // with exactly one runner in it.
     if costOnly {
         try await costProbe(model: model, context: context, promptIds: promptIds,
-                            vocab: vocab, maxContext: maxContext,
-                            blockTokens: blockTokens)
+                            vision: vision, vocab: vocab, maxContext: maxContext,
+                            blockTokens: blockTokens, cold: cold)
         return results
     }
     results.append(contentsOf: try await prefillPathBaseline(
-        model: model, context: context, promptIds: promptIds, vocab: vocab,
+        model: model, context: context, promptIds: promptIds, vision: vision, vocab: vocab,
         maxContext: maxContext))
     // Width 1 first, over the same number of positions: the chunk path with
     // nothing speculative about it, and therefore the bar the real block has to
     // meet. Anything the k-token block adds shows up as a difference between
     // these two distributions.
     let width1 = try await verifyRowsAgainstScalarDecode(
-        model: model, context: context, promptIds: promptIds, vocab: vocab,
+        model: model, context: context, promptIds: promptIds, vision: vision, vocab: vocab,
         maxContext: maxContext, blockTokens: 1, rounds: rounds * blockTokens)
     let wide = try await verifyRowsAgainstScalarDecode(
-        model: model, context: context, promptIds: promptIds, vocab: vocab,
+        model: model, context: context, promptIds: promptIds, vision: vision, vocab: vocab,
         maxContext: maxContext, blockTokens: blockTokens, rounds: rounds)
     results.append(contentsOf: width1.cases)
     results.append(contentsOf: wide.cases)
@@ -258,14 +321,14 @@ func runVerifyBlockChecks(modelPath: String,
                                          blockTokens, wide.worst, width1.worst,
                                          wide.median, width1.median)))
     results.append(contentsOf: try await verifyGreedyRows(
-        model: model, context: context, promptIds: promptIds, vocab: vocab,
+        model: model, context: context, promptIds: promptIds, vision: vision, vocab: vocab,
         maxContext: maxContext, blockTokens: blockTokens, rounds: rounds))
     results.append(contentsOf: try await rewindEquivalence(
-        model: model, context: context, promptIds: promptIds, vocab: vocab,
+        model: model, context: context, promptIds: promptIds, vision: vision, vocab: vocab,
         maxContext: maxContext, blockTokens: blockTokens))
     try await costProbe(model: model, context: context, promptIds: promptIds,
-                        vocab: vocab, maxContext: maxContext,
-                        blockTokens: blockTokens)
+                        vision: vision, vocab: vocab, maxContext: maxContext,
+                        blockTokens: blockTokens, cold: cold)
     return results
 }
 
@@ -280,6 +343,7 @@ func runVerifyBlockChecks(modelPath: String,
 private func prefillPathBaseline(model: Model,
                                  context: MetalContext,
                                  promptIds: [Int32],
+                                 vision: VisionPrefillInput?,
                                  vocab: Int,
                                  maxContext: Int) async throws -> [CaseResult] {
     let runner = try makeRunner(model: model, context: context,
@@ -289,7 +353,8 @@ private func prefillPathBaseline(model: Model,
     let logits = try sharedBuffer(device, bytes: rowBytes, label: "baseline.logits")
 
     // The whole prompt through the chunk path.
-    _ = try await prefillPrompt(runner: runner, promptIds: promptIds, into: logits)
+    _ = try await prefillPrompt(runner: runner, promptIds: promptIds,
+                                vision: vision, into: logits)
     let chunkRow = Fp16Buffer.read(logits, count: vocab)
 
     // The same final position through the scalar path.
@@ -321,6 +386,7 @@ private struct RowSweep {
 private func verifyRowsAgainstScalarDecode(model: Model,
                                            context: MetalContext,
                                            promptIds: [Int32],
+                                           vision: VisionPrefillInput?,
                                            vocab: Int,
                                            maxContext: Int,
                                            blockTokens: Int,
@@ -469,6 +535,7 @@ private func verifyRowsAgainstScalarDecode(model: Model,
 private func verifyGreedyRows(model: Model,
                               context: MetalContext,
                               promptIds: [Int32],
+                              vision: VisionPrefillInput?,
                               vocab: Int,
                               maxContext: Int,
                               blockTokens: Int,
@@ -541,20 +608,63 @@ private func verifyGreedyRows(model: Model,
 /// is paying for the tokens. The two have different fixes and only the sweep
 /// tells them apart.
 private enum CostProbePlan {
-    static let timedBlocks = 16
+    /// Blocks per width. `TF_VERIFY_COST_BLOCKS` widens the stream: a cold
+    /// probe wants enough positions for the cache to leave its opening
+    /// transient, which the 16-block default does not give it.
+    static let timedBlocks = Int(ProcessInfo.processInfo
+        .environment["TF_VERIFY_COST_BLOCKS"] ?? "") ?? 16
     static let warmupBlocks = 2
     /// Positions one pass walks. Every width replays the same stream, so the
     /// widest one sizes it.
     static let tokens = (timedBlocks + warmupBlocks) * SpeculativeBlock.maxTokens
 }
 
+/// Expert I/O attributable to one timed phase.
+private struct ExpertIODelta {
+    let experts: Int
+    let hits: Int
+    let seconds: Double
+
+    var hitRate: Double { experts > 0 ? Double(hits) / Double(experts) : 0 }
+
+    /// Both phases together: `verifyBlock` books its fetches under `prefill`
+    /// (it is the chunk path) and `produce` books them under `decode`, and the
+    /// probe wants the fetches of whatever it just timed.
+    init(from before: ExpertTelemetrySnapshot, to after: ExpertTelemetrySnapshot) {
+        experts = (after.decode.experts - before.decode.experts)
+            + (after.prefill.experts - before.prefill.experts)
+        hits = (after.decode.hits - before.decode.hits)
+            + (after.prefill.hits - before.prefill.hits)
+        seconds = Double((after.decode.fetchNanos - before.decode.fetchNanos)
+            + (after.prefill.fetchNanos - before.prefill.fetchNanos)) / 1e9
+    }
+
+    func describe(_ label: String, over positions: Int) -> String {
+        let padded = label.padding(toLength: max(label.count, 6),
+                                   withPad: " ", startingAt: 0)
+        return String(format: "  %@ hit=%.1f%% miss=%d io=%.2fs (%.2f ms/pos)",
+                      padded, hitRate * 100, experts - hits,
+                      seconds, seconds * 1000 / Double(max(positions, 1)))
+    }
+}
+
 private func costProbe(model: Model,
                        context: MetalContext,
                        promptIds: [Int32],
+                       vision: VisionPrefillInput?,
                        vocab: Int,
                        maxContext: Int,
-                       blockTokens: Int) async throws {
-    let widths = Array(Set([1, 2, blockTokens, SpeculativeBlock.maxTokens])).sorted()
+                       blockTokens: Int,
+                       cold: Bool) async throws {
+    // One process normally sweeps every width, which is cheap but orders them:
+    // the last width is measured on a machine that has already read tens of GB
+    // and warmed up. `TF_VERIFY_COST_WIDTHS` narrows the sweep so a width can be
+    // run on its own, bracketed by its own decode baseline.
+    let requested = (ProcessInfo.processInfo.environment["TF_VERIFY_COST_WIDTHS"] ?? "")
+        .split(separator: ",").compactMap { Int($0) }
+    let widths = requested.isEmpty
+        ? Array(Set([1, 2, blockTokens, SpeculativeBlock.maxTokens])).sorted()
+        : requested.sorted()
     let timedBlocks = CostProbePlan.timedBlocks
     let warmupBlocks = CostProbePlan.warmupBlocks
     let total = CostProbePlan.tokens
@@ -573,14 +683,28 @@ private func costProbe(model: Model,
     // sweep, because this machine drifts: the same phase has come out anywhere
     // between 45 and 62 ms/tok across runs. Bracketing it makes the drift
     // visible instead of silently scaling every ratio below it.
-    let produceWarmup = warmupBlocks * (widths.last ?? blockTokens)
+    //
+    // Warm (the default): the stream is walked once per width on a cache the
+    // recording decode pass already filled, and the first `warmupBlocks` are
+    // dropped. Cold: every phase starts from an empty expert cache and times
+    // all of its positions, so decode and the block each pay their own misses.
+    //
+    // Every width walks the *same* positions — `total / k` blocks rather than a
+    // fixed block count — because the KV grows under the sweep: a width that
+    // stops after 48 blocks is measured on a shorter context than one that runs
+    // to 384. Documents before 21 used a fixed block count per width, so their
+    // wide k are measured deeper into the stream than their narrow k.
+    let produceWarmup = cold ? 0 : warmupBlocks * (widths.last ?? blockTokens)
     var tokens: [Int32] = []
     var promptEnd = 0
+    var ioLines: [String] = []
 
     func decodePass(record: Bool) async throws -> Double {
+        if cold { model.resetExpertCaches() }
         var position = try await prefillPrompt(runner: runner, promptIds: promptIds,
-                                               into: logits)
+                                               vision: vision, into: logits)
         if record { promptEnd = position }
+        let ioBefore = model.telemetry.snapshot()
         var token = Int32(bitPattern: runner.lastGreedyToken)
         var seconds = 0.0
         for step in 0..<total {
@@ -591,35 +715,60 @@ private func costProbe(model: Model,
             position += 1
             token = Int32(bitPattern: runner.lastGreedyToken)
         }
+        if record {
+            ioLines.append(ExpertIODelta(from: ioBefore, to: model.telemetry.snapshot())
+                .describe("decode", over: total))
+        }
         return seconds * 1000 / Double(total - produceWarmup)
     }
 
-    let decodeBefore = try await decodePass(record: true)
+    // The decode baseline is re-measured after every width, not once at each
+    // end of the sweep: this machine drifts far enough inside one run (54 →
+    // 94 ms/tok has been seen) that a single bracket cannot be divided out.
+    // Each width is priced against the mean of the two baselines around it.
+    var baselines = [try await decodePass(record: true)]
     var position = 0
 
     var line = ""
     for k in widths {
-        position = try await prefillPrompt(runner: runner, promptIds: promptIds, into: logits)
+        if cold { model.resetExpertCaches() }
+        position = try await prefillPrompt(runner: runner, promptIds: promptIds,
+                                           vision: vision, into: logits)
         precondition(position == promptEnd, "prefill is not reproducible — harness bug")
+        let ioBefore = model.telemetry.snapshot()
+        // `TF_VERIFY_COST_FIXED_BLOCKS=1` restores the pre-21 protocol — a fixed
+        // block count per width, so wide k walk further into the stream than
+        // narrow k — for A/B against the numbers 15-M4 … 20-M4.8 published.
+        let fixedBlocks = ProcessInfo.processInfo
+            .environment["TF_VERIFY_COST_FIXED_BLOCKS"] == "1"
+        let blocks = fixedBlocks ? warmupBlocks + timedBlocks : total / k
+        let skipped = cold ? 0 : min(warmupBlocks, blocks - 1)
         var seconds = 0.0
-        for block in 0..<(warmupBlocks + timedBlocks) {
+        for block in 0..<blocks {
             let lower = block * k
             let at = Date()
             try await runner.verifyBlock(tokens: tokens[lower..<(lower + k)],
                                          startPosition: position,
                                          into: logits,
                                          greedyTokens: greedyRows)
-            if block >= warmupBlocks { seconds += Date().timeIntervalSince(at) }
+            if block >= skipped { seconds += Date().timeIntervalSince(at) }
             position += k
         }
-        let msPerBlock = seconds * 1000 / Double(timedBlocks)
-        line += String(format: "  |  k=%d %.0f ms/block", k, msPerBlock)
+        let msPerBlock = seconds * 1000 / Double(blocks - skipped)
+        ioLines.append(ExpertIODelta(from: ioBefore, to: model.telemetry.snapshot())
+            .describe("k=\(k)", over: blocks * k))
+        baselines.append(try await decodePass(record: false))
+        let decode = (baselines[baselines.count - 2] + baselines[baselines.count - 1]) / 2
+        line += String(format: "  |  k=%d %.0f ms/block = %.2f decode (%.1f/%.1f ms/tok)",
+                       k, msPerBlock, msPerBlock / decode,
+                       baselines[baselines.count - 2], baselines[baselines.count - 1])
     }
-    let decodeAfter = try await decodePass(record: false)
-    let decode = (decodeBefore + decodeAfter) / 2
-    print(String(format: "  cost: decode=%.1f ms/tok (%.1f before, %.1f after)%@",
-                 decode, decodeBefore, decodeAfter, line))
+    let decode = baselines.reduce(0, +) / Double(baselines.count)
+    print(String(format: "  cost: decode=%.1f ms/tok%@", decode, line))
     // Which side of the round is paying: expert bytes, or everything else.
+    // Per phase first (this is the whole point of a cold probe), then the
+    // process totals the earlier documents quote.
+    for ioLine in ioLines { print(ioLine) }
     let telemetry = model.telemetry.snapshot()
     print(String(format: "  expert io: decode hit=%.1f%% %d/%d io=%.2fs  |  "
                  + "prefill hit=%.1f%% %d/%d io=%.2fs",
@@ -642,6 +791,7 @@ private enum RewindFault: String, CaseIterable {
 private func rewindEquivalence(model: Model,
                                context: MetalContext,
                                promptIds: [Int32],
+                               vision: VisionPrefillInput?,
                                vocab: Int,
                                maxContext: Int,
                                blockTokens: Int) async throws -> [CaseResult] {

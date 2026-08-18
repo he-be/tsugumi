@@ -19,6 +19,17 @@ public struct RoutedExpertFetchPlan: Sendable {
 }
 
 extension Model {
+    /// Empty every open layer's expert cache. Measurement only: it lets a probe
+    /// start two phases from the same cold cache (`PreadExpertStreamer.resetCache`).
+    /// Layers that were never opened have nothing cached, so they are skipped.
+    public func resetExpertCaches() {
+        streamersQueue.sync {
+            for streamer in streamersBox.streamers {
+                streamer?.resetCache()
+            }
+        }
+    }
+
     public func routedExpertOffsets(layer: Int) -> MoEExpertOffsets {
         let expert = packedExpertsLayout.expert(layer: layer, expert: 0)
         func offset(_ role: String) -> UInt32 {

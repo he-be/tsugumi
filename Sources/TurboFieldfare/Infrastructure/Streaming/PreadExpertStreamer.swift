@@ -349,6 +349,32 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         adviseRanges(expertAdviceRanges(experts: experts), requested: experts.count)
     }
 
+    /// Drop every cached expert, leaving the cache as it was at open time.
+    ///
+    /// Measurement only (`--verify-cold`, docs/mtp/21-GOAL-CONDITION-RESULTS.md): the
+    /// warm cost probe replays a stream decode has already fetched, so it
+    /// reports the case where the block has no expert I/O to fold. Starting
+    /// each timed phase from the same empty cache measures the other end.
+    /// The file's pages stay in the OS page cache — this cools the slot cache,
+    /// not the SSD.
+    public func resetCache() {
+        cacheLock.lock()
+        for slot in slotExpert.indices {
+            slotExpert[slot] = -1
+            slotLastUse[slot] = 0
+        }
+        for expert in expertUseCount.indices {
+            expertUseCount[expert] = 0
+            expertResidency[expert] = 0
+            expertSlotHint[expert] = -1
+        }
+        useClock = 0
+        cacheLock.unlock()
+        cursorLock.lock()
+        nextSlot = 0
+        cursorLock.unlock()
+    }
+
     public func adviseExpertMisses(experts: [Int]) -> ExpertIOAdviceResult {
         cacheLock.lock()
         let misses = experts.filter { expert in

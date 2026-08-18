@@ -1310,6 +1310,24 @@ var verifyPrompt = VerifyBlockPrompt.default
 if let index = arguments.firstIndex(of: "--verify-prompt"), index + 1 < arguments.count {
     verifyPrompt = arguments[index + 1]
 }
+// The goal condition (docs/mtp/10-M0-RESULTS.md §4) is an image plus reasoning,
+// not a bare completion, and its cache is not the one a replayed stream leaves
+// behind. These three put the cost probe there: `--verify-image` attaches an
+// image to the prompt through the chat template, `--verify-thinking` opens the
+// thought channel, and `--verify-cold` empties the expert cache before every
+// timed phase so decode and the block each pay their own misses.
+var verifyImages: [String] = []
+for (index, argument) in arguments.enumerated()
+where argument == "--verify-image" && index + 1 < arguments.count {
+    verifyImages.append(arguments[index + 1])
+}
+var verifyImageTokens = 280
+if let index = arguments.firstIndex(of: "--verify-image-tokens"), index + 1 < arguments.count,
+   let value = Int(arguments[index + 1]) {
+    verifyImageTokens = value
+}
+let verifyThinking = arguments.contains("--verify-thinking")
+let verifyCold = arguments.contains("--verify-cold")
 // Skip the synthetic kernel suites and run only the checks that need an
 // installed model. `--verify-block` implies it: those suites take minutes and
 // have nothing to say about the pass this run is here to check.
@@ -1455,6 +1473,10 @@ if let modelPath = verifyBlockModel {
         blockTokens: verifyBlockTokens,
         rounds: verifyRounds,
         prompt: verifyPrompt,
+        images: verifyImages,
+        thinking: verifyThinking,
+        imageTokens: verifyImageTokens,
+        cold: verifyCold,
         costOnly: arguments.contains("--verify-cost-only"))
     printCases(verifyCases)
     results.append(contentsOf: verifyCases)
