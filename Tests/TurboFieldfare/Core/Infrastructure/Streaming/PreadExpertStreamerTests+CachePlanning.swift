@@ -190,4 +190,74 @@ extension PreadExpertStreamerTests {
     #expect(plan == nil)
   }
 
+  /// A guess may not take a slot the layer used in its most recent plan
+  /// (docs/mtp/29-M8-B-PROBE.md §6): a prefetch that evicts the round's own
+  /// working set pays for its hit with a miss somewhere else. With every slot
+  /// stamped by the last plan there is nowhere to put a guess, and giving it up
+  /// is the answer — the layer will read what it needs when it gets there.
+  @Test func speculativePlanDeclinesRatherThanEvictTheLastRound() throws {
+    let url = try Self.writeSyntheticLayer()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let device = try MetalContext().device
+    let streamer = try PreadExpertStreamer(
+      layout: Self.makeLayout(path: url.path), device: device, slotCount: 2)
+
+    _ = try streamer.loadExpertsCached(experts: [0, 1])
+
+    #expect(streamer.planSpeculativeExperts(experts: [2]) == nil)
+    // Nothing moved: the cache is exactly what the last plan left.
+    #expect(streamer.residentExperts([0, 1, 2]) == [true, true, false])
+    // A guess bigger than the cache, or no guess at all, is not a plan either.
+    #expect(streamer.planSpeculativeExperts(experts: []) == nil)
+    #expect(streamer.planSpeculativeExperts(experts: [0, 1, 2]) == nil)
+  }
+
+  /// The other half: a slot the last plan did not touch is fair game, and once
+  /// the guess has been executed the layer's own plan sees a plain hit — which
+  /// is the whole point, since the read happened a layer early.
+  @Test func speculativePlanTakesAStaleSlotAndLandsAsAHit() throws {
+    let url = try Self.writeSyntheticLayer()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let device = try MetalContext().device
+    let streamer = try PreadExpertStreamer(
+      layout: Self.makeLayout(path: url.path), device: device, slotCount: 3)
+
+    // Two rounds of the same pair leaves the third slot untouched by the last.
+    _ = try streamer.loadExpertsCached(experts: [0, 1])
+    _ = try streamer.loadExpertsCached(experts: [0, 1])
+
+    let guess = try #require(streamer.planSpeculativeExperts(experts: [2]))
+    #expect(guess.misses == [0])
+    let buffers = try streamer.executeExpertCachePlan(guess)
+    let got = Self.bytes(of: buffers[0].buffer, offset: 0, count: Self.expertStride)
+    #expect(got.allSatisfy { $0 == Self.tagByte(2) })
+
+    let plan = streamer.planExpertsCached(experts: [0, 1, 2])
+    #expect(plan.hits == 3)
+    #expect(plan.misses.isEmpty)
+  }
+
+  /// A guess does not earn the expert it read any protection: the use count is
+  /// what keeps a slot under LFU, and counting a guess would leave an expert
+  /// nothing ever used holding a slot against experts that are being used.
+  @Test func speculativePlanDoesNotCountTowardsEviction() throws {
+    let url = try Self.writeSyntheticLayer()
+    defer { try? FileManager.default.removeItem(at: url) }
+    let device = try MetalContext().device
+    let streamer = try PreadExpertStreamer(
+      layout: Self.makeLayout(path: url.path), device: device, slotCount: 2)
+
+    // Expert 0 is asked for twice; the second round leaves the other slot stale.
+    _ = try streamer.loadExpertsCached(experts: [0])
+    _ = try streamer.loadExpertsCached(experts: [0])
+    let guess = try #require(streamer.planSpeculativeExperts(experts: [1]))
+    _ = try streamer.executeExpertCachePlan(guess)
+    #expect(streamer.residentExperts([0, 1]) == [true, true])
+
+    // One victim is needed. The guessed expert has never been used, so it is
+    // the one that goes — not the expert two plans asked for.
+    _ = try streamer.loadExpertsCached(experts: [2])
+    #expect(streamer.residentExperts([0, 1, 2]) == [true, false, true])
+  }
+
 }

@@ -242,6 +242,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// 計器が有効なときだけ確保する。
     private var routerPreviewIDs: [MTLBuffer] = []
     private var routerPreviewWeights: [MTLBuffer] = []
+    /// 29-M8-B §6 の先読み: 同じ予測を数えるだけでなく fetch に渡す経路。
+    /// `TF_MTP_EXPERT_PREFETCH=1` のときだけ動く。
+    private var expertPrefetch = ExpertPrefetchState()
     /// The same busy/idle split for plain decode, so a block's occupancy has
     /// something to be compared against: `verify(k)` is a ratio of two wall
     /// clocks, and it says nothing about whether either side is GPU-bound.
@@ -305,6 +308,24 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// The block's router as one dispatch pair instead of one per row
     /// (`TF_MTP_ROWS_ROUTER_FOLD=0` keeps the row loop).
     private static let blockRowsRouterFoldEnabled = rowsPathEnabled("ROUTER_FOLD")
+    /// 層 L で「先の層の router」を何本回すか。計器と先読みは同じ予測を使うので
+    /// バッファも回数も共有する。0 なら 1 本も回さない = 既定の経路。
+    private static let routerAheadDistances: Int = {
+        var count = RouterPreviewProbe.isEnabled ? RouterPreviewProbe.maxDistance : 0
+        if ExpertPrefetch.isEnabled { count = max(count, ExpertPrefetch.distance) }
+        return count
+    }()
+
+    /// そのうち本当に回す距離。計器は 1..maxDistance を全部見るが、先読みだけ
+    /// なら使うのは 1 本 (`ExpertPrefetch.distance`) だけである。router 1 本は
+    /// GPU の実費 (層あたり 720 KB の GEMV) なので、要らない距離は回さない。
+    private static func routerAheadNeeded(distance: Int) -> Bool {
+        if RouterPreviewProbe.isEnabled, distance <= RouterPreviewProbe.maxDistance {
+            return true
+        }
+        return ExpertPrefetch.isEnabled && distance == ExpertPrefetch.distance
+    }
+
     /// Set on the sort key of an expert that is not in a slot. Above every
     /// physical offset (a layer's stream is well under 2^40 bytes), so it
     /// splits the order in two without disturbing either half.
@@ -704,6 +725,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             ? model.telemetry.snapshot().decode : ExpertPhaseCounters()
         let verifyStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         routerPreviewProbe.beginBlock()
+        expertPrefetch.beginBlock()
         defer {
             verifyBlockNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - verifyStart
             verifyBlockCount += 1
@@ -735,14 +757,18 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         if let line = routerPreviewProbe.summary {
             FileHandle.standardError.write(Data((line + "\n").utf8))
         }
+        if PrefillHostProfile.isEnabled, let line = expertPrefetch.summary {
+            FileHandle.standardError.write(Data((line + "\n").utf8))
+            expertPrefetch.reset()
+        }
     }
 
     /// 計器用のバッファ。距離ごとに ID と重みを 1 本ずつ、`maxTokens * topK`
     /// ぶん。8 × 8 × 4 B = 256 B なので、確保しても測定の邪魔にならない。
     private func ensureRouterPreviewBuffers(topK: Int) throws {
-        guard routerPreviewIDs.count < RouterPreviewProbe.maxDistance else { return }
+        guard routerPreviewIDs.count < Self.routerAheadDistances else { return }
         let elements = SpeculativeBlock.maxTokens * topK
-        while routerPreviewIDs.count < RouterPreviewProbe.maxDistance {
+        while routerPreviewIDs.count < Self.routerAheadDistances {
             guard let ids = ctx.device.makeBuffer(
                     length: elements * MemoryLayout<UInt32>.stride,
                     options: .storageModeShared),
@@ -755,6 +781,62 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             routerPreviewIDs.append(ids)
             routerPreviewWeights.append(weights)
         }
+    }
+
+    /// 層 L の router 入力に層 `targetLayer` の重みを当てて出た予測の読み戻し。
+    ///
+    /// 予測の強さは**ブロックの全行が付けた router 重みの和**で、複数の行が
+    /// 選ぶエキスパートほど確かだという順である。`nonResident` はその強い順に
+    /// 並べた「読み戻した時点で `targetLayer` のスロットに載っていないもの」 —
+    /// 先読みが実際に SSD を叩くのはここだけで、29-M8-B §4 が順位ごとの
+    /// 的中率を測ったのもこの並びである。
+    private func readRouterPreview(distance: Int,
+                                   targetLayer: Int,
+                                   rows: Int,
+                                   topK: Int,
+                                   numExperts: Int) throws
+        -> (predicted: Set<Int>, nonResident: [Int]) {
+        let count = rows * topK
+        let ptr = routerPreviewIDs[distance - 1].contents()
+            .bindMemory(to: UInt32.self, capacity: count)
+        let weightPtr = routerPreviewWeights[distance - 1].contents()
+            .bindMemory(to: Float16.self, capacity: count)
+        var score = [Int: Float]()
+        for i in 0..<count {
+            let expert = Int(min(ptr[i], UInt32(numExperts - 1)))
+            score[expert, default: 0] += Float(weightPtr[i])
+        }
+        let predicted = Set(score.keys)
+        let order = predicted.sorted()
+        let resident = try model.routedExpertResidency(layer: targetLayer, experts: order)
+        let nonResident = zip(order, resident)
+            .filter { !$0.1 }
+            .map(\.0)
+            .sorted { (score[$0] ?? 0, $1) > (score[$1] ?? 0, $0) }
+        return (predicted, nonResident)
+    }
+
+    /// 予測の上から N 本を層 `layer` の streamer に投げる (29-M8-B §6)。
+    ///
+    /// 置けなければ**諦める**: 投機用のプランは「直近のラウンドで使った
+    /// エキスパートは追い出さない」ので、32 スロットが埋まりきっていれば
+    /// `nil` が返る。層はそこに着いたときに普通に読むだけなので、諦めても
+    /// 失われるのは前倒しの利益だけである。
+    private func issueExpertPrefetch(layer: Int, candidates: [Int]) throws {
+        guard ExpertPrefetch.topN > 0, !candidates.isEmpty,
+              !expertPrefetch.isPending(layer: layer) else { return }
+        let wanted = Array(candidates.prefix(ExpertPrefetch.topN))
+        guard let plan = try model.planSpeculativeRoutedExperts(layer: layer,
+                                                                experts: wanted) else {
+            expertPrefetch.decline()
+            return
+        }
+        // 読み戻しとプランの間に常駐した = 読むものが無い。スロットも取って
+        // いないので、控えずに捨ててよい。
+        guard !plan.misses.isEmpty else { return }
+        expertPrefetch.issued(layer: layer,
+                              experts: plan.misses.map { plan.experts[$0] },
+                              handle: try model.startRoutedExpertFetch(plan: plan))
     }
 
     /// Drop every KV row at or after `position` (`docs/mtp/03-DESIGN.md` D4).
@@ -1104,6 +1186,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                      greedyRows: MTLBuffer? = nil,
                                      speculativeBlock: Bool = false) async throws {
         guard !tokens.isEmpty else { return }
+        // 先読みは投げっぱなしにできない: 待たずにこの関数を抜けると、飛行中の
+        // 読み出しが、別の用途に割り当て直されたスロットへ書き込みうる。
+        // 途中でエラーを投げた場合も同じなので `defer` で回収する。
+        defer { expertPrefetch.drain() }
         guard kv != nil else {
             throw PrefillError.chunkedUnsupported("chunked prefill attention requires FP16 KV")
         }
@@ -1757,17 +1843,20 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         hiddenStrideElements: UInt32(D))
             }
 
-            // 計器 (28-M8 §3 の果実 B): 層 L の router 入力に層 L+d の router
-            // 重みを当てて、層 L+d が選ぶエキスパートを先に出しておく。同じ
-            // command buffer の後ろに積むだけなので `routerLogits` の共用は
-            // 直列で安全で、結果は数えるだけ — 本物のルーティングにも fetch
-            // にも渡さないので出力は 1 バイトも動かない。
-            if RouterPreviewProbe.isEnabled, speculativeBlock,
+            // 28-M8 §3 の果実 B: 層 L の router 入力に層 L+d の router 重みを
+            // 当てて、層 L+d が選ぶエキスパートを先に出しておく。同じ command
+            // buffer の後ろに積むだけなので `routerLogits` の共用は直列で安全。
+            // 出た予測は計器 (`RouterPreviewProbe`) が数え、先読みが有効なら
+            // 上から N 本だけ層 L+d の streamer に渡る — どちらも本物の
+            // ルーティングには触らないので、選ぶエキスパートは変わらない。
+            var routerAheadEncoded = false
+            if Self.routerAheadDistances > 0, speculativeBlock,
                t <= SpeculativeBlock.maxTokens,
                moe.routerWeightBits == 16, cfg.topKExperts == 8 {
                 try ensureRouterPreviewBuffers(topK: cfg.topKExperts)
-                for distance in 1...RouterPreviewProbe.maxDistance
-                where L + distance < cfg.numLayers {
+                routerAheadEncoded = true
+                for distance in 1...Self.routerAheadDistances
+                where L + distance < cfg.numLayers && Self.routerAheadNeeded(distance: distance) {
                     let ahead = layerViews[L + distance]
                     moe.encodeRouterGemma4BF16Rows(
                         commandBuffer: cb,
@@ -1836,6 +1925,19 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     try drainPendingBlockLayer()
                     prefillHostProfile.add(.drain, since: drainStart)
 
+                    // 前の層がこの層のために出しておいた先読みを、この層が
+                    // プランを作る前に回収する。飛行中の読み出しはまだ
+                    // `expertResidency` を上げていないので、待たずに進むと
+                    // この層のプランが同じスロットを犠牲に選んで二重書きしうる
+                    // (29-M8-B §6)。完了した先読みはただのヒットとして見える
+                    // ので、待ってさえいれば後ろは何も足さなくてよい。
+                    var prefetchedExperts: [Int] = []
+                    if ExpertPrefetch.isEnabled {
+                        let prefetchWaitStart = PrefillHostProfile.mark()
+                        prefetchedExperts = expertPrefetch.wait(layer: L)
+                        prefillHostProfile.add(.waitPrefetch, since: prefetchWaitStart)
+                    }
+
                     let routeStart = PrefillHostProfile.mark()
                     let routeCount = t * cfg.topKExperts
                     let idPtr = scratch.routeIDs.contents()
@@ -1854,46 +1956,51 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                                                    weights: routeWeights,
                                                                    queryCount: t,
                                                                    topK: cfg.topKExperts)
+                    // 先読みが当たったか: 投げた本数のうち、この層が本当に
+                    // 要求した数。telemetry の hit 率では判定できない
+                    // (先読みの read は miss として数えられるので必ず下がる)
+                    // ので、ここで数える (29-M8-B §7)。
+                    if !prefetchedExperts.isEmpty {
+                        expertPrefetch.score(prefetched: prefetchedExperts,
+                                             requested: Set(pairs.map { Int($0.expert) }))
+                    }
                     // この層について前もって出しておいた予測を採点し、続けて
-                    // 先の層の予測を控える。順番が要る: `compare` が層 L の
+                    // 先の層の予測を読み戻す。順番が要る: `compare` が層 L の
                     // 予測を消費してから、`record` が L+d 用を積む。
-                    if RouterPreviewProbe.isEnabled, speculativeBlock {
-                        let requested = Array(Set(pairs.map { Int($0.expert) })).sorted()
-                        let resident = try model.routedExpertResidency(layer: L,
-                                                                       experts: requested)
-                        routerPreviewProbe.compare(layer: L,
-                                                   actual: requested,
-                                                   resident: resident)
-                        let previewCount = t * cfg.topKExperts
-                        for distance in 1...RouterPreviewProbe.maxDistance
+                    if routerAheadEncoded {
+                        if RouterPreviewProbe.isEnabled {
+                            let requested = Array(Set(pairs.map { Int($0.expert) })).sorted()
+                            let resident = try model.routedExpertResidency(layer: L,
+                                                                           experts: requested)
+                            routerPreviewProbe.compare(layer: L,
+                                                       actual: requested,
+                                                       resident: resident)
+                        }
+                        for distance in 1...Self.routerAheadDistances
                         where L + distance < cfg.numLayers
-                            && distance <= routerPreviewIDs.count {
-                            let ptr = routerPreviewIDs[distance - 1].contents()
-                                .bindMemory(to: UInt32.self, capacity: previewCount)
-                            let wPtr = routerPreviewWeights[distance - 1].contents()
-                                .bindMemory(to: Float16.self, capacity: previewCount)
-                            // 予測の強さ = その層の全行が付けた router 重みの和。
-                            // 複数の行が同じエキスパートを選ぶほど確かになる。
-                            var score = [Int: Float]()
-                            for i in 0..<previewCount {
-                                let expert = Int(min(ptr[i],
-                                                     UInt32(cfg.numExperts - 1)))
-                                score[expert, default: 0] += Float(wPtr[i])
+                            && distance <= routerPreviewIDs.count
+                            && Self.routerAheadNeeded(distance: distance) {
+                            let preview = try readRouterPreview(
+                                distance: distance,
+                                targetLayer: L + distance,
+                                rows: t,
+                                topK: cfg.topKExperts,
+                                numExperts: cfg.numExperts)
+                            if RouterPreviewProbe.isEnabled,
+                               distance <= RouterPreviewProbe.maxDistance {
+                                routerPreviewProbe.record(fromLayer: L,
+                                                          distance: distance,
+                                                          predicted: preview.predicted,
+                                                          nonResident: preview.nonResident)
                             }
-                            let predicted = Set(score.keys)
-                            // 先読みが実際に読むのは「予測のうちまだ載って
-                            // いないもの」だけなので、その時点の常駐を引く。
-                            let order = predicted.sorted()
-                            let ahead = try model.routedExpertResidency(
-                                layer: L + distance, experts: order)
-                            let nonResident = zip(order, ahead)
-                                .filter { !$0.1 }
-                                .map(\.0)
-                                .sorted { (score[$0] ?? 0, $1) > (score[$1] ?? 0, $0) }
-                            routerPreviewProbe.record(fromLayer: L,
-                                                      distance: distance,
-                                                      predicted: predicted,
-                                                      nonResident: nonResident)
+                            // 先読みは 1 つの距離だけ。**上から N 本**に絞るのが
+                            // 肝で、全部投げるとバイトが 1.72 倍になって 32
+                            // スロットでは今より遅くなる (29-M8-B §3/§4)。
+                            if ExpertPrefetch.isEnabled, distance == ExpertPrefetch.distance {
+                                try issueExpertPrefetch(
+                                    layer: L + distance,
+                                    candidates: preview.nonResident)
+                            }
                         }
                     }
                     let schedulerConfig = Self.prefillRoutedTileSchedulerConfig

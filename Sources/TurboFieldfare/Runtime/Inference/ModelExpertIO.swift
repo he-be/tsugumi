@@ -127,6 +127,29 @@ extension Model {
         return RoutedExpertFetchPlan(layer: layer, cachePlan: cachePlan)
     }
 
+    /// A plan for a read this layer has not asked for yet
+    /// (`PreadExpertStreamer.planSpeculativeExperts`): the caller guessed the
+    /// experts from the previous layer's router and wants the bytes moving
+    /// before the layer is reached (docs/mtp/29-M8-B-PROBE.md §6).
+    ///
+    /// Nil when the guess cannot be placed without evicting something the layer
+    /// used in its last round. That is not an error — the prefetch is dropped
+    /// and the layer fetches normally when it gets there.
+    public func planSpeculativeRoutedExperts(layer: Int,
+                                             experts: [Int],
+                                             avoidingSlots: Set<Int> = []) throws
+        -> RoutedExpertFetchPlan? {
+        try ensureLayerOpened(layer)
+        let streamer = streamersQueue.sync { streamersBox.streamers[layer]! }
+        let validSlots = Set(avoidingSlots.filter { $0 >= 0 && $0 < streamer.slotCount })
+        guard let cachePlan = streamer.planSpeculativeExperts(experts: experts,
+                                                              avoidingSlots: validSlots)
+        else {
+            return nil
+        }
+        return RoutedExpertFetchPlan(layer: layer, cachePlan: cachePlan)
+    }
+
     public func routedExpertCacheSlotCount(layer _: Int) -> Int? {
         guard case .pread(let slotCount) = streamingMode else { return nil }
         return slotCount

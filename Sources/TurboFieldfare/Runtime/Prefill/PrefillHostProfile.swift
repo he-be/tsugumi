@@ -24,6 +24,11 @@ struct PrefillHostProfile {
         case drain
         /// Reading the routing back and turning it into sorted, grouped tiles.
         case route
+        /// Blocked on a routed-expert read this layer never asked for: the
+        /// previous layer guessed it and started it early
+        /// (docs/mtp/29-M8-B-PROBE.md §6). What is left here is the part of the
+        /// guess that did not fit in the layer ahead of it.
+        case waitPrefetch = "wait.prefetch"
         /// Blocked on the shared expert, which was submitted before the
         /// readback.
         case waitShared = "wait.shared"

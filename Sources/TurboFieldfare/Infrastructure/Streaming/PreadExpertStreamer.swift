@@ -224,8 +224,33 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         makeExpertCachePlan(experts: experts, avoidingSlots: avoidingSlots)
     }
 
+    /// A plan for experts nothing has asked for yet.
+    ///
+    /// Running layer `L + 1`'s router weights on layer `L`'s hidden state names
+    /// two thirds of the experts layer `L + 1` is about to miss, a layer before
+    /// it asks for them (docs/mtp/29-M8-B-PROBE.md §2). A guess is planned by
+    /// different rules than a request, because a wrong guess must not cost more
+    /// than a right one saves (§6):
+    ///
+    /// - **The use count does not move.** A request counts every expert it
+    ///   places, and under LFU that count is what keeps a slot. A guess that
+    ///   counted would leave an expert nothing ever used protected in the cache.
+    /// - **Only slots the last plan did not touch may be evicted.** A guess that
+    ///   throws out what this layer used in its previous round pays for its hit
+    ///   with a miss somewhere else. `nil` when no such slot is free — giving
+    ///   the prefetch up is always allowed, since the layer will fetch what it
+    ///   needs when it gets there.
+    public func planSpeculativeExperts(experts: [Int],
+                                       avoidingSlots: Set<Int> = []) -> ExpertCachePlan? {
+        guard !experts.isEmpty, experts.count <= slotCount else { return nil }
+        return makeExpertCachePlan(experts: experts,
+                                   avoidingSlots: avoidingSlots,
+                                   speculative: true)
+    }
+
     private func makeExpertCachePlan(experts: [Int],
-                                     avoidingSlots rawAvoidingSlots: Set<Int>) -> ExpertCachePlan? {
+                                     avoidingSlots rawAvoidingSlots: Set<Int>,
+                                     speculative: Bool = false) -> ExpertCachePlan? {
         precondition(experts.count <= slotCount,
                      "expert cache needs at least \(experts.count) slots")
         let avoidingSlots = Set(rawAvoidingSlots.filter { $0 >= 0 && $0 < slotCount })
@@ -233,7 +258,9 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         cacheLock.lock()
         defer { cacheLock.unlock() }
 
-        let clock = useClock + 1
+        // A speculative plan does not advance the clock: what "the last round"
+        // means has to stay the round the layer actually ran.
+        let clock = speculative ? useClock : useClock + 1
         var assignedSlots = [Int](repeating: -1, count: experts.count)
         var reserved = [Bool](repeating: false, count: slotCount)
 
@@ -259,6 +286,15 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         for slot in avoidingSlots where !reserved[slot] {
             reserved[slot] = true
         }
+        if speculative {
+            // Everything the most recent plan touched — and everything an
+            // earlier guess of this round already claimed, which is stamped
+            // with the same clock below — is off limits.
+            for slot in 0..<slotCount
+            where !reserved[slot] && slotLastUse[slot] >= useClock {
+                reserved[slot] = true
+            }
+        }
 
         let misses = experts.indices.filter { assignedSlots[$0] == -1 }
         // Only the `misses.count` cheapest victims are ever used, so pick them
@@ -270,11 +306,17 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         guard misses.count <= victims.count else { return nil }
 
         useClock = clock
-        for expert in experts where expert >= 0 && expert < expertUseCount.count {
-            expertUseCount[expert] &+= 1
-        }
-        for slot in assignedSlots where slot >= 0 {
-            slotLastUse[slot] = clock
+        // A guess leaves the cache's ranking exactly as it found it: no use
+        // count moves, and the slots it merely read from keep the recency the
+        // layer's own last plan gave them. Only the slots it takes are stamped,
+        // which is what keeps a second guess of the same round off them.
+        if !speculative {
+            for expert in experts where expert >= 0 && expert < expertUseCount.count {
+                expertUseCount[expert] &+= 1
+            }
+            for slot in assignedSlots where slot >= 0 {
+                slotLastUse[slot] = clock
+            }
         }
         for (offset, index) in misses.enumerated() {
             let slot = victims[offset]
