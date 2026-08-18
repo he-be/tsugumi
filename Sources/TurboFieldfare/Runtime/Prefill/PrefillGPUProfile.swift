@@ -76,15 +76,17 @@ struct PrefillGPUProfile {
     var totalSeconds: Double { seconds.values.reduce(0, +) }
 
     /// One line, formatted like the other prefill footers, plus a second line
-    /// with the `.attention` split when detail mode is on.
-    var summary: String {
+    /// with the `.attention` split when detail mode is on. `label` names the
+    /// path, so plain decode can be accounted with the same buckets as a block
+    /// and the two read side by side.
+    func summary(label: String = "prefill gpu") -> String {
         let total = totalSeconds
         let parts = Stage.allCases.compactMap { stage -> String? in
             guard let value = seconds[stage], value > 0 else { return nil }
             let share = total > 0 ? value / total * 100 : 0
             return String(format: "%@=%.3fs(%.0f%%)", stage.rawValue, value, share)
         }
-        var line = "[prefill gpu " + parts.joined(separator: " ")
+        var line = "[" + label + " " + parts.joined(separator: " ")
             + String(format: " total=%.3fs]", total)
         guard Self.isDetailed, !detailSeconds.isEmpty else { return line }
         let attentionTotal = detailSeconds.values.reduce(0, +)
@@ -93,7 +95,7 @@ struct PrefillGPUProfile {
             let share = attentionTotal > 0 ? value / attentionTotal * 100 : 0
             return String(format: "%@=%.3fs(%.0f%%)", detail.rawValue, value, share)
         }
-        line += "\n[prefill gpu attn " + detailParts.joined(separator: " ")
+        line += "\n[" + label + " attn " + detailParts.joined(separator: " ")
             + String(format: " total=%.3fs]", attentionTotal)
         return line
     }

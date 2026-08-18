@@ -234,6 +234,20 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private let prefillRuntimeConfig: PrefillRuntimeConfig
     private var prefillGPUProfile = PrefillGPUProfile()
     private var prefillHostProfile = PrefillHostProfile()
+    /// The same busy/idle split for plain decode, so a block's occupancy has
+    /// something to be compared against: `verify(k)` is a ratio of two wall
+    /// clocks, and it says nothing about whether either side is GPU-bound.
+    /// One line per `decodeQueueWindow` steps, on the same env var.
+    private var decodeQueue = GPUQueueOccupancy()
+    private var decodeQueueSteps = 0
+    private var decodeQueueRecording = false
+    private static let decodeQueueWindow = 32
+    /// Decode's own per-stage GPU split, in the block's buckets: `attn` is the
+    /// one buffer that carries norm/QKV/RoPE/attention/o/router, `moe` the
+    /// routed experts, `head` the LM head. Which bucket a wait belongs to is
+    /// set by the site that waits.
+    private var decodeStageProfile = PrefillGPUProfile()
+    private var decodeStage = PrefillGPUProfile.Stage.attention
 
     /// Vision state, built on the first image and never for a text-only run:
     /// the tower owns 83 MB of scratch and its weights are 1.15 GB, so a prompt
@@ -267,6 +281,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private static let rowsMoEEnabled = rowsPathEnabled("MOE")
     private static let rowsHeadEnabled = rowsPathEnabled("HEAD")
     private static let rowsRouterEnabled = rowsPathEnabled("ROUTER")
+    private static let rowsAttentionEnabled = rowsPathEnabled("ATTENTION")
     private static let blockPipelineEnabled = rowsPathEnabled("PIPELINE")
     private static let blockTileLookaheadEnabled = rowsPathEnabled("LOOKAHEAD")
 
@@ -679,7 +694,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // A verify block is one chunk, so the profile has to be flushed here or
         // it accumulates across rounds with nothing to print it.
         if PrefillGPUProfile.isEnabled {
-            FileHandle.standardError.write(Data((prefillGPUProfile.summary + "\n").utf8))
+            FileHandle.standardError.write(Data((prefillGPUProfile.summary() + "\n").utf8))
             prefillGPUProfile.reset()
         }
         if PrefillHostProfile.isEnabled {
@@ -824,7 +839,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             onProgress(span.completedCount)
         }
         if PrefillGPUProfile.isEnabled {
-            FileHandle.standardError.write(Data((prefillGPUProfile.summary + "\n").utf8))
+            FileHandle.standardError.write(Data((prefillGPUProfile.summary() + "\n").utf8))
             prefillGPUProfile.reset()
         }
         if PrefillHostProfile.isEnabled {
@@ -1490,15 +1505,64 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     let activeRingCapacity = ringCapacity > 0 && startPosition + t > ringCapacity
                         ? UInt32(ringCapacity)
                         : 0
-                    prefillAttention.encodeCausal(commandBuffer: cb,
-                                                  q: scratch.q,
-                                                  k: keyBuffer,
-                                                  v: valueBuffer,
-                                                  out: scratch.attentionOutput,
-                                                  params: params,
-                                                  spanEnd: layerSpanEnd,
-                                                  kvRingCapacity: activeRingCapacity,
-                                                  path: prefillAttentionPath)
+                    // A k-token block is a decode step's shape, not a prompt's.
+                    // The query-blocked prefill kernel gives one simdgroup four
+                    // queries and never splits the key range, so at k <= 8 it
+                    // runs 16 threadgroups with one live simdgroup each and the
+                    // GPU sits at a few percent occupancy: 15 ms a block, more
+                    // than plain decode spends on its whole forward
+                    // (docs/mtp/24-M5.5-RESULTS.md §2). Decode's split-KV
+                    // kernel has the parallelism the shape needs, so the block
+                    // takes it a row at a time — the same trade the router made
+                    // in M4.5, and for the same second reason: it puts the
+                    // block on decode's kernel instead of near it.
+                    if Self.rowsAttentionEnabled, speculativeBlock, layerSpanEnd == nil,
+                       t <= SpeculativeBlock.maxTokens {
+                        let rowStride = qDim * MemoryLayout<Float16>.stride
+                        for row in 0..<t {
+                            let seqLen = UInt32(startPosition + row + 1)
+                            if isFull {
+                                attention.encodeFull(commandBuffer: cb,
+                                                     q: scratch.q, qOffset: row * rowStride,
+                                                     k: keyBuffer, kOffset: 0,
+                                                     v: valueBuffer, vOffset: 0,
+                                                     out: scratch.attentionOutput,
+                                                     outOffset: row * rowStride,
+                                                     headDim: UInt32(headDim),
+                                                     numQHeads: UInt32(cfg.numHeads),
+                                                     numKVHeads: UInt32(numKVHeads),
+                                                     seqLen: seqLen,
+                                                     scale: 1.0)
+                            } else {
+                                let rowRing = ringCapacity > 0 && Int(seqLen) > ringCapacity
+                                    ? UInt32(ringCapacity)
+                                    : 0
+                                attention.encodeSWA(commandBuffer: cb,
+                                                    q: scratch.q, qOffset: row * rowStride,
+                                                    k: keyBuffer, kOffset: 0,
+                                                    v: valueBuffer, vOffset: 0,
+                                                    out: scratch.attentionOutput,
+                                                    outOffset: row * rowStride,
+                                                    headDim: UInt32(headDim),
+                                                    numQHeads: UInt32(cfg.numHeads),
+                                                    numKVHeads: UInt32(numKVHeads),
+                                                    seqLen: seqLen,
+                                                    window: UInt32(cfg.slidingWindow),
+                                                    scale: 1.0,
+                                                    ringCapacity: rowRing)
+                            }
+                        }
+                    } else {
+                        prefillAttention.encodeCausal(commandBuffer: cb,
+                                                      q: scratch.q,
+                                                      k: keyBuffer,
+                                                      v: valueBuffer,
+                                                      out: scratch.attentionOutput,
+                                                      params: params,
+                                                      spanEnd: layerSpanEnd,
+                                                      kvRingCapacity: activeRingCapacity,
+                                                      path: prefillAttentionPath)
+                    }
             } else {
                 throw PrefillError.chunkedUnsupported(
                     "chunked prefill attention requires FP16 KV")
@@ -2280,6 +2344,33 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         let FmoE = UInt32(cfg.moeIntermediateSize)
         let eps: Float = 1e-6
         let sqrtHidden = Float(cfg.hiddenSize).squareRoot()
+        // A decode step's own busy/idle split, on the same env var as the block
+        // one. The last buffers of a step are waited for at the top of the next
+        // step, so the window is closed a step late by construction — over 32
+        // steps that is a 3% edge effect on the span, and none at all on busy.
+        let profilingDecodeQueue = PrefillHostProfile.isEnabled
+        if profilingDecodeQueue {
+            decodeQueueRecording = true
+            decodeQueueSteps += 1
+        }
+        defer {
+            if profilingDecodeQueue {
+                decodeQueueRecording = false
+                if decodeQueueSteps >= Self.decodeQueueWindow {
+                    if let line = decodeQueue.summary(label: "decode gpuq",
+                                                      extra: " tok=\(decodeQueueSteps)") {
+                        FileHandle.standardError.write(Data((line + "\n").utf8))
+                    }
+                    if PrefillGPUProfile.isEnabled {
+                        let line = decodeStageProfile.summary(label: "decode gpu")
+                        FileHandle.standardError.write(Data((line + "\n").utf8))
+                        decodeStageProfile.reset()
+                    }
+                    decodeQueue.reset()
+                    decodeQueueSteps = 0
+                }
+            }
+        }
         struct PendingRoutedCommand {
             let cb: MTLCommandBuffer
             let sharedCB: MTLCommandBuffer?
@@ -2292,12 +2383,31 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                         waitIfNeeded: Bool) throws {
             if waitIfNeeded {
                 if let sharedCB = pending.sharedCB {
+                    decodeStage = .shared
                     waitUntilCompleted(sharedCB)
                 }
+                decodeStage = .moe
                 if let phase1HitCB = pending.phase1HitCB {
                     waitUntilCompleted(phase1HitCB)
                 }
                 waitUntilCompleted(pending.cb)
+            } else if decodeQueueRecording {
+                // Not waited for, but finished: these buffers sit ahead of the
+                // front buffer this step already blocked on, so their GPU spans
+                // are readable. Recording them here is what keeps the decode
+                // side of the busy/idle split honest — a layer's routed experts
+                // are most of its GPU time, and skipping them would book that
+                // time as an idle queue.
+                if let sharedCB = pending.sharedCB {
+                    decodeQueue.record(sharedCB)
+                    decodeStageProfile.record(.shared, sharedCB)
+                }
+                if let phase1HitCB = pending.phase1HitCB {
+                    decodeQueue.record(phase1HitCB)
+                    decodeStageProfile.record(.moe, phase1HitCB)
+                }
+                decodeQueue.record(pending.cb)
+                decodeStageProfile.record(.moe, pending.cb)
             }
             if let sharedCB = pending.sharedCB {
                 try checkCommandBufferError(sharedCB.error)
@@ -2514,6 +2624,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             gRouter(cb)
             cb.commit()
             let tWait = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+            decodeStage = .attention
             waitUntilCompleted(cb)
             let waitNanos = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tWait
             if let pending = pendingRoutedCommand {
@@ -2793,6 +2904,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         if emitHead {
             let useFusedHeadForThisToken = useFusedGreedyHead && outputMode == .greedyIfAvailable
             let tHead = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+            decodeStage = .head
             if useFusedHeadForThisToken {
                 try runSync(gFusionHead)
                 totalHeadFusedNanos &+= clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - tHead
@@ -2829,10 +2941,14 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                               detail: PrefillGPUProfile.Detail? = nil) throws {
         try waitForCompletion(cb)
         prefillGPUProfile.record(stage, cb, detail: detail)
+        prefillHostProfile.recordGPUInterval(start: cb.gpuStartTime, end: cb.gpuEndTime)
     }
 
-    private nonisolated func waitUntilCompleted(_ cb: MTLCommandBuffer) {
+    private func waitUntilCompleted(_ cb: MTLCommandBuffer) {
         cb.waitUntilCompleted()
+        guard decodeQueueRecording else { return }
+        decodeQueue.record(cb)
+        decodeStageProfile.record(decodeStage, cb)
     }
 
 }

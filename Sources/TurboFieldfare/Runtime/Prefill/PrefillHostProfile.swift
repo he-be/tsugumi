@@ -55,6 +55,15 @@ struct PrefillHostProfile {
     private var experts = 0
     private var misses = 0
     private var ioSeconds: Double = 0
+    /// Every command buffer's GPU interval, so the call's wall clock can be
+    /// split into "the GPU was running something" and "the queue was empty".
+    ///
+    /// `wait.front` says the host was blocked; it does not say on what. The
+    /// front buffer sits behind the previous layer's MoE and shared expert on
+    /// the same queue, so a wait can be almost entirely GPU work already in
+    /// flight — which is a floor, not an overhead. Only the idle part is what
+    /// removing a host round trip could buy (docs/mtp/24-M6-RESULTS.md §1).
+    private var gpuQueue = GPUQueueOccupancy()
 
     /// A timestamp to hand back to `add`. Cheap enough to take unconditionally,
     /// but taken only when the profile is on.
@@ -67,6 +76,13 @@ struct PrefillHostProfile {
         let now = DispatchTime.now().uptimeNanoseconds
         guard now > start else { return }
         seconds[stage, default: 0] += Double(now - start) / 1e9
+    }
+
+    /// One command buffer's GPU span, taken from the buffer itself once it has
+    /// completed.
+    mutating func recordGPUInterval(start: Double, end: Double) {
+        guard Self.isEnabled else { return }
+        gpuQueue.record(start: start, end: end)
     }
 
     mutating func recordTile(lookahead: Bool) {
@@ -103,12 +119,16 @@ struct PrefillHostProfile {
         }
         let other = callSeconds - total
         let bytes = Double(misses) * 3_719_168 / 1_073_741_824
-        return "[prefill host " + parts.joined(separator: " ")
+        var line = "[prefill host " + parts.joined(separator: " ")
             + String(format: " other=%.3fs(%.0f%%) call=%.3fs", other,
                      callSeconds > 0 ? other / callSeconds * 100 : 0, callSeconds)
             + String(format: " | tiles=%d ahead=%d experts=%d miss=%d io=%.3fs %.1fGB/s]",
                      tiles, lookaheadTiles, experts, misses, ioSeconds,
                      ioSeconds > 0 ? bytes / ioSeconds : 0)
+        if let gpuLine = gpuQueue.summary(label: "prefill gpuq") {
+            line += "\n" + gpuLine
+        }
+        return line
     }
 
     mutating func reset() {
@@ -119,5 +139,6 @@ struct PrefillHostProfile {
         experts = 0
         misses = 0
         ioSeconds = 0
+        gpuQueue.reset()
     }
 }
