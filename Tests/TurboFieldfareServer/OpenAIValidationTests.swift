@@ -569,6 +569,67 @@ struct ServerArgumentTests {
         #expect(arguments.prefillPolicy == .chunked)
         #expect(arguments.prefillChunkTokens == 2048)
         #expect(arguments.rdadvisePolicy == .off)
+        #expect(arguments.draftBlockSize == 0)
+    }
+
+    @Test func parsesDraftBlockSizeAndRejectsUnsupportedWidths() throws {
+        let arguments = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--draft-block-size", "4",
+        ])
+        #expect(arguments.draftBlockSize == 4)
+        let off = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--draft-block-size", "0",
+        ])
+        #expect(off.draftBlockSize == 0)
+        // A one-token block is not speculation, and the ceiling is the block
+        // the verify path was built for (03-DESIGN D7).
+        for width in ["1", "\(SpeculativeBlock.maxTokens + 1)", "-1", "four"] {
+            #expect(throws: ServerArgumentError.self) {
+                try ServerArguments.parse([
+                    "--model", "model.gturbo",
+                    "--draft-block-size", width,
+                ])
+            }
+        }
+    }
+
+    @Test func parsesEveryAllowedContextAndRejectsOthers() throws {
+        for tokens in [4_096, 8_192, 16_384, 32_768, 65_536, 131_072] {
+            let arguments = try ServerArguments.parse([
+                "--model", "model.gturbo",
+                "--max-context", String(tokens),
+            ])
+            #expect(arguments.maxContext == tokens)
+        }
+        // 128K is the widest the runtime is wired for, and the values between
+        // the steps are not sizes the KV ring was measured at.
+        for tokens in ["2048", "100000", "262144"] {
+            #expect(throws: ServerArgumentError.self) {
+                try ServerArguments.parse([
+                    "--model", "model.gturbo",
+                    "--max-context", tokens,
+                ])
+            }
+        }
+    }
+
+    @Test func draftBlockSizeRequiresChunkedPrefill() throws {
+        #expect(throws: ServerArgumentError.self) {
+            try ServerArguments.parse([
+                "--model", "model.gturbo",
+                "--prefill", "off",
+                "--draft-block-size", "4",
+            ])
+        }
+        // The same run without speculation stays legal.
+        let plain = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--prefill", "off",
+        ])
+        #expect(plain.prefillPolicy == .off)
+        #expect(plain.draftBlockSize == 0)
     }
 
     @Test func parsesSinglePrefixModeAndRejectsUnknownMode() throws {

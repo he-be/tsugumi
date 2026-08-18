@@ -7,20 +7,46 @@ public enum ServerInferenceEvent: Equatable, Sendable {
     case toolCall(ParsedToolCall)
 }
 
+/// What the MTP round bookkeeping saw for one request, for the log line only.
+///
+/// 22-GOAL-RESET §6 keeps these out of any pass/fail column: accepted tokens are
+/// tokens the target itself drew, so this says how the wall clock was spent and
+/// never what the answer was.
+public struct ServerSpeculativeSummary: Equatable, Sendable {
+    public let blockTokens: Int
+    public let rounds: Int
+    public let accepted: Int
+
+    public init(blockTokens: Int, rounds: Int, accepted: Int) {
+        self.blockTokens = blockTokens
+        self.rounds = rounds
+        self.accepted = accepted
+    }
+
+    /// Mean accepted draft length per round (14-M3.5 §4's `a`).
+    public var meanAcceptedLength: Double {
+        rounds > 0 ? Double(accepted) / Double(rounds) : 0
+    }
+}
+
 public struct ServerCompletion: Equatable, Sendable {
     public let content: String
     public let toolCalls: [ParsedToolCall]
     public let finishReason: String
     public let usage: OpenAIUsage
+    /// Non-nil only when this request actually ran the speculative loop.
+    public let speculative: ServerSpeculativeSummary?
 
     public init(content: String,
                 toolCalls: [ParsedToolCall],
                 finishReason: String,
-                usage: OpenAIUsage) {
+                usage: OpenAIUsage,
+                speculative: ServerSpeculativeSummary? = nil) {
         self.content = content
         self.toolCalls = toolCalls
         self.finishReason = finishReason
         self.usage = usage
+        self.speculative = speculative
     }
 }
 
@@ -387,6 +413,10 @@ public actor ServerModelSession: ServerInferenceBackend {
     private let tokenizer: GFTokenizer
     private let runner: RealForwardRunner
     private let scratch: RawCompletionScratch
+    /// Allocated once, only when the server was started with
+    /// `--draft-block-size > 0`; nil keeps the pre-MTP memory profile and the
+    /// pre-MTP code path (04-PHASES §3 gate 4).
+    private let speculative: SpeculativeScratch?
     private let prefillConfig: PrefillRuntimeConfig
     private let maxContext: Int
     private let promptCacheMode: ServerPromptCacheMode
@@ -399,6 +429,7 @@ public actor ServerModelSession: ServerInferenceBackend {
                             promptCacheMode: ServerPromptCacheMode = .singlePrefix,
                             runtimeConfiguration: RuntimeConfiguration,
                             integrityPolicy: ModelIntegrityPolicy = .fullSha256,
+                            draftBlockSize: Int = 0,
                             imagePolicy: ServerImagePolicy = .default) async throws -> ServerModelSession {
         let tokenizerFolder = GFTokenizer.tokenizerFolder(forModelDirectory: modelDirectory)
         guard let tokenizerFolder else {
@@ -422,6 +453,24 @@ public actor ServerModelSession: ServerInferenceBackend {
                                            maxContext: maxContext,
                                            runtimeConfiguration: runtime)
         let scratch = try RawCompletionScratch(context: context, vocab: model.config.vocabSize)
+        // Refused at startup rather than per request: a server told to
+        // speculate against a model with no drafter section is misconfigured,
+        // and finding out on the first completion is worse than not starting.
+        var speculative: SpeculativeScratch?
+        if draftBlockSize > 0 {
+            guard runner.isDraftInstalled else {
+                throw ServerArgumentError.invalid(
+                    "--draft-block-size \(draftBlockSize) needs a model installed with the "
+                    + "drafter section; reinstall with --include-draft or run with "
+                    + "--draft-block-size 0")
+            }
+            speculative = try SpeculativeScratch(
+                context: context,
+                vocab: model.config.vocabSize,
+                hiddenSize: model.config.hiddenSize,
+                blockTokens: draftBlockSize,
+                fusedGreedy: runner.usesFusedGreedyHead)
+        }
         let templateDigest = SHA256.hash(data: try Data(contentsOf: templateURL))
             .map { String(format: "%02x", $0) }
             .joined()
@@ -449,6 +498,7 @@ public actor ServerModelSession: ServerInferenceBackend {
                                   tokenizer: tokenizer,
                                   runner: runner,
                                   scratch: scratch,
+                                  speculative: speculative,
                                   prefillConfig: runtime.prefillConfig,
                                   maxContext: maxContext,
                                   promptCacheMode: promptCacheMode,
@@ -461,6 +511,7 @@ public actor ServerModelSession: ServerInferenceBackend {
                  tokenizer: GFTokenizer,
                  runner: RealForwardRunner,
                  scratch: RawCompletionScratch,
+                 speculative: SpeculativeScratch?,
                  prefillConfig: PrefillRuntimeConfig,
                  maxContext: Int,
                  promptCacheMode: ServerPromptCacheMode,
@@ -471,6 +522,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         self.tokenizer = tokenizer
         self.runner = runner
         self.scratch = scratch
+        self.speculative = speculative
         self.prefillConfig = prefillConfig
         self.maxContext = maxContext
         self.promptCacheMode = promptCacheMode
@@ -579,61 +631,97 @@ public actor ServerModelSession: ServerInferenceBackend {
         var decodingError: Error?
         var shouldStop = false
 
-        let result = try await runRawCompletion(
-            producer: runner,
-            tokenizer: tokenizer,
-            promptIds: effectivePromptIDs,
-            config: config,
-            context: context,
-            scratch: scratch,
-            prefillConfig: prefillConfig,
-            vision: vision,
-            start: completionStart,
-            shouldStop: { shouldStop }) { progress in
-                guard decodingError == nil else { return }
-                do {
-                    func handle(_ events: [StructuredAssistantEvent]) {
-                        for event in events {
-                            switch event {
-                            case .content(let text):
-                                let visible = stopMatcher.push(text)
-                                if !visible.isEmpty {
-                                    content += visible
-                                    onEvent(.content(visible))
-                                }
-                                if stopMatcher.isStopped { shouldStop = true }
-                            case .toolCall(let call):
-                                calls.append(call)
-                                onEvent(.toolCall(call))
+        func onProgress(_ progress: RawDecodeProgress) {
+            guard decodingError == nil else { return }
+            do {
+                func handle(_ events: [StructuredAssistantEvent]) {
+                    for event in events {
+                        switch event {
+                        case .content(let text):
+                            let visible = stopMatcher.push(text)
+                            if !visible.isEmpty {
+                                content += visible
+                                onEvent(.content(visible))
                             }
+                            if stopMatcher.isStopped { shouldStop = true }
+                        case .toolCall(let call):
+                            calls.append(call)
+                            onEvent(.toolCall(call))
                         }
                     }
-                    switch progress {
-                    case .prefill:
-                        break
-                    case .token(_, let tokenID, let delta):
-                        let events = if let decoder {
-                            try decoder.consume(tokenID: tokenID, delta: delta)
-                        } else {
-                            delta.isEmpty ? [] : [StructuredAssistantEvent.content(delta)]
-                        }
-                        handle(events)
-                    case .tail(let text):
-                        // The flush tail is not tied to a token ID, so it must
-                        // go through the decoder's channel state explicitly;
-                        // appending it directly would leak text held back
-                        // inside the thought channel or a tool call.
-                        let events = if let decoder {
-                            try decoder.consumeTail(text)
-                        } else {
-                            text.isEmpty ? [] : [StructuredAssistantEvent.content(text)]
-                        }
-                        handle(events)
-                    }
-                } catch {
-                    decodingError = error
-                    shouldStop = true
                 }
+                switch progress {
+                case .prefill:
+                    break
+                case .token(_, let tokenID, let delta):
+                    let events = if let decoder {
+                        try decoder.consume(tokenID: tokenID, delta: delta)
+                    } else {
+                        delta.isEmpty ? [] : [StructuredAssistantEvent.content(delta)]
+                    }
+                    handle(events)
+                case .tail(let text):
+                    // The flush tail is not tied to a token ID, so it must
+                    // go through the decoder's channel state explicitly;
+                    // appending it directly would leak text held back
+                    // inside the thought channel or a tool call.
+                    let events = if let decoder {
+                        try decoder.consumeTail(text)
+                    } else {
+                        text.isEmpty ? [] : [StructuredAssistantEvent.content(text)]
+                    }
+                    handle(events)
+                }
+            } catch {
+                decodingError = error
+                shouldStop = true
+            }
+        }
+
+        // The speculative loop emits the tokens the target itself drew, at the
+        // same sampler positions a plain decode would have used (D5), so both
+        // branches produce the same text, the same stop reason, and the same
+        // rewound K/V — only the wall clock differs (docs/mtp/25-M5.6-RESULTS.md).
+        // A repetition penalty makes the draw depend on history the round has
+        // not committed, which cannot be verified, so such a request takes the
+        // plain path instead of being refused.
+        let result: RawDecodeResult
+        var speculativeSummary: ServerSpeculativeSummary?
+        if let speculative, config.repetitionPenalty == 1.0 {
+            let spec = try await runSpeculativeCompletion(
+                producer: runner,
+                tokenizer: tokenizer,
+                promptIds: effectivePromptIDs,
+                config: config,
+                context: context,
+                scratch: scratch,
+                speculative: speculative,
+                prefillConfig: prefillConfig,
+                vision: vision,
+                start: completionStart,
+                shouldStop: { shouldStop },
+                // Passed as a literal rather than as `onProgress` itself:
+                // region isolation rejects sending an actor-isolated function
+                // value, and accepts a closure it can see is non-escaping.
+                onProgress: { onProgress($0) })
+            result = spec.decode
+            speculativeSummary = ServerSpeculativeSummary(
+                blockTokens: spec.speculative.blockTokens,
+                rounds: spec.speculative.rounds,
+                accepted: spec.speculative.accepted)
+        } else {
+            result = try await runRawCompletion(
+                producer: runner,
+                tokenizer: tokenizer,
+                promptIds: effectivePromptIDs,
+                config: config,
+                context: context,
+                scratch: scratch,
+                prefillConfig: prefillConfig,
+                vision: vision,
+                start: completionStart,
+                shouldStop: { shouldStop },
+                onProgress: { onProgress($0) })
         }
         func structuredFailure(
             kind: StructuredOutputFailureKind,
@@ -700,7 +788,8 @@ public actor ServerModelSession: ServerInferenceBackend {
             usage: OpenAIUsage(promptTokens: result.prefillTokens,
                                completionTokens: result.newTokens,
                                totalTokens: result.prefillTokens + result.newTokens,
-                               cachedTokens: result.cachedPromptTokens))
+                               cachedTokens: result.cachedPromptTokens),
+            speculative: speculativeSummary)
     }
 
     private func renderPrompt(

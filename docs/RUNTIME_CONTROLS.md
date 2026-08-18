@@ -12,7 +12,7 @@ The Mac app and CLI expose these generation controls:
 | Control | Mac values | CLI flag | Default | Effect |
 | --- | --- | --- | --- | --- |
 | Maximum response | Automatic | `--max-new` | App: remaining context; CLI: 1,024 tokens | The app can use the context space left after formatting the prompt. The CLI uses its explicit or default `--max-new` limit. |
-| Maximum context | 4K, 8K, 16K, 32K, 64K | `--max-context` | 4K | Sets prompt plus response capacity. The app shows the FP16 KV-memory delta. |
+| Maximum context | 4K, 8K, 16K, 32K, 64K | `--max-context` | 4K | Sets prompt plus response capacity. The app shows the FP16 KV-memory delta. The server also takes 128K; the app and its five options do not. |
 | Temperature | 0...2 in 0.05 steps | `--temperature` | 1.0 | `0` is greedy; positive values sample. `1.0` is the model-recommended value; lower settings risk repetition loops. |
 | Top-K | Off or 1...256 | `--top-k` | 64 | Keeps at most K candidates. CLI `0` turns it off. |
 | Top-P | Off or 0.01...1 | `--top-p` | 0.95 | Applies nucleus truncation before Top-K and is effective only while Top-K is enabled. |
@@ -35,7 +35,13 @@ model, so an unsupported combination fails immediately with the usage text.
 | Expert-cache policy | LFU | `--expert-cache-policy lfu\|lru` | LFU | Chooses which expert is evicted when the cache is full. |
 | Prompt prefill | On, off | `--prefill on\|off` | On | On processes known prompt tokens through the chunked prefill path. Off disables that path. |
 | Prefill chunk size | 32, 64, 128, 256, 512, 1024, 2048 | `--prefill-chunk-tokens` | 2048 | Sets the number of prompt tokens processed by each chunked-prefill step. A wider chunk routes more tokens through each expert it fetches, so the SSD moves far fewer bytes per prompt token and long prompts prefill faster; it costs KV ring rows (`sliding window + chunk`) and prefill scratch, both counted at load, so a width the device cannot keep resident is rejected there. It has no effect while prefill is off. |
+| Speculative block (MTP) | — | `--draft-block-size` | 0 (off) | `0` runs the plain decode loop. `2`...`8` turns on multi-token prediction: the drafter proposes `n - 1` tokens, one verify pass checks them, and only the tokens the target itself would have drawn are kept, so the text is the text of the non-speculative run and only the wall clock moves. Needs a model installed with the drafter section (`--include-draft` / `--add-draft`) and `--prefill on`. The gain follows how predictable the text is: about 1.4x on code and vision answers, about 1.0x on Japanese prose. |
 | RDADVISE | Off, Default, Bounded, Adaptive | `--rdadvise off\|default\|bounded\|adaptive` | Off | Applies experimental read advice. Its effect depends on the workload; it may help a short decode and slow a long one. |
+
+A request that asks for a repetition penalty other than 1.0 cannot be verified
+(the accept rule needs a draw that depends only on position, seed, and
+committed history), so the server answers it on the plain decode path instead
+of refusing it. The Mac app does not expose the control.
 
 In the app, changing context length, expert-cache slots, or RDADVISE requires a
 reload. Some sampling changes also require a reload because greedy and sampled

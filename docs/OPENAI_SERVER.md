@@ -4,6 +4,10 @@
 model. It binds to `127.0.0.1` without authentication or TLS. Do not expose it
 through a proxy or tunnel.
 
+For the M3 Pro this branch targets, [`SERVER_RUNBOOK.md`](SERVER_RUNBOOK.md)
+(Japanese) has the exact commands, the context/slot combinations that fit in
+its Metal working set, and the measured numbers.
+
 ## Start the server
 
 First, install the model with the Mac app or `TurboFieldfareRepack`. Then check
@@ -71,6 +75,41 @@ requires `--prefill off`.
 
 The settings are fixed for the life of the process. Restart the server to
 change them.
+
+## Speculative decoding (MTP)
+
+If the model was installed with the drafter section (`--include-draft`, or
+`--add-draft` on an existing install), `--draft-block-size` turns on multi-token
+prediction:
+
+```bash
+.build/release/TurboFieldfareServer \
+  --model scratch/gemma4-qat.gturbo \
+  --expert-cache-slots 80 \
+  --draft-block-size 4
+```
+
+Every accepted token is a token the target model itself drew at the same
+sampler position, so the answer is the answer of the non-speculative run and
+only the wall clock changes. Measured on this server with 4-token blocks:
+about **1.4x** on a coding answer with tools declared, and about **1.0x** on
+Japanese prose, which the drafter predicts far less well
+(`docs/mtp/26-M6-RESULTS.md`).
+
+The flag needs `--prefill on` (the default) and a model with the drafter
+section; either missing exits at startup rather than failing on the first
+request. A request that asks for a `repetition_penalty` other than `1.0` runs
+on the plain decode path for that request alone. Prompt reuse is unaffected:
+`cached_tokens` is the same with the flag on and off.
+
+Each completed request logs what the round bookkeeping saw:
+
+```
+request chatcmpl-… completed in 18.264s prompt=208 cached=0 completion=600 finish=length mtp=4 rounds=179 accept=2.346
+```
+
+`accept` is the mean number of accepted drafts per round; `mtp` is the block
+width. They say how the wall clock was spent, never what the answer was.
 
 ## Connect a client
 
@@ -266,9 +305,14 @@ above; audio and video are not. It does not support the Responses API, legacy
 Completions, embeddings, structured output, batching, log probabilities, or
 remote model switching.
 
-Context length can be 4K, 8K, 16K, 32K, or 64K. The default is 16K. Larger FP16
-KV contexts use more memory. On an 8 GB Mac, run one model process at a time and
-watch memory pressure.
+Context length can be 4K, 8K, 16K, 32K, 64K, or 128K. The default is 16K. Only
+the full-attention layers grow with the context — the sliding-window layers are
+capped by their ring — but those layers grow linearly: on the pinned checkpoint
+the FP16 KV cache measures 1.97 GB at 64K and 3.31 GB at 128K. That comes out of
+the same Metal working set as the expert cache, so a long context needs fewer
+`--expert-cache-slots`; a combination the device cannot keep resident is
+rejected at load with the arithmetic printed. On an 8 GB Mac, run one model
+process at a time and watch memory pressure.
 
 For long requests, stderr reports the request lifecycle as prepared, queued,
 generating, completed, or failed. It includes token counts and timing, but not

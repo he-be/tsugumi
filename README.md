@@ -285,6 +285,28 @@ silently ignored token.
 The [local server](docs/OPENAI_SERVER.md#images) takes the same images as
 OpenAI-style `image_url` content parts holding a `data:` URI.
 
+#### Speculative decoding (MTP)
+
+A model installed with the drafter section (`--include-draft`, or `--add-draft`
+on an existing install) can predict several tokens per step:
+
+```bash
+swift run -c release TurboFieldfareCLI \
+  --model scratch/gemma4.gturbo \
+  --messages-file messages.json \
+  --draft-block-size 4
+```
+
+A small drafter proposes the next few tokens, one verify pass checks them all,
+and only the tokens the target model itself would have drawn are kept — so the
+answer is the answer of the non-speculative run and only the wall clock moves.
+The gain follows how predictable the text is: about **1.4x** on code and on
+image descriptions, about **1.0x** on Japanese prose, where the drafter is
+rarely right. It needs chunked prefill and a repetition penalty of 1.0, and it
+is off unless asked for. The [local server](docs/OPENAI_SERVER.md#speculative-decoding-mtp)
+takes the same flag. Measurements and the accepted trade-offs are in
+[`RESULTS_MTP.md`](RESULTS_MTP.md).
+
 Common generation options include `--max-context`, `--temperature`, `--top-k`,
 `--top-p`, `--repetition-penalty`, `--seed`, and repeatable `--stop` strings.
 Runtime options include `--expert-cache-slots`, `--expert-cache-policy`,
@@ -310,14 +332,17 @@ swift build -c release --product TurboFieldfareServer
 ```
 
 It listens on `http://127.0.0.1:8080/v1` and supports Chat Completions,
-streaming, function tools, `image_url` content parts holding a `data:` URI, and
-single-prefix prompt reuse for text-only turns. The client must
+streaming, function tools, `image_url` content parts holding a `data:` URI,
+speculative decoding (`--draft-block-size`), and single-prefix prompt reuse for
+text-only turns. The client must
 authorize and run every tool call. Keep the server on loopback; it has no
 remote authentication or TLS.
 
 See [Local server](docs/OPENAI_SERVER.md) for a test request, Python and
 OpenCode setup, image limits, prompt reuse, tool handling, and the supported API
-subset.
+subset. A machine-specific runbook for this M3 Pro — the three context/slot
+combinations that fit, what to check before starting, and how to read the log —
+is in [`docs/SERVER_RUNBOOK.md`](docs/SERVER_RUNBOOK.md) (Japanese).
 
 ## Test and contribute
 

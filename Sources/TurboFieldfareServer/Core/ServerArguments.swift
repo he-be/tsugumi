@@ -14,6 +14,7 @@ public struct ServerArguments: Equatable, Sendable {
     public let prefillChunkTokens: Int
     public let rdadvisePolicy: RDAdvicePolicyMode
     public let verification: ModelIntegrityPolicy
+    public let draftBlockSize: Int
     public let imagePolicy: ServerImagePolicy
 
     public static let usage = """
@@ -22,7 +23,15 @@ public struct ServerArguments: Equatable, Sendable {
       --model <dir>              Required model directory.
       --port <1...65535>         Loopback port (default 8080).
       --model-id <id>            API model identifier (default gemma-4-26b-a4b-it).
-      --max-context <tokens>     4096, 8192, 16384, 32768, or 65536 (default 16384).
+      --max-context <tokens>     4096, 8192, 16384, 32768, 65536, or 131072
+                                 (default 16384). Only the full-attention layers
+                                 grow with the context, but they grow linearly:
+                                 the KV cache measures 1.97 GB at 65536 and
+                                 3.31 GB at 131072, which has to come out of the
+                                 same Metal working set as the expert cache, so
+                                 a long context wants fewer --expert-cache-slots.
+                                 A combination the device cannot keep resident is
+                                 rejected at load with the arithmetic.
       --queue-limit <count>      Maximum queued requests (default 4).
       --prompt-cache-mode <off|single-prefix>
                                  Prompt KV reuse mode (default single-prefix).
@@ -44,6 +53,14 @@ public struct ServerArguments: Equatable, Sendable {
                                  (default full-sha256). trusted-install checks sizes
                                  against verified-install.json instead of rehashing
                                  every layer file on first touch.
+      --draft-block-size <n>     MTP speculative block width: 0 (off, the default)
+                                 or 2...8. Needs a model installed with the
+                                 drafter section and --prefill on. Accepted
+                                 tokens are the ones the target itself drew, so
+                                 speculation moves the wall clock and not the
+                                 text; a request that asks for a repetition
+                                 penalty other than 1.0 falls back to plain
+                                 decode for that request alone.
       --image-tokens <n>         Soft-token budget per image: 70, 140, or 280
                                  (default 280). An upper bound, not the count — the
                                  count follows the image's aspect ratio. Images arrive
@@ -105,6 +122,7 @@ public struct ServerArguments: Equatable, Sendable {
         var prefillChunkTokens = RuntimeConfiguration.production.prefillChunkTokens
         var rdadvisePolicy = RDAdvicePolicyMode.off
         var verification = ModelIntegrityPolicy.fullSha256
+        var draftBlockSize = 0
         var imageTokens = ServerImagePolicy.default.maxSoftTokens
         var maxImages = ServerImagePolicy.default.maxImagesPerRequest
         var maxImageBytes = ServerImagePolicy.default.maxImageBytes
@@ -133,7 +151,7 @@ public struct ServerArguments: Equatable, Sendable {
                 modelID = value
             case "--max-context":
                 guard let parsed = Int(value),
-                      [4_096, 8_192, 16_384, 32_768, 65_536].contains(parsed) else {
+                      [4_096, 8_192, 16_384, 32_768, 65_536, 131_072].contains(parsed) else {
                     throw ServerArgumentError.invalid("--max-context is not supported")
                 }
                 maxContext = parsed
@@ -189,6 +207,14 @@ public struct ServerArguments: Equatable, Sendable {
                         "--verification must be full-sha256 or trusted-install")
                 }
                 verification = parsed
+            case "--draft-block-size":
+                guard let parsed = Int(value),
+                      parsed == 0
+                        || (2...SpeculativeBlock.maxTokens).contains(parsed) else {
+                    throw ServerArgumentError.invalid(
+                        "--draft-block-size must be 0 or 2...\(SpeculativeBlock.maxTokens)")
+                }
+                draftBlockSize = parsed
             case "--image-tokens":
                 guard let parsed = Int(value),
                       VisionPreprocessorConfig.supportedSoftTokens.contains(parsed) else {
@@ -218,6 +244,12 @@ public struct ServerArguments: Equatable, Sendable {
             }
         }
         guard let model else { throw ServerArgumentError.invalid("--model is required") }
+        // The speculative block runs through the chunked prefill path (D6), so
+        // the two flags cannot disagree.
+        guard draftBlockSize == 0 || prefillPolicy == .chunked else {
+            throw ServerArgumentError.invalid(
+                "--draft-block-size \(draftBlockSize) requires --prefill on")
+        }
         return ServerArguments(model: model,
                                port: port,
                                modelID: modelID,
@@ -230,6 +262,7 @@ public struct ServerArguments: Equatable, Sendable {
                                prefillChunkTokens: prefillChunkTokens,
                                rdadvisePolicy: rdadvisePolicy,
                                verification: verification,
+                               draftBlockSize: draftBlockSize,
                                imagePolicy: ServerImagePolicy(
                                    maxSoftTokens: imageTokens,
                                    maxImagesPerRequest: maxImages,

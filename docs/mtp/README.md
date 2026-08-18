@@ -4,7 +4,13 @@ QAT ウェイト対応・Vision 対応に続く 3 つ目の大改修。
 `google/gemma-4-26B-A4B-it-qat-…-assistant` ドラフターを使った
 propose-and-verify (投機デコード) を本ランタイムに入れる。
 
-**現在地: M5.6 (ブロックの attention の行共有) 完了 ([25-M5.6-RESULTS.md](25-M5.6-RESULTS.md))。**
+**現在地: M6 (Server と受入) 完了 ([26-M6-RESULTS.md](26-M6-RESULTS.md))。実験は畳んだ。**
+**受入結果は [RESULTS_MTP.md](../../RESULTS_MTP.md) (リポジトリ直下)。**
+サーバーにも `--draft-block-size` が入り、pi 形のコーディング要求 (tools 宣言 +
+streaming + プロンプトキャッシュ) で **1.386 倍**、出力は 2,213 文字が 1 バイト差なし。
+日本語の散文は受理長 1.058 で **1.0 倍** — **受理長はタスクで 2 倍動く** (26 §2)。
+
+M5.6 まで ([25-M5.6-RESULTS.md](25-M5.6-RESULTS.md)):
 **採点基準 v1 は 1.136 → 1.336 倍** (bs=4)。**22 §5 が凍結した目標 1.33 に届いた。**
 速度比は 1.177 → **1.419**、受理長は 1.885 で不変
 (ドラフター側は 1 行も触っていない — 動いたのは費用側だけ)。
@@ -143,6 +149,7 @@ GUI は対象外。**主眼は wall time で、t/s は目安**。
 | 19 | [23-M5-RESULTS.md](23-M5-RESULTS.md) | **M5 の実測。**ループ統合 (`--draft-block-size`)、**採点基準 v1 の初実行 (1.05)**、ゲート 1 の分岐は投機ではなく経路差、マイクロベンチとループ実測の食い違いと感度表の入力の差し替え。**§7 の「次の 1 段は `wait.front`」は 24-M5.5 §2 が否定した** |
 | 20 | [24-M5.5-RESULTS.md](24-M5.5-RESULTS.md) | **M5.5 の実測。**GPU 占有率の計器 (`GPUQueueOccupancy`、ブロックと decode の両方)、**`wait.front` = ホスト往復という 23 §7 の読みの否定**、1 行ブロック 対 decode の段別突き合わせ、**ブロックの attention が decode のカーネルの 9 倍**という特定、decode の split-KV カーネルへの行ごとの付け替え、**スコア 1.050 → 1.136**、ゲート 1 の分岐が消えたこと、残っている床との差 |
 | 21 | [25-M5.6-RESULTS.md](25-M5.6-RESULTS.md) | **M5.6 の実測。**k 行を 1 回の split-KV で通す attention カーネル (1 simdgroup = 1 行、barrier 無し、combine は decode のものを流用)、段別の A/B と dispatch 数、**スコア 1.136 → 1.336 (目標到達)**、ゲート 1 は全一致のまま `--verify-block` が 2 本増えて落ちたこと、24-M5.5 §2 の帯域床の訂正 (KV head は 8)、残り (`moe` とホスト往復) |
+| 22 | [26-M6-RESULTS.md](26-M6-RESULTS.md) | **M6 の実測。**サーバーの `--draft-block-size` (起動時に確保する `SpeculativeScratch`、ドラフター無しは起動失敗、repetition penalty 付き要求の退避、完了ログの `accept=`)、pi 形の要求での A/B (code 1.386 / 2 ターン対話 1.51・1.47 / 日本語散文 1.007)、**ゲート 9 の合格** (`cached_tokens` が on/off で一致)、**ゲート 1 はサーバーでも分岐すること**と `TF_MTP_DRAFTS=0` による切り分け、**受理長のタスク依存が感度表の外側にある**という訂正 |
 
 事実の出所は 2 系統ある。**リモート (HF) 側**はドラフター重みの調査 (2026-08-17 取得。
 テンソル全数・SHA-256 一致・config・参照実装ソースは `scratch/mtp-ref/` に取得済み)、
@@ -161,3 +168,4 @@ GUI は対象外。**主眼は wall time で、t/s は目安**。
   「読むべき最新の設計」が常に 1 か所にあるようにする。訂正の履歴は git log が持つ。
 - 受入結果は最後に `RESULTS_MTP.md` (リポジトリ直下、PLAN §6 準拠) にまとめる。
   `RESULTS_QAT.md` / `RESULTS_VISION.md` と同じ場所・同じ体裁にする。
+  → **書いた ([RESULTS_MTP.md](../../RESULTS_MTP.md))。この計画はここで閉じる。**

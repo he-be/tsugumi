@@ -22,11 +22,17 @@ enum ServerLog {
                           duration: Duration,
                           completion: ServerCompletion) {
         let usage = completion.usage
-        write("request \(id) completed in \(format(duration)) "
+        var line = "request \(id) completed in \(format(duration)) "
             + "prompt=\(usage.promptTokens) "
             + "cached=\(usage.promptTokensDetails.cachedTokens) "
             + "completion=\(usage.completionTokens) "
-            + "finish=\(completion.finishReason)")
+            + "finish=\(completion.finishReason)"
+        if let speculative = completion.speculative {
+            line += " mtp=\(speculative.blockTokens)"
+                + " rounds=\(speculative.rounds)"
+                + " accept=\(String(format: "%.3f", speculative.meanAcceptedLength))"
+        }
+        write(line)
     }
 
     static func failed(id: String,
