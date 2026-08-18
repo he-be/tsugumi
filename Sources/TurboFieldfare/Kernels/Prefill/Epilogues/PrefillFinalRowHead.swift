@@ -81,6 +81,11 @@ final class PrefillFinalRowHeadInt4 {
     /// element the arithmetic is `encodeLogits`', so one row is bit-identical
     /// to it. The rows must be contiguous with stride `d`, which is how a
     /// prefill chunk stages them.
+    ///
+    /// Reading the table once was not enough on its own: at 461 MB the table is
+    /// the block's largest read, and until `encodeRowsWide` the per-row
+    /// arithmetic put a k=4 block at 6.2 ms against a 3.4 ms bandwidth floor
+    /// (`docs/mtp/20-M4.8-RESULTS.md` §2).
     func encodeLogitsRows(commandBuffer: MTLCommandBuffer,
                           hiddenBlock: MTLBuffer,
                           firstRow: Int,
@@ -117,14 +122,14 @@ final class PrefillFinalRowHeadInt4 {
                              t: UInt32(rowCount),
                              d: d,
                              eps: rmsEps)
-        int4.encodeRows(commandBuffer: commandBuffer,
-                        weights: weights, weightsOffset: weightsOffset,
-                        scales: scales, scalesOffset: scalesOffset,
-                        biases: biases, biasesOffset: biasesOffset,
-                        x: normed, xStrideElements: Int(d),
-                        y: logits, yOffset: logitsOffset,
-                        yStrideElements: Int(vocab),
-                        t: rowCount, m: vocab, n: d)
+        try int4.encodeRowsWide(commandBuffer: commandBuffer,
+                                weights: weights, weightsOffset: weightsOffset,
+                                scales: scales, scalesOffset: scalesOffset,
+                                biases: biases, biasesOffset: biasesOffset,
+                                x: normed, xStrideElements: Int(d),
+                                y: logits, yOffset: logitsOffset,
+                                yStrideElements: Int(vocab),
+                                t: rowCount, m: vocab, n: d)
     }
 
     private func blockNormedBuffer() throws -> MTLBuffer {

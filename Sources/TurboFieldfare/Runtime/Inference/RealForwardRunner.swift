@@ -1055,7 +1055,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                   columns: Int,
                                   tokenCount: Int,
                                   xStrideElements: Int,
-                                  yStrideElements: Int) {
+                                  yStrideElements: Int) throws {
             if tokenCount >= 32,
                family == .q || family == .kv || family == .o,
                let candidate = prefillMPPAffineInt4 {
@@ -1100,20 +1100,20 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             // one (docs/mtp/16-M4.5-PLAN.md §4 c).
             if Self.rowsDenseEnabled, tokenCount >= 1,
                tokenCount <= DequantInt4GEMV.maxRows {
-                int4.encodeRows(commandBuffer: commandBuffer,
-                                weights: weights.buffer,
-                                weightsOffset: Int(weights.offset),
-                                scales: weights.buffer,
-                                scalesOffset: Int(weights.scaleOffset),
-                                biases: weights.buffer,
-                                biasesOffset: Int(weights.biasOffset),
-                                x: x,
-                                xStrideElements: xStrideElements,
-                                y: y,
-                                yStrideElements: yStrideElements,
-                                t: tokenCount,
-                                m: UInt32(rows),
-                                n: UInt32(columns))
+                try int4.encodeRowsWide(commandBuffer: commandBuffer,
+                                        weights: weights.buffer,
+                                        weightsOffset: Int(weights.offset),
+                                        scales: weights.buffer,
+                                        scalesOffset: Int(weights.scaleOffset),
+                                        biases: weights.buffer,
+                                        biasesOffset: Int(weights.biasOffset),
+                                        x: x,
+                                        xStrideElements: xStrideElements,
+                                        y: y,
+                                        yStrideElements: yStrideElements,
+                                        t: tokenCount,
+                                        m: UInt32(rows),
+                                        n: UInt32(columns))
                 return
             }
             for row in 0..<tokenCount {
@@ -1327,7 +1327,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                    d: UInt32(D),
                                    eps: eps)
             try cutProfiled(.norm)
-            encodeInt4Projection(commandBuffer: cb,
+            try encodeInt4Projection(commandBuffer: cb,
                                  family: .q,
                                  weights: views.q,
                                  x: scratch.normed,
@@ -1337,7 +1337,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                  tokenCount: t,
                                  xStrideElements: D,
                                  yStrideElements: qDim)
-            encodeInt4Projection(commandBuffer: cb,
+            try encodeInt4Projection(commandBuffer: cb,
                                  family: .kv,
                                  weights: views.k,
                                  x: scratch.normed,
@@ -1347,7 +1347,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                  tokenCount: t,
                                  xStrideElements: D,
                                  yStrideElements: kvDim)
-            encodeInt4Projection(commandBuffer: cb,
+            try encodeInt4Projection(commandBuffer: cb,
                                  family: .kv,
                                  weights: views.v,
                                  x: scratch.normed,
@@ -1433,7 +1433,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     "chunked prefill attention requires FP16 KV")
             }
             try cutProfiled(isFull ? .attentionFull : .attentionSWA)
-            encodeInt4Projection(commandBuffer: cb,
+            try encodeInt4Projection(commandBuffer: cb,
                                      family: .o,
                                      weights: views.o,
                                      x: scratch.attentionOutput,

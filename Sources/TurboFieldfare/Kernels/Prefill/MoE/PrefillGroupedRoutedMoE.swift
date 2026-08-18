@@ -455,6 +455,12 @@ final class PrefillGroupedRoutedMoE {
     private let geluMulPSO: MTLComputePipelineState?
     private let rowsGateUpPSO: MTLComputePipelineState?
     private let rowsDownPSO: MTLComputePipelineState?
+    /// The same two kernels with the block's row count pinned, one pair per
+    /// width. A verify block's experts hold at most k rows, and compiling for
+    /// eight when four are running costs registers and unrolled body for
+    /// nothing (`docs/mtp/20-M4.8-RESULTS.md` §4).
+    private let rowsGateUpCappedPSO: [Int: MTLComputePipelineState]
+    private let rowsDownCappedPSO: [Int: MTLComputePipelineState]
     private let streamedArgEncoder: MTLArgumentEncoder
 
     func makeStreamedArgumentBuffer(device: MTLDevice,
@@ -499,6 +505,20 @@ final class PrefillGroupedRoutedMoE {
             && (rowsDown?.maxTotalThreadsPerThreadgroup ?? 0) >= rowsThreads
         self.rowsGateUpPSO = rowsUsable ? rowsGateUp : nil
         self.rowsDownPSO = rowsUsable ? rowsDown : nil
+        var gateUpCapped: [Int: MTLComputePipelineState] = [:]
+        var downCapped: [Int: MTLComputePipelineState] = [:]
+        if rowsUsable && DequantInt4GEMV.wideEnabled {
+            for cap in 1...Self.rowsMaxPerExpert {
+                let constants = [MetalFunctionConstant(index: 16,
+                                                       value: .uint32(UInt32(cap)))]
+                gateUpCapped[cap] = try? context.pipeline("prefill_moe_rows_gate_up_act",
+                                                          constants: constants)
+                downCapped[cap] = try? context.pipeline("prefill_moe_rows_down",
+                                                        constants: constants)
+            }
+        }
+        self.rowsGateUpCappedPSO = gateUpCapped
+        self.rowsDownCappedPSO = downCapped
         guard let streamedFn = try context.library.makeFunction(name: "prefill_grouped_routed_moe_batched_phase1") else {
             throw MetalError.missingFunction("prefill_grouped_routed_moe_batched_phase1")
         }
@@ -689,9 +709,11 @@ final class PrefillGroupedRoutedMoE {
         var blocks: [PrefillRoutedGEMMBlock] = []
         blocks.reserveCapacity(groups.count)
         var rows = 0
+        var widestBlock = 0
         for (slot, group) in groups.enumerated() {
             let count = Int(group.pairCount)
             guard count >= 1, count <= Self.rowsMaxPerExpert else { return 0 }
+            widestBlock = max(widestBlock, count)
             blocks.append(PrefillRoutedGEMMBlock(localSlot: UInt32(slot),
                                                  pairStart: group.pairStart,
                                                  rowCount: UInt32(count),
@@ -739,8 +761,10 @@ final class PrefillGroupedRoutedMoE {
             enc.endEncoding()
         }
 
-        encode(rowsGateUpPSO, outputRows: Int(params.routedIntermediate), down: false)
-        encode(rowsDownPSO, outputRows: Int(params.d), down: true)
+        encode(rowsGateUpCappedPSO[widestBlock] ?? rowsGateUpPSO,
+               outputRows: Int(params.routedIntermediate), down: false)
+        encode(rowsDownCappedPSO[widestBlock] ?? rowsDownPSO,
+               outputRows: Int(params.d), down: true)
         return blocks.count
     }
 

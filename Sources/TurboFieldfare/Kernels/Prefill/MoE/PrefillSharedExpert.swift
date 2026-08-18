@@ -69,7 +69,7 @@ final class PrefillSharedExpert {
                             scratchGate: scratchGate, scratchGateOffset: scratchGateOffset,
                             scratchUp: scratchUp, scratchUpOffset: scratchUpOffset,
                             scratchAct: scratchAct, scratchActOffset: scratchActOffset) {
-            encodeRows(commandBuffer: cb,
+            try encodeRows(commandBuffer: cb,
                        rowsGEMV: rowsGEMV,
                        x: x, xOffset: xOffset,
                        y: y, yOffset: yOffset,
@@ -138,6 +138,10 @@ final class PrefillSharedExpert {
     /// The batched path's three GEMMs as three k-row GEMVs: same weights read
     /// once each, same elementwise stage between them, one row of arithmetic
     /// per row of the block instead of a 64-row tile's worth.
+    ///
+    /// `encodeRowsWide` rather than `encodeRows`: at 80 expert-cache slots the
+    /// shared expert is GPU-bound and its k-scaling was arithmetic the block
+    /// need not repeat per row (`docs/mtp/20-M4.8-RESULTS.md` §2). Same bits.
     private func encodeRows(commandBuffer cb: MTLCommandBuffer,
                             rowsGEMV: DequantInt4GEMV,
                             x: MTLBuffer, xOffset: Int,
@@ -150,8 +154,8 @@ final class PrefillSharedExpert {
                             scratchAct: MTLBuffer, scratchActOffset: Int,
                             queryCount: Int,
                             d: Int,
-                            intermediate: Int) {
-        rowsGEMV.encodeRows(commandBuffer: cb,
+                            intermediate: Int) throws {
+        try rowsGEMV.encodeRowsWide(commandBuffer: cb,
                             weights: gate.weights, weightsOffset: gate.weightsOffset,
                             scales: gate.scales, scalesOffset: gate.scalesOffset,
                             biases: gate.biases, biasesOffset: gate.biasesOffset,
@@ -159,7 +163,7 @@ final class PrefillSharedExpert {
                             y: scratchGate, yOffset: scratchGateOffset,
                             yStrideElements: intermediate,
                             t: queryCount, m: UInt32(intermediate), n: UInt32(d))
-        rowsGEMV.encodeRows(commandBuffer: cb,
+        try rowsGEMV.encodeRowsWide(commandBuffer: cb,
                             weights: up.weights, weightsOffset: up.weightsOffset,
                             scales: up.scales, scalesOffset: up.scalesOffset,
                             biases: up.biases, biasesOffset: up.biasesOffset,
@@ -172,7 +176,7 @@ final class PrefillSharedExpert {
                       scratchUp: scratchUp, scratchUpOffset: scratchUpOffset,
                       scratchAct: scratchAct, scratchActOffset: scratchActOffset,
                       elements: queryCount * intermediate)
-        rowsGEMV.encodeRows(commandBuffer: cb,
+        try rowsGEMV.encodeRowsWide(commandBuffer: cb,
                             weights: down.weights, weightsOffset: down.weightsOffset,
                             scales: down.scales, scalesOffset: down.scalesOffset,
                             biases: down.biases, biasesOffset: down.biasesOffset,

@@ -885,6 +885,202 @@ void lm_head_greedy_int4_rows_chunk_block(
     }
 }
 
+// The block head with the per-activation-row work taken out of the weight loop.
+//
+// `lm_head_greedy_int4_rows_chunk_block` above reads the 461 MB table once per
+// block, which is why the block's bytes do not grow with k. Its *time* still
+// did: at k=4 the stage cost 7 ms against a 3.4 ms bandwidth floor, because
+// three things inside the weight loop were charged per activation row that need
+// not be — the group's activation sum (which does not depend on the vocabulary
+// row at all, yet all 262144 of them recomputed it), the activation load, and
+// its half->float conversion (`docs/mtp/20-M4.8-RESULTS.md` §2).
+//
+// So: `xsum` carries the activation sums in, precomputed once per block by
+// `int4_rows_group_sums` in the same order; `FC_LMHEAD_ROWS_PER_SG` gives one
+// SIMD group R vocabulary rows so a loaded activation pays for R of them; and
+// `FC_LMHEAD_T` pins the block width at build time so the row loop unrolls and
+// `acc` stays in registers. Past four rows it stops fitting, so the wrapper
+// splits a wider block into dispatches of four.
+//
+// Per (activation row, vocabulary row) the reduction is unchanged, element for
+// element and in the same order. The argmax is unchanged too: a SIMD group now
+// picks between its R rows first, keeping "greater value wins, and on a tie the
+// smaller vocabulary index wins", which is what the cross-SIMD merge below
+// already did across the threadgroup.
+constant uint FC_LMHEAD_ROWS_PER_SG [[function_constant(14)]];
+constant uint FC_LMHEAD_T           [[function_constant(15)]];
+
+constant constexpr uint kLMHeadMaxRowsPerSG = 2;
+constant constexpr uint kLMHeadWideMaxT     = 4;
+
+static inline uint lmhead_rows_per_sg() {
+    return is_function_constant_defined(FC_LMHEAD_ROWS_PER_SG) ? FC_LMHEAD_ROWS_PER_SG : 1u;
+}
+
+static inline uint lmhead_wide_t(constant uint& T) {
+    return is_function_constant_defined(FC_LMHEAD_T) ? FC_LMHEAD_T : T;
+}
+
+[[kernel, max_total_threads_per_threadgroup(256)]]
+void lm_head_greedy_int4_rows_chunk_block_wide(
+    device const half*    x_normed     [[buffer(0)]],
+    device const uint8_t* W            [[buffer(1)]],
+    device const bfloat*  scales       [[buffer(2)]],
+    device const bfloat*  biases       [[buffer(3)]],
+    device       float*   summaries    [[buffer(4)]],
+    constant     uint&    D            [[buffer(5)]],
+    constant     uint&    V            [[buffer(6)]],
+    constant     uint&    T_in         [[buffer(7)]],
+    constant     uint&    row_groups   [[buffer(8)]],
+    device const float*   xsum         [[buffer(9)]],
+    constant     uint&    xsum_stride  [[buffer(10)]],
+    uint  tg_idx         [[threadgroup_position_in_grid]],
+    uint  lane           [[thread_index_in_simdgroup]],
+    uint  simd_group_id  [[simdgroup_index_in_threadgroup]],
+    uint  simdgroups     [[simdgroups_per_threadgroup]]
+) {
+    threadgroup float partial_v[kLogitMaxSimdGroups * kLMHeadWideMaxT];
+    threadgroup uint partial_i[kLogitMaxSimdGroups * kLMHeadWideMaxT];
+    const uint R = lmhead_rows_per_sg();
+    const uint T = lmhead_wide_t(T_in);
+    const uint DD = lmhead_fc_d(D);
+    const uint VV = lmhead_fc_v(V);
+    const uint row0 = (tg_idx * kLMHeadRowsPerTG + simd_group_id) * R;
+
+    // Best (value, vocabulary row) this SIMD group holds, per activation row.
+    float best_v[kLMHeadWideMaxT];
+    uint best_i[kLMHeadWideMaxT];
+    for (uint t = 0; t < kLMHeadWideMaxT; ++t) {
+        best_v[t] = -INFINITY;
+        best_i[t] = 0xFFFFFFFFu;
+    }
+
+    if (row0 < VV) {
+        const uint n_groups = DD / kLMHeadGroupSize;
+        const uint row_bytes = DD / 2u;
+        const uint full_blocks = n_groups / kLMHeadGroupsPerBlock;
+
+        uint row_of[kLMHeadMaxRowsPerSG];
+        for (uint r = 0; r < R; ++r) { row_of[r] = min(row0 + r, VV - 1u); }
+
+        float acc[kLMHeadWideMaxT * kLMHeadMaxRowsPerSG];
+        for (uint i = 0; i < kLMHeadWideMaxT * kLMHeadMaxRowsPerSG; ++i) { acc[i] = 0.0f; }
+
+        for (uint blk = 0; blk < full_blocks; ++blk) {
+            const uint byte_base = blk * 128u + lane * 4u;
+            const uint g = blk * kLMHeadGroupsPerBlock + lane / kLMHeadLanesPerGroup;
+            const uint elem = byte_base * 2u;
+
+            float q[kLMHeadMaxRowsPerSG * 8];
+            float sv[kLMHeadMaxRowsPerSG];
+            float bv[kLMHeadMaxRowsPerSG];
+            for (uint r = 0; r < R; ++r) {
+                const uint row = row_of[r];
+                device const ushort* wp =
+                    (device const ushort*)(W + row * row_bytes + byte_base);
+                const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
+                sv[r] = float(scales[row * n_groups + g]);
+                bv[r] = float(biases[row * n_groups + g]);
+                const uint b0 =  w4        & 0xFFu;
+                const uint b1 = (w4 >> 8)  & 0xFFu;
+                const uint b2 = (w4 >> 16) & 0xFFu;
+                const uint b3 = (w4 >> 24) & 0xFFu;
+                q[r * 8 + 0] = float(b0 & 0x0Fu); q[r * 8 + 1] = float(b0 >> 4);
+                q[r * 8 + 2] = float(b1 & 0x0Fu); q[r * 8 + 3] = float(b1 >> 4);
+                q[r * 8 + 4] = float(b2 & 0x0Fu); q[r * 8 + 5] = float(b2 >> 4);
+                q[r * 8 + 6] = float(b3 & 0x0Fu); q[r * 8 + 7] = float(b3 >> 4);
+            }
+
+            for (uint t = 0; t < kLMHeadWideMaxT; ++t) {
+                if (t >= T) break;
+                device const half* x = x_normed + t * DD;
+                const half4 xa = *((device const half4*)(x + elem));
+                const half4 xb = *((device const half4*)(x + elem + 4u));
+                const float e0 = float(xa.x), e1 = float(xa.y);
+                const float e2 = float(xa.z), e3 = float(xa.w);
+                const float e4 = float(xb.x), e5 = float(xb.y);
+                const float e6 = float(xb.z), e7 = float(xb.w);
+                const float sum = xsum[t * xsum_stride + blk * 32u + lane];
+                for (uint r = 0; r < R; ++r) {
+                    float dot = 0.0f;
+                    dot = fma(q[r * 8 + 0], e0, dot); dot = fma(q[r * 8 + 1], e1, dot);
+                    dot = fma(q[r * 8 + 2], e2, dot); dot = fma(q[r * 8 + 3], e3, dot);
+                    dot = fma(q[r * 8 + 4], e4, dot); dot = fma(q[r * 8 + 5], e5, dot);
+                    dot = fma(q[r * 8 + 6], e6, dot); dot = fma(q[r * 8 + 7], e7, dot);
+                    acc[r * kLMHeadWideMaxT + t] =
+                        fma(sv[r], dot, acc[r * kLMHeadWideMaxT + t]);
+                    acc[r * kLMHeadWideMaxT + t] =
+                        fma(bv[r], sum, acc[r * kLMHeadWideMaxT + t]);
+                }
+            }
+        }
+        for (uint gg = full_blocks * kLMHeadGroupsPerBlock; gg < n_groups; ++gg) {
+            // Only the first kLMHeadTailLanes lanes hold a byte of this group.
+            if (lane >= kLMHeadTailLanes) break;
+            for (uint t = 0; t < kLMHeadWideMaxT; ++t) {
+                if (t >= T) break;
+                device const half* x = x_normed + t * DD;
+                const float x0 = float(x[gg * kLMHeadGroupSize + lane * 2u]);
+                const float x1 = float(x[gg * kLMHeadGroupSize + lane * 2u + 1u]);
+                for (uint r = 0; r < R; ++r) {
+                    const uint row = row_of[r];
+                    const float s = float(scales[row * n_groups + gg]);
+                    const float b = float(biases[row * n_groups + gg]);
+                    const uint8_t byte =
+                        W[row * row_bytes + gg * (kLMHeadGroupSize / 2) + lane];
+                    float dot = fma(float(uint(byte & 0x0Fu)), x0, 0.0f);
+                    dot = fma(float(uint(byte >> 4)), x1, dot);
+                    acc[r * kLMHeadWideMaxT + t] =
+                        fma(s, dot, acc[r * kLMHeadWideMaxT + t]);
+                    acc[r * kLMHeadWideMaxT + t] =
+                        fma(b, x0 + x1, acc[r * kLMHeadWideMaxT + t]);
+                }
+            }
+        }
+        // `R` and `T` are compile-time, so every lane reaches each reduction.
+        // Rows are visited in increasing order and only a strictly greater
+        // value displaces the incumbent, so a tie keeps the smaller row.
+        for (uint r = 0; r < R; ++r) {
+            for (uint t = 0; t < kLMHeadWideMaxT; ++t) {
+                if (t >= T) break;
+                const float z = simd_sum(acc[r * kLMHeadWideMaxT + t]);
+                if (lane == 0 && row0 + r < VV && isfinite(z) && z > best_v[t]) {
+                    best_v[t] = z;
+                    best_i[t] = row0 + r;
+                }
+            }
+        }
+    }
+
+    if (lane == 0) {
+        for (uint t = 0; t < kLMHeadWideMaxT; ++t) {
+            if (t >= T) break;
+            partial_v[simd_group_id * kLMHeadWideMaxT + t] = best_v[t];
+            partial_i[simd_group_id * kLMHeadWideMaxT + t] = best_i[t];
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd_group_id == 0) {
+        for (uint t = 0; t < kLMHeadWideMaxT; ++t) {
+            if (t >= T) break;
+            const bool active = lane < simdgroups;
+            const uint slot = lane * kLMHeadWideMaxT + t;
+            const float v = active ? partial_v[slot] : -INFINITY;
+            const uint idx = active ? partial_i[slot] : 0xFFFFFFFFu;
+            const float v_all = simd_max(v);
+            uint i_all = (v == v_all) ? idx : 0xFFFFFFFFu;
+            i_all = simd_min(i_all);
+            if (lane == 0) {
+                device float* out = summaries
+                    + (t * row_groups + tg_idx) * kLMHeadRowSummaryStride;
+                out[0] = v_all;
+                out[1] = as_type<float>(i_all);
+            }
+        }
+    }
+}
+
 [[kernel, max_total_threads_per_threadgroup(256)]]
 void lm_head_greedy_int4_rows_reduce(
     device const float*   summaries    [[buffer(0)]],

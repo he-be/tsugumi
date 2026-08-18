@@ -384,3 +384,190 @@ kernel void dequant_int4_qkv_gemv_simd(
     dequant_int4_gemv_simd_body(W, scales, biases, x, y, M, NN,
                                 1u, local_row, 0u, lane);
 }
+
+// ============================================================================
+// y[t, m] = sum_n W[m, n] * x[t, n], with the per-t work cut down.
+//
+// `dequant_int4_gemv_rows_simd` above already reads W once for the whole
+// block, which is why the verify block's dense bytes do not grow with k. What
+// it does grow is arithmetic: `docs/mtp/19-M4.7-RESULTS.md` §5 measures the LM
+// head at 4.1 ms for t=1 (a hair off this machine's DRAM roof) and 11.7 ms for
+// t=8, and the shared expert the same shape. Two things in the inner loop are
+// charged per activation row that need not be:
+//
+//   a. `sum = e0 + ... + e7`, the group's activation sum for the affine bias
+//      term, does not depend on the weight row — yet every one of the 262144
+//      head rows recomputes it. `xsum` carries it in, precomputed once per
+//      block by `int4_rows_group_sums` in the same order, so the value is
+//      bit-identical and seven adds per eight elements per row disappear.
+//   b. The activation load and its half->float conversion are likewise shared
+//      by every weight row. `FC_INT4_ROWS_PER_SG` gives one SIMD group R
+//      consecutive weight rows instead of one, so a loaded `x` pays for R rows
+//      of output rather than 1.
+//
+// `FC_INT4_ROWS_T` pins t at pipeline-build time so the row loop unrolls with
+// no trip-count test and `acc` stays in registers.
+//
+// Per output element the arithmetic is `dequant_int4_gemv_simd`'s, in the same
+// order, so this stays bit-identical to decode (see `--rows-bench --verify`).
+// ============================================================================
+
+constant uint FC_INT4_ROWS_PER_SG [[function_constant(27)]];
+constant uint FC_INT4_ROWS_T      [[function_constant(28)]];
+
+/// Weight rows one SIMD group may carry, and activation rows one dispatch may
+/// carry. Both bound register arrays, and `acc` is their product, so they are
+/// the kernel's occupancy knob: `docs/mtp/20-M4.8-RESULTS.md` §2 measures the
+/// cliff at `T = 5`, which is why the wrapper splits a wider block into
+/// dispatches of four rather than growing this.
+constant constexpr uint kInt4MaxRowsPerSG = 4;
+constant constexpr uint kInt4WideMaxT     = 4;
+
+static inline uint int4_rows_per_sg() {
+    return is_function_constant_defined(FC_INT4_ROWS_PER_SG) ? FC_INT4_ROWS_PER_SG : 1u;
+}
+
+/// `FC_INT4_ROWS_T` unset falls back to the bound `T`, which keeps one
+/// pipeline for every block width at the cost of the trip-count test.
+static inline uint int4_rows_t(constant uint& T) {
+    return is_function_constant_defined(FC_INT4_ROWS_T) ? FC_INT4_ROWS_T : T;
+}
+
+// xsum[t, j] = sum of the eight activations lane j of the vectorized block
+// covers, in the block kernel's order. `j` runs over `xsum_stride =
+// (N / 256) * 32` entries, which is exactly the elements the full-block loop
+// reads; the scalar tail keeps computing its own two-element sum.
+kernel void int4_rows_group_sums(
+    device const half*  x           [[buffer(0)]],
+    device float*       xsum        [[buffer(1)]],
+    constant uint&      x_stride    [[buffer(2)]],
+    constant uint&      xsum_stride [[buffer(3)]],
+    uint2               gid         [[thread_position_in_grid]]
+) {
+    if (gid.x >= xsum_stride) return;
+    device const half* x_row = x + gid.y * x_stride;
+    const uint elem = gid.x * 8u;
+    const half4 xa = *((device const half4*)(x_row + elem));
+    const half4 xb = *((device const half4*)(x_row + elem + 4u));
+    const float e0 = float(xa.x), e1 = float(xa.y), e2 = float(xa.z), e3 = float(xa.w);
+    const float e4 = float(xb.x), e5 = float(xb.y), e6 = float(xb.z), e7 = float(xb.w);
+    xsum[gid.y * xsum_stride + gid.x] = e0 + e1 + e2 + e3 + e4 + e5 + e6 + e7;
+}
+
+kernel void dequant_int4_gemv_rows_wide_simd(
+    device const uint8_t* W           [[buffer(0)]],
+    device const bfloat*  scales      [[buffer(1)]],
+    device const bfloat*  biases      [[buffer(2)]],
+    device const half*    x           [[buffer(3)]],
+    device half*          y           [[buffer(4)]],
+    constant uint&        M           [[buffer(5)]],
+    constant uint&        N           [[buffer(6)]],
+    constant uint&        T_in        [[buffer(7)]],
+    constant uint&        x_stride    [[buffer(8)]],
+    constant uint&        y_stride    [[buffer(9)]],
+    device const float*   xsum        [[buffer(10)]],
+    constant uint&        xsum_stride [[buffer(11)]],
+    uint                  tg_idx      [[threadgroup_position_in_grid]],
+    uint                  sg_idx      [[simdgroup_index_in_threadgroup]],
+    uint                  lane        [[thread_index_in_simdgroup]]
+) {
+    constexpr uint rows_per_tg = 8;
+    const uint R = int4_rows_per_sg();
+    const uint T = int4_rows_t(T_in);
+    const uint MM = int4_fc_m(M);
+    const uint NN = int4_fc_n(N);
+
+    const uint row0 = (tg_idx * rows_per_tg + sg_idx) * R;
+    if (row0 >= MM) return;
+
+    const uint n_groups  = NN / kGroupSize;
+    const uint row_bytes = NN / 2;
+    const uint full_blocks = n_groups / kGroupsPerBlock;
+
+    float acc[kInt4WideMaxT * kInt4MaxRowsPerSG];
+    for (uint i = 0; i < kInt4WideMaxT * kInt4MaxRowsPerSG; ++i) { acc[i] = 0.0f; }
+
+    // A row past the end reads the last row's bytes and is dropped at the
+    // store; every production shape divides evenly, so this is a guard rather
+    // than a path.
+    uint row_of[kInt4MaxRowsPerSG];
+    for (uint r = 0; r < R; ++r) { row_of[r] = min(row0 + r, MM - 1u); }
+
+    for (uint blk = 0; blk < full_blocks; ++blk) {
+        const uint byte_base = blk * 128u + lane * 4u;
+        const uint g    = blk * kGroupsPerBlock + lane / kLanesPerGroup;
+        const uint elem = byte_base * 2u;
+
+        // Weight-side work: once per weight row, outside the activation loop.
+        float q[kInt4MaxRowsPerSG * 8];
+        float sv[kInt4MaxRowsPerSG];
+        float bv[kInt4MaxRowsPerSG];
+        for (uint r = 0; r < R; ++r) {
+            const uint row = row_of[r];
+            device const ushort* wp =
+                (device const ushort*)(W + row * row_bytes + byte_base);
+            const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
+            sv[r] = float(scales[row * n_groups + g]);
+            bv[r] = float(biases[row * n_groups + g]);
+            const uint b0 =  w4        & 0xFFu;
+            const uint b1 = (w4 >> 8)  & 0xFFu;
+            const uint b2 = (w4 >> 16) & 0xFFu;
+            const uint b3 = (w4 >> 24) & 0xFFu;
+            q[r * 8 + 0] = float(b0 & 0x0Fu); q[r * 8 + 1] = float(b0 >> 4);
+            q[r * 8 + 2] = float(b1 & 0x0Fu); q[r * 8 + 3] = float(b1 >> 4);
+            q[r * 8 + 4] = float(b2 & 0x0Fu); q[r * 8 + 5] = float(b2 >> 4);
+            q[r * 8 + 6] = float(b3 & 0x0Fu); q[r * 8 + 7] = float(b3 >> 4);
+        }
+
+        for (uint t = 0; t < kInt4WideMaxT; ++t) {
+            if (t >= T) break;
+            device const half* x_row = x + t * x_stride;
+            const half4 xa = *((device const half4*)(x_row + elem));
+            const half4 xb = *((device const half4*)(x_row + elem + 4u));
+            const float e0 = float(xa.x), e1 = float(xa.y), e2 = float(xa.z), e3 = float(xa.w);
+            const float e4 = float(xb.x), e5 = float(xb.y), e6 = float(xb.z), e7 = float(xb.w);
+            const float sum = xsum[t * xsum_stride + blk * 32u + lane];
+            for (uint r = 0; r < R; ++r) {
+                float dot = 0.0f;
+                dot = fma(q[r * 8 + 0], e0, dot); dot = fma(q[r * 8 + 1], e1, dot);
+                dot = fma(q[r * 8 + 2], e2, dot); dot = fma(q[r * 8 + 3], e3, dot);
+                dot = fma(q[r * 8 + 4], e4, dot); dot = fma(q[r * 8 + 5], e5, dot);
+                dot = fma(q[r * 8 + 6], e6, dot); dot = fma(q[r * 8 + 7], e7, dot);
+                acc[r * kInt4WideMaxT + t] = fma(sv[r], dot, acc[r * kInt4WideMaxT + t]);
+                acc[r * kInt4WideMaxT + t] = fma(bv[r], sum, acc[r * kInt4WideMaxT + t]);
+            }
+        }
+    }
+
+    for (uint gg = full_blocks * kGroupsPerBlock; gg < n_groups; ++gg) {
+        if (lane >= kTailLanes) break;
+        for (uint t = 0; t < kInt4WideMaxT; ++t) {
+            if (t >= T) break;
+            device const half* x_row = x + t * x_stride;
+            const float x0 = float(x_row[gg * kGroupSize + lane * 2u]);
+            const float x1 = float(x_row[gg * kGroupSize + lane * 2u + 1u]);
+            const float sum = x0 + x1;
+            for (uint r = 0; r < R; ++r) {
+                const uint row = row_of[r];
+                const float s = float(scales[row * n_groups + gg]);
+                const float b = float(biases[row * n_groups + gg]);
+                const uint8_t byte = W[row * row_bytes + gg * (kGroupSize / 2) + lane];
+                float dot = fma(float(uint(byte & 0x0Fu)), x0, 0.0f);
+                dot = fma(float(uint(byte >> 4)), x1, dot);
+                acc[r * kInt4WideMaxT + t] = fma(s, dot, acc[r * kInt4WideMaxT + t]);
+                acc[r * kInt4WideMaxT + t] = fma(b, sum, acc[r * kInt4WideMaxT + t]);
+            }
+        }
+    }
+
+    // `R` and `T` are compile-time, so every lane reaches each reduction.
+    for (uint r = 0; r < R; ++r) {
+        for (uint t = 0; t < kInt4WideMaxT; ++t) {
+            if (t >= T) break;
+            const float total = simd_sum(acc[r * kInt4WideMaxT + t]);
+            if (lane == 0 && row0 + r < MM) {
+                y[t * y_stride + row0 + r] = half(total);
+            }
+        }
+    }
+}

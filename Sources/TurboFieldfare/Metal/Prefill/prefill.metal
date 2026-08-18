@@ -967,6 +967,19 @@ kernel void prefill_moe_gate_up_gelu_mul(
 // scatter on the way out (pair -> (token, rank) -> route_partials row).
 // ---------------------------------------------------------------------------
 constant constexpr uint kPrefillMoERowsMax = 8;
+// The widest routed block this dispatch actually holds, pinned at build time.
+//
+// An expert holds at most one row per token, so a k-token verify block never
+// puts more than k rows in a block — but the kernel was compiled for eight, so
+// it unrolled eight row slots and kept eight accumulators live whatever k was.
+// Pinning the cap shrinks the unrolled body and the register arrays to the
+// block that is actually running (`docs/mtp/20-M4.8-RESULTS.md` §4).
+constant uint FC_MOE_ROWS_CAP [[function_constant(16)]];
+
+static inline uint prefill_moe_rows_cap() {
+    return is_function_constant_defined(FC_MOE_ROWS_CAP)
+        ? FC_MOE_ROWS_CAP : kPrefillMoERowsMax;
+}
 constant constexpr uint kPrefillMoERowsPerTG = 8;
 // Vectorized INT4 block geometry — see the note in dequant_int4.metal. A block
 // is a fixed 128 bytes (32 lanes x 4 bytes); the affine group size decides how
@@ -989,7 +1002,8 @@ kernel void prefill_moe_rows_gate_up_act(
     const PrefillRoutedGEMMBlockMSL blk = blocks[tgid.y];
     const uint f = tgid.x * kPrefillMoERowsPerTG + sg_idx;
     if (f >= p.F || blk.row_count == 0u) return;
-    const uint rows = min(blk.row_count, kPrefillMoERowsMax);
+    const uint cap = prefill_moe_rows_cap();
+    const uint rows = min(blk.row_count, cap);
 
     device const uint8_t* base = routed.blob[blk.local_slot];
     const uint n_groups = p.D / kPrefillGroupSize;
@@ -1008,7 +1022,7 @@ kernel void prefill_moe_rows_gate_up_act(
     // Resolved once: the rows of this block are the same for every f, and the
     // index arithmetic does not belong in the K loop.
     device const half* x_row[kPrefillMoERowsMax];
-    for (uint r = 0; r < kPrefillMoERowsMax; ++r) {
+    for (uint r = 0; r < cap; ++r) {
         const uint pick = min(r, rows - 1u);
         const PrefillTokenExpertPairMSL pr = sorted_pairs[blk.pair_start + pick];
         x_row[r] = hidden + pr.token * p.hidden_stride_elements;
@@ -1016,7 +1030,7 @@ kernel void prefill_moe_rows_gate_up_act(
 
     float g_acc[kPrefillMoERowsMax];
     float u_acc[kPrefillMoERowsMax];
-    for (uint r = 0; r < kPrefillMoERowsMax; ++r) { g_acc[r] = 0.0f; u_acc[r] = 0.0f; }
+    for (uint r = 0; r < cap; ++r) { g_acc[r] = 0.0f; u_acc[r] = 0.0f; }
 
     const uint full_blocks = n_groups / kPrefillRowsGroupsPerBlock;
     for (uint b = 0; b < full_blocks; ++b) {
@@ -1037,7 +1051,7 @@ kernel void prefill_moe_rows_gate_up_act(
         const uint gb2 = (gw4 >> 16) & 0xFFu, gb3 = (gw4 >> 24) & 0xFFu;
         const uint ub0 = uw4 & 0xFFu, ub1 = (uw4 >> 8) & 0xFFu;
         const uint ub2 = (uw4 >> 16) & 0xFFu, ub3 = (uw4 >> 24) & 0xFFu;
-        for (uint r = 0; r < kPrefillMoERowsMax; ++r) {
+        for (uint r = 0; r < cap; ++r) {
             if (r >= rows) break;
             const half4 xa = *((device const half4*)(x_row[r] + elem));
             const half4 xb = *((device const half4*)(x_row[r] + elem + 4u));
@@ -1071,7 +1085,7 @@ kernel void prefill_moe_rows_gate_up_act(
         const float ub = float(uB_row[g]);
         const uint8_t gbv = gW_row[g * (kPrefillGroupSize / 2u) + lane];
         const uint8_t ubv = uW_row[g * (kPrefillGroupSize / 2u) + lane];
-        for (uint r = 0; r < kPrefillMoERowsMax; ++r) {
+        for (uint r = 0; r < cap; ++r) {
             if (r >= rows) break;
             const float x0 = float(x_row[r][g * kPrefillGroupSize + lane * 2u]);
             const float x1 = float(x_row[r][g * kPrefillGroupSize + lane * 2u + 1u]);
@@ -1089,7 +1103,7 @@ kernel void prefill_moe_rows_gate_up_act(
 
     // `rows` is uniform across the SIMD group, so every lane reaches each of
     // these reductions.
-    for (uint r = 0; r < kPrefillMoERowsMax; ++r) {
+    for (uint r = 0; r < cap; ++r) {
         if (r >= rows) break;
         const float gate = simd_sum(g_acc[r]);
         const float up_value = simd_sum(u_acc[r]);
@@ -1114,7 +1128,8 @@ kernel void prefill_moe_rows_down(
     const PrefillRoutedGEMMBlockMSL blk = blocks[tgid.y];
     const uint d = tgid.x * kPrefillMoERowsPerTG + sg_idx;
     if (d >= p.D || blk.row_count == 0u) return;
-    const uint rows = min(blk.row_count, kPrefillMoERowsMax);
+    const uint cap = prefill_moe_rows_cap();
+    const uint rows = min(blk.row_count, cap);
 
     device const uint8_t* base = routed.blob[blk.local_slot];
     const uint n_groups = p.F / kPrefillGroupSize;
@@ -1127,7 +1142,7 @@ kernel void prefill_moe_rows_down(
 
     device const half* x_row[kPrefillMoERowsMax];
     uint dst[kPrefillMoERowsMax];
-    for (uint r = 0; r < kPrefillMoERowsMax; ++r) {
+    for (uint r = 0; r < cap; ++r) {
         const uint pick = min(r, rows - 1u);
         const PrefillTokenExpertPairMSL pr = sorted_pairs[blk.pair_start + pick];
         x_row[r] = act + (blk.local_row + pick) * p.F;
@@ -1135,7 +1150,7 @@ kernel void prefill_moe_rows_down(
     }
 
     float acc[kPrefillMoERowsMax];
-    for (uint r = 0; r < kPrefillMoERowsMax; ++r) { acc[r] = 0.0f; }
+    for (uint r = 0; r < cap; ++r) { acc[r] = 0.0f; }
 
     const uint full_blocks = n_groups / kPrefillRowsGroupsPerBlock;
     for (uint b = 0; b < full_blocks; ++b) {
@@ -1148,7 +1163,7 @@ kernel void prefill_moe_rows_down(
         const uint elem = byte_base * 2u;
         const uint b0 = w4 & 0xFFu, b1 = (w4 >> 8) & 0xFFu;
         const uint b2 = (w4 >> 16) & 0xFFu, b3 = (w4 >> 24) & 0xFFu;
-        for (uint r = 0; r < kPrefillMoERowsMax; ++r) {
+        for (uint r = 0; r < cap; ++r) {
             if (r >= rows) break;
             const half4 xa = *((device const half4*)(x_row[r] + elem));
             const half4 xb = *((device const half4*)(x_row[r] + elem + 4u));
@@ -1171,7 +1186,7 @@ kernel void prefill_moe_rows_down(
         const float s = float(s_row[g]);
         const float bias = float(b_row[g]);
         const uint8_t byte = W_row[g * (kPrefillGroupSize / 2u) + lane];
-        for (uint r = 0; r < kPrefillMoERowsMax; ++r) {
+        for (uint r = 0; r < cap; ++r) {
             if (r >= rows) break;
             const float x0 = float(x_row[r][g * kPrefillGroupSize + lane * 2u]);
             const float x1 = float(x_row[r][g * kPrefillGroupSize + lane * 2u + 1u]);
@@ -1182,7 +1197,7 @@ kernel void prefill_moe_rows_down(
         }
     }
 
-    for (uint r = 0; r < kPrefillMoERowsMax; ++r) {
+    for (uint r = 0; r < cap; ++r) {
         if (r >= rows) break;
         const float value = simd_sum(acc[r]);
         if (lane == 0) {

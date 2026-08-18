@@ -18,12 +18,24 @@ package final class LMHeadChainInt4 {
     /// `kLMHeadMaxBlockRows`.
     package static let maxBlockRows = 8
 
+    /// Rows one *wide* dispatch may score, and vocabulary rows one SIMD group
+    /// carries. Match `kLMHeadWideMaxT` / `kLMHeadMaxRowsPerSG`; see
+    /// `DequantInt4GEMV.maxRowsPerWideDispatch` for why a wider block splits
+    /// rather than growing the register arrays.
+    private static let maxWideRows = 4
+    private static let wideRowsPerSIMDGroup = 2
+
     private let rms: RMSNorm
     private let blockRMS: PrefillRMSNorm
     private let rowGreedy: MTLComputePipelineState
     private let rowGreedySpecialized: MTLComputePipelineState
     private let blockGreedy: MTLComputePipelineState
     private let blockGreedySpecialized: MTLComputePipelineState
+    /// The wide block head, one pipeline per block width. `nil` when
+    /// `TF_MTP_ROWS_WIDE=0`, which sends the block back to `blockGreedy`.
+    private let blockGreedyWide: [Int: MTLComputePipelineState]
+    private let blockGreedyWideSpecialized: [Int: MTLComputePipelineState]
+    private let groupSums: Int4RowGroupSums
     private let rowReducer: MTLComputePipelineState
     private let xNormedBuffer: MTLBuffer
     private let rowSummariesBuffer: MTLBuffer
@@ -53,6 +65,25 @@ package final class LMHeadChainInt4 {
             "lm_head_greedy_int4_rows_chunk_block",
             constants: Self.realDecodeHeadConstants)
         self.rowReducer = try context.pipeline("lm_head_greedy_int4_rows_reduce")
+        self.groupSums = try Int4RowGroupSums(context: context)
+        var wide: [Int: MTLComputePipelineState] = [:]
+        var wideSpecialized: [Int: MTLComputePipelineState] = [:]
+        if DequantInt4GEMV.wideEnabled {
+            for rows in 1...Self.maxWideRows {
+                let width = [
+                    MetalFunctionConstant(index: 14,
+                                          value: .uint32(UInt32(Self.wideRowsPerSIMDGroup))),
+                    MetalFunctionConstant(index: 15, value: .uint32(UInt32(rows))),
+                ]
+                wide[rows] = try context.pipeline(
+                    "lm_head_greedy_int4_rows_chunk_block_wide", constants: width)
+                wideSpecialized[rows] = try context.pipeline(
+                    "lm_head_greedy_int4_rows_chunk_block_wide",
+                    constants: width + Self.realDecodeHeadConstants)
+            }
+        }
+        self.blockGreedyWide = wide
+        self.blockGreedyWideSpecialized = wideSpecialized
         self.maxD = maxD
         self.maxVocab = maxVocab
 
@@ -193,7 +224,14 @@ package final class LMHeadChainInt4 {
         precondition(weightsOffset % 2 == 0,
                      "lm_head_greedy_int4_rows_chunk_block needs a 2-aligned weightsOffset")
 
-        let rowGroups = (Int(vocab) + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup
+        let specialized = d == Self.realDecodeD && vocab == Self.realDecodeVocab
+        let wide = !blockGreedyWide.isEmpty
+        // A wide threadgroup covers `wideRowsPerSIMDGroup` vocabulary rows per
+        // SIMD group, so it needs proportionally fewer of them — and the
+        // summaries it writes, and the reducer that reads them, follow.
+        let rowsPerGroup = Self.rowsPerThreadgroup
+            * (wide ? Self.wideRowsPerSIMDGroup : 1)
+        let rowGroups = (Int(vocab) + rowsPerGroup - 1) / rowsPerGroup
         let (xNormed, summaries) = try blockStaging()
 
         blockRMS.encodeBF16W(commandBuffer: commandBuffer,
@@ -206,8 +244,46 @@ package final class LMHeadChainInt4 {
                              d: d,
                              eps: rmsEps)
 
-        if let encoder = commandBuffer.makeComputeCommandEncoder() {
-            let specialized = d == Self.realDecodeD && vocab == Self.realDecodeVocab
+        let summaryRowBytes = rowGroups * Self.rowSummaryStride * MemoryLayout<Float>.stride
+        if wide {
+            let halfBytes = MemoryLayout<Float16>.stride
+            var first = 0
+            while first < rows {
+                let count = min(Self.maxWideRows, rows - first)
+                let (xsum, xsumStride) = try groupSums.encode(
+                    commandBuffer: commandBuffer,
+                    x: xNormed, xOffset: first * Int(d) * halfBytes,
+                    xStrideElements: Int(d), t: count, n: Int(d))
+                guard let encoder = commandBuffer.makeComputeCommandEncoder(),
+                      let state = (specialized ? blockGreedyWideSpecialized
+                                               : blockGreedyWide)[count] else {
+                    break
+                }
+                encoder.setComputePipelineState(state)
+                encoder.setBuffer(xNormed, offset: first * Int(d) * halfBytes, index: 0)
+                encoder.setBuffer(weights, offset: weightsOffset, index: 1)
+                encoder.setBuffer(scales, offset: scalesOffset, index: 2)
+                encoder.setBuffer(biases, offset: biasesOffset, index: 3)
+                encoder.setBuffer(summaries, offset: first * summaryRowBytes, index: 4)
+                var dValue = d
+                var vocabValue = vocab
+                var rowsValue = UInt32(count)
+                var rowGroupCount = UInt32(rowGroups)
+                var sumStride = UInt32(xsumStride)
+                encoder.setBytes(&dValue, length: MemoryLayout<UInt32>.size, index: 5)
+                encoder.setBytes(&vocabValue, length: MemoryLayout<UInt32>.size, index: 6)
+                encoder.setBytes(&rowsValue, length: MemoryLayout<UInt32>.size, index: 7)
+                encoder.setBytes(&rowGroupCount, length: MemoryLayout<UInt32>.size, index: 8)
+                encoder.setBuffer(xsum, offset: 0, index: 9)
+                encoder.setBytes(&sumStride, length: MemoryLayout<UInt32>.size, index: 10)
+                encoder.dispatchThreadgroups(
+                    MTLSize(width: rowGroups, height: 1, depth: 1),
+                    threadsPerThreadgroup: MTLSize(width: 32 * Self.rowsPerThreadgroup,
+                                                   height: 1, depth: 1))
+                encoder.endEncoding()
+                first += count
+            }
+        } else if let encoder = commandBuffer.makeComputeCommandEncoder() {
             encoder.setComputePipelineState(specialized ? blockGreedySpecialized : blockGreedy)
             encoder.setBuffer(xNormed, offset: 0, index: 0)
             encoder.setBuffer(weights, offset: weightsOffset, index: 1)
@@ -233,7 +309,6 @@ package final class LMHeadChainInt4 {
         // One reducer per row over that row's slice of the summaries. Each is a
         // single 256-thread threadgroup, so this is the same work the one-row
         // path did, not a new cost.
-        let summaryRowBytes = rowGroups * Self.rowSummaryStride * MemoryLayout<Float>.stride
         for row in 0..<rows {
             guard let encoder = commandBuffer.makeComputeCommandEncoder() else { continue }
             encoder.setComputePipelineState(rowReducer)

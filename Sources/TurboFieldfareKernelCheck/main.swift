@@ -1315,6 +1315,24 @@ if let index = arguments.firstIndex(of: "--verify-prompt"), index + 1 < argument
 // have nothing to say about the pass this run is here to check.
 let modelOnly = arguments.contains("--model-only") || verifyBlockModel != nil
 
+// `--rows-bench` measures the k-row dense GEMV on its own (RowsBench.swift).
+// It needs no model and no expert cache, so the k-scaling that
+// `docs/mtp/19-M4.7-RESULTS.md` §5 attributes to arithmetic can be read
+// directly. It is a measurement, not a check, so it runs and exits.
+if arguments.contains("--rows-bench") {
+    var rowsBenchIterations = 20
+    if let index = arguments.firstIndex(of: "--rows-bench-iterations"),
+       index + 1 < arguments.count,
+       let value = Int(arguments[index + 1]) {
+        rowsBenchIterations = value
+    }
+    let verifyCases = try runRowsVerify(groupSize: groupSizes[0])
+    printCases(verifyCases)
+    print("")
+    try runRowsBench(groupSize: groupSizes[0], iterations: rowsBenchIterations)
+    exit(verifyCases.allSatisfy(\.passed) ? 0 : 1)
+}
+
 var results: [CaseResult] = []
 
 func printCases(_ cases: [CaseResult]) {
