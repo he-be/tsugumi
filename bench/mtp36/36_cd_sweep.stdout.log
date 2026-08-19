@@ -1,0 +1,81 @@
+# mtp_cd_sweep: 21 runs planned (tasks=['prose', 'math', 'image'], bs=[0, 2, 3, 4, 6, 8], COOL_S=20s)
+[1/21] task=prose bs=0 slot=head_base OK tok/s=25.400 new=192 accept=n/a rounds=n/a d_ms=n/a outside/round_ms=n/a stop=maxTokens
+# cooldown 20s
+[2/21] task=prose bs=2 slot=mid OK tok/s=32.464 new=192 accept=0.605 rounds=119 d_ms=3.4537815126050417 outside/round_ms=2.042016806722692 stop=maxTokens
+# cooldown 20s
+[3/21] task=prose bs=3 slot=mid OK tok/s=34.014 new=192 accept=1.032 rounds=94 d_ms=3.1808510638297873 outside/round_ms=2.5531914893617045 stop=maxTokens
+# cooldown 20s
+[4/21] task=prose bs=4 slot=mid OK tok/s=29.776 new=192 accept=0.99 rounds=96 d_ms=2.892361111111111 outside/round_ms=2.5520833333333344 stop=maxTokens
+# cooldown 20s
+[5/21] task=prose bs=6 slot=mid OK tok/s=24.882 new=192 accept=1.358 rounds=81 d_ms=2.7234567901234565 outside/round_ms=3.1111111111111085 stop=maxTokens
+# cooldown 20s
+[6/21] task=prose bs=8 slot=mid OK tok/s=20.735 new=192 accept=1.358 rounds=81 d_ms=2.6754850088183417 outside/round_ms=3.0493827160493816 stop=maxTokens
+# cooldown 20s
+[7/21] task=prose bs=0 slot=tail_base OK tok/s=25.312 new=192 accept=n/a rounds=n/a d_ms=n/a outside/round_ms=n/a stop=maxTokens
+# cooldown 20s
+[8/21] task=math bs=0 slot=head_base OK tok/s=23.102 new=192 accept=n/a rounds=n/a d_ms=n/a outside/round_ms=n/a stop=maxTokens
+# cooldown 20s
+[9/21] task=math bs=2 slot=mid OK tok/s=28.578 new=192 accept=0.705 rounds=112 d_ms=3.580357142857143 outside/round_ms=2.205357142857142 stop=maxTokens
+# cooldown 20s
+[10/21] task=math bs=3 slot=mid OK tok/s=28.437 new=192 accept=0.929 rounds=99 d_ms=3.131313131313131 outside/round_ms=2.4848484848484804 stop=maxTokens
+# cooldown 20s
+[11/21] task=math bs=4 slot=mid OK tok/s=26.486 new=192 accept=1.076 rounds=92 d_ms=2.8768115942028984 outside/round_ms=2.6739130434782563 stop=maxTokens
+# cooldown 20s
+[12/21] task=math bs=6 slot=mid OK tok/s=24.745 new=192 accept=1.768 rounds=69 d_ms=2.7478260869565214 outside/round_ms=3.565217391304341 stop=maxTokens
+# cooldown 20s
+[13/21] task=math bs=8 slot=mid OK tok/s=18.228 new=192 accept=1.387 rounds=80 d_ms=2.623214285714286 outside/round_ms=3.0124999999999957 stop=maxTokens
+# cooldown 20s
+[14/21] task=math bs=0 slot=tail_base OK tok/s=23.421 new=192 accept=n/a rounds=n/a d_ms=n/a outside/round_ms=n/a stop=maxTokens
+# cooldown 20s
+[15/21] task=image bs=0 slot=head_base OK tok/s=24.775 new=166 accept=n/a rounds=n/a d_ms=n/a outside/round_ms=n/a stop=endOfTurn
+# cooldown 20s
+[16/21] task=image bs=2 slot=mid OK tok/s=34.552 new=192 accept=0.675 rounds=114 d_ms=3.6578947368421053 outside/round_ms=2.1403508771929807 stop=maxTokens
+# cooldown 20s
+[17/21] task=image bs=3 slot=mid OK tok/s=34.503 new=172 accept=1.123 rounds=81 d_ms=3.3703703703703707 outside/round_ms=2.7037037037037073 stop=endOfTurn
+# cooldown 20s
+[18/21] task=image bs=4 slot=mid OK tok/s=31.462 new=192 accept=1.122 rounds=90 d_ms=3.0925925925925926 outside/round_ms=2.6999999999999935 stop=maxTokens
+# cooldown 20s
+[19/21] task=image bs=6 slot=mid OK tok/s=24.275 new=192 accept=1.274 rounds=84 d_ms=2.9238095238095236 outside/round_ms=2.964285714285721 stop=maxTokens
+# cooldown 20s
+[20/21] task=image bs=8 slot=mid OK tok/s=19.953 new=192 accept=1.274 rounds=84 d_ms=2.8248299319727894 outside/round_ms=2.904761904761902 stop=maxTokens
+# cooldown 20s
+[21/21] task=image bs=0 slot=tail_base OK tok/s=24.238 new=166 accept=n/a rounds=n/a d_ms=n/a outside/round_ms=n/a stop=endOfTurn
+
+# wrote bench/logs/36_cd_sweep.tsv
+# wrote bench/logs/36_cd_sweep.jsonl
+
+=== prose ===
+bs	t/s	base比	受理長	rounds	step_ms	d_ms	outside/round_ms	ms_per_tok	stop
+0	25.400	1.000	n/a	n/a	n/a	n/a	n/a	39.38	maxTokens
+2	32.464	1.278	0.605	119	44.17	3.45	2.04	30.78	maxTokens
+3	34.014	1.339	1.032	94	51.09	3.18	2.55	29.38	maxTokens
+4	29.776	1.172	0.990	96	55.96	2.89	2.55	33.59	maxTokens
+6	24.882	0.980	1.358	81	78.58	2.72	3.11	40.21	maxTokens
+8	20.735	0.816	1.358	81	92.54	2.68	3.05	48.23	maxTokens
+0	25.312	0.997	n/a	n/a	n/a	n/a	n/a	39.53	maxTokens
+
+=== math ===
+bs	t/s	base比	受理長	rounds	step_ms	d_ms	outside/round_ms	ms_per_tok	stop
+0	23.102	1.000	n/a	n/a	n/a	n/a	n/a	43.28	maxTokens
+2	28.578	1.237	0.705	112	54.21	3.58	2.21	35.00	maxTokens
+3	28.437	1.231	0.929	99	59.43	3.13	2.48	35.16	maxTokens
+4	26.486	1.146	1.076	92	67.50	2.88	2.67	37.76	maxTokens
+6	24.745	1.071	1.768	69	95.16	2.75	3.57	40.42	maxTokens
+8	18.228	0.789	1.387	80	110.25	2.62	3.01	54.84	maxTokens
+0	23.421	1.014	n/a	n/a	n/a	n/a	n/a	42.71	maxTokens
+
+=== image ===
+bs	t/s	base比	受理長	rounds	step_ms	d_ms	outside/round_ms	ms_per_tok	stop
+0	24.775	1.000	n/a	n/a	n/a	n/a	n/a	40.36	endOfTurn
+2	34.552	1.395	0.675	114	42.97	3.66	2.14	28.96	maxTokens
+3	34.503	1.393	1.123	81	52.16	3.37	2.70	29.01	endOfTurn
+4	31.462	1.270	1.122	90	55.80	3.09	2.70	31.77	maxTokens
+6	24.275	0.980	1.274	84	76.58	2.92	2.96	41.20	maxTokens
+8	19.953	0.805	1.274	84	91.85	2.82	2.90	50.10	maxTokens
+0	24.238	0.978	n/a	n/a	n/a	n/a	n/a	41.27	endOfTurn
+
+=== 熱ドリフト (先頭 base vs 末尾 base) ===
+task	head t/s	tail t/s	差(%)
+prose	25.400	25.312	-0.35%
+math	23.102	23.421	+1.38%
+image	24.775	24.238	-2.17%
