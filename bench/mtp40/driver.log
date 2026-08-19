@@ -1,0 +1,45 @@
+[07:52:16] === 40 N2 start 2026年 8月20日 木曜日 07時52分16秒 JST ===
+[07:52:16] image = /Users/mh/Pictures/sample_imgs/NO_FUSION_0401_001.png
+MD5 (/Users/mh/Pictures/sample_imgs/NO_FUSION_0401_001.png) = 1c624f33c638665a1cb54749cae4fbad
+[07:52:16] sysctl 14336 MB wired limit
+[07:52:16] commit 7732643
+[07:52:24] === 40 N2 start 2026年 8月20日 木曜日 07時52分24秒 JST ===
+[07:52:24] image = /Users/mh/Pictures/sample_imgs/NO_FUSION_0401_001.png
+MD5 (/Users/mh/Pictures/sample_imgs/NO_FUSION_0401_001.png) = 1c624f33c638665a1cb54749cae4fbad
+[07:52:24] sysctl 14336 MB wired limit
+[07:52:24] commit 7732643
+[07:52:24] start warm_s48 (reg=ja_prose slots=48 seed=9999 prof=on)
+[07:52:38] done  warm_s48 rc=0  tok/s=24.390
+[07:52:58] start ja_prose_s48_r1 (reg=ja_prose slots=48 seed=1234 prof=on)
+[07:53:12] done  ja_prose_s48_r1 rc=0  tok/s=23.420
+[07:53:32] start en_bullets_s48_r1 (reg=en_bullets slots=48 seed=1234 prof=on)
+[07:53:49] done  en_bullets_s48_r1 rc=0  tok/s=20.416
+[07:54:09] start en_bullets_s48_r2 (reg=en_bullets slots=48 seed=1235 prof=on)
+[07:54:25] done  en_bullets_s48_r2 rc=0  tok/s=20.226
+[07:54:45] start ja_prose_s48_r2 (reg=ja_prose slots=48 seed=1235 prof=on)
+[07:54:59] done  ja_prose_s48_r2 rc=0  tok/s=23.708
+[07:55:19] start ja_prose_s48_r3 (reg=ja_prose slots=48 seed=1236 prof=on)
+[07:55:34] done  ja_prose_s48_r3 rc=0  tok/s=23.849
+[07:55:54] start en_bullets_s48_r3 (reg=en_bullets slots=48 seed=1236 prof=on)
+[07:56:11] done  en_bullets_s48_r3 rc=0  tok/s=20.238
+[07:56:31] start ja_prose_s48_noprof (reg=ja_prose slots=48 seed=1234 prof=off)
+[07:56:45] done  ja_prose_s48_noprof rc=0  tok/s=23.856
+[07:57:05] start en_bullets_s48_noprof (reg=en_bullets slots=48 seed=1234 prof=off)
+[07:57:21] done  en_bullets_s48_noprof rc=0  tok/s=20.881
+[07:57:41] start ja_prose_s48_drift (reg=ja_prose slots=48 seed=1234 prof=on)
+[07:57:55] done  ja_prose_s48_drift rc=0  tok/s=23.619
+[07:58:15] start warm_s32 (reg=ja_prose slots=32 seed=9999 prof=on)
+[07:58:30] done  warm_s32 rc=0  tok/s=24.709
+[07:58:50] start ja_prose_s32_r1 (reg=ja_prose slots=32 seed=1234 prof=on)
+[07:59:03] done  ja_prose_s32_r1 rc=0  tok/s=24.320
+[07:59:24] start en_bullets_s32_r1 (reg=en_bullets slots=32 seed=1234 prof=on)
+[07:59:40] done  en_bullets_s32_r1 rc=0  tok/s=20.095
+[08:00:00] start en_bullets_s32_r2 (reg=en_bullets slots=32 seed=1235 prof=on)
+[08:00:16] done  en_bullets_s32_r2 rc=0  tok/s=20.544
+[08:00:36] start ja_prose_s32_r2 (reg=ja_prose slots=32 seed=1235 prof=on)
+[08:00:50] done  ja_prose_s32_r2 rc=0  tok/s=24.195
+[08:01:10] start ja_prose_s32_r3 (reg=ja_prose slots=32 seed=1236 prof=on)
+[08:01:24] done  ja_prose_s32_r3 rc=0  tok/s=24.636
+[08:01:44] start en_bullets_s32_r3 (reg=en_bullets slots=32 seed=1236 prof=on)
+[08:02:01] done  en_bullets_s32_r3 rc=0  tok/s=19.855
+[08:02:21] === 40 N2 ALL DONE 2026年 8月20日 木曜日 08時02分21秒 JST ===

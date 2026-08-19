@@ -1,0 +1,19 @@
+[08:10:37] === 40 N2c (detail=2, 帰属専用) start 2026年 8月20日 木曜日 08時10分37秒 JST ===
+[08:10:37] image = /Users/mh/Pictures/sample_imgs/NO_FUSION_0401_001.png ; slots = 48 ; bs = 2
+MD5 (/Users/mh/Pictures/sample_imgs/NO_FUSION_0401_001.png) = 1c624f33c638665a1cb54749cae4fbad
+[08:10:37] commit 7732643
+[08:10:37] start warm (reg=ja_prose seed=9999 bs=2 slots=48 detail=2)
+[08:10:50] done  warm rc=0  tok/s=31.311
+[08:11:10] start ja_prose_r1 (reg=ja_prose seed=1234 bs=2 slots=48 detail=2)
+[08:11:23] done  ja_prose_r1 rc=0  tok/s=31.900
+[08:11:43] start en_bullets_r1 (reg=en_bullets seed=1234 bs=2 slots=48 detail=2)
+[08:11:57] done  en_bullets_r1 rc=0  tok/s=27.968
+[08:12:17] start en_bullets_r2 (reg=en_bullets seed=1235 bs=2 slots=48 detail=2)
+[08:12:30] done  en_bullets_r2 rc=0  tok/s=28.360
+[08:12:50] start ja_prose_r2 (reg=ja_prose seed=1235 bs=2 slots=48 detail=2)
+[08:13:02] done  ja_prose_r2 rc=0  tok/s=31.696
+[08:13:22] start ja_prose_r3 (reg=ja_prose seed=1236 bs=2 slots=48 detail=2)
+[08:13:35] done  ja_prose_r3 rc=0  tok/s=33.455
+[08:13:55] start en_bullets_r3 (reg=en_bullets seed=1236 bs=2 slots=48 detail=2)
+[08:14:09] done  en_bullets_r3 rc=0  tok/s=27.329
+[08:14:29] === 40 N2c ALL DONE 2026年 8月20日 木曜日 08時14分29秒 JST ===

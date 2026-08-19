@@ -1,0 +1,22 @@
+[08:14:43] === 40 N2d (bs=4) start 2026年 8月20日 木曜日 08時14分43秒 JST ===
+[08:14:43] image = /Users/mh/Pictures/sample_imgs/NO_FUSION_0401_001.png ; slots = 48
+MD5 (/Users/mh/Pictures/sample_imgs/NO_FUSION_0401_001.png) = 1c624f33c638665a1cb54749cae4fbad
+[08:14:43] sysctl 14336 MB wired limit
+[08:14:43] commit 7732643
+[08:14:43] start warm (reg=ja_prose bs=4 seed=9999 slots=48)
+[08:14:55] done  warm rc=0  tok/s=29.983
+[08:15:15] start ja_prose_bs4_r1 (reg=ja_prose bs=4 seed=1234 slots=48)
+[08:15:28] done  ja_prose_bs4_r1 rc=0  tok/s=30.144
+[08:15:48] start en_bullets_bs4_r1 (reg=en_bullets bs=4 seed=1234 slots=48)
+[08:16:01] done  en_bullets_bs4_r1 rc=0  tok/s=28.784
+[08:16:21] start en_bullets_bs4_r2 (reg=en_bullets bs=4 seed=1235 slots=48)
+[08:16:35] done  en_bullets_bs4_r2 rc=0  tok/s=29.498
+[08:16:55] start ja_prose_bs4_r2 (reg=ja_prose bs=4 seed=1235 slots=48)
+[08:17:07] done  ja_prose_bs4_r2 rc=0  tok/s=31.622
+[08:17:27] start ja_prose_bs4_r3 (reg=ja_prose bs=4 seed=1236 slots=48)
+[08:17:39] done  ja_prose_bs4_r3 rc=0  tok/s=35.385
+[08:17:59] start en_bullets_bs4_r3 (reg=en_bullets bs=4 seed=1236 slots=48)
+[08:18:13] done  en_bullets_bs4_r3 rc=0  tok/s=29.619
+[08:18:33] start ja_prose_bs4_drift (reg=ja_prose bs=4 seed=1234 slots=48)
+[08:18:45] done  ja_prose_bs4_drift rc=0  tok/s=30.355
+[08:19:05] === 40 N2d ALL DONE 2026年 8月20日 木曜日 08時19分05秒 JST ===
