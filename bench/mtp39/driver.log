@@ -1,0 +1,30 @@
+=== N1 start 2026年 8月20日 木曜日 06時54分43秒 JST ===
+image A = /Users/mh/Pictures/sample_imgs/NO_FUSION_0401_001.png
+image B = /Users/mh/Pictures/sample_imgs/NO_FUSION_0712_002.png
+MD5 (/Users/mh/Pictures/sample_imgs/NO_FUSION_0401_001.png) = 1c624f33c638665a1cb54749cae4fbad
+MD5 (/Users/mh/Pictures/sample_imgs/NO_FUSION_0712_002.png) = 382dab3f21792826e4e96709800bb5d5
+[06:54:43] costProbe slots=16 start
+[06:57:27] costProbe slots=16 done rc=0
+[06:57:47] costProbe slots=24 start
+[07:00:09] costProbe slots=24 done rc=0
+[07:00:29] costProbe slots=32 start
+[07:02:42] costProbe slots=32 done rc=0
+[07:03:02] costProbe slots=48 start
+[07:05:08] costProbe slots=48 done rc=0
+[07:05:28] sweep img=A slots=16 start
+[07:07:54] sweep img=A slots=16 done rc=0
+[07:07:54] sweep img=A slots=24 start
+[07:10:18] sweep img=A slots=24 done rc=0
+[07:10:18] sweep img=A slots=32 start
+[07:12:43] sweep img=A slots=32 done rc=0
+[07:12:43] sweep img=A slots=48 start
+[07:15:08] sweep img=A slots=48 done rc=0
+[07:15:08] sweep img=B slots=16 start
+[07:17:34] sweep img=B slots=16 done rc=0
+[07:17:34] sweep img=B slots=24 start
+[07:19:59] sweep img=B slots=24 done rc=0
+[07:19:59] sweep img=B slots=32 start
+[07:22:24] sweep img=B slots=32 done rc=0
+[07:22:24] sweep img=B slots=48 start
+[07:24:55] sweep img=B slots=48 done rc=0
+=== N1 ALL DONE 2026年 8月20日 木曜日 07時24分55秒 JST ===
