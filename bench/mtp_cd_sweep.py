@@ -161,7 +161,7 @@ def build_cmd(args, task: str, bs: int) -> list:
         "--max-new", str(args.max_new),
         "--max-context", "4096",
         "--expert-cache-slots", str(args.slots),
-        "--thinking", "off",
+        "--thinking", args.thinking,
         "--verification", "trusted-install",
         "--prefill", "on",
         "--draft-block-size", str(bs),
@@ -278,6 +278,8 @@ def main() -> int:
                         help="--max-new に渡す値 (既定 192)")
     parser.add_argument("--seed", type=int, default=1234,
                         help="--seed に渡す値 (既定 1234)")
+    parser.add_argument("--thinking", default="off", choices=["on","off"],
+                        help="思考チャネル。既定 off。採点基準 v1 は on")
     parser.add_argument("--temperature", type=float, default=1.0,
                         help="--temperature に渡す値 (既定 1.0)")
     parser.add_argument("--out", default="bench/logs/36_cd_sweep.tsv")
