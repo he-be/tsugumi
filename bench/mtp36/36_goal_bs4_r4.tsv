@@ -1,0 +1,7 @@
+image	order	side	block_size	wall	load	ttft	decode	new	tok_s	peak	stop	rounds	accept	draft	verify	decode_hit	decode_experts	decode_io	ratio
+IMG_2113.JPG	off/on	off	0	53.882	0.812	4.35	48.72	1056	21.675	4.91	endOfTurn	0				86.5	253200	15.663	1.4573
+IMG_2113.JPG	off/on	on	4	36.973	0.835	4.358	31.78	1043	32.821	4.99	endOfTurn	366	1.855	3.486	28.271	80.1	184736	18.852	1.4573
+IMG_2114.JPG	on/off	off	0	46.142	0.808	4.324	41.01	879	21.435	4.94	endOfTurn	0				85.6	210720	13.876	1.4506
+IMG_2114.JPG	on/off	on	4	31.808	0.809	4.359	26.64	863	32.394	5.01	endOfTurn	301	1.864	2.83	23.791	79.6	155681	16.14	1.4506
+IMG_2115.JPG	off/on	off	0	48.316	0.813	4.333	43.17	948	21.958	4.92	endOfTurn	0				87.0	227280	13.545	1.4539
+IMG_2115.JPG	off/on	on	4	33.232	0.81	4.382	28.04	948	33.815	4.96	endOfTurn	331	1.867	3.143	24.872	80.3	166664	16.245	1.4539
