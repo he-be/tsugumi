@@ -239,25 +239,38 @@ private func makeMoERowsFixture(context: MetalContext, groupSize: Int) throws
         params: params)
 }
 
-/// One dispatch of one stage with `rowsPerExpert` route rows on every expert.
+/// One dispatch of one stage over the experts `select` keeps.
+///
+/// `rowCounts` is per expert, so a tile can carry the row mixture production
+/// actually sees instead of a uniform `r`. `local_row` is the prefix sum over
+/// *all* experts, not just the selected ones: splitting a tile across two
+/// dispatches must not move where a block writes, which is exactly the
+/// invariant `encodeStreamedRows` relies on (31 §7).
 private func encodeMoERows(_ stage: MoERowsStage,
                            pso: MTLComputePipelineState,
                            commandBuffer: MTLCommandBuffer,
                            fixture: MoERowsFixture,
-                           rowsPerExpert: Int) {
+                           rowCounts: [Int],
+                           select: (Int) -> Bool = { _ in true }) {
     var blocks: [MoERowsBlock] = []
-    blocks.reserveCapacity(moeRowsTileExperts)
-    for expert in 0..<moeRowsTileExperts {
-        blocks.append(MoERowsBlock(
-            localSlot: UInt32(expert),
-            // Pairs are laid out at the widest stride so one buffer serves every
-            // sweep point; a block just takes the first `rowsPerExpert` of its own.
-            pairStart: UInt32(expert * moeRowsMaxPerExpert),
-            rowCount: UInt32(rowsPerExpert),
-            localRow: UInt32(expert * rowsPerExpert)))
+    blocks.reserveCapacity(rowCounts.count)
+    var localRow = 0
+    for expert in rowCounts.indices {
+        let count = rowCounts[expert]
+        if select(count) {
+            blocks.append(MoERowsBlock(
+                localSlot: UInt32(expert),
+                // Pairs are laid out at the widest stride so one buffer serves
+                // every sweep point; a block takes the first `count` of its own.
+                pairStart: UInt32(expert * moeRowsMaxPerExpert),
+                rowCount: UInt32(count),
+                localRow: UInt32(localRow)))
+        }
+        localRow += count
     }
+    guard !blocks.isEmpty else { return }
     var params = fixture.params
-    params.pairCount = UInt32(moeRowsTileExperts * rowsPerExpert)
+    params.pairCount = UInt32(localRow)
 
     guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
     enc.setComputePipelineState(pso)
@@ -278,9 +291,20 @@ private func encodeMoERows(_ stage: MoERowsStage,
     let outputRows = stage == .gateUp ? moeRowsF : moeRowsD
     let tiles = (outputRows + 7) / 8
     enc.dispatchThreadgroups(
-        MTLSize(width: tiles, height: moeRowsTileExperts, depth: 1),
+        MTLSize(width: tiles, height: blocks.count, depth: 1),
         threadsPerThreadgroup: MTLSize(width: 32 * 8, height: 1, depth: 1))
     enc.endEncoding()
+}
+
+/// The uniform sweep point: `rowsPerExpert` rows on all sixteen experts.
+private func encodeMoERows(_ stage: MoERowsStage,
+                           pso: MTLComputePipelineState,
+                           commandBuffer: MTLCommandBuffer,
+                           fixture: MoERowsFixture,
+                           rowsPerExpert: Int) {
+    encodeMoERows(stage, pso: pso, commandBuffer: commandBuffer, fixture: fixture,
+                  rowCounts: [Int](repeating: rowsPerExpert,
+                                   count: moeRowsTileExperts))
 }
 
 /// `--moe-rows-bench`: the routed MoE rows kernels at the production shapes.
@@ -378,5 +402,90 @@ func runMoERowsBench(groupSize: Int, iterations: Int) throws {
             }
             print(line)
         }
+    }
+
+    // The row mixture a bs=4 verify block actually hands these kernels, run
+    // three ways at several tile widths.
+    //
+    // The width matters more than 31 §5 assumed. A tile *binds* up to sixteen
+    // experts, but the live experts a 4-token block puts in one are far fewer:
+    // instrumenting `encodeStreamedRows` over a 48-slot run reads 6560 blocks
+    // across 1144 tiles -- 5.7 experts per tile -- with row counts
+    // 1:4036 2:1257 3:818 4:449 (mean 1.65). Those proportions are what
+    // `mixture(width:)` lays down; width 16 reproduces 31 §5's tile.
+    func mixture(width: Int) -> [Int] {
+        let share = [1: 0.615, 2: 0.192, 3: 0.125, 4: 0.068]
+        var rows: [Int] = []
+        for r in [4, 3, 2] {
+            let n = Int((Double(width) * share[r]!).rounded())
+            rows.append(contentsOf: [Int](repeating: r, count: n))
+        }
+        // Ones fill the rest, so the tile is exactly `width` experts wide.
+        rows.append(contentsOf: [Int](repeating: 1, count: max(0, width - rows.count)))
+        return rows.sorted()
+    }
+
+    /// One scheme: for each stage, the dispatches to encode as (cap, predicate).
+    struct MixScheme {
+        let name: String
+        let buckets: (MoERowsStage, [Int]) -> [(cap: Int, keep: (Int) -> Bool)]
+    }
+    let schemes: [MixScheme] = [
+        MixScheme(name: "current (one dispatch)") { _, mix in
+            [(cap: mix.max() ?? 1, keep: { _ in true })]
+        },
+        MixScheme(name: "`down` split at 2") { stage, mix in
+            let widest = mix.max() ?? 1
+            guard stage == .down else { return [(cap: widest, keep: { _ in true })] }
+            let narrow = mix.filter { $0 <= 2 }
+            let wide = mix.filter { $0 >= 3 }
+            guard !narrow.isEmpty, !wide.isEmpty else {
+                return [(cap: widest, keep: { _ in true })]
+            }
+            return [(cap: narrow.max()!, keep: { $0 <= 2 }),
+                    (cap: wide.max()!, keep: { $0 >= 3 })]
+        },
+        MixScheme(name: "fully bucketed") { _, mix in
+            Set(mix).sorted().map { r in (cap: r, keep: { $0 == r }) }
+        }
+    ]
+
+    print("")
+    print("  production row mixture, by tile width (us per tile)")
+    print("    `split` cuts `down` at the §4 cliff (<=2 / >=3); "
+            + "width 5.7 is what production runs.")
+    var header = "      " + "width  mixture".padding(toLength: 30, withPad: " ",
+                                                     startingAt: 0)
+    for scheme in schemes {
+        header += String(format: " %22@", scheme.name as NSString)
+    }
+    print(header)
+    for width in [4, 6, 8, 16] {
+        let mix = mixture(width: width)
+        var line = "      "
+            + ("\(width)      " + mix.map(String.init).joined())
+                .padding(toLength: 30, withPad: " ", startingAt: 0)
+        for scheme in schemes {
+            var total = 0.0
+            for stage in MoERowsStage.allCases {
+                let name = stage == .gateUp
+                    ? "prefill_moe_rows_gate_up_act" : "prefill_moe_rows_down"
+                let buckets = scheme.buckets(stage, mix)
+                var psos: [MTLComputePipelineState] = []
+                for bucket in buckets { psos.append(try pipeline(name, cap: bucket.cap)) }
+                total += try gpuSecondsThrowing(
+                    context: context, iterations: iterations,
+                    label: "w\(width) \(scheme.name) \(stage.rawValue)") { cmd in
+                    for (index, bucket) in buckets.enumerated() {
+                        encodeMoERows(stage, pso: psos[index], commandBuffer: cmd,
+                                      fixture: fixture, rowCounts: mix,
+                                      select: bucket.keep)
+                    }
+                }
+            }
+            line += String(format: " %13.1f (%5.1f/e)",
+                           total * 1e6, total * 1e6 / Double(width))
+        }
+        print(line)
     }
 }

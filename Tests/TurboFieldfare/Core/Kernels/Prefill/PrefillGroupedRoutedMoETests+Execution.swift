@@ -686,4 +686,96 @@ extension PrefillGroupedRoutedMoETests {
     #expect(blocks == 0)
   }
 
+  /// Splitting `down` at the occupancy cliff must not move a single bit.
+  ///
+  /// `encodeStreamedRows` runs the narrow blocks of a tile (<= two rows) on a
+  /// pipeline capped for them and the wide ones on the tile's widest cap
+  /// (`docs/mtp/31-M8-A-ROWS-BENCH.md` §4, §6). The cap only sizes register
+  /// arrays and the unrolled row loop, so the arithmetic per row and the
+  /// `simd_sum` order are the same either way — this pins that claim against
+  /// the single-dispatch shape (`downSplitRowCount: 0`) on a tile that has
+  /// both halves: experts hold 2, 3, 3, 4 and 4 rows.
+  @Test func rowsSplitDownMatchesSingleDispatch() throws {
+    let d = 320
+    let f = 320
+    let rows = 8
+    let topK = 2
+    let numExperts = 8
+    var pairs: [PrefillTokenExpertPair] = []
+    for token in 0..<rows {
+      pairs.append(Self.pair(token: UInt32(token), expert: UInt32(token % 3), rank: 0))
+      pairs.append(Self.pair(token: UInt32(token), expert: UInt32(token % 2 + 3), rank: 1))
+    }
+    let routes = try PrefillMoEGrouping.groupTokenExpertPairs(
+      pairs, queryCount: rows, topK: topK, numExperts: numExperts, tileExpertCount: 16)
+    try #require(routes.tiles.count == 1)
+    let rowCounts = routes.groups.map { Int($0.pairCount) }
+    try #require(rowCounts.contains { $0 <= PrefillGroupedRoutedMoE.rowsDownSplitRowCount })
+    try #require(rowCounts.contains { $0 > PrefillGroupedRoutedMoE.rowsDownSplitRowCount })
+
+    let ctx = try MetalContext()
+    let grouped = try PrefillGroupedRoutedMoE(context: ctx)
+    try #require(grouped.usesExpertRowsPath(maxPairsPerExpert: routes.maxPairsPerExpert))
+    let pool = Self.makeSyntheticExpertPool(numExperts: numExperts, d: d, f: f)
+    let expertIDs = try PrefillStreamedTileBinding.expertIDs(forTile: 0, routes: routes)
+    let hidden = (0..<(rows * d)).map { i in Float16(Float((i % 17) - 8) * 0.01) }
+    let binding = try PrefillStreamedTileBinding(
+      expertIDs: expertIDs,
+      views: Self.streamedViewsWithNonzeroOffsets(
+        device: ctx.device, pool: pool, expertIDs: expertIDs))
+    let params = PrefillGroupedRoutedMoEStreamedParams(
+      pairStart: 0,
+      pairCount: UInt32(routes.sortedPairs.count),
+      d: UInt32(d),
+      routedIntermediate: UInt32(f),
+      topK: UInt32(topK),
+      hiddenStrideElements: UInt32(d),
+      binding: binding,
+      offsets: pool.offsets)
+    let argumentBuffer = try grouped.makeStreamedArgumentBuffer(
+      device: ctx.device, binding: binding)
+
+    func run(downSplitRowCount: Int) throws -> [Float16] {
+      guard let hiddenBuffer = Fp16Buffer.make(ctx.device, halves: hidden),
+        let pairBuffer = ctx.device.makeBuffer(
+          bytes: routes.sortedPairs,
+          length: routes.sortedPairs.count * MemoryLayout<PrefillTokenExpertPair>.stride,
+          options: .storageModeShared),
+        let outputBuffer = Fp16Buffer.make(
+          ctx.device, halves: [Float16](repeating: -77, count: rows * topK * d)),
+        let scratch = ctx.device.makeBuffer(
+          length: 3 * routes.sortedPairs.count * f * MemoryLayout<Float16>.stride,
+          options: .storageModePrivate),
+        let commandBuffer = ctx.queue.makeCommandBuffer()
+      else {
+        Issue.record("allocation failed")
+        return []
+      }
+      let blocks = grouped.encodeStreamedRows(
+        commandBuffer: commandBuffer,
+        hidden: hiddenBuffer,
+        sortedPairs: pairBuffer,
+        routePartials: outputBuffer,
+        gateUpActScratch: scratch,
+        argumentBuffer: argumentBuffer,
+        binding: binding,
+        groups: routes.groups,
+        params: params,
+        maxRows: routes.sortedPairs.count,
+        downSplitRowCount: downSplitRowCount)
+      #expect(blocks == routes.groups.count)
+      withExtendedLifetime((binding, argumentBuffer)) { commandBuffer.commit() }
+      commandBuffer.waitUntilCompleted()
+      if let error = commandBuffer.error { throw error }
+      return Fp16Buffer.readHalf(outputBuffer, count: rows * topK * d)
+    }
+
+    let whole = try run(downSplitRowCount: 0)
+    let split = try run(downSplitRowCount: PrefillGroupedRoutedMoE.rowsDownSplitRowCount)
+    try #require(whole.count == rows * topK * d)
+    #expect(!whole.contains(Float16(-77)))
+    let differing = zip(whole, split).filter { $0.bitPattern != $1.bitPattern }.count
+    #expect(differing == 0, "\(differing) of \(whole.count) route partials differ")
+  }
+
 }

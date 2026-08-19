@@ -431,6 +431,25 @@ final class PrefillGroupedRoutedMoE {
     /// `kPrefillMoERowsMax`; an expert can hold at most one row per token, so
     /// this is also the widest speculative block the path serves.
     static let rowsMaxPerExpert = 8
+    /// Widest block the narrow half of the split `down` dispatch carries.
+    ///
+    /// The position of the occupancy cliff in `prefill_moe_rows_down`'s register
+    /// arrays, measured with `--moe-rows-bench` (`docs/mtp/31-M8-A-ROWS-BENCH.md`
+    /// §4) — not a structural constant like `rowsMaxPerExpert`. Re-measure it if
+    /// the kernel changes. `TF_MTP_ROWS_DOWN_SPLIT=0` is the un-split shape the
+    /// A/B in `docs/mtp/32-M8-A-ROWS-SPLIT.md` §3 uses as its off side.
+    static let rowsDownSplitRowCount =
+        ProcessInfo.processInfo.environment["TF_MTP_ROWS_DOWN_SPLIT"].flatMap { Int($0) } ?? 2
+    /// Split the dispatch but hand both halves the wide pipeline: the control
+    /// that separates the extra dispatch's cost from the cap's benefit
+    /// (32 §3, +2.3% on its own).
+    static let rowsDownSplitNoCap =
+        ProcessInfo.processInfo.environment["TF_MTP_ROWS_DOWN_SPLIT_NOCAP"] == "1"
+    /// One stderr line per tile with its row histogram. This is what measured
+    /// the tile shape 31 §5 had to guess at: 5.68 experts per tile, 57% of them
+    /// wide enough to split (32 §4).
+    static let rowsDownSplitDebug =
+        ProcessInfo.processInfo.environment["TF_MTP_ROWS_DOWN_SPLIT_DEBUG"] == "1"
     static let rowsPerThreadgroup = 8
 
     /// `TF_PREFILL_MOE=scalar` forces the per-pair GEMV kernels, so the two
@@ -700,7 +719,9 @@ final class PrefillGroupedRoutedMoE {
                             binding: PrefillStreamedTileBinding,
                             groups: [PrefillMoEGroup],
                             params: PrefillGroupedRoutedMoEStreamedParams,
-                            maxRows: Int) -> Int {
+                            maxRows: Int,
+                            downSplitRowCount: Int =
+                                PrefillGroupedRoutedMoE.rowsDownSplitRowCount) -> Int {
         guard let rowsGateUpPSO, let rowsDownPSO,
               params.liveExpertCount == UInt32(binding.views.count),
               groups.count == binding.views.count,
@@ -727,11 +748,16 @@ final class PrefillGroupedRoutedMoE {
         var p = params
         p.pairStart = 0
         p.pairCount = UInt32(rows)
-        let blockBytes = blocks.count * MemoryLayout<PrefillRoutedGEMMBlock>.stride
         let threadgroup = MTLSize(width: 32 * Self.rowsPerThreadgroup, height: 1, depth: 1)
 
-        func encode(_ pso: MTLComputePipelineState, outputRows: Int, down: Bool) {
-            guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        func encode(_ pso: MTLComputePipelineState,
+                    blocks: [PrefillRoutedGEMMBlock],
+                    outputRows: Int,
+                    down: Bool) {
+            guard !blocks.isEmpty,
+                  let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+            var blocks = blocks
+            let blockBytes = blocks.count * MemoryLayout<PrefillRoutedGEMMBlock>.stride
             enc.setComputePipelineState(pso)
             if !down {
                 enc.setBuffer(hidden, offset: hiddenOffset,
@@ -762,9 +788,47 @@ final class PrefillGroupedRoutedMoE {
         }
 
         encode(rowsGateUpCappedPSO[widestBlock] ?? rowsGateUpPSO,
+               blocks: blocks,
                outputRows: Int(params.routedIntermediate), down: false)
-        encode(rowsDownCappedPSO[widestBlock] ?? rowsDownPSO,
-               outputRows: Int(params.d), down: true)
+
+        // `down`'s register arrays cost an occupancy step between cap=2 and
+        // cap=3, so a one-row block in a tile whose widest block is three pays
+        // +70% for a neighbour's width (`docs/mtp/31-M8-A-ROWS-BENCH.md` §4).
+        // Cutting the dispatch at that cliff lets the narrow half run on its own
+        // pipeline. Every block already carries its own `local_row` and
+        // `pair_start`, and the two halves write disjoint rows of `act` and
+        // `route_partials`, so the split is invisible to the arithmetic: same
+        // operations per row, same reduction order, bit-identical output.
+        //
+        // `gate/up` has no such cliff (31 §4) and stays one dispatch; a second
+        // one there costs more than the mismatch does. Measured end to end at
+        // 48 slots: `moe` 30.11 -> 27.99 ms per verify block (32 §3).
+        //
+        // `downSplitRowCount: 0` keeps `down` whole -- the shape this path had
+        // before the split, which `rowsSplitDownMatchesSingleDispatch` pins the
+        // split against bit for bit.
+        let narrow = blocks.filter { $0.rowCount <= UInt32(downSplitRowCount) }
+        if Self.rowsDownSplitDebug {
+            var hist = [Int](repeating: 0, count: Self.rowsMaxPerExpert + 1)
+            for b in blocks { hist[Int(b.rowCount)] += 1 }
+            FileHandle.standardError.write(Data(
+                "[rowsplit tile blocks=\(blocks.count) narrow=\(narrow.count) widest=\(widestBlock) hist=\(hist)]\n"
+                    .utf8))
+        }
+        if narrow.isEmpty || narrow.count == blocks.count {
+            encode(rowsDownCappedPSO[widestBlock] ?? rowsDownPSO,
+                   blocks: blocks, outputRows: Int(params.d), down: true)
+        } else {
+            let wide = blocks.filter { $0.rowCount > UInt32(downSplitRowCount) }
+            // The control 32 §3 separates the two effects with: pay the
+            // extra dispatch, take none of the cap benefit.
+            let narrowCap = Self.rowsDownSplitNoCap
+                ? widestBlock : narrow.reduce(0) { max($0, Int($1.rowCount)) }
+            encode(rowsDownCappedPSO[narrowCap] ?? rowsDownPSO,
+                   blocks: narrow, outputRows: Int(params.d), down: true)
+            encode(rowsDownCappedPSO[widestBlock] ?? rowsDownPSO,
+                   blocks: wide, outputRows: Int(params.d), down: true)
+        }
         return blocks.count
     }
 
