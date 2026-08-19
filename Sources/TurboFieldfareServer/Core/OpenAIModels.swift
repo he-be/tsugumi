@@ -416,6 +416,23 @@ public struct ValidatedChatRequest: Sendable {
     /// goes through the tool-calling template, which pins thinking off.
     public let enableThinking: Bool
 
+    /// The conversation as the tool template takes it: the roles and tool
+    /// metadata of `messages`, with the bodies of `vision.messages` when the
+    /// request carried pictures. The two are built in lockstep by the
+    /// validator, so they are joined by position.
+    public var toolChatMessages: [GFTokenizer.ToolChatMessage] {
+        guard let multimodal = vision?.messages, multimodal.count == messages.count else {
+            return messages.map(GFTokenizer.ToolChatMessage.init)
+        }
+        return zip(messages, multimodal).map { message, parts in
+            GFTokenizer.ToolChatMessage(role: message.role,
+                                        parts: parts.parts,
+                                        toolCalls: message.toolCalls,
+                                        toolCallID: message.toolCallID,
+                                        name: message.name)
+        }
+    }
+
     public init(messages: [GFTokenizer.Message],
                 tools: [GFTokenizer.FunctionDefinition],
                 stream: Bool,

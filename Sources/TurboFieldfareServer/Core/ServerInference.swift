@@ -43,19 +43,26 @@ public struct ServerCompletion: Equatable, Sendable {
     public let usage: OpenAIUsage
     /// Non-nil only when this request actually ran the speculative loop.
     public let speculative: ServerSpeculativeSummary?
+    /// Why this request prefilled from scratch, when it did. `cached=0` alone
+    /// cannot distinguish "first request of a session" from "this client's
+    /// shape has no bridge", and a session that silently re-prefills every turn
+    /// is the difference between usable and not.
+    public let promptCacheMiss: String?
 
     public init(content: String,
                 toolCalls: [ParsedToolCall],
                 finishReason: String,
                 usage: OpenAIUsage,
                 speculative: ServerSpeculativeSummary? = nil,
-                reasoningContent: String = "") {
+                reasoningContent: String = "",
+                promptCacheMiss: String? = nil) {
         self.content = content
         self.reasoningContent = reasoningContent
         self.toolCalls = toolCalls
         self.finishReason = finishReason
         self.usage = usage
         self.speculative = speculative
+        self.promptCacheMiss = promptCacheMiss
     }
 }
 
@@ -611,6 +618,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         // the whole prompt's; on a hit the cache rebases it onto the tokens the
         // continuation adds, and nil means the pictures are already in the KV.
         var prefillVision = vision
+        var cacheMiss: String?
         if Self.promptCacheParticipates(mode: promptCacheMode) {
             switch promptCache.match(
                 domain: promptCacheDomain,
@@ -618,7 +626,8 @@ public actor ServerModelSession: ServerInferenceBackend {
                 renderedPromptIDs: promptIDs,
                 tokenizer: tokenizer,
                 vision: vision) {
-            case .miss:
+            case .miss(let reason):
+                cacheMiss = reason.label
                 promptCache.invalidate()
                 effectivePromptIDs = promptIDs
                 completionStart = .reset
@@ -628,6 +637,7 @@ public actor ServerModelSession: ServerInferenceBackend {
                 prefillVision = continuationVision
             }
         } else {
+            cacheMiss = "disabled"
             promptCache.invalidate()
             effectivePromptIDs = promptIDs
             completionStart = .reset
@@ -829,7 +839,8 @@ public actor ServerModelSession: ServerInferenceBackend {
                                totalTokens: result.prefillTokens + result.newTokens,
                                cachedTokens: result.cachedPromptTokens),
             speculative: speculativeSummary,
-            reasoningContent: reasoningContent)
+            reasoningContent: reasoningContent,
+            promptCacheMiss: cacheMiss)
     }
 
     private func renderPrompt(
@@ -899,7 +910,7 @@ public actor ServerModelSession: ServerInferenceBackend {
             let tokens: [Int32]
             if usesToolTemplate(request) {
                 tokens = try tokenizer.encodeToolChat(
-                    messages: try toolTurns(request),
+                    messages: request.toolChatMessages,
                     tools: request.tools,
                     enableThinking: request.enableThinking)
             } else {
@@ -922,32 +933,6 @@ public actor ServerModelSession: ServerInferenceBackend {
                 message: "\(error)",
                 param: "messages",
                 code: "invalid_message")
-        }
-    }
-
-    /// The tool path's turns, with each body's image parts kept.
-    ///
-    /// The validator builds the text projection and the parts view of the same
-    /// conversation in lockstep, so they are joined by position here: the roles
-    /// and tool metadata come from one, the bodies from the other.
-    private func toolTurns(
-        _ request: ValidatedChatRequest
-    ) throws -> [GFTokenizer.ToolChatMessage] {
-        guard let vision = request.vision else {
-            return request.messages.map(GFTokenizer.ToolChatMessage.init)
-        }
-        guard vision.messages.count == request.messages.count else {
-            throw ServerRequestError.invalid(
-                message: "message bodies and their parts disagree",
-                param: "messages",
-                code: "invalid_message")
-        }
-        return zip(request.messages, vision.messages).map { message, multimodal in
-            GFTokenizer.ToolChatMessage(role: message.role,
-                                        parts: multimodal.parts,
-                                        toolCalls: message.toolCalls,
-                                        toolCallID: message.toolCallID,
-                                        name: message.name)
         }
     }
 

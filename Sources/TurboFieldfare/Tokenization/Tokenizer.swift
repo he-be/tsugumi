@@ -574,11 +574,32 @@ public struct GFTokenizer: @unchecked Sendable {
         tools: [FunctionDefinition],
         enableThinking: Bool = false
     ) throws -> [Int32] {
+        try encodeToolResultContinuation(
+            cachedMessages: cachedMessages,
+            assistant: assistant,
+            incoming: incomingMessages.map(ToolChatMessage.init),
+            tools: tools,
+            enableThinking: enableThinking)
+    }
+
+    /// The same continuation with the incoming turns able to carry images.
+    ///
+    /// Everything after the cached assistant's tool call is the bridge —
+    /// the tool responses, and whatever turn the client appended after them.
+    /// `cachedMessages` is only used to locate that call, so its bodies never
+    /// reach the output and may stay text-only.
+    public func encodeToolResultContinuation(
+        cachedMessages: [Message],
+        assistant: Message,
+        incoming: [ToolChatMessage],
+        tools: [FunctionDefinition],
+        enableThinking: Bool = false
+    ) throws -> [Int32] {
         let prefix = try encodeToolChat(
             messages: cachedMessages + [assistant],
             tools: tools,
             enableThinking: enableThinking)
-        let full = try encodeToolChat(messages: incomingMessages,
+        let full = try encodeToolChat(messages: incoming,
                                       tools: tools,
                                       enableThinking: enableThinking)
         let callCount = assistant.toolCalls.count

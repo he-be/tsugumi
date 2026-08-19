@@ -459,7 +459,7 @@ struct ServerImageRequestTests {
                             request: other,
                             renderedPromptIDs: [],
                             tokenizer: tokenizer,
-                            vision: nil) == .miss)
+                            vision: nil) == .miss(.images))
     }
 
     // MARK: - Over HTTP

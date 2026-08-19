@@ -113,7 +113,7 @@ struct ServerPromptCacheTests {
         #expect(cache.match(domain: domain,
                             request: plain,
                             renderedPromptIDs: rendered,
-                            tokenizer: tokenizer) == .miss)
+                            tokenizer: tokenizer) == .miss(.thinking))
     }
 
     /// The bridge has to end the way the generation prompt of its own mode
@@ -188,6 +188,85 @@ struct ServerPromptCacheTests {
         #expect(!rendered.prefix(kvBacked.count).elementsEqual(kvBacked))
     }
 
+    /// An agent commonly sends the tool result and the user's next message in
+    /// one request. That shape used to miss, which cost a coding session a full
+    /// prefill on exactly the turns where the user typed something.
+    @Test func toolResultFollowedByANewUserTurnStillResumes() async throws {
+        let tokenizer = try await GFTokenizer.load()
+        let initial = try validatedFixture("opencode-1.15.11-initial.json")
+        let resultTurn = try validatedFixture("opencode-1.15.11-tool-result.json")
+        let initialPrompt = try tokenizer.encodeToolChat(
+            messages: initial.messages, tools: initial.tools)
+        let assistant = resultTurn.messages[initial.messages.count]
+        let prefix = try tokenizer.encodeToolChat(
+            messages: initial.messages + [assistant], tools: initial.tools)
+        let callStart = try #require(prefix.lastIndex(of: tokenizer.toolCallStartID))
+        let callEnd = try #require(prefix.lastIndex(of: tokenizer.toolCallEndID))
+        let kvBacked = initialPrompt + Array(prefix[callStart...callEnd])
+        let historicalCall = try #require(assistant.toolCalls.first)
+        var cache = ServerPromptCache()
+        cache.publish(
+            domain: domain,
+            request: initial,
+            content: "",
+            calls: [ParsedToolCall(
+                id: historicalCall.id,
+                name: historicalCall.name,
+                arguments: historicalCall.arguments,
+                argumentsJSON: try historicalCall.arguments.encoded())],
+            result: rawResult(
+                prompt: initialPrompt,
+                kvBacked: kvBacked,
+                boundary: tokenizer.toolResponseID,
+                reason: .toolCalls))
+
+        // The tool result, and the user's next message behind it.
+        let withUserTurn = ValidatedChatRequest(
+            messages: resultTurn.messages + [
+                GFTokenizer.Message(role: .user, content: "now caption this"),
+            ],
+            tools: resultTurn.tools,
+            stream: false,
+            includeUsage: false,
+            generationConfig: GenerationConfig(maxNewTokens: 16, temperature: 0),
+            maximumCompletionTokens: 16)
+        let rendered = try tokenizer.encodeToolChat(
+            messages: withUserTurn.messages, tools: withUserTurn.tools)
+        guard case .hit(let effective, let cached, _) = cache.match(
+            domain: domain,
+            request: withUserTurn,
+            renderedPromptIDs: rendered,
+            tokenizer: tokenizer) else {
+            Issue.record("expected a hit for tool result + user turn")
+            return
+        }
+        #expect(cached == kvBacked.count)
+        let bridge = Array(effective.dropFirst(cached))
+        #expect(bridge.first == tokenizer.toolResponseID)
+        // The bridge carries both the tool response and the new user turn.
+        let bridgeText = tokenizer.decode(bridge, skipSpecialTokens: false)
+        #expect(bridgeText.contains("now caption this"))
+        #expect(bridgeText.contains("<|tool_response>"))
+
+        // A tool result for a call this KV never made is still a miss.
+        let foreign = ValidatedChatRequest(
+            messages: initial.messages + [
+                assistant,
+                GFTokenizer.Message(role: .tool,
+                                    content: "x",
+                                    toolCallID: "call_ffffffffffffffffffffffff"),
+            ],
+            tools: resultTurn.tools,
+            stream: false,
+            includeUsage: false,
+            generationConfig: GenerationConfig(maxNewTokens: 16, temperature: 0),
+            maximumCompletionTokens: 16)
+        #expect(cache.match(domain: domain,
+                            request: foreign,
+                            renderedPromptIDs: rendered,
+                            tokenizer: tokenizer) == .miss(.continuationShape("tool")))
+    }
+
     @Test func mismatchedLineageDomainAndUnsafeStopsMiss() async throws {
         let tokenizer = try await GFTokenizer.load()
         let initial = request(messages: [
@@ -234,7 +313,7 @@ struct ServerPromptCacheTests {
             domain: domain,
             request: changed,
             renderedPromptIDs: rendered,
-            tokenizer: tokenizer) == .miss)
+            tokenizer: tokenizer) == .miss(.history))
     }
 
     @Test func tailCompletedStopStringDoesNotPublishPrefix() async throws {

@@ -235,11 +235,21 @@ request chatcmpl-… completed in … finish=tool_calls        ← tool 呼び�
 - **生成予算を食う。**画像 1 枚の説明で思考が 1,200 字・生成 479 トークン
   ほど要る (思考 OFF は 29 トークン)。`maxTokens` を絞りすぎると思考だけで
   尽きて本文が出ない (`finish=length`)。
-- **`cached=0` が続くのは異常。**思考 ON でもプロンプトキャッシュは効く
-  ([docs/serving/10-S1 §5](serving/10-S1-REASONING.md))。2 ターン目以降で
-  `cached=0` が続くなら、モードを途中で切り替えた (思考 ON/OFF は prefix を
-  共有しない)、会話の前半が書き換わった、あいだに別の要求が挟まった、の
-  どれかである。
+- **`cached=0` が続くのは異常。**思考 ON でも画像込みでもプロンプトキャッシュは
+  効く ([docs/serving/13-S3.6](serving/13-S3.6-PROMPT-CACHE-IMAGES.md))。
+  2 ターン目以降で `cached=0` が続くなら、完了行の `cache_miss=` が理由を
+  名指しする:
+
+  | `cache_miss=` | 意味 |
+  | --- | --- |
+  | `no_entry` | 直前の生成がキャッシュを残していない (セッション最初の要求、または直前が途中で切れた) |
+  | `thinking` | 思考 ON/OFF を途中で切り替えた。両モードは prefix を共有しない |
+  | `images` | 同じ会話の前半で写真が変わった |
+  | `history` | 会話の前半が書き換わった (クライアント側の圧縮・要約など) |
+  | `assistant_turn` | クライアントが返した assistant ターンが、サーバーが生成したものと一致しない |
+  | `continuation_shape[…]` | 続きのターンの並びにブリッジが無い。角括弧の中が役割の並びなので、そのまま報告すればよい |
+  | `boundary` / `bridge` | ブリッジは組めたが KV の境界に合わなかった。バグの可能性が高い |
+  | `disabled` | `--prompt-cache-mode off` で起動している |
 
 ## 6. よくある失敗
 

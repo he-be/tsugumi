@@ -44,8 +44,48 @@ struct ServerPromptCacheEntry: Sendable, Equatable {
     let kvPosition: Int
 }
 
+/// Why a lookup did not resume from the cached prefix.
+///
+/// A miss is normal — the first request of a session has nothing to resume —
+/// but a session that keeps missing is a bug or a client shape this cache has
+/// no bridge for, and the two are indistinguishable from `cached=0` alone.
+/// This is what the completed log line reports so they can be told apart.
+enum ServerPromptCacheMiss: Sendable, Equatable {
+    case noEntry
+    case domain
+    case tools
+    case thinking
+    case images
+    /// The conversation this request continues is not the cached one.
+    case history
+    /// The cached assistant turn is not the one the client sent back.
+    case assistantTurn
+    /// The turns after the cached assistant turn are a shape no bridge covers.
+    /// The payload is their roles, in order, which is what says what to build.
+    case continuationShape(String)
+    /// The bridge was built but did not begin at the KV boundary.
+    case boundary
+    /// The bridge could not be rendered at all.
+    case bridge
+
+    var label: String {
+        switch self {
+        case .noEntry: "no_entry"
+        case .domain: "domain"
+        case .tools: "tools"
+        case .thinking: "thinking"
+        case .images: "images"
+        case .history: "history"
+        case .assistantTurn: "assistant_turn"
+        case .continuationShape(let roles): "continuation_shape[\(roles)]"
+        case .boundary: "boundary"
+        case .bridge: "bridge"
+        }
+    }
+}
+
 enum ServerPromptCacheMatch: Sendable, Equatable {
-    case miss
+    case miss(ServerPromptCacheMiss)
     /// `vision` is the image side of the tokens still to be prefilled — the
     /// pictures this turn adds, with offsets into the continuation rather than
     /// into the whole prompt. nil when the continuation adds no picture, which
@@ -126,17 +166,19 @@ struct ServerPromptCache: Sendable {
     ) -> ServerPromptCacheMatch {
         let digests = Self.imageDigests(request)
         guard let entry,
-              entry.domain == domain,
-              entry.tools == request.tools,
-              entry.enableThinking == request.enableThinking,
               entry.kvPosition == entry.kvBackedTokenIDs.count,
               entry.kvPosition > 0,
-              entry.uncommittedBoundaryTokenIDs.count == 1,
-              // The pictures this KV holds have to be the first pictures of the
-              // conversation being continued, in the same order.
-              digests.count >= entry.imageDigests.count,
+              entry.uncommittedBoundaryTokenIDs.count == 1 else {
+            return .miss(.noEntry)
+        }
+        guard entry.domain == domain else { return .miss(.domain) }
+        guard entry.tools == request.tools else { return .miss(.tools) }
+        guard entry.enableThinking == request.enableThinking else { return .miss(.thinking) }
+        // The pictures this KV holds have to be the first pictures of the
+        // conversation being continued, in the same order.
+        guard digests.count >= entry.imageDigests.count,
               digests.starts(with: entry.imageDigests) else {
-            return .miss
+            return .miss(.images)
         }
 
         if renderedPromptIDs.count > entry.kvPosition,
@@ -146,7 +188,7 @@ struct ServerPromptCache: Sendable {
             // spans are offsets into the whole prompt: only a request whose
             // pictures all sit inside the served prefix can take this branch.
             guard (vision?.spans ?? []).allSatisfy({ $0.tokenEnd <= entry.kvPosition }) else {
-                return .miss
+                return .miss(.images)
             }
             return .hit(
                 effectivePromptIDs: renderedPromptIDs,
@@ -156,13 +198,15 @@ struct ServerPromptCache: Sendable {
         let inputCount = entry.inputMessages.count
         guard request.messages.count > inputCount + 1,
               request.messages.prefix(inputCount)
-                .elementsEqual(entry.inputMessages),
-              assistantMatches(
-                request.messages[inputCount],
-                entry.assistantTurn.message) else {
-            return .miss
+                .elementsEqual(entry.inputMessages) else {
+            return .miss(.history)
+        }
+        guard assistantMatches(request.messages[inputCount],
+                               entry.assistantTurn.message) else {
+            return .miss(.assistantTurn)
         }
         let continuation = Array(request.messages.dropFirst(inputCount + 1))
+        let shape = continuation.map(\.role.rawValue).joined(separator: ",")
 
         if entry.assistantTurn.message.toolCalls.isEmpty {
             return matchTextContinuation(
@@ -171,18 +215,17 @@ struct ServerPromptCache: Sendable {
                 continuation: continuation,
                 tokenizer: tokenizer,
                 vision: vision,
-                addedImages: digests.count - entry.imageDigests.count)
+                addedImages: digests.count - entry.imageDigests.count,
+                shape: shape)
         }
-        // A tool result never carries a picture (images are user-turn only), so
-        // a tool continuation that added one is not something this bridge can
-        // describe.
-        guard digests.count == entry.imageDigests.count else { return .miss }
         return matchToolContinuation(
             entry: entry,
             request: request,
             continuation: continuation,
             tokenizer: tokenizer,
-            enableThinking: request.enableThinking)
+            vision: vision,
+            addedImages: digests.count - entry.imageDigests.count,
+            shape: shape)
     }
 
     private func assistantMatches(
@@ -209,7 +252,8 @@ struct ServerPromptCache: Sendable {
         continuation: [GFTokenizer.Message],
         tokenizer: GFTokenizer,
         vision: VisionPrefillInput?,
-        addedImages: Int
+        addedImages: Int,
+        shape: String
     ) -> ServerPromptCacheMatch {
         guard continuation.count == 1,
               continuation[0].role == .user,
@@ -218,20 +262,19 @@ struct ServerPromptCache: Sendable {
               continuation[0].toolCallID == nil,
               entry.assistantTurn.rawStopReason == .endOfTurn
                 || entry.assistantTurn.rawStopReason == .maxTokens else {
-            return .miss
+            return .miss(.continuationShape(shape))
         }
         // The bodies with their image parts, when the request carried any. The
         // text projection is what everything else here compares, but the bridge
         // has to render what the turn actually holds.
-        let parts: [GFTokenizer.ContentPart]
-        if let multimodal = request.vision?.messages, multimodal.count == request.messages.count {
-            parts = multimodal[multimodal.count - 1].parts
-        } else if addedImages == 0, let content = continuation[0].content {
-            parts = [.text(content)]
-        } else {
-            return .miss
+        let turns = request.toolChatMessages
+        guard let last = turns.last, last.role == .user else {
+            return .miss(.continuationShape(shape))
         }
-        guard parts.filter({ $0 == .image }).count == addedImages else { return .miss }
+        let parts = last.parts
+        guard parts.filter({ $0 == .image }).count == addedImages else {
+            return .miss(.images)
+        }
         // A rejected continuation (today: literal media markers in the text) is
         // a cache miss, not an error here. The request still has to go through
         // the normal encode path, which raises the typed error with the context
@@ -239,12 +282,12 @@ struct ServerPromptCache: Sendable {
         // caching problem instead.
         guard var bridge = try? tokenizer.encodeContinuation(
             parts: parts, enableThinking: entry.enableThinking) else {
-            return .miss
+            return .miss(.bridge)
         }
         if entry.assistantTurn.rawStopReason == .maxTokens {
             bridge = entry.uncommittedBoundaryTokenIDs + bridge
         } else if bridge.first != entry.uncommittedBoundaryTokenIDs.first {
-            return .miss
+            return .miss(.boundary)
         }
         guard addedImages > 0 else {
             return .hit(
@@ -259,7 +302,7 @@ struct ServerPromptCache: Sendable {
                   tokens: bridge,
                   images: Array(images.suffix(addedImages)),
                   ids: ids) else {
-            return .miss
+            return .miss(.bridge)
         }
         return .hit(
             effectivePromptIDs: entry.kvBackedTokenIDs + expanded.tokens,
@@ -272,31 +315,59 @@ struct ServerPromptCache: Sendable {
         request: ValidatedChatRequest,
         continuation: [GFTokenizer.Message],
         tokenizer: GFTokenizer,
-        enableThinking: Bool
+        vision: VisionPrefillInput?,
+        addedImages: Int,
+        shape: String
     ) -> ServerPromptCacheMatch {
         let calls = entry.assistantTurn.message.toolCalls
+        // The tool results have to be the ones this call asked for, in order.
+        // What follows them is not this check's business: an agent commonly
+        // appends the next user turn in the same request, and the bridge below
+        // renders whatever is there.
         guard entry.assistantTurn.rawStopReason == .toolCalls,
-              continuation.count == calls.count,
-              zip(continuation, calls).allSatisfy({ message, call in
+              continuation.count >= calls.count,
+              zip(continuation.prefix(calls.count), calls).allSatisfy({ message, call in
                   message.role == .tool
                     && message.toolCallID == call.id
                     && (message.name == nil || message.name == call.name)
                     && message.content != nil
                     && message.toolCalls.isEmpty
-              }) else {
-            return .miss
+              }),
+              // Anything after them is a fresh turn, never another tool result
+              // for a call this KV does not hold.
+              continuation.dropFirst(calls.count).allSatisfy({ $0.role != .tool }) else {
+            return .miss(.continuationShape(shape))
         }
         guard let bridge = try? tokenizer.encodeToolResultContinuation(
             cachedMessages: entry.inputMessages,
             assistant: entry.assistantTurn.message,
-            incomingMessages: request.messages,
+            incoming: request.toolChatMessages,
             tools: request.tools,
-            enableThinking: enableThinking),
-              bridge.first == entry.uncommittedBoundaryTokenIDs.first else {
-            return .miss
+            enableThinking: entry.enableThinking) else {
+            return .miss(.bridge)
+        }
+        guard bridge.first == entry.uncommittedBoundaryTokenIDs.first else {
+            return .miss(.boundary)
+        }
+        guard addedImages > 0 else {
+            return .hit(
+                effectivePromptIDs: entry.kvBackedTokenIDs + bridge,
+                cachedPromptTokens: entry.kvPosition)
+        }
+        // The pictures this continuation added sit in the bridge, so widening
+        // them there is what puts their spans on the slice a resumed prefill
+        // runs (13-S3.6 §1).
+        guard let images = vision?.images, images.count >= addedImages,
+              let ids = try? VisionMediaTokenIDs(tokenizer: tokenizer),
+              let expanded = try? VisionPromptAssembler.makePrefillPrompt(
+                  tokens: bridge,
+                  images: Array(images.suffix(addedImages)),
+                  ids: ids) else {
+            return .miss(.bridge)
         }
         return .hit(
-            effectivePromptIDs: entry.kvBackedTokenIDs + bridge,
-            cachedPromptTokens: entry.kvPosition)
+            effectivePromptIDs: entry.kvBackedTokenIDs + expanded.tokens,
+            cachedPromptTokens: entry.kvPosition,
+            vision: expanded.vision)
     }
 }

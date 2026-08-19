@@ -379,4 +379,6 @@ process at a time and watch memory pressure.
 
 For long requests, stderr reports the request lifecycle as prepared, queued,
 generating, completed, or failed. It includes token counts and timing, but not
-prompt text, tool arguments, headers, or request bodies.
+prompt text, tool arguments, headers, or request bodies. A request that
+prefilled from scratch also reports why, as `cache_miss=<reason>`, so a session
+that keeps re-prefilling can be told apart from a session that simply started.
