@@ -56,69 +56,81 @@ private actor ThinkingRecordingBackend: ServerInferenceBackend {
 
 @Suite("Server reasoning requests")
 struct ServerReasoningRequestTests {
-    private func request(_ body: String) throws -> OpenAIChatRequest {
-        try JSONDecoder().decode(OpenAIChatRequest.self, from: Data(body.utf8))
-    }
+    private func request(_ body: String) -> Data { Data(body.utf8) }
 
     /// pi's `qwen-chat-template` thinking format sends exactly this, including
     /// the `preserve_thinking` key this template has no use for.
     @Test func chatTemplateKwargsTurnTheThoughtChannelOn() throws {
-        let validated = try OpenAIRequestValidator.validate(
+        let validated = try ChatRequestParser.parse(
             request(#"""
             {"model":"m","messages":[{"role":"user","content":"hi"}],
              "chat_template_kwargs":{"enable_thinking":true,"preserve_thinking":true}}
-            """#),
-            modelID: "m")
+            """#))
         #expect(validated.enableThinking)
     }
 
-    @Test func reasoningEffortIsReadForItsOnOffSense() throws {
-        for effort in ["minimal", "low", "medium", "high", "max"] {
-            let validated = try OpenAIRequestValidator.validate(
+    /// REQ-reasoning-effort: this template has one thought channel and no
+    /// budget, so a level is read for its on/off sense — and the set of levels
+    /// is not enumerated. "none" is the one word with a fixed meaning.
+    @Test func REQ_reasoning_effort_any_level_asks_to_reason() throws {
+        for effort in ["minimal", "low", "medium", "high", "max", "ultra", "off"] {
+            let validated = try ChatRequestParser.parse(
                 request("""
                 {"model":"m","messages":[{"role":"user","content":"hi"}],
                  "reasoning_effort":"\(effort)"}
-                """),
-                modelID: "m")
+                """))
             #expect(validated.enableThinking, "\(effort) should reason")
-        }
-        for effort in ["none", "off"] {
-            let validated = try OpenAIRequestValidator.validate(
-                request("""
-                {"model":"m","messages":[{"role":"user","content":"hi"}],
-                 "reasoning_effort":"\(effort)"}
-                """),
-                modelID: "m",
-                thinkingPolicy: .on)
-            #expect(!validated.enableThinking, "\(effort) should not reason")
+            #expect(validated.reasoningEffort == effort)
         }
     }
 
-    @Test func unknownReasoningEffortIsRefused() throws {
-        let decoded = try request(#"""
-        {"model":"m","messages":[{"role":"user","content":"hi"}],"reasoning_effort":"ultra"}
-        """#)
-        #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(decoded, modelID: "m")
-        }
+    @Test func REQ_reasoning_effort_none_turns_the_channel_off() throws {
+        let validated = try ChatRequestParser.parse(
+            request(#"""
+            {"model":"m","messages":[{"role":"user","content":"hi"}],
+             "reasoning_effort":"none"}
+            """#),
+            defaults: ChatRequestDefaults(thinking: .on))
+        #expect(!validated.enableThinking)
     }
 
-    /// Two spellings that disagree have no defensible winner, so the request is
-    /// answered rather than guessed at.
-    @Test func conflictingReasoningSpellingsAreRefused() throws {
-        let decoded = try request(#"""
-        {"model":"m","messages":[{"role":"user","content":"hi"}],
-         "reasoning_effort":"high","chat_template_kwargs":{"enable_thinking":false}}
-        """#)
-        #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(decoded, modelID: "m")
-        }
-        // Agreeing is fine.
-        let agreeing = try request(#"""
-        {"model":"m","messages":[{"role":"user","content":"hi"}],
-         "reasoning_effort":"high","chat_template_kwargs":{"enable_thinking":true}}
-        """#)
-        #expect(try OpenAIRequestValidator.validate(agreeing, modelID: "m").enableThinking)
+    /// RSN-2. Two spellings reach this server and neither is refused for
+    /// disagreeing with the other: `enable_thinking` is the template's own
+    /// switch and wins, and `reasoning_effort: "none"` is applied after it,
+    /// which is the order the reference implementation resolves them in
+    /// (`server-common.cpp:1278-1304`).
+    @Test func RSN_2_both_spellings_resolve_without_a_refusal() throws {
+        let kwargsWin = try ChatRequestParser.parse(
+            request(#"""
+            {"model":"m","messages":[{"role":"user","content":"hi"}],
+             "reasoning_effort":"high","chat_template_kwargs":{"enable_thinking":false}}
+            """#))
+        #expect(!kwargsWin.enableThinking)
+
+        let noneWins = try ChatRequestParser.parse(
+            request(#"""
+            {"model":"m","messages":[{"role":"user","content":"hi"}],
+             "reasoning_effort":"none","chat_template_kwargs":{"enable_thinking":true}}
+            """#))
+        #expect(!noneWins.enableThinking)
+
+        let agreeing = try ChatRequestParser.parse(
+            request(#"""
+            {"model":"m","messages":[{"role":"user","content":"hi"}],
+             "reasoning_effort":"high","chat_template_kwargs":{"enable_thinking":true}}
+            """#))
+        #expect(agreeing.enableThinking)
+    }
+
+    /// RSN-1: a budget of zero says "do not reason" the third way.
+    @Test func REQ_reasoning_budget_zero_closes_the_channel() throws {
+        let validated = try ChatRequestParser.parse(
+            request(#"""
+            {"model":"m","messages":[{"role":"user","content":"hi"}],
+             "chat_template_kwargs":{"enable_thinking":true},"reasoning_budget_tokens":0}
+            """#))
+        #expect(!validated.enableThinking)
+        #expect(validated.reasoningBudgetTokens == 0)
     }
 
     @Test func malformedChatTemplateKwargsAreRefused() throws {
@@ -126,28 +138,28 @@ struct ServerReasoningRequestTests {
             #"{"model":"m","messages":[{"role":"user","content":"hi"}],"chat_template_kwargs":{"enable_thinking":"yes"}}"#,
             #"{"model":"m","messages":[{"role":"user","content":"hi"}],"chat_template_kwargs":[1]}"#,
         ] {
-            let decoded = try request(body)
-            #expect(throws: ServerRequestError.self) {
-                try OpenAIRequestValidator.validate(decoded, modelID: "m")
+            let decoded = request(body)
+            let error = #expect(throws: ServerRequestError.self) {
+                try ChatRequestParser.parse(decoded)
             }
+            #expect(error?.param == "chat_template_kwargs")
         }
     }
 
     @Test func theProcessDefaultAppliesOnlyWhenTheRequestIsSilent() throws {
-        let silent = try request(#"""
+        let silent = request(#"""
         {"model":"m","messages":[{"role":"user","content":"hi"}]}
         """#)
-        #expect(try OpenAIRequestValidator.validate(
-            silent, modelID: "m", thinkingPolicy: .on).enableThinking)
-        #expect(!(try OpenAIRequestValidator.validate(
-            silent, modelID: "m").enableThinking))
+        #expect(try ChatRequestParser.parse(
+            silent, defaults: ChatRequestDefaults(thinking: .on)).enableThinking)
+        #expect(!(try ChatRequestParser.parse(silent).enableThinking))
 
-        let opinionated = try request(#"""
+        let opinionated = request(#"""
         {"model":"m","messages":[{"role":"user","content":"hi"}],
          "chat_template_kwargs":{"enable_thinking":false}}
         """#)
-        #expect(!(try OpenAIRequestValidator.validate(
-            opinionated, modelID: "m", thinkingPolicy: .on).enableThinking))
+        #expect(!(try ChatRequestParser.parse(
+            opinionated, defaults: ChatRequestDefaults(thinking: .on)).enableThinking))
     }
 
     @Test func serverArgumentsCarryTheThinkingPolicy() throws {
@@ -330,7 +342,7 @@ struct ServerReasoningResponseTests {
         let server = TurboFieldfareHTTPServer(modelID: "test-model",
                                               queueLimit: 1,
                                               backend: backend,
-                                              thinkingPolicy: .on)
+                                              defaults: ChatRequestDefaults(thinking: .on))
         let channel = try await server.start(port: 0)
         let port = try #require(channel.localAddress?.port)
         defer { Task { try? await server.shutdown() } }

@@ -98,7 +98,7 @@ Japanese prose, which the drafter predicts far less well
 
 The flag needs `--prefill on` (the default) and a model with the drafter
 section; either missing exits at startup rather than failing on the first
-request. A request that asks for a `repetition_penalty` other than `1.0` runs
+request. A request that asks for a `repeat_penalty` other than `1.0` runs
 on the plain decode path for that request alone. Prompt reuse is unaffected:
 `cached_tokens` is the same with the flag on and off.
 
@@ -358,10 +358,22 @@ Chat Completions supports JSON and Server-Sent Events responses. Set
 Requests may contain system, developer, user, assistant, and tool messages.
 Message content may be a string or a list of `text` and `image_url` parts.
 Supported options include `temperature`, `top_p`, `top_k`,
-`repetition_penalty`, `seed`, `stop`, `max_tokens`,
-`max_completion_tokens`, `reasoning_effort`,
+`repeat_penalty`, `seed`, `stop`, `max_tokens`,
+`max_completion_tokens`, `n`, `cache_prompt`, `reasoning_effort`,
+`reasoning_budget_tokens`, `reasoning_format`,
 `chat_template_kwargs.enable_thinking`, and function-tool fields.
 Responses carry `reasoning_content` when the request reasoned.
+
+The accepted values of every one of those fields are
+[SPEC §4](serving/SPEC.md); that table is the contract, and this page only
+summarises it. Three rules are worth stating here because clients rely on
+them: an unknown field is ignored rather than refused, `null` means "use the
+default", and a sampling value outside its range is clamped rather than
+rejected. `model` is not checked — the name you send is the name that comes
+back. A parameter the server cannot honor is answered with 501
+`not_supported_error`, never with a 200 in the wrong shape: today that is
+`logprobs`, `response_format` other than `text`, and `tool_choice` beyond
+`auto` and `none`.
 
 The server supports one model and one choice. Images are supported as described
 above; audio and video are not. It does not support the Responses API, legacy

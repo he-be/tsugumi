@@ -313,3 +313,74 @@ struct ChatRequestSchemaConformanceTests {
         }
     }
 }
+
+/// C0, second half: the clamped table values as the sampler actually takes
+/// them. Two of the mappings are approximations this engine forces (DEV-10),
+/// and an approximation that silently produced an unrunnable config would be
+/// worse than the refusal R3 forbids — so every case here also asserts that
+/// the engine would accept what it built.
+@Suite("C0 sampler mapping")
+struct ChatRequestSamplerMappingTests {
+    private static func config(_ extra: String = "") throws -> GenerationConfig {
+        let tail = extra.isEmpty ? "" : ",\(extra)"
+        let body = #"{"model":"m","messages":[{"role":"user","content":"hi"}]"# + tail + "}"
+        let config = try ChatRequestParser.parse(Data(body.utf8)).generationConfig
+        try config.validate()
+        return config
+    }
+
+    @Test("the defaults are a plain untruncated draw at temperature 1")
+    func defaults_are_runnable() throws {
+        let config = try Self.config()
+        #expect(config.temperature == 1.0)
+        #expect(config.topK == nil)
+        #expect(config.topP == nil)
+        #expect(config.seed == nil)
+        #expect(config.repetitionPenalty == 1.0)
+    }
+
+    @Test("DEV-10: top_p below 1 borrows the widest top-k this sampler has")
+    func DEV_10_nucleus_needs_a_top_k() throws {
+        let config = try Self.config(#""top_p":0.9"#)
+        #expect(config.topP == 0.9)
+        #expect(config.topK == ChatRequestSchema.topKCeiling)
+    }
+
+    @Test("DEV-10: an empty nucleus is the greedy draw it describes")
+    func DEV_10_top_p_zero_is_greedy() throws {
+        let config = try Self.config(#""top_p":0"#)
+        #expect(config.topP == nil)
+        #expect(config.topK == 1)
+    }
+
+    @Test("an explicit top_k is kept beside top_p")
+    func top_k_and_top_p_together() throws {
+        let config = try Self.config(#""top_k":40,"top_p":0.8"#)
+        #expect(config.topK == 40)
+        #expect(config.topP == 0.8)
+    }
+
+    @Test("REQ-seed: -1 is a random draw, and every other value is used as sent")
+    func REQ_seed_maps_to_the_sampler() throws {
+        #expect(try Self.config(#""seed":-1"#).seed == nil)
+        #expect(try Self.config(#""seed":42"#).seed == 42)
+        #expect(try Self.config(#""seed":-2"#).seed == UInt64(bitPattern: -2))
+    }
+
+    @Test("REQ-stop: both spellings reach the sampler")
+    func REQ_stop_maps_to_the_sampler() throws {
+        #expect(try Self.config(#""stop":"END""#).stopStrings == ["END"])
+        #expect(try Self.config(#""stop":["a","b"]"#).stopStrings == ["a", "b"])
+    }
+
+    @Test("every clamped corner of the table still builds a config the engine runs")
+    func clamped_corners_stay_runnable() throws {
+        for extra in [#""temperature":-1"#, #""temperature":100"#, #""top_p":1.5"#,
+                      #""top_p":-1"#, #""top_k":-5"#, #""top_k":100000"#,
+                      #""top_p":0.5,"top_k":0"#, #""repeat_penalty":0.1"#] {
+            #expect(throws: Never.self, "\(extra) should stay runnable") {
+                _ = try Self.config(extra)
+            }
+        }
+    }
+}

@@ -41,15 +41,7 @@ C3 だけがモデルを積む。
 
 | SPEC ID | 現状 (実測 2026-08-19) | 段 |
 | --- | --- | --- |
-| REQ-model | `model: "gpt-3.5-turbo"` が 404 `model_not_found` | P0 |
-| REQ-seed | `seed: -1` が 400 「malformed JSON request」(ERR-3 違反も同時に) | P0 |
-| REQ-ignored | `presence_penalty` / `frequency_penalty` ≠ 0 が 400 | P0 |
-| REQ-tool-choice / GEN-4 | `required` / 名前指定が 400 | P0 |
-| REQ-parallel | `parallel_tool_calls: false` が 400 | P0 |
-| REQ-temp / REQ-top-p / REQ-top-k / REQ-max-tokens | clamp でなく 400 (`temperature: 3`, `top_p: 1.5`, `top_k: 0`, `max_tokens: -1` すべて拒否) | P0 |
-| REQ-reasoning-effort | 既知 7 語以外が 400 | P0 |
-| REQ-logprobs | 400 (仕様は 501 `not_supported_error`) | P0 |
-| GEN-3 | `response_format: json_object` で **200 + Markdown** (最悪の赤: R4 違反) | P0 (501 化) → P2 (拘束) |
+| GEN-3 | 501 化は済み。文法拘束の実挙動はこれから | P2 |
 | INV-1 | 空 thought channel の分だけ描き直しが生成とずれる (推定 — D1 で検定して確定させる) | P1 |
 | CACHE-1〜6 | 意味ゲート 8 個 + ブリッジ合成 + ミス 11 分類 (設計ごと置換) | P1 |
 | GEN-1 / GEN-2 | 事後パース + スキーマ入口 400 | P2 |
@@ -62,7 +54,7 @@ C3 だけがモデルを積む。
 
 すでに適合している (壊さないことをテストで固定する): RSP-2 (SSE の並び)、
 R2 (`null` = 未指定)、R1 (未知キー無視)、RSP-1 (usage + cached_tokens)、
-ERR-1 の封筒の形。
+ERR-1 の封筒の形、および P0 で緑にした REQ-* 全行 (C0 の 41 本)。
 
 ## 3. 実装順
 
@@ -70,7 +62,7 @@ ERR-1 の封筒の形。
 
 | 段 | 中身 | 主な赤 |
 | --- | --- | --- |
-| **P0** | 要求スキーマの巻き直し。`OpenAIRequestValidator` を捨て、`server-schema.cpp` を写した宣言的スキーマ表 (名前・別名・型・clamp/hard・既定) に置換。C0 の表駆動テストを先に全部書く | REQ-* 全行 + GEN-3 の 501 化 |
+| ~~**P0**~~ | **済** (2026-08-19)。`ChatRequestSchema` の宣言的な表 + `ChatRequestParser`。`OpenAIRequestValidator` と `OpenAIChatRequest` は削除、メッセージ・tools の検査だけ `ChatMessageValidator` に残した | REQ-* 全行 + GEN-3 の 501 化 |
 | **P1** | プロンプトキャッシュを LCP へ。順序厳守: **(D1) INV-1 の検定を書く (赤のはず) → (D2) テンプレート/エンコーダ側で緑にする → (D3) `match` を LCP 1 行に置換、ゲートとブリッジと 11 分類を削除 → (D4) 画像チャンク比較 → (D5) 名前を SPEC に合わせる**。D2 より先に D3 をやると、ブリッジが 100% 使えていた KV を LCP が取りこぼして遅くなる | INV-1, CACHE-* |
 | **P2** | 生成の拘束。JSON schema → 文法で tool call と `response_format` を同じ機構に載せ、GEN-3/GEN-4 の 501 を実挙動に置換。スキーマ入口 400 を撤去 | GEN-* |
 | **P3** | ライフサイクルとエンドポイント。listen 先行 + ロード中 503、`/v1/health`、`/props`、採らないパスの 501 | LIF-*, EP-1/4/7 |

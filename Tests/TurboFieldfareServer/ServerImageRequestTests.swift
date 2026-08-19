@@ -40,7 +40,7 @@ struct ServerImageRequestTests {
             {"type":"text","text":"what is this?"},
             {"type":"image_url","image_url":{"url":"\(dataURI(width: 64, height: 48))"}}
             """))
-        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        let validated = try ChatRequestParser.parse(request)
 
         let vision = try #require(validated.vision)
         #expect(vision.images.count == 1)
@@ -60,7 +60,7 @@ struct ServerImageRequestTests {
         let request = try decode(body(parts: """
             {"type":"image_url","image_url":{"url":"\(dataURI(width: 8, height: 8))","detail":"high"}}
             """))
-        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        let validated = try ChatRequestParser.parse(request)
         #expect(try #require(validated.vision).images.count == 1)
     }
 
@@ -76,7 +76,7 @@ struct ServerImageRequestTests {
             ]}
             """)
         let vision = try #require(
-            try OpenAIRequestValidator.validate(request, modelID: "m").vision)
+            try ChatRequestParser.parse(request).vision)
         #expect(vision.images.map(\.pixelWidth) == [16, 32])
         #expect(vision.messages.map(\.imageCount) == [1, 0, 1])
     }
@@ -85,7 +85,7 @@ struct ServerImageRequestTests {
         let request = try decode(body(parts: """
             {"type":"text","text":"a"},{"type":"text","text":"b"}
             """))
-        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        let validated = try ChatRequestParser.parse(request)
         #expect(validated.vision == nil)
         #expect(validated.messages.map(\.content) == ["ab"])
     }
@@ -103,7 +103,7 @@ struct ServerImageRequestTests {
                 {"type":"image_url","image_url":{"url":"\(url)"}}
                 """))
             let error = #expect(throws: ServerRequestError.self) {
-                try OpenAIRequestValidator.validate(request, modelID: "m")
+                try ChatRequestParser.parse(request)
             }
             #expect(error?.envelope.error.code == "unsupported_image_url")
             #expect(error?.httpStatus == .badRequest)
@@ -116,7 +116,7 @@ struct ServerImageRequestTests {
             """))
         let policy = ServerImagePolicy(maxImageBytes: 32)
         let error = #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(request, modelID: "m", imagePolicy: policy)
+            try ChatRequestParser.parse(request, imagePolicy: policy)
         }
         #expect(error?.envelope.error.code == "image_too_large")
         #expect(error?.httpStatus == .badRequest)
@@ -130,7 +130,7 @@ struct ServerImageRequestTests {
             """))
         let policy = ServerImagePolicy(maxImagePixels: 4_095)
         let error = #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(request, modelID: "m", imagePolicy: policy)
+            try ChatRequestParser.parse(request, imagePolicy: policy)
         }
         #expect(error?.envelope.error.code == "image_too_large")
         #expect(error?.envelope.error.message.contains("64x64") == true)
@@ -142,8 +142,8 @@ struct ServerImageRequestTests {
             """
         let request = try decode(body(parts: [part, part, part].joined(separator: ",")))
         let error = #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(
-                request, modelID: "m", imagePolicy: ServerImagePolicy(maxImagesPerRequest: 2))
+            try ChatRequestParser.parse(
+                request, imagePolicy: ServerImagePolicy(maxImagesPerRequest: 2))
         }
         #expect(error?.envelope.error.code == "too_many_images")
         #expect(error?.httpStatus == .badRequest)
@@ -161,7 +161,7 @@ struct ServerImageRequestTests {
                 {"type":"image_url","image_url":{"url":"\(url)"}}
                 """))
             let error = #expect(throws: ServerRequestError.self) {
-                try OpenAIRequestValidator.validate(request, modelID: "m")
+                try ChatRequestParser.parse(request)
             }
             #expect(error?.envelope.error.code == code, "\(url)")
         }
@@ -175,7 +175,7 @@ struct ServerImageRequestTests {
             {"type":"image_url","image_url":{"url":"data:image/png;base64,\(encoded)"}}
             """))
         let error = #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(request, modelID: "m")
+            try ChatRequestParser.parse(request)
         }
         #expect(error?.envelope.error.code == "invalid_image_data")
     }
@@ -185,7 +185,7 @@ struct ServerImageRequestTests {
             {"type":"input_audio","input_audio":{"data":"AA=="}}
             """))
         let error = #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(request, modelID: "m")
+            try ChatRequestParser.parse(request)
         }
         #expect(error?.envelope.error.code == "unsupported_content")
     }
@@ -202,7 +202,7 @@ struct ServerImageRequestTests {
              "tools":[{"type":"function","function":{
                 "name":"f","description":"d","parameters":{"type":"object"}}}]}
             """)
-        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        let validated = try ChatRequestParser.parse(request)
         #expect(validated.tools.count == 1)
         let vision = try #require(validated.vision)
         #expect(vision.images.count == 1)
@@ -220,7 +220,7 @@ struct ServerImageRequestTests {
              "tools":[{"type":"function","function":{
                 "name":"f","description":"d","parameters":{"type":"object"}}}]}
             """)
-        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        let validated = try ChatRequestParser.parse(request)
         #expect(validated.enableThinking)
         #expect(validated.tools.count == 1)
         #expect(validated.vision != nil)
@@ -234,7 +234,7 @@ struct ServerImageRequestTests {
               {"role":"user","content":"hi"}]}
             """)
         let error = #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(request, modelID: "m")
+            try ChatRequestParser.parse(request)
         }
         #expect(error?.envelope.error.message.contains("user turns") == true)
     }
@@ -284,16 +284,14 @@ struct ServerImageRequestTests {
     /// The words of two requests can be identical while the pictures differ,
     /// so the digests are what a resumed prefix is keyed on.
     @Test func imageDigestsDistinguishOtherwiseIdenticalRequests() throws {
-        let first = try OpenAIRequestValidator.validate(
+        let first = try ChatRequestParser.parse(
             decode(body(parts: """
                 {"type":"image_url","image_url":{"url":"\(dataURI(width: 8, height: 8))"}}
-                """)),
-            modelID: "m")
-        let second = try OpenAIRequestValidator.validate(
+                """)))
+        let second = try ChatRequestParser.parse(
             decode(body(parts: """
                 {"type":"image_url","image_url":{"url":"\(dataURI(width: 16, height: 16))"}}
-                """)),
-            modelID: "m")
+                """)))
         #expect(ServerPromptCache.imageDigests(first).count == 1)
         #expect(ServerPromptCache.imageDigests(first) != ServerPromptCache.imageDigests(second))
         #expect(ServerPromptCache.imageDigests(first) == ServerPromptCache.imageDigests(first))
@@ -318,7 +316,7 @@ struct ServerImageRequestTests {
             templateSHA256: "template")
 
         func validated(_ json: String) throws -> ValidatedChatRequest {
-            try OpenAIRequestValidator.validate(decode(json), modelID: "m")
+            try ChatRequestParser.parse(decode(json))
         }
         func rendered(_ request: ValidatedChatRequest) throws
             -> (tokens: [Int32], vision: VisionPrefillInput) {
@@ -409,7 +407,7 @@ struct ServerImageRequestTests {
             fp16RingEnabled: true,
             templateSHA256: "template")
         func validated(_ json: String) throws -> ValidatedChatRequest {
-            try OpenAIRequestValidator.validate(decode(json), modelID: "m")
+            try ChatRequestParser.parse(decode(json))
         }
         let first = try validated("""
             {"model":"m","messages":[{"role":"user","content":[
@@ -532,8 +530,8 @@ struct ServerImageRequestTests {
         return try await URLSession.shared.data(for: request)
     }
 
-    private func decode(_ json: String) throws -> OpenAIChatRequest {
-        try JSONDecoder().decode(OpenAIChatRequest.self, from: Data(json.utf8))
+    private func decode(_ json: String) throws -> Data {
+        Data(json.utf8)
     }
 
     private func body(parts: String) -> String {

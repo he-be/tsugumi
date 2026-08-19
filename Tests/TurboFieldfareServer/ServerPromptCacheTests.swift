@@ -384,11 +384,6 @@ struct ServerPromptCacheTests {
             forResource: name,
             withExtension: nil,
             subdirectory: "Fixtures"))
-        let request = try JSONDecoder().decode(
-            OpenAIChatRequest.self,
-            from: Data(contentsOf: url))
-        return try OpenAIRequestValidator.validate(
-            request,
-            modelID: "gemma-4-26b-a4b-it")
+        return try ChatRequestParser.parse(try Data(contentsOf: url))
     }
 }

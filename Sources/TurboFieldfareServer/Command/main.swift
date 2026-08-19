@@ -34,7 +34,7 @@ do {
         queueLimit: arguments.queueLimit,
         backend: backend,
         imagePolicy: arguments.imagePolicy,
-        thinkingPolicy: arguments.thinkingPolicy)
+        defaults: ChatRequestDefaults(thinking: arguments.thinkingPolicy))
     _ = try await server.start(port: arguments.port)
     print("TurboFieldfareServer ready at http://127.0.0.1:\(arguments.port) model=\(arguments.modelID) context=\(arguments.maxContext) prompt_cache=\(arguments.promptCacheMode.rawValue) mtp=\(arguments.draftBlockSize) thinking=\(arguments.thinkingPolicy.rawValue)")
 

@@ -83,7 +83,7 @@
 | REQ-top-k | `top_k` | int | 0 | clamp [0, ∞)。**0 = 無効**。サンプラ実装の上限 256 への丸めは DEV-9 |
 | REQ-seed | `seed` | int64 | -1 | 透過。**-1 = ランダム**。符号付きでデコードする (`UInt64` デコードで 400 にしない) |
 | REQ-stop | `stop` | str \| arr | [] | 透過 (最大 4 は設けない — 参照実装に無い制限を足さない) |
-| REQ-repeat-penalty | `repeat_penalty` | num | 1.0 | 透過 (llama 拡張。engine の repetitionPenalty へ) |
+| REQ-repeat-penalty | `repeat_penalty` | num | 1.0 | 透過 (llama 拡張。engine の repetitionPenalty へ)。旧名 `repetition_penalty` は採らない — R1 により無視される |
 | REQ-n | `n` | int | 1 | hard [1, 1] (単一スロット。参照実装も `[1, n_parallel]`) |
 | REQ-logprobs | `logprobs` / `top_logprobs` | — | — | 契約 (R4)。実装まで **501** `not_supported_error` (§12 DEV-6) |
 | REQ-tools | `tools` | arr | [] | §6 |
@@ -144,7 +144,7 @@
 | ID | 規範 |
 | --- | --- |
 | RSN-1 | プロセス既定は `--reasoning-budget N` (**-1 = 無制限 (既定)、0 = 無効**)。独自フラグ `--thinking on\|off` は廃止 (FLAG-4)。 |
-| RSN-2 | 要求ごとの制御は `reasoning_effort` (REQ-reasoning-effort) と `chat_template_kwargs.enable_thinking`。参照実装と同じく両方受け、それぞれ独立にテンプレート kwargs へ渡す (優先解決はテンプレートの仕事)。 |
+| RSN-2 | 要求ごとの制御は `reasoning_effort` (REQ-reasoning-effort) と `chat_template_kwargs.enable_thinking`。参照実装と同じく両方受け、食い違いを 400 にしない。解決順は参照実装 (`server-common.cpp:1278-1304`) と同じ: `enable_thinking` があればそれ、無ければ `reasoning_effort` の有無 (`none` 以外 = 思考する)、最後に `reasoning_effort: "none"` と予算 0 が上書きして閉じる。 |
 | RSN-3 | 思考は `reasoning_content` に分離して返す (`--reasoning-format auto`、既定)。`--reasoning-format none` で生テキストのまま返す。 |
 | RSN-4 | **思考の予算が尽きたら終了タグを強制挿入して本文へ移らせる** (参照実装 `reasoning_budget_forced`)。予算 = `reasoning_budget_tokens`、および `max_tokens` の残り。`finish_reason: length` で本文 0 字・思考だけの応答を返さない (旧 16 §5 で実測済みの欠陥)。 |
 | RSN-5 | tools 宣言時も思考は有効 (MSG-6)。 |
@@ -194,6 +194,8 @@
 | DEV-7 | embeddings / rerank / infill / completions (非 chat) / responses / messages / control / lora / マルチモデル / MCP | あり | 採らない (EP-7 の 501) | このモデル・この用途 (pi / OpenCode / ブラウザデモ) に不要。面積を増やさない | 実クライアントの需要が出たら |
 | DEV-8 | 音声・動画入力 | あり (mtmd) | 501 | モデルが vision のみ | モデルが変わったら |
 | DEV-9 | `top_k` の上限 | INT32_MAX | 256 へ丸め | サンプラ実装の partial-sort 上限。クランプであり拒否ではない | サンプラを一般化したら |
+| DEV-10 | `top_p` のサンプラ写像 | 全語彙で nucleus を取る | `top_p < 1` かつ `top_k` 未指定なら `top_k = 256` を補う。`top_p = 0` は貪欲 (`top_k = 1`) として実行 | サンプラが全語彙 nucleus を実装していない (`GenerationConfig.validate`)。R3 の「範囲外は端に丸める」の延長で、拒否ではない | 全語彙 nucleus を実装したら |
+| DEV-11 | 413 Payload Too Large | 無し (本文上限は 500) | 使わない。本文超過・画像サイズ超過・画像枚数超過はすべて 400 `invalid_request_error` | ERR-2 の型 ↔ HTTP 表に 413 の型が無く、型を増やすより 400 に寄せるほうが面積が小さい | 実クライアントが 413 を区別する必要が出たら |
 
 ## 13. この文書の変え方
 

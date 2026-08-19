@@ -38,9 +38,174 @@ public enum ChatRequestParser {
         imagePolicy: ServerImagePolicy = .default,
         defaults: ChatRequestDefaults = ChatRequestDefaults()
     ) throws -> ValidatedChatRequest {
-        throw ServerRequestError.invalid(
-            message: "ChatRequestParser is not implemented yet",
-            param: nil,
-            code: "not_implemented")
+        let json: JSONValue
+        do {
+            json = try JSONDecoder().decode(JSONValue.self, from: body)
+        } catch {
+            // ERR-3: the body really was unparseable here, which is the only
+            // place that sentence is true.
+            throw ServerRequestError.invalid(
+                message: "the request body is not valid JSON",
+                param: nil, code: "invalid_json")
+        }
+        return try parse(json, imagePolicy: imagePolicy, defaults: defaults)
+    }
+
+    public static func parse(
+        _ body: JSONValue,
+        imagePolicy: ServerImagePolicy = .default,
+        defaults: ChatRequestDefaults = ChatRequestDefaults()
+    ) throws -> ValidatedChatRequest {
+        let request = try ChatRequestSchema.normalize(body)
+
+        let toolChoice: ChatToolChoice =
+            request.string("tool_choice") == "none" ? .none : .auto
+        let messages = try decode([OpenAIChatMessage].self,
+                                  from: request["messages"] ?? .array([]),
+                                  param: "messages")
+        let validated = try ChatMessageValidator.validateMessages(messages,
+                                                                  imagePolicy: imagePolicy)
+        // `tool_choice: none` means the model may not call a tool, which the
+        // template expresses by not being told the tools exist.
+        let declaredTools = toolChoice == .none
+            ? []
+            : try decode([OpenAITool].self,
+                         from: request["tools"] ?? .array([]),
+                         param: "tools")
+        let tools = try declaredTools.map(ChatMessageValidator.validateTool)
+
+        let maximumCompletionTokens = request.int("max_tokens") ?? -1
+        let reasoningEffort = request.string("reasoning_effort")
+        let kwargs = request.object("chat_template_kwargs") ?? [:]
+        let reasoningBudgetTokens = request.int("reasoning_budget_tokens") ?? -1
+        return ValidatedChatRequest(
+            messages: validated.messages,
+            tools: tools,
+            stream: request.bool("stream") ?? false,
+            includeUsage: request.object("stream_options")?["include_usage"] == .bool(true),
+            generationConfig: try generationConfig(request),
+            maximumCompletionTokens: maximumCompletionTokens,
+            vision: validated.vision,
+            enableThinking: try enableThinking(kwargs: kwargs,
+                                               effort: reasoningEffort,
+                                               budget: reasoningBudgetTokens,
+                                               defaults: defaults),
+            model: request.string("model") ?? "",
+            toolChoice: toolChoice,
+            parallelToolCalls: request.bool("parallel_tool_calls") ?? true,
+            cachePrompt: request.bool("cache_prompt") ?? true,
+            reasoningEffort: reasoningEffort,
+            chatTemplateKwargs: kwargs,
+            reasoningBudgetTokens: reasoningBudgetTokens,
+            reasoningFormat: ReasoningFormat(
+                rawValue: request.string("reasoning_format") ?? "auto") ?? .auto,
+            timingsPerToken: request.bool("timings_per_token") ?? false)
+    }
+
+    /// The clamped table values as the sampler takes them.
+    ///
+    /// Two of the mappings are approximations the engine forces, both
+    /// registered in SPEC §12 (DEV-10): this sampler cannot run nucleus
+    /// sampling over the full vocabulary, so a `top_p` below 1 borrows the
+    /// widest top-k it has, and a `top_p` of 0 — an empty nucleus — is served
+    /// as the greedy draw it describes. Neither is a refusal: R3 says a tuning
+    /// parameter is clamped into something this machine can run.
+    private static func generationConfig(
+        _ request: NormalizedChatRequest
+    ) throws -> GenerationConfig {
+        let temperature = Float(request.double("temperature") ?? 1.0)
+        let topP = request.double("top_p") ?? 1.0
+        var topK = request.int("top_k") ?? 0
+        var nucleus: Float? = topP < 1 ? Float(topP) : nil
+        if topP <= 0 {
+            nucleus = nil
+            topK = 1
+        } else if nucleus != nil, topK == 0 {
+            topK = ChatRequestSchema.topKCeiling
+        }
+        let seed = request.int64("seed") ?? -1
+        return GenerationConfig(
+            // The real ceiling is the context left after the prompt, which
+            // only the session knows; it recomputes this before generating.
+            maxNewTokens: max(request.int("max_tokens") ?? -1, 1),
+            temperature: temperature,
+            topK: topK == 0 ? nil : topK,
+            topP: nucleus,
+            repetitionPenalty: Float(request.double("repeat_penalty") ?? 1.0),
+            seed: seed == -1 ? nil : UInt64(bitPattern: seed),
+            stopStrings: stopStrings(request["stop"]))
+    }
+
+    private static func stopStrings(_ value: JSONValue?) -> [String] {
+        switch value {
+        case .string(let one): [one]
+        case .array(let many): many.compactMap { if case .string(let s) = $0 { s } else { nil } }
+        default: []
+        }
+    }
+
+    /// RSN-2. Both spellings are read, and the reference implementation's
+    /// order of resolution is kept: `chat_template_kwargs.enable_thinking`
+    /// says what the template does, and `reasoning_effort: "none"` overrides it
+    /// afterwards (`server-common.cpp:1278-1304`). A budget of zero says the
+    /// same thing a third way (RSN-1).
+    private static func enableThinking(kwargs: [String: JSONValue],
+                                       effort: String?,
+                                       budget: Int,
+                                       defaults: ChatRequestDefaults) throws -> Bool {
+        var enabled = defaults.thinking.isEnabled
+        if let requested = kwargs["enable_thinking"], requested != .null {
+            guard case .bool(let value) = requested else {
+                throw ServerRequestError.invalid(
+                    message: "chat_template_kwargs.enable_thinking must be a boolean",
+                    param: "chat_template_kwargs", code: "invalid_type")
+            }
+            enabled = value
+        } else if let effort, !effort.isEmpty, effort != "none" {
+            // This template has one thought channel and no budget, so a level
+            // has nothing to select but the channel itself. Which levels exist
+            // is not this server's business to enumerate (REQ-reasoning-effort).
+            enabled = true
+        }
+        if effort == "none" { enabled = false }
+        if budget == 0 { enabled = false }
+        return enabled
+    }
+
+    private static func decode<T: Decodable>(_ type: T.Type,
+                                             from value: JSONValue,
+                                             param: String) throws -> T {
+        do {
+            return try JSONDecoder().decode(type, from: try JSONEncoder().encode(value))
+        } catch let error as DecodingError {
+            // ERR-3 again: name the field inside `messages` or `tools` that
+            // did not fit, rather than calling the whole body malformed.
+            throw ServerRequestError.invalid(
+                message: "\(param) is not shaped as expected: \(Self.describe(error))",
+                param: param, code: "invalid_type")
+        } catch {
+            throw ServerRequestError.invalid(
+                message: "\(param) could not be read",
+                param: param, code: "invalid_type")
+        }
+    }
+
+    private static func describe(_ error: DecodingError) -> String {
+        func path(_ context: DecodingError.Context) -> String {
+            let steps = context.codingPath.map { key in
+                key.intValue.map { "[\($0)]" } ?? ".\(key.stringValue)"
+            }.joined()
+            return steps.isEmpty ? "the value" : String(steps.dropFirst(steps.first == "." ? 1 : 0))
+        }
+        switch error {
+        case .keyNotFound(let key, let context):
+            return "\(path(context)) is missing \"\(key.stringValue)\""
+        case .typeMismatch(_, let context), .valueNotFound(_, let context):
+            return "\(path(context)) has the wrong type"
+        case .dataCorrupted(let context):
+            return context.debugDescription
+        @unknown default:
+            return "the value could not be read"
+        }
     }
 }

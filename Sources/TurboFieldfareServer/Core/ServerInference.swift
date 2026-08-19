@@ -619,7 +619,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         // continuation adds, and nil means the pictures are already in the KV.
         var prefillVision = vision
         var cacheMiss: String?
-        if Self.promptCacheParticipates(mode: promptCacheMode) {
+        if Self.promptCacheParticipates(mode: promptCacheMode), request.cachePrompt {
             switch promptCache.match(
                 domain: promptCacheDomain,
                 request: request,
@@ -650,10 +650,27 @@ public actor ServerModelSession: ServerInferenceBackend {
         }
 
         var config = request.generationConfig
-        config.maxNewTokens = min(
-            request.maximumCompletionTokens,
-            maxContext - effectivePromptIDs.count)
+        // REQ-max-tokens: -1 asks for everything the context has left, and any
+        // other value is still bounded by it.
+        let contextRemaining = maxContext - effectivePromptIDs.count
+        config.maxNewTokens = request.maximumCompletionTokens < 0
+            ? contextRemaining
+            : min(request.maximumCompletionTokens, contextRemaining)
         config.stopStrings = []
+
+        // REQ-max-tokens: 0 is "prefill only". There is nothing to sample, so
+        // the answer is an empty one with the prompt accounted for.
+        if request.maximumCompletionTokens == 0 {
+            completed = true
+            return ServerCompletion(
+                content: "",
+                toolCalls: [],
+                finishReason: "length",
+                usage: OpenAIUsage(promptTokens: promptIDs.count,
+                                   completionTokens: 0,
+                                   totalTokens: promptIDs.count,
+                                   cachedTokens: 0))
+        }
 
         // With thinking on, the generation prompt leaves the thought channel
         // for the model to open, so its markers arrive in the stream and the
@@ -820,7 +837,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         } else {
             reason = "stop"
         }
-        if Self.promptCacheParticipates(mode: promptCacheMode) {
+        if Self.promptCacheParticipates(mode: promptCacheMode), request.cachePrompt {
             promptCache.publish(
                 domain: promptCacheDomain,
                 request: request,

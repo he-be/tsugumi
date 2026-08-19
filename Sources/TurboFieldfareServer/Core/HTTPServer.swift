@@ -24,7 +24,7 @@ public actor TurboFieldfareHTTPServer {
     private let coordinator: ServerCoordinator
     private let heartbeatInterval: TimeAmount
     private let imagePolicy: ServerImagePolicy
-    private let thinkingPolicy: ServerThinkingPolicy
+    private let defaults: ChatRequestDefaults
     private let childChannels = ChildChannelRegistry()
     private var channel: Channel?
     private var shutdownTask: Task<Void, any Error>?
@@ -34,7 +34,7 @@ public actor TurboFieldfareHTTPServer {
                 backend: any ServerInferenceBackend,
                 heartbeatInterval: TimeAmount = .seconds(5),
                 imagePolicy: ServerImagePolicy = .default,
-                thinkingPolicy: ServerThinkingPolicy = .off,
+                defaults: ChatRequestDefaults = ChatRequestDefaults(),
                 group: MultiThreadedEventLoopGroup = .init(numberOfThreads: 1)) {
         self.group = group
         self.modelID = modelID
@@ -42,7 +42,7 @@ public actor TurboFieldfareHTTPServer {
         self.coordinator = ServerCoordinator(queueLimit: queueLimit)
         self.heartbeatInterval = heartbeatInterval
         self.imagePolicy = imagePolicy
-        self.thinkingPolicy = thinkingPolicy
+        self.defaults = defaults
     }
 
     public func start(port: Int) async throws -> Channel {
@@ -51,7 +51,7 @@ public actor TurboFieldfareHTTPServer {
         let coordinator = self.coordinator
         let heartbeatInterval = self.heartbeatInterval
         let imagePolicy = self.imagePolicy
-        let thinkingPolicy = self.thinkingPolicy
+        let defaults = self.defaults
         let childChannels = self.childChannels
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 16)
@@ -68,7 +68,7 @@ public actor TurboFieldfareHTTPServer {
                         coordinator: coordinator,
                         heartbeatInterval: heartbeatInterval,
                         imagePolicy: imagePolicy,
-                        thinkingPolicy: thinkingPolicy,
+                        defaults: defaults,
                         childChannels: childChannels))
                 }
             }
@@ -138,7 +138,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private let coordinator: ServerCoordinator
     private let heartbeatInterval: TimeAmount
     private let imagePolicy: ServerImagePolicy
-    private let thinkingPolicy: ServerThinkingPolicy
+    private let defaults: ChatRequestDefaults
     private let maximumBodyBytes: Int
     private let childChannels: ChildChannelRegistry
     private var head: HTTPRequestHead?
@@ -151,14 +151,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
          coordinator: ServerCoordinator,
          heartbeatInterval: TimeAmount,
          imagePolicy: ServerImagePolicy,
-         thinkingPolicy: ServerThinkingPolicy,
+         defaults: ChatRequestDefaults,
          childChannels: ChildChannelRegistry) {
         self.modelID = modelID
         self.backend = backend
         self.coordinator = coordinator
         self.heartbeatInterval = heartbeatInterval
         self.imagePolicy = imagePolicy
-        self.thinkingPolicy = thinkingPolicy
+        self.defaults = defaults
         self.maximumBodyBytes = imagePolicy.maximumBodyBytes
         self.childChannels = childChannels
     }
@@ -235,12 +235,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                   context: ChannelHandlerContext) {
         do {
             let bytes = body.getBytes(at: body.readerIndex, length: body.readableBytes) ?? []
-            let decoded = try JSONDecoder().decode(OpenAIChatRequest.self, from: Data(bytes))
-            let request = try OpenAIRequestValidator.validate(decoded,
-                                                             modelID: modelID,
-                                                             imagePolicy: imagePolicy,
-                                                             thinkingPolicy: thinkingPolicy)
+            let request = try ChatRequestParser.parse(
+                Data(bytes),
+                imagePolicy: imagePolicy,
+                defaults: defaults)
             let responseID = "chatcmpl-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+            // R5: the answer carries the name the client asked for. A request
+            // that named no model gets this server's own id back.
+            let responseModel = request.model.isEmpty ? modelID : request.model
             let created = Int(Date().timeIntervalSince1970)
             let contextBox = SendableContext(context)
             let streamState = StreamState()
@@ -254,7 +256,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                       }) else { return }
                 let future = self.beginStream(
                     contextBox.value,
-                    self.chunk(id: responseID, created: created,
+                    self.chunk(id: responseID, created: created, model: responseModel,
                                delta: ["role": "assistant"],
                                finishReason: nil))
                 streamState.setStartFuture(future)
@@ -294,18 +296,21 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                     self.writeStreamChunk(
                                         contextBox.value,
                                         self.chunk(id: responseID, created: created,
+                                                   model: responseModel,
                                                    delta: ["content": text],
                                                    finishReason: nil))
                                 case .reasoning(let text):
                                     self.writeStreamChunk(
                                         contextBox.value,
                                         self.chunk(id: responseID, created: created,
+                                                   model: responseModel,
                                                    delta: ["reasoning_content": text],
                                                    finishReason: nil))
                                 case .toolCall(let call):
                                     self.writeToolCall(contextBox.value,
                                                        id: responseID,
                                                        created: created,
+                                                       model: responseModel,
                                                        toolIndex: streamState.nextToolIndex(),
                                                        call: call)
                                 }
@@ -319,12 +324,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                         self.finishStream(contextBox.value,
                                           id: responseID,
                                           created: created,
+                                          responseModel: responseModel,
                                           completion: completion,
                                           includeUsage: request.includeUsage)
                     } else {
                         self.writeCompletion(contextBox.value,
                                              id: responseID,
                                              created: created,
+                                             responseModel: responseModel,
                                              completion: completion)
                     }
                 } catch {
@@ -348,6 +355,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private func writeCompletion(_ context: ChannelHandlerContext,
                                  id: String,
                                  created: Int,
+                                 responseModel: String,
                                  completion: ServerCompletion) {
         let encodedContent: Any =
             completion.content.isEmpty && !completion.toolCalls.isEmpty
@@ -371,7 +379,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             "id": id,
             "object": "chat.completion",
             "created": created,
-            "model": modelID,
+            "model": responseModel,
             "choices": [[
                 "index": 0,
                 "message": message,
@@ -416,6 +424,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private func writeToolCall(_ context: ChannelHandlerContext,
                                id: String,
                                created: Int,
+                               model: String,
                                toolIndex: Int,
                                call: ParsedToolCall) {
         let fragments = utf8Fragments(call.argumentsJSON, maximumBytes: 1024)
@@ -430,7 +439,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             }
             writeStreamChunk(
                 context,
-                chunk(id: id, created: created,
+                chunk(id: id, created: created, model: model,
                       delta: ["tool_calls": [tool]],
                       finishReason: nil))
         }
@@ -439,11 +448,12 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private func finishStream(_ context: ChannelHandlerContext,
                               id: String,
                               created: Int,
+                              responseModel: String,
                               completion: ServerCompletion,
                               includeUsage: Bool) {
         writeStreamChunk(
             context,
-            chunk(id: id, created: created,
+            chunk(id: id, created: created, model: responseModel,
                   delta: [:],
                   finishReason: completion.finishReason))
         if includeUsage {
@@ -451,7 +461,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 "id": id,
                 "object": "chat.completion.chunk",
                 "created": created,
-                "model": modelID,
+                "model": responseModel,
                 "choices": [],
                 "usage": usageObject(completion.usage),
             ])
@@ -466,6 +476,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
 
     private func chunk(id: String,
                        created: Int,
+                       model: String,
                        delta: [String: Any],
                        finishReason: String?) -> [String: Any] {
         let encodedReason: Any = finishReason.map { $0 as Any } ?? NSNull()
@@ -473,7 +484,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             "id": id,
             "object": "chat.completion.chunk",
             "created": created,
-            "model": modelID,
+            "model": model,
             "choices": [[
                 "index": 0,
                 "delta": delta,
