@@ -27,18 +27,26 @@ swift build -c release --product TurboFieldfareServer   # 初回とコード変�
 
 ## 1. コピペする 3 つの構成
 
-**どれを選ぶかは「コンテキスト長」だけで決まる。**長いコンテキストを取ると
-KV キャッシュがメモリを食い、その分だけ expert キャッシュのスロットを削る必要がある
-(理由は §2)。**スロットが減ると生成も遅くなる** (§4)。
+**コンテキスト長で決まるのは「スロットの上限」である** (理由は §2)。
+長いコンテキストを取ると KV キャッシュがメモリを食い、その分だけ expert
+キャッシュのスロットを削る必要がある。**スロットが減ると生成も遅くなる** (§4)。
 
-### (a) 16K — 既定。いちばん速い。pi の常用はこれ
+上限まで取るかどうかは別の判断で、**常用は 3 構成とも 32 スロット**にしている
+(2026-08-19 に変更。16K は 80、64K は 64、128K は 48 だった)。上限まで取ると
+推奨作業セット 12.88 GB をほぼ使い切り、**同じ機体で他の作業を並行させる余地が
+残らない**。32 なら peak 約 5.1 GB で、速度は落ちるが常時起動に耐える。
+上限は §2 の表に残してあるので、速度が要る単発の測定だけそちらを明示して付ける。
+
+つまり **3 つの構成の違いはコンテキスト長だけ**になった。
+
+### (a) 16K — pi の常用。他の作業とメモリを分け合う設定
 
 ```bash
 .build/release/TurboFieldfareServer \
   --model scratch/gemma4-qat.gturbo \
   --port 8091 \
   --max-context 16384 \
-  --expert-cache-slots 80 \
+  --expert-cache-slots 32 \
   --verification trusted-install \
   --draft-block-size 4
 ```
@@ -50,22 +58,26 @@ KV キャッシュがメモリを食い、その分だけ expert キャッシュ
   --model scratch/gemma4-qat.gturbo \
   --port 8091 \
   --max-context 65536 \
-  --expert-cache-slots 64 \
+  --expert-cache-slots 32 \
   --verification trusted-install \
   --draft-block-size 4
 ```
 
-### (c) 128K — 最長。生成は (a) より 15〜20% 遅い
+### (c) 128K — 最長
 
 ```bash
 .build/release/TurboFieldfareServer \
   --model scratch/gemma4-qat.gturbo \
   --port 8091 \
   --max-context 131072 \
-  --expert-cache-slots 48 \
+  --expert-cache-slots 32 \
   --verification trusted-install \
   --draft-block-size 4
 ```
+
+(c) が (a) より 15〜20% 遅いという §4 の数字は、128K/48 と 16K/80 を比べた
+ときのものである。スロットを 3 構成とも 32 に揃えた今、両者の差は KV の大きさ
+だけになった — **この条件での再測定は未了**。
 
 **ポートは 8091。**`~/.pi/agent/models.json` の `local-turbofieldfare` が
 `http://127.0.0.1:8091/v1` を向いている。
@@ -74,7 +86,7 @@ KV キャッシュがメモリを食い、その分だけ expert キャッシュ
 
 ```bash
 nohup .build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo \
-  --port 8091 --max-context 65536 --expert-cache-slots 64 \
+  --port 8091 --max-context 65536 --expert-cache-slots 32 \
   --verification trusted-install --draft-block-size 4 > /tmp/tf-server.log 2>&1 &
 ```
 
@@ -84,7 +96,10 @@ nohup .build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo \
 **12.88 GB** と比べ、超えていたら**ポートを開く前に exit 2** で落ちる。
 内訳は実測でこう出る:
 
-| コンテキスト | KV | resident + vision + scratch | 使えるスロット |
+この表の「使えるスロット」は**載る上限**であって、常用の設定ではない
+(常用は §1 のとおり 32)。
+
+| コンテキスト | KV | resident + vision + scratch | 使えるスロット (上限) |
 | ---: | ---: | ---: | --- |
 | 16K | 0.96 GB (**導出**) | 1.51 + 1.15 + 0.29 GB | **80** (合計 12.84 GB、上限 12.88 GB にぎりぎり) |
 | 64K | **1.97 GB** | 同上 | **64** (80 は 13.85 GB で拒否) |
@@ -134,6 +149,11 @@ pkill -f TurboFieldfareServer
 | --- | ---: | ---: |
 | 16K / 80 スロット | **18.3 s** | 25.3 s (**1.39 倍**) |
 | 128K / 48 スロット | 20.6〜22.4 s | (未測定) |
+
+**この表は 80 スロット時の記録である。**§1(a) を 32 スロットに変えたぶんの
+再測定はまだ取っていない (32 スロットの生成速度は
+[docs/mtp/27-M7-RESULTS.md](mtp/27-M7-RESULTS.md) §2 が別タスクで 23.6 t/s と
+出している)。
 
 - **MTP (`--draft-block-size 4`) の効きはタスク次第**: コードと画像の説明で約 1.4 倍、
   日本語の散文はほぼ等速 (受理長 1.06)。詳細は [RESULTS_MTP.md](../RESULTS_MTP.md)。

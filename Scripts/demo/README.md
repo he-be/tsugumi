@@ -30,7 +30,7 @@ Python の追加パッケージは要らない。
   起動しない**。8091 が答えるならそれに接続し (`owned: false`)、終了時にも**止めない**。
   答えないならエラーで止まる — 他人のプロセスを殺さない。
 - **起動**: SERVER_RUNBOOK §1(a) の 16K 構成
-  (`--max-context 16384 --expert-cache-slots 80 --verification trusted-install
+  (`--max-context 16384 --expert-cache-slots 32 --verification trusted-install
   --draft-block-size 4`)。
 - **ウォームアップ**: テキスト 1 回、画像 1 回。画像側はこの場で作った 96x96 の PNG で、
   vision タワーの初回コスト (M3 Pro 18GB で約 5〜11 秒) を最初の 1 枚に払わせないため。
