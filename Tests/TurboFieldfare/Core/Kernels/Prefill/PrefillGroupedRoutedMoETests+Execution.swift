@@ -445,13 +445,18 @@ extension PrefillGroupedRoutedMoETests {
     let rows = 4
     let topK = 8
     let numExperts = 64
+    // The router table is 64 wide, but the pairs below only ever reach the
+    // first `routedExpertCount` experts and the pool is indexed by expert ID,
+    // so synthesizing the other 40 sets of 704x704 weights is work that
+    // nothing — neither the kernel nor the CPU expectation — ever reads.
+    let routedExpertCount = 24
     // Four tokens x top-8, spread so every tile holds several experts and no
     // expert holds more than `rows` pairs: the production verify shape.
     var pairs: [PrefillTokenExpertPair] = []
     for token in 0..<rows {
       for rank in 0..<topK {
         pairs.append(Self.pair(token: UInt32(token),
-                               expert: UInt32((token + rank * 3) % 24),
+                               expert: UInt32((token + rank * 3) % routedExpertCount),
                                rank: UInt32(rank)))
       }
     }
@@ -460,7 +465,7 @@ extension PrefillGroupedRoutedMoETests {
     try #require(routes.tiles.count >= 3, "wanted several tiles, got \(routes.tiles.count)")
     try #require(routes.maxPairsPerExpert <= PrefillGroupedRoutedMoE.rowsMaxPerExpert)
 
-    let pool = Self.makeSyntheticExpertPool(numExperts: numExperts, d: d, f: f)
+    let pool = Self.makeSyntheticExpertPool(numExperts: routedExpertCount, d: d, f: f)
     let hidden = (0..<(rows * d)).map { i in Float16(Float((i % 23) - 11) * 0.01) }
     let expected = Self.cpuSyntheticRoutePartials(
       routes: routes, hidden: hidden, hiddenStride: d, pool: pool,

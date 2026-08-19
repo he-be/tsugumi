@@ -117,44 +117,33 @@ import TurboFieldfareValidationSupport
         var stride = 0
         for expert in 0..<numExperts {
             var bytes: [UInt8] = []
+            // Each projection is quantized once and then emitted as its three
+            // component-major regions. Quantizing per component instead would
+            // redo the same work three times, and the widest caller builds
+            // this pool at 24 x 704 x 704.
+            let gate = Self.quantizedRows(rows: f, cols: d, expert: expert, role: 0)
             let gateWOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 0),
-                                  to: &bytes,
-                                  component: .packed)
+            Self.appendQuantized(gate, to: &bytes, component: .packed)
             let gateSOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 0),
-                                  to: &bytes,
-                                  component: .scales)
+            Self.appendQuantized(gate, to: &bytes, component: .scales)
             let gateBOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 0),
-                                  to: &bytes,
-                                  component: .biases)
+            Self.appendQuantized(gate, to: &bytes, component: .biases)
 
+            let up = Self.quantizedRows(rows: f, cols: d, expert: expert, role: 1)
             let upWOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 1),
-                                  to: &bytes,
-                                  component: .packed)
+            Self.appendQuantized(up, to: &bytes, component: .packed)
             let upSOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 1),
-                                  to: &bytes,
-                                  component: .scales)
+            Self.appendQuantized(up, to: &bytes, component: .scales)
             let upBOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 1),
-                                  to: &bytes,
-                                  component: .biases)
+            Self.appendQuantized(up, to: &bytes, component: .biases)
 
+            let down = Self.quantizedRows(rows: d, cols: f, expert: expert, role: 2)
             let downWOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: d, cols: f, expert: expert, role: 2),
-                                  to: &bytes,
-                                  component: .packed)
+            Self.appendQuantized(down, to: &bytes, component: .packed)
             let downSOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: d, cols: f, expert: expert, role: 2),
-                                  to: &bytes,
-                                  component: .scales)
+            Self.appendQuantized(down, to: &bytes, component: .scales)
             let downBOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: d, cols: f, expert: expert, role: 2),
-                                  to: &bytes,
-                                  component: .biases)
+            Self.appendQuantized(down, to: &bytes, component: .biases)
 
             let currentOffsets = MoEExpertOffsets(gateWOff: gateWOff,
                                                   gateSOff: gateSOff,
@@ -184,10 +173,16 @@ import TurboFieldfareValidationSupport
         case biases
     }
 
-    static func appendProjection(rows: [[Float]],
-                                         to bytes: inout [UInt8],
-                                         component: ProjectionComponent) {
-        let quantized = rows.map { Quantization.quantizeInt4Affine($0) }
+    static func quantizedRows(rows: Int, cols: Int, expert: Int, role: Int)
+        -> [Quantization.Int4AffineRow]
+    {
+        Self.syntheticRows(rows: rows, cols: cols, expert: expert, role: role)
+            .map { Quantization.quantizeInt4Affine($0) }
+    }
+
+    static func appendQuantized(_ quantized: [Quantization.Int4AffineRow],
+                                to bytes: inout [UInt8],
+                                component: ProjectionComponent) {
         switch component {
         case .packed:
             for row in quantized {

@@ -1,4 +1,5 @@
 import Testing
+import Accelerate
 import Foundation
 import Metal
 @testable import TurboFieldfare
@@ -392,29 +393,51 @@ import TurboFieldfareValidationSupport
             let last = min(fixture.kvValid, absQ + 1)
             for qh in 0..<fixture.qHeads {
                 let kvh = qh / qPerKV
-                var scores: [Float] = []
-                scores.reserveCapacity(last - first)
-                for key in first..<last {
-                    var score: Float = 0
-                    for d in 0..<fixture.headDim {
-                        let qv = fixture.q[t * fixture.qStride + qh * fixture.headDim + d]
-                        let kv = fixture.k[key * fixture.kvStride + kvh * fixture.headDim + d]
-                        score += qv * kv
+                let qBase = t * fixture.qStride + qh * fixture.headDim
+                let kvBase = kvh * fixture.headDim
+                let keyCount = last - first
+                guard keyCount > 0 else { continue }
+
+                // Score row: one dot product per key position.
+                var weights = [Float](repeating: 0, count: keyCount)
+                fixture.q.withUnsafeBufferPointer { pq in
+                    fixture.k.withUnsafeBufferPointer { pk in
+                        weights.withUnsafeMutableBufferPointer { pw in
+                            for i in 0..<keyCount {
+                                let kBase = (first + i) * fixture.kvStride + kvBase
+                                var dot: Float = 0
+                                vDSP_dotpr(pq.baseAddress! + qBase, 1,
+                                           pk.baseAddress! + kBase, 1,
+                                           &dot, vDSP_Length(fixture.headDim))
+                                pw[i] = dot * fixture.scale
+                            }
+                        }
                     }
-                    scores.append(score * fixture.scale)
                 }
-                let maxScore = scores.max() ?? -.infinity
+
+                // Softmax, shifted by the row maximum.
+                var maxScore: Float = 0
+                vDSP_maxv(weights, 1, &maxScore, vDSP_Length(keyCount))
+                var negMax = -maxScore
+                vDSP_vsadd(weights, 1, &negMax, &weights, 1, vDSP_Length(keyCount))
+                weights = vForce.exp(weights)
                 var denom: Float = 0
-                for score in scores {
-                    denom += Foundation.exp(score - maxScore)
-                }
-                for d in 0..<fixture.headDim {
-                    var acc: Float = 0
-                    for (i, key) in (first..<last).enumerated() {
-                        let w = Foundation.exp(scores[i] - maxScore)
-                        acc += w * fixture.v[key * fixture.kvStride + kvh * fixture.headDim + d]
+                vDSP_sve(weights, 1, &denom, vDSP_Length(keyCount))
+
+                // Output column d is the weight row dotted against V's column
+                // d, which is strided by the padded KV token stride.
+                let outBase = (t * fixture.qHeads + qh) * fixture.headDim
+                weights.withUnsafeBufferPointer { pw in
+                    fixture.v.withUnsafeBufferPointer { pv in
+                        let vColumn = pv.baseAddress! + first * fixture.kvStride + kvBase
+                        for d in 0..<fixture.headDim {
+                            var acc: Float = 0
+                            vDSP_dotpr(pw.baseAddress!, 1,
+                                       vColumn + d, vDSP_Stride(fixture.kvStride),
+                                       &acc, vDSP_Length(keyCount))
+                            out[outBase + d] = denom > 0 ? acc / denom : 0
+                        }
                     }
-                    out[(t * fixture.qHeads + qh) * fixture.headDim + d] = denom > 0 ? acc / denom : 0
                 }
             }
         }

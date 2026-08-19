@@ -67,8 +67,9 @@ import Metal
             }
         }
 
-        func appendProjection(rows: [[Float]], to bytes: inout [UInt8], component: String) {
-            let quantized = rows.map { Quantization.quantizeInt4Affine($0) }
+        func appendProjection(_ quantized: [Quantization.Int4AffineRow],
+                              to bytes: inout [UInt8],
+                              component: String) {
             switch component {
             case "packed":
                 for row in quantized { bytes.append(contentsOf: row.packed) }
@@ -86,22 +87,25 @@ import Metal
             var tensors: [String: [String: Any]] = [:]
 
             func addProjection(prefix: String, rows: Int, cols: Int, role: Int) {
+                // Quantized once, then emitted as three component-major
+                // regions; quantizing per component repeats the same work.
                 let projectionRows = toyExpertRows(rows: rows, cols: cols, expert: expert, role: role)
+                    .map { Quantization.quantizeInt4Affine($0) }
                 let packedOffset = bytes.count
-                appendProjection(rows: projectionRows, to: &bytes, component: "packed")
+                appendProjection(projectionRows, to: &bytes, component: "packed")
                 tensors[prefix] = [
                     "offset": packedOffset, "size": bytes.count - packedOffset,
                     "dtype": "U32", "shape": [rows, cols],
                     "bits": 4,
                 ]
                 let scalesOffset = bytes.count
-                appendProjection(rows: projectionRows, to: &bytes, component: "scales")
+                appendProjection(projectionRows, to: &bytes, component: "scales")
                 tensors["\(prefix)_scales"] = [
                     "offset": scalesOffset, "size": bytes.count - scalesOffset,
                     "dtype": "BF16", "shape": [rows, cols / Quantization.groupSize],
                 ]
                 let biasesOffset = bytes.count
-                appendProjection(rows: projectionRows, to: &bytes, component: "biases")
+                appendProjection(projectionRows, to: &bytes, component: "biases")
                 tensors["\(prefix)_biases"] = [
                     "offset": biasesOffset, "size": bytes.count - biasesOffset,
                     "dtype": "BF16", "shape": [rows, cols / Quantization.groupSize],
