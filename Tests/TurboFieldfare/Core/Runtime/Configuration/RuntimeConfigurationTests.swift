@@ -5,13 +5,13 @@ import Testing
     @Test func productionDefaultsAreStable() {
         let runtime = RuntimeConfiguration.production
         #expect(runtime.fp16RingEnabled)
-        #expect(runtime.expertCacheSlots == 16)
+        #expect(runtime.expertCacheSlots == 48)
         #expect(runtime.expertCachePolicy == .lfu)
         #expect(runtime.rdadvisePolicy == .off)
         #expect(!runtime.rdadviseEnabled)
         #expect(runtime.prefillPolicy == .chunked)
         #expect(runtime.prefillChunkTokens == 2048)
-        #expect(runtime.prefillAttentionPath == .fullTensorOps2DPreferred)
+        #expect(runtime.prefillAttentionPath == .causalQBlock)
         #expect(runtime.headPath == .fusedRows)
     }
 

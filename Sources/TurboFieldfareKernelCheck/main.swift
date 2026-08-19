@@ -1351,6 +1351,21 @@ if arguments.contains("--rows-bench") {
     exit(verifyCases.allSatisfy(\.passed) ? 0 : 1)
 }
 
+// `--moe-rows-bench` does the same for the *routed* MoE rows kernels
+// (MoERowsBench.swift), which is where `docs/mtp/28-M8-PROPOSAL.md` §2 puts the
+// remaining GPU gap. Separate flag because it reports a slope in r rather than
+// a throughput, and because gate/up and down are timed apart.
+if arguments.contains("--moe-rows-bench") {
+    var moeBenchIterations = 50
+    if let index = arguments.firstIndex(of: "--moe-rows-bench-iterations"),
+       index + 1 < arguments.count,
+       let value = Int(arguments[index + 1]) {
+        moeBenchIterations = value
+    }
+    try runMoERowsBench(groupSize: groupSizes[0], iterations: moeBenchIterations)
+    exit(0)
+}
+
 var results: [CaseResult] = []
 
 func printCases(_ cases: [CaseResult]) {

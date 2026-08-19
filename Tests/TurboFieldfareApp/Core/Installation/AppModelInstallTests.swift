@@ -77,14 +77,16 @@ import TurboFieldfareRepackCore
 
   @MainActor
   @Test func defaultInstallDescriptorMatchesPinnedAudit() {
+    // Repinned to the lattice-aligned QAT checkpoint that `SupportedModelSource`
+    // now names (docs/investigations/QAT_MTP_CHECKPOINT_ANALYSIS.md).
     let descriptor = AppModelInstallDescriptor.default
-    #expect(descriptor.displayName == "Gemma 4 26B-A4B IT 4-bit")
-    #expect(descriptor.repoID == "mlx-community/gemma-4-26b-a4b-it-4bit")
-    #expect(descriptor.revision == "0d77464eeb233a2da68ebf9d7dc4edaac7db956d")
-    #expect(descriptor.sourceIndexSHA256 == "bf198c9f5ea6462addca1966e5dd669c407537a876e82cf06db9084c5c850b13")
-    #expect(descriptor.approximateDownloadBytes == 14_620_479_420)
-    #expect(descriptor.installedBytes == 14_291_921_884)
-    #expect(descriptor.requiredFreeBytes == 15_432_772_572)
+    #expect(descriptor.displayName == "Gemma 4 26B-A4B IT QAT q4_0 (lattice-aligned)")
+    #expect(descriptor.repoID == "mlx-community/gemma-4-26B-A4B-it-qat-q4_0-mlx-aligned")
+    #expect(descriptor.revision == "745a97a754ed4b7713163c7d0e9c11da41809e0c")
+    #expect(descriptor.sourceIndexSHA256 == "7dbbeef0345505798abcf0ac54434116a48c2f1e7aad828071c17a7a871adfe7")
+    #expect(descriptor.approximateDownloadBytes == 15_819_233_792)
+    #expect(descriptor.installedBytes == 15_835_181_312)
+    #expect(descriptor.requiredFreeBytes == 16_976_032_000)
   }
 
   @MainActor

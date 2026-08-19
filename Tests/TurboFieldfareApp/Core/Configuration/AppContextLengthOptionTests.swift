@@ -11,7 +11,10 @@ import Testing
         let mebibytes = AppContextLengthOption.allCases.map {
             $0.fp16KVBytes / 1_048_576
         }
-        #expect(mebibytes == [305, 385, 545, 865, 1_505])
+        // The base moved +375 MiB when the prefill chunk default went 128 ->
+        // 2048: sliding rows are `window + chunkTokens`. The per-context
+        // deltas below are unchanged, so the slope is the same.
+        #expect(mebibytes == [680, 760, 920, 1_240, 1_880])
         #expect(AppContextLengthOption.allCases.map(\.menuLabel) == [
             "4K, Default",
             "8K, +85 MB",

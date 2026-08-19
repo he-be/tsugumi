@@ -16,7 +16,7 @@ import TurboFieldfare
         let runtime = try options.resolvedRuntimeConfiguration(forceLogitsHead: false)
         #expect(runtime == .production)
         #expect(options.resultSummary ==
-            "Cache 48 LFU, prefill 128, FP16 KV, RDADVISE off, full SHA-256")
+            "Cache 48 LFU, prefill 2048, FP16 KV, RDADVISE off, full SHA-256")
     }
 
     @Test func everyPublicChoiceMapsToRuntime() throws {
