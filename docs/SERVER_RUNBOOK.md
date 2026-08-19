@@ -172,14 +172,72 @@ pkill -f TurboFieldfareServer
 ## 5. pi につなぐ
 
 `~/.pi/agent/models.json` は設定済み (`local-turbofieldfare` → 8091)。
-サーバーを建ててから pi を起動するだけでよい。**既知の制限が 2 つある**:
+サーバーを建ててから pi を起動するだけでよい。
 
-| 制限 | 中身 | 回避 |
-| --- | --- | --- |
-| 対話モードで画像が使えない | pi は毎リクエストに built-in tools を宣言し、サーバーは「画像 + tools」を 400 で拒否する | 画像を見せたいセッションだけ `pi -nt` (tools 無効) で起動する |
-| Reasoning が使えない | サーバーに `--thinking` 相当が無く、tools 宣言時はテンプレートが `enable_thinking: false` を固定する | CLI (`--messages-file` + `--thinking on`) を使う |
+**2026-08-19 に制限が 2 つとも消えた**: 対話モード (tools 有効) で画像が使え、
+Reasoning も使える ([docs/serving/12-S3](serving/12-S3-TOOLS-VISION-THINKING.md))。
 
-どちらも [TODO.md](../TODO.md) に調査済みの項目として残してある。
+### (a) 思考を pi 側から切り替えたい場合の設定
+
+サーバーを `--thinking on` で建てるだけでも思考は効くが、pi の Shift-Tab で
+切り替えたいなら `~/.pi/agent/models.json` の `local-turbofieldfare` に 2 行足す:
+
+```jsonc
+"compat": {
+  "supportsDeveloperRole": false,
+  "supportsReasoningEffort": false,
+  "thinkingFormat": "qwen-chat-template"   // ← 追加
+},
+"models": [{
+  "id": "gemma-4-26b-a4b-it",
+  "reasoning": true,                        // ← false から変更
+  "input": ["text", "image"],
+  "contextWindow": 16384,
+  "maxTokens": 8192
+}]
+```
+
+`thinkingFormat` が `qwen-chat-template` のとき、pi は
+`chat_template_kwargs: {enable_thinking: …, preserve_thinking: true}` を送る。
+サーバーはこれを読む (`reasoning_effort` でも同じことができる)。
+応答の `reasoning_content` は pi 側がそのまま思考として表示する。
+
+### (b) 通しの確認手順
+
+```bash
+# 1. サーバー (§1(a) に --thinking on を足す)
+.build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo \
+  --port 8091 --max-context 16384 --expert-cache-slots 32 \
+  --verification trusted-install --draft-block-size 4 --thinking on
+
+# 2. 別ターミナルで pi (対話モード = tools 有効のまま)
+pi --provider local-turbofieldfare --model gemma-4-26b-a4b-it
+```
+
+セッション内で見るもの:
+
+| やること | 期待 |
+| --- | --- |
+| Shift-Tab を押す | `Thinking level: …` と出る。`Current model does not support thinking` なら (a) の `reasoning: true` が入っていない |
+| `@sample_imgs/IMG_2113.JPG この写真を説明して` | 画像の説明が返る。以前の 400 (`images cannot be combined with tools`) は出ない。クリップボードからは Ctrl-V でも貼れる |
+| `/etc/hosts の 1 行目を教えて` | `bash` などの tool call が走る。思考 ON でも tool 呼び出しは出る |
+
+サーバーの stderr 側で見るもの:
+
+```
+request chatcmpl-… accepted streaming=true thinking=on     ← 要求が思考を頼んだ
+request chatcmpl-… completed in … finish=stop reasoning=1246B
+request chatcmpl-… completed in … finish=tool_calls        ← tool 呼び出し
+```
+
+**思考 ON のときの注意 2 つ:**
+
+- **生成予算を食う。**画像 1 枚の説明で思考が 1,200 字・生成 479 トークン
+  ほど要る (思考 OFF は 29 トークン)。`maxTokens` を絞りすぎると思考だけで
+  尽きて本文が出ない (`finish=length`)。
+- **`cached=0` が正常。**思考 ON の要求はプロンプトキャッシュに参加しない
+  ([docs/serving/10-S1 §5](serving/10-S1-REASONING.md))。多ターンでも毎回
+  prefill するので、pi の体感は思考 OFF より遅い。
 
 ## 6. よくある失敗
 
