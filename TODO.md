@@ -4,12 +4,12 @@
 >
 > - **サーバーの Reasoning on**: S1 で入った (`--thinking on|off` +
 >   `chat_template_kwargs.enable_thinking` / `reasoning_effort`、応答は
->   `reasoning_content`。[10-S1-REASONING.md](docs/serving/10-S1-REASONING.md))。
+>   `reasoning_content`。旧 docs/serving/10-S1-REASONING.md — 削除済み、git 履歴)。
 > - **pi の対話モードで画像が使えない / tools 宣言時に思考が無効**: S3 で
->   両方閉じた ([12-S3-TOOLS-VISION-THINKING.md](docs/serving/12-S3-TOOLS-VISION-THINKING.md))。
+>   両方閉じた (旧 docs/serving/12-S3-TOOLS-VISION-THINKING.md — 削除済み、git 履歴)。
 >   下に「tool-calling 用テンプレートが画像を描画できない」と書いてあるのは
 >   **誤りだった** — 描画できる。制約は `encodeToolChat` 側にあった
->   ([11-S2-TEMPLATE-PROBE.md](docs/serving/11-S2-TEMPLATE-PROBE.md))。
+>   (旧 docs/serving/11-S2-TEMPLATE-PROBE.md — 削除済み、git 履歴)。
 >   pi への upstream 要望も不要になった。
 > - **128k**: サーバー側は対応済み (`--max-context 131072` が許可リストにある)。
 >   残りはメモリ判定の実測のみ ([計画の Backlog](docs/serving/README.md))。

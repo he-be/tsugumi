@@ -1,0 +1,204 @@
+# サーバー仕様 (SPEC) — TurboFieldfareServer
+
+2026-08-19 制定。**この文書が `TurboFieldfareServer` の唯一の規範仕様である。**
+実装・テスト・運用文書はすべてここから導出する。ここに書いていない挙動は
+実装しない。実装がこの文書と食い違えば、それはバグである — 直すのは実装か、
+§13 の手順を踏んだこの文書への行追加であり、その場しのぎの実装変更ではない。
+
+各規範項目には ID (`REQ-*`, `EP-*`, …) を振る。適合テストは ID を名前に含める
+([CONFORMANCE.md](CONFORMANCE.md))。この文書は実験ログではなく**生きた文書**
+なので、変更は本文を直し、履歴は git log に任せる。
+
+---
+
+## 0. 規範の優先順位
+
+仕様は自分で決めない。次の順で引く:
+
+1. **ワイヤ形式** (`/v1/*` の要求・応答・エラーの形) — **OpenAI API**
+   (platform.openai.com/docs/api-reference/chat)。
+2. **挙動の詳細と拡張** (受理規則・クランプ・プロンプトキャッシュ・`/props`・
+   `/health`・思考・文法拘束・llama 拡張パラメータ) — **参照実装
+   `~/LLM/llama.cpp` の `tools/server`**。ピン: コミット `34af94cd9`。
+   一次資料は `server-schema.cpp` (要求スキーマ)、`README.md` (API 仕様書)、
+   `server-common.cpp` (OAI 層の変換)、`server-context.cpp` (キャッシュ)。
+   ピンを上げるときは、これらの差分を読んでこの文書の該当行を先に更新する。
+3. **機体の制約** (M3 Pro 18GB / macOS 15 / Metal / 単一モデル・単一スロット) —
+   §12 の逸脱登録簿に登録した行だけが、上の 2 つから外れてよい。
+
+## 1. 受理の大原則
+
+| ID | 規則 |
+| --- | --- |
+| R1 | **未知の JSON キーは無視する。**400 にしない。 |
+| R2 | **`null` は未指定と同じ。**既定値が使われる (参照実装 `has_value`)。 |
+| R3 | **調整パラメータ** (出力の質にだけ影響するサンプリング系) は、範囲外なら §4 の表のとおり**クランプ**する。拒否 (400) は表で **hard** と書いた範囲だけ。実装が無い調整パラメータは受理して無視してよいが、必ず §12 に登録する。 |
+| R4 | **契約パラメータ** (応答の形・内容の構造を決める: `tools`, `tool_choice`, `response_format`, `logprobs`, `n`, `stream` など) は、**実装どおり動くか、明示エラー** (§10)。要求と違う形の応答を 200 で返すことは、どのパラメータでも常に仕様違反。R4 は R3 より強い。 |
+| R5 | **`model` は検査しない。**単一モデルのサーバーは受けた値をそのまま応答に写す (参照実装 `server-common.cpp:1410`)。 |
+| R6 | **この文書の変更は、参照実装 (または OpenAI API) の該当箇所を確認してから行う。**クライアントの症状から仕様を逆算しない。 |
+
+## 2. ライフサイクル (LIF)
+
+| ID | 規範 |
+| --- | --- |
+| LIF-1 | プロセスは**モデルのロード前にポートを開く**。 |
+| LIF-2 | ロード完了まで、全エンドポイントは **503** + `unavailable_error` (§10) を返す。`/health` の本文は `{"error":{"message":"Loading model","type":"unavailable_error","param":null,"code":"model_loading"}}`。クライアントは「接続拒否」と「ロード中」を区別できる。 |
+| LIF-3 | ロード完了後、`/health` は `200 {"status":"ok"}`。 |
+| LIF-4 | 生成スロットが埋まり待ち行列 (`--queue-limit`) も満杯のときは 503 + `unavailable_error`。 |
+| LIF-5 | SIGINT / SIGTERM で終了する。進行中の SSE は切断してよい。二度目のシグナルで即死。 |
+
+## 3. エンドポイント (EP)
+
+| ID | エンドポイント | 規範 | 段 |
+| --- | --- | --- | --- |
+| EP-1 | `GET /health`, `GET /v1/health` (別名) | §2 のとおり。API キー不要 | 実装済 (別名と 503 は未) |
+| EP-2 | `GET /v1/models` | OpenAI 形。1 モデルを返す | 実装済 |
+| EP-3 | `POST /v1/chat/completions` | §4〜§9 | 実装済 (乖離多数 — [CONFORMANCE §2](CONFORMANCE.md)) |
+| EP-4 | `GET /props` | `default_generation_settings` (§4 の既定値の実効値)、`total_slots`、`model_path`、`chat_template`、`modalities` (`{"vision": true}`)、`build_info`、実効 `n_ctx`。クライアントの能力判定はここを見る | P3 |
+| EP-5 | `POST /tokenize`, `/detokenize`, `/apply-template` | 参照実装と同形。トークン数の事前計算用 | P5 |
+| EP-6 | `GET /slots`, `GET /metrics` | 参照実装と同形・同じく起動フラグでゲート。runbook の「詰まってないか」を stderr で見るのをやめる | P5 |
+| EP-7 | **採らない既知パス** (§12 DEV-7) は **501** + `not_supported_error` を返す。未知パスだけが 404 | P3 |
+
+採らない既知パス: `/v1/embeddings` `/embedding` `/reranking` `/rerank` `/infill`
+`/v1/responses` `/v1/messages` `/v1/chat/completions/control` `POST /props`
+`/lora-adapters` `/slots/{id}?action=…` `/v1/completions` `/completion`。
+理由と再考条件は §12。
+
+## 4. `/v1/chat/completions` — 要求パラメータ (REQ)
+
+規則の読み方: **clamp [a,b]** = 範囲外は端に丸めて受理 / **hard [a,b]** =
+範囲外は 400 (`invalid_request_error`, `param` にフィールド名) / **透過** =
+検査せずそのまま使う / **無視** = 受理して効かせない (§12 DEV-5 登録済み)。
+既定値の実効値は `/props` の `default_generation_settings` が真実 (EP-4)。
+
+| ID | パラメータ | 型 | 既定 | 規則 |
+| --- | --- | --- | --- | --- |
+| REQ-model | `model` | str | — | R5: 検査しない。応答へそのまま写す |
+| REQ-messages | `messages` | arr | 必須 | §5 |
+| REQ-stream | `stream` | bool | false | |
+| REQ-stream-usage | `stream_options.include_usage` | bool | false | |
+| REQ-max-tokens | `max_tokens`、別名 `max_completion_tokens` | int | -1 | hard [-1, ∞)。**-1 = 無制限** (コンテキスト残量まで)、**0 = prefill のみ** |
+| REQ-temp | `temperature` | num | 1.0 | clamp [0, ∞) |
+| REQ-top-p | `top_p` | num | 1.0 | clamp [0, 1] |
+| REQ-top-k | `top_k` | int | 0 | clamp [0, ∞)。**0 = 無効**。サンプラ実装の上限 256 への丸めは DEV-9 |
+| REQ-seed | `seed` | int64 | -1 | 透過。**-1 = ランダム**。符号付きでデコードする (`UInt64` デコードで 400 にしない) |
+| REQ-stop | `stop` | str \| arr | [] | 透過 (最大 4 は設けない — 参照実装に無い制限を足さない) |
+| REQ-repeat-penalty | `repeat_penalty` | num | 1.0 | 透過 (llama 拡張。engine の repetitionPenalty へ) |
+| REQ-n | `n` | int | 1 | hard [1, 1] (単一スロット。参照実装も `[1, n_parallel]`) |
+| REQ-logprobs | `logprobs` / `top_logprobs` | — | — | 契約 (R4)。実装まで **501** `not_supported_error` (§12 DEV-6) |
+| REQ-tools | `tools` | arr | [] | §6 |
+| REQ-tool-choice | `tool_choice` | str \| obj | "auto" | `auto` / `none` / `required` / `{"type":"function","function":{"name":…}}` の 4 形を受理 (§6 GEN-4)。それ以外の値は 400 |
+| REQ-parallel | `parallel_tool_calls` | bool | true | 透過 (テンプレートへ) |
+| REQ-response-format | `response_format` | obj | text | `text` / `json_object` / `json_schema` (§6 GEN-3)。それ以外の type は 400 (参照実装 `server-common.cpp:1157`) |
+| REQ-reasoning-effort | `reasoning_effort` | str | — | **"none" = 思考無効。それ以外は検査せずテンプレートへ透過** (参照実装 `server-common.cpp:1296`)。既知 7 語の列挙検査は廃止 |
+| REQ-template-kwargs | `chat_template_kwargs` | obj | {} | テンプレートへ透過。`enable_thinking` は §8 |
+| REQ-cache-prompt | `cache_prompt` | bool | true | §7 |
+| REQ-reasoning-budget | `reasoning_budget_tokens` | int | -1 | hard [-1, ∞)。§8 (llama 拡張) |
+| REQ-reasoning-format | `reasoning_format` | str | auto | §8 (llama 拡張) |
+| REQ-timings | `timings_per_token` | bool | false | §9 RSP-3 |
+| REQ-ignored | `min_p` `typical_p` `presence_penalty` `frequency_penalty` `repeat_last_n` `mirostat*` `dry_*` `xtc_*` `dynatemp_*` `samplers` `logit_bias` `ignore_eos` | — | — | **無視** (engine に該当サンプラが無い。§12 DEV-5)。engine に実装が入った時点でこの表の行に昇格させる |
+
+## 5. メッセージと入力 (MSG)
+
+| ID | 規範 |
+| --- | --- |
+| MSG-1 | role は `system` / `user` / `assistant` / `tool`。 |
+| MSG-2 | `content` は文字列または parts 配列 (`text` / `image_url`)。 |
+| MSG-3 | `image_url.url` は `data:image/…;base64` を受ける。**リモート URL とローカルパスは採らない** (§12 DEV-4) — 400 で「data URI のみ」と明言する。 |
+| MSG-4 | `input_audio` / `input_video` parts は **501** `not_supported_error` (§12 DEV-8)。 |
+| MSG-5 | assistant の `tool_calls`、`tool` role + `tool_call_id`、`reasoning_content` の入力 (思考の持ち回り) を受理し、テンプレートに渡す。 |
+| MSG-6 | tools × 画像 × 思考は**同時に成立する** (テンプレートは 3 つ同時に描ける — S2 実測、commit b45fceb 時点)。組合せを入口で 400 にしない。 |
+
+## 6. 生成の拘束 (GEN)
+
+| ID | 規範 |
+| --- | --- |
+| GEN-1 | `tools` 宣言時、tool call は最終的に**文法で拘束して生成**する (JSON schema → 文法、参照実装 `server-schema.cpp:251` / `server-common.cpp:1246` の機構)。事後パース (`GemmaToolCallParser`) は拘束が入るまでの暫定実装であり、応答の形は同じ。 |
+| GEN-2 | **スキーマの入口検査で 400 にしない。**表現できないスキーマ要素は拘束できる近似 (generic JSON) に落とす。`validateSchemaKeys` / `GemmaToolSchema.adapted` の入口拒否は廃止。 |
+| GEN-3 | `response_format: json_object` / `json_schema` は GEN-1 と同じ文法機構で拘束する。**拘束が実装されるまでは 501** `not_supported_error` — JSON を頼まれて Markdown を 200 で返すことは R4 違反であり、どの段階でも許されない。 |
+| GEN-4 | `tool_choice: required` / 名前指定も文法で実現する (参照実装と同じ)。拘束が入るまでは 501。`auto` / `none` は今すぐ動く。 |
+
+## 7. プロンプトキャッシュ (CACHE)
+
+| ID | 規範 |
+| --- | --- |
+| CACHE-1 | 再利用判定は**トークン列の最長共通接頭辞 (LCP) のみ** (参照実装 `server-context.cpp:3125` の `get_common_prefix` 1 行)。会話の形 (role の並び・tools・思考・画像の有無) を判定に使わない。意味ゲートとブリッジ合成 (`ServerPromptCache` の現行設計) は廃止。 |
+| CACHE-2 | **部分一致はそのまま使う。**不一致点から後ろだけを prefill する。all-or-nothing にしない。 |
+| CACHE-3 | 全トークン一致時は末尾 1 トークンを捨てて再デコードする (参照実装 `n_past--`)。 |
+| CACHE-4 | 画像は LCP 走査の中でチャンク (ダイジェスト + トークン数) の一致でまとめて飛ばす (参照実装 `server-common.cpp:678`)。 |
+| CACHE-5 | 要求ごとの `cache_prompt: false` で不参加 (既定 true)。プロセスフラグ `--prompt-cache-mode` は廃止 (FLAG-4)。 |
+| CACHE-6 | **ミス理由の分類はしない。**観測値は `usage.prompt_tokens_details.cached_tokens` と `timings.cache_n` の数字 1 種類のみ。11 種の `ServerPromptCacheMiss` は削除。 |
+| CACHE-7 | `--cache-reuse` (KV の位置ずらし流用) は当面採らない。LCP が安定してから backlog で検討 (参照実装でも画像経路では無効)。 |
+
+**INV-1 (不変条件): 描き直し == 生成。**完了した assistant ターンを含む会話を
+テンプレートで描き直したトークン列は、そのターンを生成し終えた時点の
+(プロンプト + 生成) トークン列と**一致する**。思考 ON/OFF × tools 有無 ×
+画像有無の全組合せで成立させる。これが崩れると LCP が本来より短くなるが、
+**補正はキャッシュ側でやらない** (ブリッジ合成の再導入禁止) —
+テンプレート/エンコーダ側を直す。既知の破れ: 空の thought channel の分だけ
+描き直しがずれる (旧 10-S1 §5、実測)。検定はトークン列を 2 通り作って
+比べるだけで、モデルの重みも Metal も要らない。
+
+## 8. 思考 (RSN)
+
+| ID | 規範 |
+| --- | --- |
+| RSN-1 | プロセス既定は `--reasoning-budget N` (**-1 = 無制限 (既定)、0 = 無効**)。独自フラグ `--thinking on\|off` は廃止 (FLAG-4)。 |
+| RSN-2 | 要求ごとの制御は `reasoning_effort` (REQ-reasoning-effort) と `chat_template_kwargs.enable_thinking`。参照実装と同じく両方受け、それぞれ独立にテンプレート kwargs へ渡す (優先解決はテンプレートの仕事)。 |
+| RSN-3 | 思考は `reasoning_content` に分離して返す (`--reasoning-format auto`、既定)。`--reasoning-format none` で生テキストのまま返す。 |
+| RSN-4 | **思考の予算が尽きたら終了タグを強制挿入して本文へ移らせる** (参照実装 `reasoning_budget_forced`)。予算 = `reasoning_budget_tokens`、および `max_tokens` の残り。`finish_reason: length` で本文 0 字・思考だけの応答を返さない (旧 16 §5 で実測済みの欠陥)。 |
+| RSN-5 | tools 宣言時も思考は有効 (MSG-6)。 |
+
+## 9. 応答 (RSP)
+
+| ID | 規範 | 段 |
+| --- | --- | --- |
+| RSP-1 | 非ストリーム応答は OpenAI の chat.completion 形。`usage` は常に載せ、`prompt_tokens_details.cached_tokens` を含む | 実装済 |
+| RSP-2 | SSE: `delta.role` チャンク → `delta.content` / `delta.reasoning_content` / `delta.tool_calls` → `finish_reason` チャンク → (include_usage 時) `choices: []` + `usage` → `data: [DONE]`。無音時は `: ping` コメント (5 秒) | 実装済 (旧 16 §3 で適合を実測) |
+| RSP-3 | `timings` オブジェクト (`cache_n`, `prompt_n`, `prompt_ms`, `prompt_per_second`, `predicted_n`, `predicted_ms`, `predicted_per_token_ms`, `predicted_per_second`) を非ストリーム応答と最終チャンクに載せる。`timings_per_token: true` で毎チャンク。コンテキスト使用量は `prompt_n + cache_n + predicted_n` で計算できる | P5 |
+| RSP-4 | `finish_reason`: `stop` / `length` / `tool_calls` | 実装済 |
+| RSP-5 | `system_fingerprint`: ビルドのハッシュ | P5 |
+
+## 10. エラー (ERR)
+
+| ID | 規範 |
+| --- | --- |
+| ERR-1 | 封筒は `{"error":{"message","type","param","code"}}`。`code` は**文字列または null** (OpenAI 形)。参照実装は `code` に HTTP 番号を入れるが、`/v1/*` のワイヤ形式は OpenAI が上位規範なので合わせない (§12 DEV-1)。 |
+| ERR-2 | `type` ↔ HTTP: `invalid_request_error` 400 / `not_found_error` 404 / `not_supported_error` **501** / `unavailable_error` **503** / `exceed_context_size_error` 400 / `server_error` 500 (参照実装 `server-common.cpp:25-54` と同じ対応)。 |
+| ERR-3 | JSON デコード失敗の 400 は、**どのフィールドが**問題かを `message` と `param` に含める。型不一致に「malformed JSON request」を使わない (旧 16 §1-a の `seed: -1` の欠陥)。 |
+| ERR-4 | プロンプトがコンテキストに入らないときは `exceed_context_size_error`。`message` にプロンプトのトークン数と実効 `n_ctx` を入れる。 |
+
+## 11. 起動フラグ (FLAG)
+
+| ID | 規範 |
+| --- | --- |
+| FLAG-1 | 参照実装に同名概念があるフラグは名前を合わせる: `-c/--ctx-size` (旧 `--max-context`)、`--reasoning-budget`、`--reasoning-format`。 |
+| FLAG-2 | `--ctx-size` は自由な整数を受け、この機体で確保できる対応値へ**下に丸める** (§12 DEV-2)。実効値は `/props` の `n_ctx` で分かる。列挙外を 400 で拒否しない。`--expert-cache-slots` も同様に丸める。 |
+| FLAG-3 | 機体・エンジン固有で参照実装に対応物が無いフラグはそのまま: `--expert-cache-slots` `--expert-cache-policy` `--draft-block-size` `--prefill` `--prefill-chunk-tokens` `--image-tokens` `--max-image-*` `--verification` `--rdadvise` `--model-id` `--queue-limit`。 |
+| FLAG-4 | 廃止: `--thinking` (→ `--reasoning-budget`)、`--prompt-cache-mode` (→ 要求ごとの `cache_prompt`)。 |
+| FLAG-5 | `--api-key`、`--cors-origins` は P5。それまでの既定は 127.0.0.1 バインドのみで守る (現行どおり)。 |
+
+## 12. 逸脱登録簿 (DEV)
+
+参照実装 / OpenAI から**意図して**外れる箇所はここに全部載る。
+ここに無い乖離はバグである。
+
+| ID | 逸脱 | 参照実装 | こちら | 理由 | 再考条件 |
+| --- | --- | --- | --- | --- | --- |
+| DEV-1 | エラー封筒 | `code` = HTTP 番号 | `code` = 文字列/null、`param` あり | `/v1/*` は OpenAI 本家の形が上位規範 (§0) | OpenAI が形を変えたら |
+| DEV-2 | `--ctx-size` / `--expert-cache-slots` の値域 | 自由な整数 | 対応値の集合へ**下に丸める** | Metal ワーキングセットの実測に基づく確保 (16GB 機) | メモリ算術が動的になったら |
+| DEV-3 | スロット数 | `--parallel N`、`--slot-prompt-similarity` | 生成 1 スロット固定。`--slot-prompt-similarity` は採らない | 18GB にモデル + KV 1 本が上限 | ハードが変わったら |
+| DEV-4 | 画像のリモート URL / ローカルパス | fetch する (`--media-path`) | data URI のみ。400 で明言 | ローカル専用サーバーが外へ HTTP を出さない・任意パスを読まない | 認証と allowlist を設計したら |
+| DEV-5 | 未実装サンプラ (`min_p` `typical_p` `presence/frequency_penalty` `repeat_last_n` `mirostat*` `dry_*` `xtc_*` `dynatemp_*` `samplers` `logit_bias` `ignore_eos`) | 実装済み | 受理して無視 (R3) | engine のサンプラは temperature / top-k / top-p / repetition penalty のみ (`GenerationConfig`) | engine に該当サンプラが入ったら REQ 表へ昇格 |
+| DEV-6 | `logprobs` | 実装済み (`n_probs`) | 501 | engine が logits を露出していない。契約パラメータなので無視ではなくエラー (R4) | logits 露出を実装したら |
+| DEV-7 | embeddings / rerank / infill / completions (非 chat) / responses / messages / control / lora / マルチモデル / MCP | あり | 採らない (EP-7 の 501) | このモデル・この用途 (pi / OpenCode / ブラウザデモ) に不要。面積を増やさない | 実クライアントの需要が出たら |
+| DEV-8 | 音声・動画入力 | あり (mtmd) | 501 | モデルが vision のみ | モデルが変わったら |
+| DEV-9 | `top_k` の上限 | INT32_MAX | 256 へ丸め | サンプラ実装の partial-sort 上限。クランプであり拒否ではない | サンプラを一般化したら |
+
+## 13. この文書の変え方
+
+1. 参照実装 (ピン §0) または OpenAI API の該当箇所を読む。
+2. この文書に行を足す / 直す (ID を振る)。逸脱なら §12 にも登録する。
+3. その行の**赤い適合テスト**を書く ([CONFORMANCE.md](CONFORMANCE.md) の階層に従う)。
+4. 実装して緑にする。
+5. クライアント (pi / OpenCode) の症状が出発点のときも、必ず 1 から始める (R6)。

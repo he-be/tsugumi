@@ -986,7 +986,7 @@ soft token 数は画像のアスペクト比で決まる (§2-1) ので、解像
 
 | 組み合わせ | 応答 |
 | --- | --- |
-| ~~画像 + `tools` / tool 履歴 / developer ターン~~ | **2026-08-19 に撤回**。「ツールテンプレートは文字列 content しか描画できない」という前提が誤りで、実際は `<\|image\|>` を描ける。この 400 は削除した ([docs/serving/11-S2](docs/serving/11-S2-TEMPLATE-PROBE.md) / [12-S3](docs/serving/12-S3-TOOLS-VISION-THINKING.md)) |
+| ~~画像 + `tools` / tool 履歴 / developer ターン~~ | **2026-08-19 に撤回**。「ツールテンプレートは文字列 content しか描画できない」という前提が誤りで、実際は `<\|image\|>` を描ける。この 400 は削除した (旧 docs/serving/11-S2 / 12-S3 — 削除済み、git 履歴) |
 | user 以外のターンの画像 | 400 `unsupported_content` |
 | tower なしのモデル | 400 `vision_not_installed`、`--add-vision` のコマンドを名指しする |
 | `--prefill off` で起動したサーバ | 400 `vision_prefill_disabled` |

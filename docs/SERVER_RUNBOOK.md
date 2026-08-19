@@ -175,7 +175,7 @@ pkill -f TurboFieldfareServer
 サーバーを建ててから pi を起動するだけでよい。
 
 **2026-08-19 に制限が 2 つとも消えた**: 対話モード (tools 有効) で画像が使え、
-Reasoning も使える ([docs/serving/12-S3](serving/12-S3-TOOLS-VISION-THINKING.md))。
+Reasoning も使える ([docs/serving/SPEC.md](serving/SPEC.md) MSG-6)。
 
 ### (a) 思考を pi 側から切り替えたい場合の設定
 
@@ -236,7 +236,7 @@ request chatcmpl-… completed in … finish=tool_calls        ← tool 呼び�
   ほど要る (思考 OFF は 29 トークン)。`maxTokens` を絞りすぎると思考だけで
   尽きて本文が出ない (`finish=length`)。
 - **`cached=0` が続くのは異常。**思考 ON でも画像込みでもプロンプトキャッシュは
-  効く ([docs/serving/13-S3.6](serving/13-S3.6-PROMPT-CACHE-IMAGES.md))。
+  効く ([docs/serving/SPEC.md](serving/SPEC.md) §7)。
   2 ターン目以降で `cached=0` が続くなら、完了行の `cache_miss=` が理由を
   名指しする:
 
