@@ -869,15 +869,8 @@ public actor ServerModelSession: ServerInferenceBackend {
             let prepared = try renderVisionPrompt(requested, request: request)
             promptIDs = prepared.tokens
             vision = prepared.vision
-        } else if usesToolTemplate(request) {
-            promptIDs = try tokenizer.encodeToolChat(
-                messages: request.messages,
-                tools: request.tools,
-                enableThinking: request.enableThinking)
         } else {
-            let rendered = try tokenizer.applyChatTemplate(
-                request.messages, enableThinking: request.enableThinking)
-            promptIDs = tokenizer.encode(rendered, addBOS: false)
+            promptIDs = try ServerPromptRenderer(tokenizer: tokenizer).promptIDs(request)
         }
         guard promptIDs.count < maxContext else {
             throw ServerRequestError.invalid(
@@ -954,8 +947,6 @@ public actor ServerModelSession: ServerInferenceBackend {
     }
 
     private func usesToolTemplate(_ request: ValidatedChatRequest) -> Bool {
-        !request.tools.isEmpty || request.messages.contains {
-            $0.role == .developer || $0.role == .tool || !$0.toolCalls.isEmpty
-        }
+        ServerPromptRenderer.usesToolTemplate(request)
     }
 }

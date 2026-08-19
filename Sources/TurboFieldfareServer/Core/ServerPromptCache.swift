@@ -95,6 +95,21 @@ enum ServerPromptCacheMatch: Sendable, Equatable {
              vision: VisionPrefillInput? = nil)
 }
 
+/// CACHE-1: how much of two token sequences is the same from the start.
+///
+/// This is the whole reuse rule. The reference implementation spends one line
+/// on it too (`server-context.cpp:3125`, `get_common_prefix`), and the reason
+/// it can is that a prefix of identical tokens is exactly what a KV cache is
+/// valid for — no fact about roles, tools, thinking, or pictures adds anything
+/// to that, and every such fact that was consulted here before could only make
+/// the answer smaller than the truth.
+func commonPrefixLength(_ lhs: [Int32], _ rhs: [Int32]) -> Int {
+    var index = 0
+    let limit = min(lhs.count, rhs.count)
+    while index < limit, lhs[index] == rhs[index] { index += 1 }
+    return index
+}
+
 struct ServerPromptCache: Sendable {
     private(set) var entry: ServerPromptCacheEntry?
 
