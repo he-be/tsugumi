@@ -53,14 +53,13 @@ func prepareGeneration(producer: any LogitProducer,
             throw GeneratorError.invalidContinuation(
                 "cached prompt token count must be greater than zero and less than the effective prompt")
         }
-        // Image spans are offsets into the slice that is actually prefilled, so
-        // a served prefix would shift every one of them. The prompt cache is
-        // disabled for image requests upstream of here (PLAN_VISION §4-6); this
-        // is the check that makes that a contract rather than a convention.
-        guard vision == nil else {
-            throw GeneratorError.invalidContinuation(
-                "a cached prompt prefix cannot be combined with attached images")
-        }
+        // Image spans are offsets into the slice that is actually prefilled,
+        // which is exactly what makes a served prefix workable: `vision` here
+        // describes the tokens still to be prefilled, not the whole prompt, and
+        // a span that falls outside that slice is refused by
+        // `imageSpanRejection` before any KV row is written. The caller is what
+        // has to get this right — `ServerPromptCache` hands back the images the
+        // continuation adds, with their offsets already rebased.
         guard producer is any ContinuableLogitProducer else {
             throw GeneratorError.invalidContinuation(
                 "producer does not support continuation")

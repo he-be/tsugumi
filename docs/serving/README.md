@@ -11,6 +11,7 @@ CLI と Server を、Vision・MTP・Reasoning が揃った状態で、日常の�
 | S1 | 実装・テスト済み。**G4 は 80 スロットで達成 (37.5 t/s)、常用点の 32 スロットでは 28.6 t/s で未達**。思考 ON のプロンプトキャッシュは一度切って戻した (§5) | [10-S1-REASONING.md](10-S1-REASONING.md) |
 | S2 | 完了。**テンプレートは tools・画像・思考を同時に描ける** — 制約は `encodeToolChat` 側だった | [11-S2-TEMPLATE-PROBE.md](11-S2-TEMPLATE-PROBE.md) |
 | S3 | 完了。**tools + 画像 + 思考が同時に通る** (G1 到達)。tool 呼び出しも思考と両立 | [12-S3-TOOLS-VISION-THINKING.md](12-S3-TOOLS-VISION-THINKING.md) |
+| S3.6 | 完了。**画像セッションもプレフィックスを再利用する**。思考 ON はキャッシュ有無で答えが変わる点に注意 | [13-S3.6-PROMPT-CACHE-IMAGES.md](13-S3.6-PROMPT-CACHE-IMAGES.md) |
 
 ## 出発点 (2026-08-19)
 

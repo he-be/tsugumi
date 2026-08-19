@@ -559,16 +559,16 @@ public actor ServerModelSession: ServerInferenceBackend {
     /// What the modes may not do is share a prefix, which the entry's
     /// `enableThinking` prevents.
     ///
-    /// An image request is excluded on both sides. The cache is keyed on the
-    /// *text* of the messages (`ServerPromptCache.match`), so two requests with
-    /// the same words and different pictures are indistinguishable to it — a
-    /// hit would answer about the wrong image, and a published entry would let a
-    /// later text-only turn continue from KV that an image wrote. A served
-    /// prefix would also shift every image span, which `runRawCompletion`
-    /// refuses outright (PLAN_VISION §4-6).
-    static func promptCacheParticipates(mode: ServerPromptCacheMode,
-                                        vision: VisionPrefillInput?) -> Bool {
-        mode == .singlePrefix && vision == nil
+    /// An image request participates too, since S3.6. It was excluded because
+    /// the cache is keyed on the *text* of the messages, which cannot tell two
+    /// pictures apart, and because a served prefix shifts every image span
+    /// (PLAN_VISION §4-6). Both are answered rather than avoided now: the entry
+    /// carries a digest per image, and the spans a continuation reports are
+    /// offsets into the continuation itself, which is the slice the resumed
+    /// prefill runs. Without this, one picture in a conversation cost that
+    /// conversation its prefix reuse for every turn that followed.
+    static func promptCacheParticipates(mode: ServerPromptCacheMode) -> Bool {
+        mode == .singlePrefix
     }
 
     public func prepare(_ request: ValidatedChatRequest) async throws -> ServerPreparedRequest {
@@ -607,22 +607,25 @@ public actor ServerModelSession: ServerInferenceBackend {
 
         let effectivePromptIDs: [Int32]
         let completionStart: RawCompletionStart
-        // Falling into the else branch for an image request is required rather
-        // than incidental: it invalidates whatever was cached, and this
-        // generation is about to overwrite that KV.
-        if Self.promptCacheParticipates(mode: promptCacheMode, vision: vision) {
+        // The image side of what still has to be prefilled. On a miss that is
+        // the whole prompt's; on a hit the cache rebases it onto the tokens the
+        // continuation adds, and nil means the pictures are already in the KV.
+        var prefillVision = vision
+        if Self.promptCacheParticipates(mode: promptCacheMode) {
             switch promptCache.match(
                 domain: promptCacheDomain,
                 request: request,
                 renderedPromptIDs: promptIDs,
-                tokenizer: tokenizer) {
+                tokenizer: tokenizer,
+                vision: vision) {
             case .miss:
                 promptCache.invalidate()
                 effectivePromptIDs = promptIDs
                 completionStart = .reset
-            case .hit(let effective, let cached):
+            case .hit(let effective, let cached, let continuationVision):
                 effectivePromptIDs = effective
                 completionStart = .resume(cachedPromptTokens: cached)
+                prefillVision = continuationVision
             }
         } else {
             promptCache.invalidate()
@@ -733,7 +736,7 @@ public actor ServerModelSession: ServerInferenceBackend {
                 scratch: scratch,
                 speculative: speculative,
                 prefillConfig: prefillConfig,
-                vision: vision,
+                vision: prefillVision,
                 start: completionStart,
                 shouldStop: { shouldStop },
                 // Passed as a literal rather than as `onProgress` itself:
@@ -754,7 +757,7 @@ public actor ServerModelSession: ServerInferenceBackend {
                 context: context,
                 scratch: scratch,
                 prefillConfig: prefillConfig,
-                vision: vision,
+                vision: prefillVision,
                 start: completionStart,
                 shouldStop: { shouldStop },
                 onProgress: { onProgress($0) })
@@ -807,7 +810,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         } else {
             reason = "stop"
         }
-        if Self.promptCacheParticipates(mode: promptCacheMode, vision: vision) {
+        if Self.promptCacheParticipates(mode: promptCacheMode) {
             promptCache.publish(
                 domain: promptCacheDomain,
                 request: request,

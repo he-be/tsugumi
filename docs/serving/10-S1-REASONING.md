@@ -150,6 +150,12 @@ request chatcmpl-… completed in … finish=stop reasoning=812B # 実際に何�
 
 **思考 ON と OFF で再利用の効き方に差は無い。**
 
+**ただし思考 ON は、キャッシュ経由と素の描き直しで答えが変わる**
+([13-S3.6 §3](13-S3.6-PROMPT-CACHE-IMAGES.md)、**実測**)。キャッシュ側は前の
+ターンの思考を文脈に残したまま続きを書くのに対し、素の描き直しに載るのは
+クライアントが送り返した答えだけだからである。速度と引き換えの選択であり、
+描き直しと一致させたい用途では `--prompt-cache-mode off` を使う。
+
 ## 6. 測定 (G4) — **実測** 2026-08-19
 
 M3 Pro 18GB / macOS 15.7.5 / `scratch/gemma4-qat.gturbo` / 16K /

@@ -153,9 +153,13 @@ tools, attach a picture, and ask to reason, and the answer comes back with the
 tool calls it decided on, the reasoning separated out, or both.
 
 Prompt reuse works the same with reasoning on: a follow-up turn resumes from
-the cached prefix and prefills only what the turn added. The one rule is that
-the two modes cannot share a prefix — switching reasoning on or off mid
-conversation costs one full prefill, after which reuse resumes.
+the cached prefix and prefills only what the turn added. Two things follow from
+that. The modes cannot share a prefix, so switching reasoning on or off mid
+conversation costs one full prefill. And a resumed turn keeps the previous
+turn's reasoning in context, which a fresh render does not — the same
+conversation can answer differently depending on whether it resumed, so a
+caller that needs render-exact behavior should run with
+`--prompt-cache-mode off`.
 
 ## Connect a client
 
@@ -292,11 +296,10 @@ a picture. One condition is refused rather than approximated: images while the
 server runs `--prefill off`, since the unchunked path has nowhere to place a
 soft token.
 
-Prompt reuse is disabled for any request carrying an image, in both directions:
-such a request never resumes a cached prefix and never publishes one. The cache
-matches on message text, so two requests with the same words and different
-pictures are indistinguishable to it. A conversation that continues after an
-image therefore prefills in full each turn.
+Prompt reuse works across images: a conversation that showed a picture resumes
+from its cached prefix on the next turn, and a turn that adds another picture
+prefills only what it added. The cache carries a digest per image, so two
+requests with the same words and different pictures do not share a prefix.
 
 Audio and video are not supported. Writing `<|image|>`, `<|audio|>`, or
 `<|video|>` into message text is an error, not a silent pass-through.

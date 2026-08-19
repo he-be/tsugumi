@@ -200,8 +200,8 @@ struct ServerReasoningRequestTests {
     /// modes may share a prefix is the cache entry's question, not this one
     /// (`ServerPromptCacheTests`).
     @Test func promptCacheParticipationDoesNotDependOnReasoning() throws {
-        #expect(ServerModelSession.promptCacheParticipates(mode: .singlePrefix, vision: nil))
-        #expect(!ServerModelSession.promptCacheParticipates(mode: .off, vision: nil))
+        #expect(ServerModelSession.promptCacheParticipates(mode: .singlePrefix))
+        #expect(!ServerModelSession.promptCacheParticipates(mode: .off))
     }
 
     @Test func decoderSurfacesTheThoughtChannelAsReasoning() async throws {

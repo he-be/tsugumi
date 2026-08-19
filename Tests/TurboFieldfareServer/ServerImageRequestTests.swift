@@ -273,15 +273,193 @@ struct ServerImageRequestTests {
         }
     }
 
-    /// The prompt cache is keyed on message text, so it cannot tell two
-    /// requests with the same words and different pictures apart. Both sides —
-    /// lookup and publish — go through this one predicate.
-    @Test func promptCacheIsOffForImageRequests() throws {
-        let empty = try VisionPrefillInput(spans: [], images: [])
-        #expect(ServerModelSession.promptCacheParticipates(mode: .singlePrefix, vision: nil))
-        #expect(!ServerModelSession.promptCacheParticipates(mode: .singlePrefix, vision: empty))
-        #expect(!ServerModelSession.promptCacheParticipates(mode: .off, vision: nil))
-        #expect(!ServerModelSession.promptCacheParticipates(mode: .off, vision: empty))
+    /// Image requests take part in the prompt cache since S3.6; only the mode
+    /// decides. What keeps two pictures apart is the entry's digests, which
+    /// `ServerPromptCacheTests` covers.
+    @Test func promptCacheParticipationFollowsTheModeAlone() throws {
+        #expect(ServerModelSession.promptCacheParticipates(mode: .singlePrefix))
+        #expect(!ServerModelSession.promptCacheParticipates(mode: .off))
+    }
+
+    /// The words of two requests can be identical while the pictures differ,
+    /// so the digests are what a resumed prefix is keyed on.
+    @Test func imageDigestsDistinguishOtherwiseIdenticalRequests() throws {
+        let first = try OpenAIRequestValidator.validate(
+            decode(body(parts: """
+                {"type":"image_url","image_url":{"url":"\(dataURI(width: 8, height: 8))"}}
+                """)),
+            modelID: "m")
+        let second = try OpenAIRequestValidator.validate(
+            decode(body(parts: """
+                {"type":"image_url","image_url":{"url":"\(dataURI(width: 16, height: 16))"}}
+                """)),
+            modelID: "m")
+        #expect(ServerPromptCache.imageDigests(first).count == 1)
+        #expect(ServerPromptCache.imageDigests(first) != ServerPromptCache.imageDigests(second))
+        #expect(ServerPromptCache.imageDigests(first) == ServerPromptCache.imageDigests(first))
+    }
+
+    /// A second picture in the same conversation resumes from the first one's
+    /// KV: the bridge holds the new turn, and the spans it reports are offsets
+    /// into that bridge — the slice a resumed prefill actually runs — not into
+    /// the whole prompt. Before S3.6 one picture cost the conversation its
+    /// prefix reuse for every turn that followed.
+    @Test func aSecondImageTurnResumesFromTheFirstOnesPrefix() async throws {
+        let tokenizer = try await GFTokenizer.load()
+        let ids = try VisionMediaTokenIDs(tokenizer: tokenizer)
+        let config = try VisionPreprocessorConfig(maxSoftTokens: 70)
+        let domain = ServerPromptCacheDomain(
+            modelID: "model",
+            sourceSnapshotHash: "snapshot",
+            runtimeProfileHash: "profile",
+            maximumContext: 16_384,
+            kvStorage: "fp16",
+            fp16RingEnabled: true,
+            templateSHA256: "template")
+
+        func validated(_ json: String) throws -> ValidatedChatRequest {
+            try OpenAIRequestValidator.validate(decode(json), modelID: "m")
+        }
+        func rendered(_ request: ValidatedChatRequest) throws
+            -> (tokens: [Int32], vision: VisionPrefillInput) {
+            let vision = try #require(request.vision)
+            let images = try vision.images.map {
+                try VisionImagePreprocessor.preprocess(data: $0.data, config: config)
+            }
+            let text = try tokenizer.applyChatTemplate(multimodal: vision.messages)
+            return try VisionPromptAssembler.makePrefillPrompt(
+                tokens: tokenizer.encode(text, addBOS: false), images: images, ids: ids)
+        }
+
+        let first = try validated("""
+            {"model":"m","messages":[{"role":"user","content":[
+              {"type":"text","text":"caption this"},
+              {"type":"image_url","image_url":{"url":"\(dataURI(width: 64, height: 64))"}}]}]}
+            """)
+        let firstPrompt = try rendered(first)
+        let generated = tokenizer.encode("a blue square", addBOS: false)
+        let kvBacked = firstPrompt.tokens + generated
+        var cache = ServerPromptCache()
+        cache.publish(
+            domain: domain,
+            request: first,
+            content: "a blue square",
+            calls: [],
+            result: RawDecodeResult(
+                prefillTokens: firstPrompt.tokens.count,
+                cachedPromptTokens: 0,
+                computedPrefillTokens: firstPrompt.tokens.count,
+                prefillSeconds: 0,
+                newTokens: generated.count,
+                decodeSeconds: 0,
+                timeToFirstTokenSeconds: 0,
+                reason: .endOfTurn,
+                kvPosition: kvBacked.count,
+                kvBackedTokenIDs: kvBacked,
+                uncommittedBoundaryTokenIDs: [tokenizer.endOfTurnID]))
+
+        let second = try validated("""
+            {"model":"m","messages":[
+              {"role":"user","content":[
+                {"type":"text","text":"caption this"},
+                {"type":"image_url","image_url":{"url":"\(dataURI(width: 64, height: 64))"}}]},
+              {"role":"assistant","content":"a blue square"},
+              {"role":"user","content":[
+                {"type":"text","text":"and this one"},
+                {"type":"image_url","image_url":{"url":"\(dataURI(width: 96, height: 96))"}}]}]}
+            """)
+        let secondPrompt = try rendered(second)
+        guard case .hit(let effective, let cached, let continuationVision) = cache.match(
+            domain: domain,
+            request: second,
+            renderedPromptIDs: secondPrompt.tokens,
+            tokenizer: tokenizer,
+            vision: secondPrompt.vision) else {
+            Issue.record("expected the second image turn to resume from the first")
+            return
+        }
+        #expect(cached == kvBacked.count)
+        #expect(Array(effective.prefix(cached)) == kvBacked)
+
+        // Exactly the picture this turn added, positioned inside the bridge.
+        let vision = try #require(continuationVision)
+        #expect(vision.images.count == 1)
+        let bridgeLength = effective.count - cached
+        let span = try #require(vision.spans.first)
+        #expect(span.tokenOffset >= 0)
+        #expect(span.tokenEnd <= bridgeLength)
+        #expect(span.tokenCount == vision.images[0].geometry.softTokenCount)
+        // The soft tokens sit between the markers the assembler wrote.
+        let bridge = Array(effective.dropFirst(cached))
+        #expect(bridge[span.tokenOffset - 1] == ids.beginImage)
+        #expect(bridge[span.tokenEnd] == ids.endImage)
+    }
+
+    /// A different picture behind the same words cannot ride the cached prefix.
+    @Test func aDifferentPictureWithTheSameWordsMisses() async throws {
+        let tokenizer = try await GFTokenizer.load()
+        let ids = try VisionMediaTokenIDs(tokenizer: tokenizer)
+        let config = try VisionPreprocessorConfig(maxSoftTokens: 70)
+        let domain = ServerPromptCacheDomain(
+            modelID: "model",
+            sourceSnapshotHash: "snapshot",
+            runtimeProfileHash: "profile",
+            maximumContext: 16_384,
+            kvStorage: "fp16",
+            fp16RingEnabled: true,
+            templateSHA256: "template")
+        func validated(_ json: String) throws -> ValidatedChatRequest {
+            try OpenAIRequestValidator.validate(decode(json), modelID: "m")
+        }
+        let first = try validated("""
+            {"model":"m","messages":[{"role":"user","content":[
+              {"type":"text","text":"caption this"},
+              {"type":"image_url","image_url":{"url":"\(dataURI(width: 64, height: 64))"}}]}]}
+            """)
+        let visionFirst = try #require(first.vision)
+        let images = try visionFirst.images.map {
+            try VisionImagePreprocessor.preprocess(data: $0.data, config: config)
+        }
+        let prompt = try VisionPromptAssembler.makePrefillPrompt(
+            tokens: tokenizer.encode(
+                try tokenizer.applyChatTemplate(multimodal: visionFirst.messages),
+                addBOS: false),
+            images: images,
+            ids: ids)
+        let kvBacked = prompt.tokens + tokenizer.encode("a blue square", addBOS: false)
+        var cache = ServerPromptCache()
+        cache.publish(
+            domain: domain,
+            request: first,
+            content: "a blue square",
+            calls: [],
+            result: RawDecodeResult(
+                prefillTokens: prompt.tokens.count,
+                cachedPromptTokens: 0,
+                computedPrefillTokens: prompt.tokens.count,
+                prefillSeconds: 0,
+                newTokens: 3,
+                decodeSeconds: 0,
+                timeToFirstTokenSeconds: 0,
+                reason: .endOfTurn,
+                kvPosition: kvBacked.count,
+                kvBackedTokenIDs: kvBacked,
+                uncommittedBoundaryTokenIDs: [tokenizer.endOfTurnID]))
+
+        // Same words, a different photograph in the first turn.
+        let other = try validated("""
+            {"model":"m","messages":[
+              {"role":"user","content":[
+                {"type":"text","text":"caption this"},
+                {"type":"image_url","image_url":{"url":"\(dataURI(width: 96, height: 96))"}}]},
+              {"role":"assistant","content":"a blue square"},
+              {"role":"user","content":"and now?"}]}
+            """)
+        #expect(cache.match(domain: domain,
+                            request: other,
+                            renderedPromptIDs: [],
+                            tokenizer: tokenizer,
+                            vision: nil) == .miss)
     }
 
     // MARK: - Over HTTP

@@ -79,10 +79,13 @@ public struct VisionImageSpan: Sendable, Equatable {
 /// the result goes.
 ///
 /// `spans` are offsets into the token slice handed to `prefillChunked`, not
-/// into the original prompt. The two coincide unless a prefix was served from a
-/// cache — which is why a cached prefix and an image are refused together
-/// (`PLAN_VISION.md` §4-6): the offsets would silently point at the wrong rows.
-public struct VisionPrefillInput: Sendable {
+/// into the original prompt. The two coincide only when the whole prompt is
+/// prefilled; when a prefix is served from a cache, the spans describe the
+/// *remaining* slice, and the images are the ones that slice adds. That is what
+/// lets a picture and a cached prefix be combined at all — the caller rebases
+/// (`ServerPromptCache`), and `imageSpanRejection` refuses a span that falls
+/// outside the slice rather than pointing it at the wrong rows.
+public struct VisionPrefillInput: Sendable, Equatable {
     public let spans: [VisionImageSpan]
     public let images: [VisionPreprocessedImage]
 

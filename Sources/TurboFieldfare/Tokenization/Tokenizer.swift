@@ -540,10 +540,28 @@ public struct GFTokenizer: @unchecked Sendable {
     /// the session is not reasoning, exactly as `applyChatTemplate` does.
     public func encodeTextContinuation(userContent: String,
                                        enableThinking: Bool = false) throws -> [Int32] {
-        try VisionPromptAssembler.rejectMediaMarkers(in: userContent)
-        let content = userContent.trimmingCharacters(in: .whitespacesAndNewlines)
+        try encodeContinuation(parts: [.text(userContent)], enableThinking: enableThinking)
+    }
+
+    /// The same bridge with image placeholders allowed in the new user turn.
+    ///
+    /// The `<|image|>` markers are left for `VisionPromptAssembler` to widen, so
+    /// the spans it reports are offsets into this bridge — which is the slice a
+    /// resumed prefill actually processes.
+    public func encodeContinuation(parts: [ContentPart],
+                                   enableThinking: Bool = false) throws -> [Int32] {
+        var body = ""
+        for part in parts {
+            switch part {
+            case .text(let text):
+                try VisionPromptAssembler.rejectMediaMarkers(in: text)
+                body += text.trimmingCharacters(in: .whitespacesAndNewlines)
+            case .image:
+                body += VisionMediaTokenIDs.imageToken
+            }
+        }
         return [endOfTurnID] + encode(
-            "\n\(Self.turnOpen)user\n\(content)\(Self.turnClose)\n"
+            "\n\(Self.turnOpen)user\n\(body)\(Self.turnClose)\n"
                 + "\(Self.turnOpen)model\n"
                 + (enableThinking ? "" : "<|channel>thought\n<channel|>"),
             addBOS: false)

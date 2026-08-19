@@ -50,7 +50,7 @@ struct ServerPromptCacheTests {
             renderedPromptIDs: rendered,
             tokenizer: tokenizer)
 
-        guard case .hit(let effective, let cached) = match else {
+        guard case .hit(let effective, let cached, _) = match else {
             Issue.record("expected text continuation hit")
             return
         }
@@ -94,7 +94,7 @@ struct ServerPromptCacheTests {
         let rendered = tokenizer.encode(
             try tokenizer.applyChatTemplate(messages, enableThinking: true),
             addBOS: false)
-        guard case .hit(let effective, let cached) = cache.match(
+        guard case .hit(let effective, let cached, _) = cache.match(
             domain: domain,
             request: continuation,
             renderedPromptIDs: rendered,
@@ -173,7 +173,7 @@ struct ServerPromptCacheTests {
             renderedPromptIDs: rendered,
             tokenizer: tokenizer)
 
-        guard case .hit(let effective, let cached) = match else {
+        guard case .hit(let effective, let cached, _) = match else {
             Issue.record("expected captured OpenCode tool-result hit")
             return
         }
