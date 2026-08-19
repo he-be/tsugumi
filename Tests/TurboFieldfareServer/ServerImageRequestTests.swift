@@ -110,7 +110,7 @@ struct ServerImageRequestTests {
         }
     }
 
-    @Test func oversizedImageIsRefusedWith413() throws {
+    @Test func oversizedImageIsRefused() throws {
         let request = try decode(body(parts: """
             {"type":"image_url","image_url":{"url":"\(dataURI(width: 64, height: 64))"}}
             """))
@@ -119,7 +119,7 @@ struct ServerImageRequestTests {
             try OpenAIRequestValidator.validate(request, modelID: "m", imagePolicy: policy)
         }
         #expect(error?.envelope.error.code == "image_too_large")
-        #expect(error?.httpStatus == .payloadTooLarge)
+        #expect(error?.httpStatus == .badRequest)
     }
 
     /// Read from the container header, so a decompression bomb is refused
@@ -146,7 +146,7 @@ struct ServerImageRequestTests {
                 request, modelID: "m", imagePolicy: ServerImagePolicy(maxImagesPerRequest: 2))
         }
         #expect(error?.envelope.error.code == "too_many_images")
-        #expect(error?.httpStatus == .payloadTooLarge)
+        #expect(error?.httpStatus == .badRequest)
     }
 
     @Test func nonImageMediaTypesAndNonBase64PayloadsAreRefused() throws {
@@ -503,7 +503,7 @@ struct ServerImageRequestTests {
         try await server.shutdown()
     }
 
-    @Test func oversizedImageReturns413OverHTTP() async throws {
+    @Test func oversizedImageIsRefusedOverHTTP() async throws {
         let server = TurboFieldfareHTTPServer(
             modelID: "test-model",
             queueLimit: 1,
@@ -515,7 +515,7 @@ struct ServerImageRequestTests {
             {"model":"test-model","messages":[{"role":"user","content":[
               {"type":"image_url","image_url":{"url":"\(dataURI(width: 64, height: 64))"}}]}]}
             """)
-        #expect((response as? HTTPURLResponse)?.statusCode == 413)
+        #expect((response as? HTTPURLResponse)?.statusCode == 400)
         #expect(String(decoding: data, as: UTF8.self).contains("image_too_large"))
 
         try await server.shutdown()

@@ -1,25 +1,6 @@
 import Foundation
 import TurboFieldfare
 
-public struct OpenAIErrorEnvelope: Codable, Equatable, Sendable {
-    public struct Detail: Codable, Equatable, Sendable {
-        public let message: String
-        public let type: String
-        public let param: String?
-        public let code: String
-    }
-
-    public let error: Detail
-
-    public init(message: String, param: String? = nil, code: String,
-                type: String = "invalid_request_error") {
-        error = Detail(message: message,
-                       type: type,
-                       param: param,
-                       code: code)
-    }
-}
-
 public struct OpenAIImageURL: Codable, Equatable, Sendable {
     public let url: String
     /// OpenAI's resolution hint. Accepted and ignored: the soft-token count
@@ -103,7 +84,7 @@ public enum OpenAIMessageContent: Codable, Equatable, Sendable {
                             code: "unsupported_content")
                     }
                     guard images.count < policy.maxImagesPerRequest else {
-                        throw ServerRequestError.payloadTooLarge(
+                        throw ServerRequestError.invalid(
                             message: "a request may attach at most "
                                 + "\(policy.maxImagesPerRequest) images",
                             param: "messages",
@@ -299,28 +280,6 @@ public struct OpenAIModelList: Codable, Equatable, Sendable {
     public let data: [Model]
 }
 
-public enum ServerRequestError: Error, Equatable, Sendable {
-    case invalid(message: String, param: String?, code: String)
-    /// Refused for size rather than for shape — answered with 413, not 400.
-    case payloadTooLarge(message: String, param: String?, code: String)
-    case unknownModel
-    case queueFull
-
-    public var envelope: OpenAIErrorEnvelope {
-        switch self {
-        case .invalid(let message, let param, let code):
-            OpenAIErrorEnvelope(message: message, param: param, code: code)
-        case .payloadTooLarge(let message, let param, let code):
-            OpenAIErrorEnvelope(message: message, param: param, code: code)
-        case .unknownModel:
-            OpenAIErrorEnvelope(message: "requested model is not available",
-                                param: "model", code: "model_not_found")
-        case .queueFull:
-            OpenAIErrorEnvelope(message: "generation queue is full",
-                                code: "queue_full")
-        }
-    }
-}
 
 /// The image side of a validated request: the turns as parts, and the bytes.
 ///
@@ -408,6 +367,9 @@ public struct ValidatedChatRequest: Sendable {
     public let stream: Bool
     public let includeUsage: Bool
     public let generationConfig: GenerationConfig
+    /// REQ-max-tokens. **-1 means unlimited** (whatever the context has left
+    /// after the prompt) and 0 means prefill only; both are values the client
+    /// may send, so this is not a plain positive count.
     public let maximumCompletionTokens: Int
     public let vision: ValidatedVisionRequest?
     /// What this request asked the thought channel to do, after the process
@@ -433,6 +395,28 @@ public struct ValidatedChatRequest: Sendable {
         }
     }
 
+    /// R5: the name the client asked for, written back into the response
+    /// unexamined. A single-model server has nothing to check it against.
+    public let model: String
+    /// REQ-tool-choice. `required` and named choices need the grammar (GEN-4),
+    /// so the parser refuses them with 501 until it exists; this only ever
+    /// carries a choice the server can actually honor.
+    public let toolChoice: ChatToolChoice
+    public let parallelToolCalls: Bool
+    /// REQ-cache-prompt. Whether this request may read from or write to the
+    /// prompt cache (CACHE-5).
+    public let cachePrompt: Bool
+    /// REQ-reasoning-effort, verbatim. Only `"none"` has a meaning here
+    /// (thinking off); every other value rides through to the template
+    /// unexamined, as the reference implementation does.
+    public let reasoningEffort: String?
+    /// REQ-template-kwargs, verbatim.
+    public let chatTemplateKwargs: [String: JSONValue]
+    /// REQ-reasoning-budget. -1 is unlimited, 0 disables the thought channel.
+    public let reasoningBudgetTokens: Int
+    public let reasoningFormat: ReasoningFormat
+    public let timingsPerToken: Bool
+
     public init(messages: [GFTokenizer.Message],
                 tools: [GFTokenizer.FunctionDefinition],
                 stream: Bool,
@@ -440,7 +424,16 @@ public struct ValidatedChatRequest: Sendable {
                 generationConfig: GenerationConfig,
                 maximumCompletionTokens: Int,
                 vision: ValidatedVisionRequest? = nil,
-                enableThinking: Bool = false) {
+                enableThinking: Bool = false,
+                model: String = "",
+                toolChoice: ChatToolChoice = .auto,
+                parallelToolCalls: Bool = true,
+                cachePrompt: Bool = true,
+                reasoningEffort: String? = nil,
+                chatTemplateKwargs: [String: JSONValue] = [:],
+                reasoningBudgetTokens: Int = -1,
+                reasoningFormat: ReasoningFormat = .auto,
+                timingsPerToken: Bool = false) {
         self.messages = messages
         self.tools = tools
         self.stream = stream
@@ -449,6 +442,15 @@ public struct ValidatedChatRequest: Sendable {
         self.maximumCompletionTokens = maximumCompletionTokens
         self.vision = vision
         self.enableThinking = enableThinking
+        self.model = model
+        self.toolChoice = toolChoice
+        self.parallelToolCalls = parallelToolCalls
+        self.cachePrompt = cachePrompt
+        self.reasoningEffort = reasoningEffort
+        self.chatTemplateKwargs = chatTemplateKwargs
+        self.reasoningBudgetTokens = reasoningBudgetTokens
+        self.reasoningFormat = reasoningFormat
+        self.timingsPerToken = timingsPerToken
     }
 }
 
@@ -481,7 +483,6 @@ public enum OpenAIRequestValidator {
                                 modelID: String,
                                 imagePolicy: ServerImagePolicy = .default,
                                 thinkingPolicy: ServerThinkingPolicy = .off) throws -> ValidatedChatRequest {
-        guard request.model == modelID else { throw ServerRequestError.unknownModel }
         guard request.n == nil || request.n == 1 else {
             throw invalid("only n=1 is supported", "n", "unsupported_value")
         }

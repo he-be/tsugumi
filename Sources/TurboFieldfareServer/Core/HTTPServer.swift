@@ -6,15 +6,10 @@ import Synchronization
 import TurboFieldfare
 
 extension ServerRequestError {
-    /// The status each refusal is answered with. Kept next to the HTTP layer
-    /// because the error type itself is transport-agnostic.
+    /// ERR-2's mapping, read off the error's own type. Kept next to the HTTP
+    /// layer because the error type itself is transport-agnostic.
     var httpStatus: HTTPResponseStatus {
-        switch self {
-        case .unknownModel: .notFound
-        case .queueFull: .tooManyRequests
-        case .payloadTooLarge: .payloadTooLarge
-        case .invalid: .badRequest
-        }
+        HTTPResponseStatus(statusCode: type.httpStatusCode)
     }
 }
 
@@ -522,8 +517,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             status = .internalServerError
             envelope = OpenAIErrorEnvelope(
                 message: "generation failed; see TurboFieldfareServer stderr",
-                code: "internal_error",
-                type: "server_error")
+                type: .server,
+                code: "internal_error")
         }
         if !(error is CancellationError) {
             ServerLog.failed(id: id, phase: phase, status: status.code, error: error)

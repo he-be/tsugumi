@@ -475,7 +475,10 @@ struct HTTPServerTests {
         try await server.shutdown()
     }
 
-    @Test func wrongModelUsesOpenAIErrorEnvelope() async throws {
+    /// R5 / REQ-model: a single-model server has nothing to check the name
+    /// against, so it answers and writes the name back as it was sent. The
+    /// OpenAI SDK's own examples pass a name this server has never heard of.
+    @Test func REQ_model_any_name_is_answered_and_echoed() async throws {
         let server = TurboFieldfareHTTPServer(
             modelID: "test-model",
             queueLimit: 1,
@@ -487,11 +490,11 @@ struct HTTPServerTests {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "content-type")
         request.httpBody = Data(#"""
-        {"model":"wrong","messages":[{"role":"user","content":"hi"}]}
+        {"model":"gpt-3.5-turbo","messages":[{"role":"user","content":"hi"}]}
         """#.utf8)
         let (data, response) = try await URLSession.shared.data(for: request)
-        #expect((response as? HTTPURLResponse)?.statusCode == 404)
-        #expect(String(decoding: data, as: UTF8.self).contains("model_not_found"))
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        #expect(String(decoding: data, as: UTF8.self).contains(#""model":"gpt-3.5-turbo""#))
 
         try await server.shutdown()
     }
@@ -609,7 +612,9 @@ struct HTTPServerTests {
             socket: sockets[2],
             timeoutMilliseconds: 1_000,
             condition: { $0.contains(#""code":"queue_full""#) })
-        #expect(rejected.contains("HTTP/1.1 429 Too Many Requests"))
+        // LIF-4: a full slot and a full queue is a 503 the client should retry,
+        // not a 429 — nothing about the request was wrong.
+        #expect(rejected.contains("HTTP/1.1 503 Service Unavailable"))
         #expect(await backend.preparationCount == 2)
 
         await backend.releaseAll()

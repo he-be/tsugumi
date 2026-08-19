@@ -165,7 +165,7 @@ public enum ServerImageDecoder {
     }
 
     private static func tooLarge(index: Int, detail: String) -> ServerRequestError {
-        .payloadTooLarge(message: "image \(index) was rejected because \(detail)",
+        .invalid(message: "image \(index) was rejected because \(detail)",
                          param: "messages",
                          code: "image_too_large")
     }
