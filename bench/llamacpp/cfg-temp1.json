@@ -1,0 +1,146 @@
+[
+ {
+  "name": "t1_base",
+  "extra": [],
+  "tasks": [
+   "story",
+   "math",
+   "image"
+  ],
+  "npred": 192,
+  "reps": 2,
+  "temp": 1.0
+ },
+ {
+  "name": "t1_n1",
+  "extra": [
+   "-md",
+   "/Users/mh/LLM/gemma-4-26B-A4B/mtp-gemma-4-26B-A4B-it.gguf",
+   "--spec-type",
+   "draft-mtp",
+   "--spec-draft-n-max",
+   "1"
+  ],
+  "tasks": [
+   "story",
+   "math",
+   "image"
+  ],
+  "npred": 192,
+  "reps": 2,
+  "temp": 1.0
+ },
+ {
+  "name": "t1_n2",
+  "extra": [
+   "-md",
+   "/Users/mh/LLM/gemma-4-26B-A4B/mtp-gemma-4-26B-A4B-it.gguf",
+   "--spec-type",
+   "draft-mtp",
+   "--spec-draft-n-max",
+   "2"
+  ],
+  "tasks": [
+   "story",
+   "math",
+   "image"
+  ],
+  "npred": 192,
+  "reps": 2,
+  "temp": 1.0
+ },
+ {
+  "name": "t1_n4",
+  "extra": [
+   "-md",
+   "/Users/mh/LLM/gemma-4-26B-A4B/mtp-gemma-4-26B-A4B-it.gguf",
+   "--spec-type",
+   "draft-mtp",
+   "--spec-draft-n-max",
+   "4"
+  ],
+  "tasks": [
+   "story",
+   "math",
+   "image"
+  ],
+  "npred": 192,
+  "reps": 2,
+  "temp": 1.0
+ },
+ {
+  "name": "t1_n4_p75",
+  "extra": [
+   "-md",
+   "/Users/mh/LLM/gemma-4-26B-A4B/mtp-gemma-4-26B-A4B-it.gguf",
+   "--spec-type",
+   "draft-mtp",
+   "--spec-draft-n-max",
+   "4",
+   "--spec-draft-p-min",
+   "0.75"
+  ],
+  "tasks": [
+   "story",
+   "math",
+   "image"
+  ],
+  "npred": 192,
+  "reps": 2,
+  "temp": 1.0
+ },
+ {
+  "name": "t1_n4_p90",
+  "extra": [
+   "-md",
+   "/Users/mh/LLM/gemma-4-26B-A4B/mtp-gemma-4-26B-A4B-it.gguf",
+   "--spec-type",
+   "draft-mtp",
+   "--spec-draft-n-max",
+   "4",
+   "--spec-draft-p-min",
+   "0.9"
+  ],
+  "tasks": [
+   "story",
+   "math",
+   "image"
+  ],
+  "npred": 192,
+  "reps": 2,
+  "temp": 1.0
+ },
+ {
+  "name": "t1_n8_p90",
+  "extra": [
+   "-md",
+   "/Users/mh/LLM/gemma-4-26B-A4B/mtp-gemma-4-26B-A4B-it.gguf",
+   "--spec-type",
+   "draft-mtp",
+   "--spec-draft-n-max",
+   "8",
+   "--spec-draft-p-min",
+   "0.9"
+  ],
+  "tasks": [
+   "story",
+   "math",
+   "image"
+  ],
+  "npred": 192,
+  "reps": 2,
+  "temp": 1.0
+ },
+ {
+  "name": "t1_base_end",
+  "extra": [],
+  "tasks": [
+   "story",
+   "math",
+   "image"
+  ],
+  "npred": 192,
+  "reps": 2,
+  "temp": 1.0
+ }
+]

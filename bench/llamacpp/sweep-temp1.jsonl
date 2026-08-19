@@ -1,0 +1,104 @@
+=== CFG t1_base
+{"task": "story", "rep": 0, "wall": 5.531, "prompt_n": 96, "prompt_ms": 359.631, "predicted_n": 192, "predicted_ms": 5154.028, "tg_tps": 37.05839393965263, "draft_n": null, "draft_acc": null, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_base/story/0
+{"task": "story", "rep": 1, "wall": 5.27, "prompt_n": 5, "prompt_ms": 108.758, "predicted_n": 192, "predicted_ms": 5155.572, "tg_tps": 37.04729562500533, "draft_n": null, "draft_acc": null, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_base/story/1
+{"task": "math", "rep": 0, "wall": 5.601, "prompt_n": 42, "prompt_ms": 293.186, "predicted_n": 192, "predicted_ms": 5300.131, "tg_tps": 36.03684512703554, "draft_n": null, "draft_acc": null, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_base/math/0
+{"task": "math", "rep": 1, "wall": 5.26, "prompt_n": 5, "prompt_ms": 110.981, "predicted_n": 192, "predicted_ms": 5143.957, "tg_tps": 37.13094802308806, "draft_n": null, "draft_acc": null, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_base/math/1
+{"task": "image", "rep": 0, "wall": 7.347, "prompt_n": 370, "prompt_ms": 2099.845, "predicted_n": 192, "predicted_ms": 5184.323, "tg_tps": 36.841840294287216, "draft_n": null, "draft_acc": null, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_base/image/0
+{"task": "image", "rep": 1, "wall": 5.331, "prompt_n": 5, "prompt_ms": 107.587, "predicted_n": 192, "predicted_ms": 5167.5, "tg_tps": 36.96178035800677, "draft_n": null, "draft_acc": null, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_base/image/1
+=== CFG t1_n1
+{"task": "story", "rep": 0, "wall": 5.122, "prompt_n": 96, "prompt_ms": 366.877, "predicted_n": 192, "predicted_ms": 4741.624, "tg_tps": 40.2815575423104, "draft_n": 118, "draft_acc": 72, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_n1/story/0
+{"task": "story", "rep": 1, "wall": 4.948, "prompt_n": 5, "prompt_ms": 123.302, "predicted_n": 192, "predicted_ms": 4796.407, "tg_tps": 39.82147469970751, "draft_n": 118, "draft_acc": 72, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_n1/story/1
+{"task": "math", "rep": 0, "wall": 5.031, "prompt_n": 42, "prompt_ms": 284.852, "predicted_n": 192, "predicted_ms": 4703.402, "tg_tps": 40.60890393804314, "draft_n": 116, "draft_acc": 74, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_n1/math/0
+{"task": "math", "rep": 1, "wall": 4.728, "prompt_n": 5, "prompt_ms": 130.439, "predicted_n": 192, "predicted_ms": 4526.414, "tg_tps": 42.19675884706967, "draft_n": 111, "draft_acc": 80, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_n1/math/1
+{"task": "image", "rep": 0, "wall": 7.098, "prompt_n": 370, "prompt_ms": 2222.185, "predicted_n": 192, "predicted_ms": 4755.571, "tg_tps": 40.1634209645908, "draft_n": 115, "draft_acc": 76, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_n1/image/0
+{"task": "image", "rep": 1, "wall": 4.897, "prompt_n": 5, "prompt_ms": 145.462, "predicted_n": 192, "predicted_ms": 4666.526, "tg_tps": 40.92980516984155, "draft_n": 112, "draft_acc": 79, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_n1/image/1
+=== CFG t1_n2
+{"task": "story", "rep": 0, "wall": 6.168, "prompt_n": 96, "prompt_ms": 365.631, "predicted_n": 192, "predicted_ms": 5725.639, "tg_tps": 33.35872205704901, "draft_n": 193, "draft_acc": 93, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_n2/story/0
+{"task": "story", "rep": 1, "wall": 5.691, "prompt_n": 5, "prompt_ms": 119.494, "predicted_n": 192, "predicted_ms": 5528.546, "tg_tps": 34.54796252034441, "draft_n": 188, "draft_acc": 96, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_n2/story/1
+{"task": "math", "rep": 0, "wall": 5.47, "prompt_n": 42, "prompt_ms": 299.939, "predicted_n": 192, "predicted_ms": 5114.739, "tg_tps": 37.343058951786205, "draft_n": 175, "draft_acc": 103, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_n2/math/0
+{"task": "math", "rep": 1, "wall": 5.215, "prompt_n": 5, "prompt_ms": 115.3, "predicted_n": 192, "predicted_ms": 5061.235, "tg_tps": 37.737824858952415, "draft_n": 174, "draft_acc": 104, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_n2/math/1
+{"task": "image", "rep": 0, "wall": 8.301, "prompt_n": 370, "prompt_ms": 2231.306, "predicted_n": 192, "predicted_ms": 5945.614, "tg_tps": 32.12452069710547, "draft_n": 196, "draft_acc": 92, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_n2/image/0
+{"task": "image", "rep": 1, "wall": 5.827, "prompt_n": 5, "prompt_ms": 142.375, "predicted_n": 192, "predicted_ms": 5601.833, "tg_tps": 34.09598251143867, "draft_n": 186, "draft_acc": 97, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_n2/image/1
+=== CFG t1_n4
+{"task": "story", "rep": 0, "wall": 8.545, "prompt_n": 96, "prompt_ms": 351.318, "predicted_n": 192, "predicted_ms": 8168.85, "tg_tps": 23.381504128488096, "draft_n": 313, "draft_acc": 111, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_n4/story/0
+{"task": "story", "rep": 1, "wall": 8.409, "prompt_n": 5, "prompt_ms": 131.013, "predicted_n": 192, "predicted_ms": 8208.277, "tg_tps": 23.26919522818248, "draft_n": 315, "draft_acc": 111, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_n4/story/1
+{"task": "math", "rep": 0, "wall": 8.456, "prompt_n": 42, "prompt_ms": 275.885, "predicted_n": 192, "predicted_ms": 8140.641, "tg_tps": 23.462525862521147, "draft_n": 315, "draft_acc": 112, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_n4/math/0
+{"task": "math", "rep": 1, "wall": 8.168, "prompt_n": 5, "prompt_ms": 112.417, "predicted_n": 192, "predicted_ms": 8023.75, "tg_tps": 23.804330892662406, "draft_n": 312, "draft_acc": 113, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_n4/math/1
+{"task": "image", "rep": 0, "wall": 10.509, "prompt_n": 370, "prompt_ms": 2158.278, "predicted_n": 192, "predicted_ms": 8264.982, "tg_tps": 23.109548211962228, "draft_n": 311, "draft_acc": 112, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_n4/image/0
+{"task": "image", "rep": 1, "wall": 8.673, "prompt_n": 5, "prompt_ms": 118.995, "predicted_n": 192, "predicted_ms": 8493.02, "tg_tps": 22.489055718696058, "draft_n": 322, "draft_acc": 110, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_n4/image/1
+=== CFG t1_n4_p75
+{"task": "story", "rep": 0, "wall": 5.861, "prompt_n": 96, "prompt_ms": 354.619, "predicted_n": 192, "predicted_ms": 5496.904, "tg_tps": 34.74683203490547, "draft_n": 136, "draft_acc": 94, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_n4_p75/story/0
+{"task": "story", "rep": 1, "wall": 5.657, "prompt_n": 5, "prompt_ms": 122.587, "predicted_n": 192, "predicted_ms": 5478.457, "tg_tps": 34.86383118458354, "draft_n": 142, "draft_acc": 98, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_n4_p75/story/1
+{"task": "math", "rep": 0, "wall": 5.782, "prompt_n": 42, "prompt_ms": 284.453, "predicted_n": 192, "predicted_ms": 5452.214, "tg_tps": 35.031640357476796, "draft_n": 160, "draft_acc": 109, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_n4_p75/math/0
+{"task": "math", "rep": 1, "wall": 5.804, "prompt_n": 5, "prompt_ms": 121.032, "predicted_n": 192, "predicted_ms": 5637.214, "tg_tps": 33.88198496633266, "draft_n": 162, "draft_acc": 105, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_n4_p75/math/1
+{"task": "image", "rep": 0, "wall": 8.324, "prompt_n": 370, "prompt_ms": 2167.265, "predicted_n": 192, "predicted_ms": 6053.332, "tg_tps": 31.5528703860948, "draft_n": 160, "draft_acc": 96, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_n4_p75/image/0
+{"task": "image", "rep": 1, "wall": 6.198, "prompt_n": 5, "prompt_ms": 126.936, "predicted_n": 192, "predicted_ms": 5992.04, "tg_tps": 31.875621658066365, "draft_n": 159, "draft_acc": 95, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_n4_p75/image/1
+=== CFG t1_n4_p90
+{"task": "story", "rep": 0, "wall": 5.967, "prompt_n": 96, "prompt_ms": 861.831, "predicted_n": 192, "predicted_ms": 5031.856, "tg_tps": 37.95816096486068, "draft_n": 103, "draft_acc": 92, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_n4_p90/story/0
+{"task": "story", "rep": 1, "wall": 5.321, "prompt_n": 5, "prompt_ms": 122.242, "predicted_n": 192, "predicted_ms": 5142.975, "tg_tps": 37.13803780885577, "draft_n": 111, "draft_acc": 90, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_n4_p90/story/1
+{"task": "math", "rep": 0, "wall": 5.217, "prompt_n": 42, "prompt_ms": 293.83, "predicted_n": 192, "predicted_ms": 4855.003, "tg_tps": 39.340861375368874, "draft_n": 122, "draft_acc": 107, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_n4_p90/math/0
+{"task": "math", "rep": 1, "wall": 5.437, "prompt_n": 5, "prompt_ms": 121.154, "predicted_n": 192, "predicted_ms": 5259.737, "tg_tps": 36.313602752380966, "draft_n": 124, "draft_acc": 94, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_n4_p90/math/1
+{"task": "image", "rep": 0, "wall": 8.051, "prompt_n": 370, "prompt_ms": 2193.241, "predicted_n": 192, "predicted_ms": 5702.579, "tg_tps": 33.49361753690743, "draft_n": 124, "draft_acc": 84, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_n4_p90/image/0
+{"task": "image", "rep": 1, "wall": 5.782, "prompt_n": 5, "prompt_ms": 122.768, "predicted_n": 192, "predicted_ms": 5579.867, "tg_tps": 34.23020656227111, "draft_n": 120, "draft_acc": 86, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_n4_p90/image/1
+=== CFG t1_n8_p90
+{"task": "story", "rep": 0, "wall": 5.813, "prompt_n": 96, "prompt_ms": 360.844, "predicted_n": 192, "predicted_ms": 5357.917, "tg_tps": 35.64818193338941, "draft_n": 108, "draft_acc": 86, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_n8_p90/story/0
+{"task": "story", "rep": 1, "wall": 5.386, "prompt_n": 5, "prompt_ms": 115.11, "predicted_n": 192, "predicted_ms": 5205.87, "tg_tps": 36.6893525962039, "draft_n": 103, "draft_acc": 86, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_n8_p90/story/1
+{"task": "math", "rep": 0, "wall": 6.007, "prompt_n": 42, "prompt_ms": 288.742, "predicted_n": 192, "predicted_ms": 5629.618, "tg_tps": 33.927701666436334, "draft_n": 168, "draft_acc": 104, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_n8_p90/math/0
+{"task": "math", "rep": 1, "wall": 5.323, "prompt_n": 5, "prompt_ms": 128.974, "predicted_n": 192, "predicted_ms": 5131.797, "tg_tps": 37.21893130223195, "draft_n": 155, "draft_acc": 111, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_n8_p90/math/1
+{"task": "image", "rep": 0, "wall": 8.226, "prompt_n": 370, "prompt_ms": 2202.182, "predicted_n": 192, "predicted_ms": 5860.016, "tg_tps": 32.59376766206782, "draft_n": 128, "draft_acc": 84, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_n8_p90/image/0
+{"task": "image", "rep": 1, "wall": 5.96, "prompt_n": 5, "prompt_ms": 147.339, "predicted_n": 192, "predicted_ms": 5703.152, "tg_tps": 33.49025240779134, "draft_n": 116, "draft_acc": 81, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_n8_p90/image/1
+=== CFG t1_base_end
+{"task": "story", "rep": 0, "wall": 5.557, "prompt_n": 96, "prompt_ms": 349.154, "predicted_n": 192, "predicted_ms": 5200.385, "tg_tps": 36.72804994245618, "draft_n": null, "draft_acc": null, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_base_end/story/0
+{"task": "story", "rep": 1, "wall": 5.354, "prompt_n": 5, "prompt_ms": 125.983, "predicted_n": 192, "predicted_ms": 5198.541, "tg_tps": 36.74107792936518, "draft_n": null, "draft_acc": null, "content_head": "ある日突然あなたに12人もの妹ができたらどうしますか？\nそれも…\nとびっきり可愛くて\nとびっきり素直で\nとびっきり愛らし"}
+# cooldown 20s t1_base_end/story/1
+{"task": "math", "rep": 0, "wall": 5.557, "prompt_n": 42, "prompt_ms": 285.943, "predicted_n": 192, "predicted_ms": 5238.009, "tg_tps": 36.46423669756963, "draft_n": null, "draft_acc": null, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_base_end/math/0
+{"task": "math", "rep": 1, "wall": 5.361, "prompt_n": 5, "prompt_ms": 121.305, "predicted_n": 192, "predicted_ms": 5204.033, "tg_tps": 36.70230377094072, "draft_n": null, "draft_acc": null, "content_head": "この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、代数的な解法（代数方程式の解の公式）を用いると非常に"}
+# cooldown 20s t1_base_end/math/1
+{"task": "image", "rep": 0, "wall": 7.423, "prompt_n": 370, "prompt_ms": 2105.146, "predicted_n": 192, "predicted_ms": 5239.168, "tg_tps": 36.45617013999169, "draft_n": null, "draft_acc": null, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_base_end/image/0
+{"task": "image", "rep": 1, "wall": 5.467, "prompt_n": 5, "prompt_ms": 151.341, "predicted_n": 192, "predicted_ms": 5231.704, "tg_tps": 36.508181655537086, "draft_n": null, "draft_acc": null, "content_head": "明るい木目調のフローリングが広がる室内で、一人の若い男性が薄いベージュのタオルケットに全身を包み込み、床に横たわっていま"}
+# cooldown 20s t1_base_end/image/1
