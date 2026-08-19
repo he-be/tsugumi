@@ -1,2 +1,0 @@
-t02	baseline (temp=0.2)
-google	Gemma 4 default (temp=1.0, top_p=0.95, top_k=64)

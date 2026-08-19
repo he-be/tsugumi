@@ -7,7 +7,8 @@ end-to-end 壁時計比を出し、その**中央値**を 1 本のスコアに�
 
 条件 (22 §4、変えるときは v2 を切って旧数字を測り直すこと):
 
-  - `sample_imgs/` の 8 枚 × 固定プロンプト `bench/mtp_goal_prompt.json`
+  - 画像 × 固定プロンプト `bench/mtp_goal_prompt.json`
+    (画像は `$TF_SAMPLE_IMGS`、既定 `~/Pictures/sample_imgs`。**リポジトリ外**)
   - Reasoning ON / temp 0 / 80 スロット / 画像ごとにプロセスを分ける
   - 生成長に上限を置かない。`--max-new 2048` は保険で、**到達したら FAIL**
   - wall = load + ttft + decode (footer から拾う。プロセス全体の実時間は
@@ -16,14 +17,16 @@ end-to-end 壁時計比を出し、その**中央値**を 1 本のスコアに�
 on/off の順序は画像ごとに入れ替える。マシンの温まりが片側だけに乗るのを
 防ぐためで、22 §5 の「比は同一セッションの交互 A/B で取る」の実装である。
 
-  ./bench/mtp_goal_ab.py                     # bs=4、8 枚
+  ./bench/mtp_goal_ab.py                     # bs=4、ディレクトリ内の全画像
   ./bench/mtp_goal_ab.py --block-size 3      # bs を変える
-  ./bench/mtp_goal_ab.py --images IMG_2112.JPG --max-new 256   # 動作確認
+  ./bench/mtp_goal_ab.py --images a.png b.png --max-new 256    # 動作確認
 """
 
 import argparse
+import hashlib
 import json
 import os
+import pathlib
 import re
 import statistics
 import subprocess
@@ -32,16 +35,20 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_IMAGES = [
-    "2026-07-12_225404.png",
-    "IMG_2112.JPG",
-    "IMG_2113.JPG",
-    "IMG_2114.JPG",
-    "IMG_2115.JPG",
-    "IMG_2117.JPG",
-    "IMG_2118.JPG",
-    "IMG_2119.JPG",
-]
+# 画像はリポジトリ外に置く (追跡もプッシュもしない)。既定は ~/Pictures/sample_imgs で、
+# TF_SAMPLE_IMGS で差し替える。--images を省くとディレクトリ内の全画像を名前順に使う。
+# **どの枚数を採点に使うかは未凍結である** — 採点基準 v2 が切れるまで、この既定は
+# 「そこに在るもの全部」であって基準ではない (docs/mtp/22 §5-5)。
+IMAGES_DIR = pathlib.Path(
+    os.environ.get("TF_SAMPLE_IMGS", os.path.expanduser("~/Pictures/sample_imgs"))
+)
+
+
+def available_images() -> list:
+    if not IMAGES_DIR.is_dir():
+        raise SystemExit(f"画像ディレクトリが無い: {IMAGES_DIR} (TF_SAMPLE_IMGS で指定する)")
+    return sorted(f.name for f in IMAGES_DIR.iterdir()
+                  if not f.name.startswith(".") and f.is_file())
 
 FOOTER_PATTERNS = {
     "new": r"new=(\d+)tok",
@@ -78,7 +85,7 @@ def run_once(args, image: str, block_size: int) -> dict:
         str(ROOT / ".build/release/TurboFieldfareCLI"),
         "--model", args.model,
         "--messages-file", str(ROOT / "bench/mtp_goal_prompt.json"),
-        "--image", str(ROOT / "sample_imgs" / image),
+        "--image", str(IMAGES_DIR / image),
         "--image-tokens", str(args.image_tokens),
         "--thinking", "on",
         "--temperature", "0",
@@ -106,7 +113,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", default="scratch/gemma4-qat.gturbo")
-    parser.add_argument("--images", nargs="*", default=DEFAULT_IMAGES)
+    parser.add_argument("--images", nargs="*", default=None)
     parser.add_argument("--block-size", type=int, default=4)
     parser.add_argument("--slots", type=int, default=80)
     parser.add_argument("--image-tokens", type=int, default=280)
@@ -115,9 +122,23 @@ def main() -> int:
     parser.add_argument("--out", default="bench/logs/mtp_goal_ab.tsv")
     args = parser.parse_args()
 
+    if args.images is None:
+        args.images = available_images()
+    missing = [i for i in args.images if not (IMAGES_DIR / i).is_file()]
+    if missing:
+        raise SystemExit(f"画像が見つからない: {missing} (探した先: {IMAGES_DIR})")
+
+    # 34 §1-L6 / P6: 使った画像の md5 を run ごとに記録する。凍結ではなく、
+    # 「この run が何を見たか」を後から検証できるようにするためのもの。
+    digests = []
+    for name in args.images:
+        h = hashlib.md5((IMAGES_DIR / name).read_bytes()).hexdigest()
+        digests.append(f"{h}  {name}")
+
     rows = []
     ratios = []
     print(f"# goal-condition A/B, bs={args.block_size}, {len(args.images)} images")
+    print(f"# images from {IMAGES_DIR}")
     print("image\torder\twall_off\twall_on\tnew_off\tnew_on\tratio\taccept\tstop")
     for index, image in enumerate(args.images):
         # 交互: 偶数枚目は off を先に、奇数枚目は on を先に。
@@ -158,6 +179,9 @@ def main() -> int:
     out_path = ROOT / args.out
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w") as handle:
+        handle.write(f"# images_dir\t{IMAGES_DIR}\n")
+        for line in digests:
+            handle.write(f"# md5\t{line}\n")
         handle.write("image\torder\tside\tblock_size\twall\tload\tttft\tdecode\tnew\ttok_s"
                      "\tpeak\tstop\trounds\taccept\tdraft\tverify"
                      "\tdecode_hit\tdecode_experts\tdecode_io\tratio\n")

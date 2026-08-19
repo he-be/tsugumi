@@ -1,0 +1,38 @@
+=== 38 register@temp1.0 start 2026年 8月20日 木曜日 06時24分09秒 JST ===
+[06:24:09] start warmup (cell=ja_prose seed=9999)
+[06:24:24] done  warmup rc=0
+[06:24:44] start ja_prose_r1 (cell=ja_prose seed=1234)
+[06:24:58] done  ja_prose_r1 rc=0
+[06:25:18] start ja_bullets_r1 (cell=ja_bullets seed=1234)
+[06:25:33] done  ja_bullets_r1 rc=0
+[06:25:53] start en_prose_r1 (cell=en_prose seed=1234)
+[06:26:08] done  en_prose_r1 rc=0
+[06:26:28] start en_bullets_r1 (cell=en_bullets seed=1234)
+[06:26:44] done  en_bullets_r1 rc=0
+[06:27:04] start en_bullets_r2 (cell=en_bullets seed=1235)
+[06:27:21] done  en_bullets_r2 rc=0
+[06:27:41] start en_prose_r2 (cell=en_prose seed=1235)
+[06:27:57] done  en_prose_r2 rc=0
+[06:28:17] start ja_bullets_r2 (cell=ja_bullets seed=1235)
+[06:28:32] done  ja_bullets_r2 rc=0
+[06:28:52] start ja_prose_r2 (cell=ja_prose seed=1235)
+[06:29:07] done  ja_prose_r2 rc=0
+[06:29:27] start ja_prose_r3 (cell=ja_prose seed=1236)
+[06:29:39] done  ja_prose_r3 rc=0
+[06:29:59] start ja_bullets_r3 (cell=ja_bullets seed=1236)
+[06:30:14] done  ja_bullets_r3 rc=0
+[06:30:34] start en_prose_r3 (cell=en_prose seed=1236)
+[06:30:49] done  en_prose_r3 rc=0
+[06:31:10] start en_bullets_r3 (cell=en_bullets seed=1236)
+[06:31:26] done  en_bullets_r3 rc=0
+[06:31:46] start ja_prose_drift (cell=ja_prose seed=1234)
+[06:32:00] done  ja_prose_drift rc=0
+[06:32:20] start tr_ja_prose (cell=ja_prose seed=1234)
+[06:32:34] done  tr_ja_prose rc=0
+[06:32:54] start tr_ja_bullets (cell=ja_bullets seed=1234)
+[06:33:09] done  tr_ja_bullets rc=0
+[06:33:29] start tr_en_prose (cell=en_prose seed=1234)
+[06:33:44] done  tr_en_prose rc=0
+[06:34:04] start tr_en_bullets (cell=en_bullets seed=1234)
+[06:34:20] done  tr_en_bullets rc=0
+=== ALL DONE 2026年 8月20日 木曜日 06時34分40秒 JST ===

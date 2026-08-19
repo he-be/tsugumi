@@ -56,6 +56,7 @@ turbo 本番 CLI (`TurboFieldfareCLI`) を子プロセスとして 1 実行 = 1 
 import argparse
 import json
 import os
+import pathlib
 import re
 import subprocess
 import sys
@@ -96,12 +97,30 @@ FOOTER_PATTERNS = {
 # parse_footer で float に変換せず文字列のまま row に入れる列。
 STRING_FOOTER_KEYS = {"stop", "accepted_hist"}
 
+# 画像はリポジトリ外に置く (追跡もプッシュもしない)。既定は ~/Pictures/sample_imgs で、
+# TF_SAMPLE_IMGS で差し替える。image タスクが使う 1 枚は TF_SWEEP_IMAGE で指定でき、
+# 省略時はディレクトリを名前順に並べた先頭 (決定的) を使う。
+IMAGES_DIR = pathlib.Path(
+    os.environ.get("TF_SAMPLE_IMGS", os.path.expanduser("~/Pictures/sample_imgs"))
+)
+
+
+def sweep_image() -> pathlib.Path:
+    override = os.environ.get("TF_SWEEP_IMAGE")
+    if override:
+        return pathlib.Path(override).expanduser()
+    files = sorted(f for f in IMAGES_DIR.iterdir() if not f.name.startswith("."))
+    if not files:
+        raise SystemExit(f"画像が 1 枚も無い: {IMAGES_DIR} (TF_SAMPLE_IMGS で指定する)")
+    return files[0]
+
+
 TASKS = {
     "prose": {"messages_file": "bench/story.json"},
     "math": {"messages_file": "bench/math.json"},
     "image": {
         "messages_file": "bench/mtp_goal_prompt.json",
-        "image": "sample_imgs/IMG_2113.JPG",
+        "image": None,          # 実行時に sweep_image() で解決する
         "image_tokens": 280,
     },
 }
@@ -150,7 +169,7 @@ def build_cmd(args, task: str, bs: int) -> list:
     ]
     if "image" in task_cfg:
         cmd += [
-            "--image", str(ROOT / task_cfg["image"]),
+            "--image", str(task_cfg["image"] or sweep_image()),
             "--image-tokens", str(task_cfg["image_tokens"]),
         ]
     cmd += [

@@ -32,7 +32,7 @@ def load_msgs(p):
     return json.load(open(f"{PROJ}/bench/{p}"))
 
 def img_msgs():
-    b = base64.b64encode(open(f"{PROJ}/sample_imgs/IMG_2113.JPG","rb").read()).decode()
+    b = base64.b64encode(open(os.environ.get("TF_SWEEP_IMAGE") or sorted(p for p in __import__("pathlib").Path(os.environ.get("TF_SAMPLE_IMGS", os.path.expanduser("~/Pictures/sample_imgs"))).iterdir() if not p.name.startswith("."))[0],"rb").read()).decode()
     sysu = load_msgs("mtp_goal_prompt.json")
     return [sysu[0],
             {"role":"user","content":[
