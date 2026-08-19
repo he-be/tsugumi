@@ -1,0 +1,6 @@
+[
+ {
+  "role": "user",
+  "content": "Write a Python module that implements an LRU cache with a fixed capacity, type hints, and docstrings. Return only the code in a single markdown code block."
+ }
+]
