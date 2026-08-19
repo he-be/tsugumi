@@ -8,7 +8,7 @@ CLI と Server を、Vision・MTP・Reasoning が揃った状態で、日常の�
 
 | 段 | 状態 | 文書 |
 | --- | --- | --- |
-| S1 | 実装・テスト済み。**G4 は 80 スロットで達成 (37.5 t/s)、常用点の 32 スロットでは 28.6 t/s で未達** | [10-S1-REASONING.md](10-S1-REASONING.md) |
+| S1 | 実装・テスト済み。**G4 は 80 スロットで達成 (37.5 t/s)、常用点の 32 スロットでは 28.6 t/s で未達**。思考 ON のプロンプトキャッシュは一度切って戻した (§5) | [10-S1-REASONING.md](10-S1-REASONING.md) |
 | S2 | 完了。**テンプレートは tools・画像・思考を同時に描ける** — 制約は `encodeToolChat` 側だった | [11-S2-TEMPLATE-PROBE.md](11-S2-TEMPLATE-PROBE.md) |
 | S3 | 完了。**tools + 画像 + 思考が同時に通る** (G1 到達)。tool 呼び出しも思考と両立 | [12-S3-TOOLS-VISION-THINKING.md](12-S3-TOOLS-VISION-THINKING.md) |
 
@@ -65,7 +65,8 @@ goal 条件そのものであり、tools が絡まない限り純粋な配線な
 - `applyChatTemplate` に `enableThinking` を配線 (テキスト経路・画像経路とも)。
 - 応答は `reasoning_content`。thought channel の切り出しは
   `StructuredAssistantDecoder` が既に持っていた channel 状態を使う (10-S1 §2)。
-- 思考 ON の要求は**プロンプトキャッシュに参加しない** (10-S1 §5)。
+- 思考 ON の要求も**プロンプトキャッシュに参加する** (10-S1 §5)。
+  当初は外していたが、pi の対話が毎ターン全再 prefill になったため撤回した。
 - tools 宣言時は依然として思考なし (テンプレート制約)。400 にはせず通す — S2/S3 の論点。
 - 出口: pi から Reasoning ON の Vision 単発が Server で通る (**達成**)。
   G4 の数字は**スロット数で割れた** (10-S1 §6): 80 スロットで 37.5 t/s、

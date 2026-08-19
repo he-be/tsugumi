@@ -278,14 +278,10 @@ struct ServerImageRequestTests {
     /// lookup and publish — go through this one predicate.
     @Test func promptCacheIsOffForImageRequests() throws {
         let empty = try VisionPrefillInput(spans: [], images: [])
-        #expect(ServerModelSession.promptCacheParticipates(
-            mode: .singlePrefix, vision: nil, thinking: false))
-        #expect(!ServerModelSession.promptCacheParticipates(
-            mode: .singlePrefix, vision: empty, thinking: false))
-        #expect(!ServerModelSession.promptCacheParticipates(
-            mode: .off, vision: nil, thinking: false))
-        #expect(!ServerModelSession.promptCacheParticipates(
-            mode: .off, vision: empty, thinking: false))
+        #expect(ServerModelSession.promptCacheParticipates(mode: .singlePrefix, vision: nil))
+        #expect(!ServerModelSession.promptCacheParticipates(mode: .singlePrefix, vision: empty))
+        #expect(!ServerModelSession.promptCacheParticipates(mode: .off, vision: nil))
+        #expect(!ServerModelSession.promptCacheParticipates(mode: .off, vision: empty))
     }
 
     // MARK: - Over HTTP

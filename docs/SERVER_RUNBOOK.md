@@ -235,9 +235,11 @@ request chatcmpl-… completed in … finish=tool_calls        ← tool 呼び�
 - **生成予算を食う。**画像 1 枚の説明で思考が 1,200 字・生成 479 トークン
   ほど要る (思考 OFF は 29 トークン)。`maxTokens` を絞りすぎると思考だけで
   尽きて本文が出ない (`finish=length`)。
-- **`cached=0` が正常。**思考 ON の要求はプロンプトキャッシュに参加しない
-  ([docs/serving/10-S1 §5](serving/10-S1-REASONING.md))。多ターンでも毎回
-  prefill するので、pi の体感は思考 OFF より遅い。
+- **`cached=0` が続くのは異常。**思考 ON でもプロンプトキャッシュは効く
+  ([docs/serving/10-S1 §5](serving/10-S1-REASONING.md))。2 ターン目以降で
+  `cached=0` が続くなら、モードを途中で切り替えた (思考 ON/OFF は prefix を
+  共有しない)、会話の前半が書き換わった、あいだに別の要求が挟まった、の
+  どれかである。
 
 ## 6. よくある失敗
 

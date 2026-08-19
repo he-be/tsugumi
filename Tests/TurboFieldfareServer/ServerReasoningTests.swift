@@ -195,14 +195,13 @@ struct ServerReasoningRequestTests {
         #expect(asMessages == asParts)
     }
 
-    /// A reasoning generation writes its thought tokens into the KV, which a
-    /// fresh render of the next turn would never contain. Reuse would answer
-    /// from a prompt a cache miss could not build, so both sides are off.
-    @Test func promptCacheIsOffForReasoningRequests() throws {
-        #expect(ServerModelSession.promptCacheParticipates(
-            mode: .singlePrefix, vision: nil, thinking: false))
-        #expect(!ServerModelSession.promptCacheParticipates(
-            mode: .singlePrefix, vision: nil, thinking: true))
+    /// Reasoning requests reuse their prefix like any other request; only the
+    /// image exclusion and the mode remain (S3.5). Whether two *different*
+    /// modes may share a prefix is the cache entry's question, not this one
+    /// (`ServerPromptCacheTests`).
+    @Test func promptCacheParticipationDoesNotDependOnReasoning() throws {
+        #expect(ServerModelSession.promptCacheParticipates(mode: .singlePrefix, vision: nil))
+        #expect(!ServerModelSession.promptCacheParticipates(mode: .off, vision: nil))
     }
 
     @Test func decoderSurfacesTheThoughtChannelAsReasoning() async throws {

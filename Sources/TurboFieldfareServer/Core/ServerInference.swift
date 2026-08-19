@@ -549,13 +549,15 @@ public actor ServerModelSession: ServerInferenceBackend {
 
     /// Whether the prompt cache may read from or write to this generation.
     ///
-    /// A reasoning request is excluded on both sides. The KV this cache replays
-    /// holds every token the model drew, thought channel included, while a
-    /// fresh render of the same conversation holds none of it — the client
-    /// sends back the answer, not the reasoning. Reusing the KV would therefore
-    /// answer turn 2 from a prompt that a cache miss would never have built,
-    /// which is exactly the reproducibility this project grades on. Turning the
-    /// reuse off costs a re-prefill and keeps the two paths identical.
+    /// A reasoning request participates like any other. It was excluded when
+    /// reasoning shipped (S1), on the argument that the replayed KV holds the
+    /// thought tokens a fresh render would not — but that is what this cache
+    /// has always done: even with reasoning off, the cached history carries the
+    /// generation prompt's empty thought channel that a fresh render omits.
+    /// The KV *is* the session's history here, and holding reasoning to a
+    /// stricter standard only bought a full re-prefill per turn (S3.5).
+    /// What the modes may not do is share a prefix, which the entry's
+    /// `enableThinking` prevents.
     ///
     /// An image request is excluded on both sides. The cache is keyed on the
     /// *text* of the messages (`ServerPromptCache.match`), so two requests with
@@ -565,9 +567,8 @@ public actor ServerModelSession: ServerInferenceBackend {
     /// prefix would also shift every image span, which `runRawCompletion`
     /// refuses outright (PLAN_VISION §4-6).
     static func promptCacheParticipates(mode: ServerPromptCacheMode,
-                                        vision: VisionPrefillInput?,
-                                        thinking: Bool) -> Bool {
-        mode == .singlePrefix && vision == nil && !thinking
+                                        vision: VisionPrefillInput?) -> Bool {
+        mode == .singlePrefix && vision == nil
     }
 
     public func prepare(_ request: ValidatedChatRequest) async throws -> ServerPreparedRequest {
@@ -609,9 +610,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         // Falling into the else branch for an image request is required rather
         // than incidental: it invalidates whatever was cached, and this
         // generation is about to overwrite that KV.
-        if Self.promptCacheParticipates(mode: promptCacheMode,
-                                        vision: vision,
-                                        thinking: thinking) {
+        if Self.promptCacheParticipates(mode: promptCacheMode, vision: vision) {
             switch promptCache.match(
                 domain: promptCacheDomain,
                 request: request,
@@ -808,9 +807,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         } else {
             reason = "stop"
         }
-        if Self.promptCacheParticipates(mode: promptCacheMode,
-                                        vision: vision,
-                                        thinking: thinking) {
+        if Self.promptCacheParticipates(mode: promptCacheMode, vision: vision) {
             promptCache.publish(
                 domain: promptCacheDomain,
                 request: request,

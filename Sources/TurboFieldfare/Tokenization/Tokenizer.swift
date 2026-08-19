@@ -533,12 +533,19 @@ public struct GFTokenizer: @unchecked Sendable {
         } as [any Sendable]
     }
 
-    public func encodeTextContinuation(userContent: String) throws -> [Int32] {
+    /// The tokens that carry a cached generation into the next user turn.
+    ///
+    /// `enableThinking` has to agree with the generation prompt the cached KV
+    /// was built from: the thought channel is opened and closed here only when
+    /// the session is not reasoning, exactly as `applyChatTemplate` does.
+    public func encodeTextContinuation(userContent: String,
+                                       enableThinking: Bool = false) throws -> [Int32] {
         try VisionPromptAssembler.rejectMediaMarkers(in: userContent)
         let content = userContent.trimmingCharacters(in: .whitespacesAndNewlines)
         return [endOfTurnID] + encode(
             "\n\(Self.turnOpen)user\n\(content)\(Self.turnClose)\n"
-                + "\(Self.turnOpen)model\n<|channel>thought\n<channel|>",
+                + "\(Self.turnOpen)model\n"
+                + (enableThinking ? "" : "<|channel>thought\n<channel|>"),
             addBOS: false)
     }
 
@@ -546,12 +553,16 @@ public struct GFTokenizer: @unchecked Sendable {
         cachedMessages: [Message],
         assistant: Message,
         incomingMessages: [Message],
-        tools: [FunctionDefinition]
+        tools: [FunctionDefinition],
+        enableThinking: Bool = false
     ) throws -> [Int32] {
         let prefix = try encodeToolChat(
             messages: cachedMessages + [assistant],
-            tools: tools)
-        let full = try encodeToolChat(messages: incomingMessages, tools: tools)
+            tools: tools,
+            enableThinking: enableThinking)
+        let full = try encodeToolChat(messages: incomingMessages,
+                                      tools: tools,
+                                      enableThinking: enableThinking)
         let callCount = assistant.toolCalls.count
         let starts = prefix.indices.filter { prefix[$0] == toolCallStartID }
         guard callCount > 0, starts.count >= callCount,

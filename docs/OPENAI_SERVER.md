@@ -152,10 +152,10 @@ Reasoning works alongside function tools and images: a request may declare
 tools, attach a picture, and ask to reason, and the answer comes back with the
 tool calls it decided on, the reasoning separated out, or both.
 
-One limit is worth knowing before turning it on: **prompt reuse is off for a
-reasoning request.** The reused KV holds the thought tokens the model drew,
-which a fresh render of the next turn would not contain, so a reasoning
-conversation re-prefills each turn and `cached_tokens` stays 0.
+Prompt reuse works the same with reasoning on: a follow-up turn resumes from
+the cached prefix and prefills only what the turn added. The one rule is that
+the two modes cannot share a prefix — switching reasoning on or off mid
+conversation costs one full prefill, after which reuse resumes.
 
 ## Connect a client
 

@@ -61,6 +61,76 @@ struct ServerPromptCacheTests {
         #expect(effective[cached] == tokenizer.endOfTurnID)
     }
 
+    /// A reasoning session reuses its prefix like any other. Without this the
+    /// second turn of a pi session re-prefills the whole conversation, which is
+    /// what reasoning cost when it shipped (S3.5).
+    @Test func reasoningContinuationHitsTheCache() async throws {
+        let tokenizer = try await GFTokenizer.load()
+        let initial = request(
+            messages: [GFTokenizer.Message(role: .user, content: "first")],
+            enableThinking: true)
+        let initialPrompt = tokenizer.encode(
+            try tokenizer.applyChatTemplate(initial.messages, enableThinking: true),
+            addBOS: false)
+        let generated = tokenizer.encode("answer", addBOS: false)
+        let kvBacked = initialPrompt + generated
+        var cache = ServerPromptCache()
+        cache.publish(
+            domain: domain,
+            request: initial,
+            content: "answer",
+            calls: [],
+            result: rawResult(
+                prompt: initialPrompt,
+                kvBacked: kvBacked,
+                boundary: tokenizer.endOfTurnID,
+                reason: .endOfTurn))
+
+        let messages = initial.messages + [
+            GFTokenizer.Message(role: .assistant, content: "answer"),
+            GFTokenizer.Message(role: .user, content: "second"),
+        ]
+        let continuation = request(messages: messages, enableThinking: true)
+        let rendered = tokenizer.encode(
+            try tokenizer.applyChatTemplate(messages, enableThinking: true),
+            addBOS: false)
+        guard case .hit(let effective, let cached) = cache.match(
+            domain: domain,
+            request: continuation,
+            renderedPromptIDs: rendered,
+            tokenizer: tokenizer) else {
+            Issue.record("expected a reasoning continuation hit")
+            return
+        }
+        #expect(cached == kvBacked.count)
+        let bridge = try tokenizer.encodeTextContinuation(
+            userContent: "second", enableThinking: true)
+        #expect(effective == kvBacked + bridge)
+
+        // Switching the mode mid-session cannot ride that prefix: the cached
+        // system turn carries the marker this request would not render.
+        let plain = request(messages: messages, enableThinking: false)
+        #expect(cache.match(domain: domain,
+                            request: plain,
+                            renderedPromptIDs: rendered,
+                            tokenizer: tokenizer) == .miss)
+    }
+
+    /// The bridge has to end the way the generation prompt of its own mode
+    /// does: reasoning leaves the thought channel open, plain closes it.
+    @Test func continuationBridgeMatchesTheModesGenerationPrompt() async throws {
+        let tokenizer = try await GFTokenizer.load()
+        let reasoning = try tokenizer.encodeTextContinuation(
+            userContent: "second", enableThinking: true)
+        let plain = try tokenizer.encodeTextContinuation(userContent: "second")
+        #expect(reasoning != plain)
+        #expect(plain.count > reasoning.count)
+        #expect(plain.starts(with: reasoning))
+        let plainTail = tokenizer.decode(Array(plain.dropFirst(reasoning.count)),
+                                         skipSpecialTokens: false)
+        #expect(plainTail == "<|channel>thought\n<channel|>")
+    }
+
     @Test func capturedOpenCodeToolResultUsesFrozenToolBoundary() async throws {
         let tokenizer = try await GFTokenizer.load()
         let initial = try validatedFixture("opencode-1.15.11-initial.json")
@@ -197,7 +267,8 @@ struct ServerPromptCacheTests {
 
     private func request(
         messages: [GFTokenizer.Message],
-        tools: [GFTokenizer.FunctionDefinition] = []
+        tools: [GFTokenizer.FunctionDefinition] = [],
+        enableThinking: Bool = false
     ) -> ValidatedChatRequest {
         ValidatedChatRequest(
             messages: messages,
@@ -205,7 +276,8 @@ struct ServerPromptCacheTests {
             stream: false,
             includeUsage: false,
             generationConfig: GenerationConfig(maxNewTokens: 16, temperature: 0),
-            maximumCompletionTokens: 16)
+            maximumCompletionTokens: 16,
+            enableThinking: enableThinking)
     }
 
     private func rawResult(

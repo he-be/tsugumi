@@ -25,6 +25,11 @@ struct ServerPromptCacheEntry: Sendable, Equatable {
     let domain: ServerPromptCacheDomain
     let inputMessages: [GFTokenizer.Message]
     let tools: [GFTokenizer.FunctionDefinition]
+    /// The thought-channel mode this KV was built with. A later request that
+    /// disagrees is a miss: the cached system turn carries (or lacks) the
+    /// `<|think|>` marker, and the bridge that continues it opens (or closes)
+    /// the channel to match, so the two modes cannot share a prefix.
+    let enableThinking: Bool
     let assistantTurn: CachedAssistantTurn
     let kvBackedTokenIDs: [Int32]
     let uncommittedBoundaryTokenIDs: [Int32]
@@ -75,6 +80,7 @@ struct ServerPromptCache: Sendable {
             domain: domain,
             inputMessages: request.messages,
             tools: request.tools,
+            enableThinking: request.enableThinking,
             assistantTurn: CachedAssistantTurn(
                 message: assistant,
                 rawStopReason: result.reason),
@@ -92,6 +98,7 @@ struct ServerPromptCache: Sendable {
         guard let entry,
               entry.domain == domain,
               entry.tools == request.tools,
+              entry.enableThinking == request.enableThinking,
               entry.kvPosition == entry.kvBackedTokenIDs.count,
               entry.kvPosition > 0,
               entry.uncommittedBoundaryTokenIDs.count == 1 else {
@@ -121,13 +128,15 @@ struct ServerPromptCache: Sendable {
             return matchTextContinuation(
                 entry: entry,
                 continuation: continuation,
-                tokenizer: tokenizer)
+                tokenizer: tokenizer,
+                enableThinking: request.enableThinking)
         }
         return matchToolContinuation(
             entry: entry,
             request: request,
             continuation: continuation,
-            tokenizer: tokenizer)
+            tokenizer: tokenizer,
+            enableThinking: request.enableThinking)
     }
 
     private func assistantMatches(
@@ -151,7 +160,8 @@ struct ServerPromptCache: Sendable {
     private func matchTextContinuation(
         entry: ServerPromptCacheEntry,
         continuation: [GFTokenizer.Message],
-        tokenizer: GFTokenizer
+        tokenizer: GFTokenizer,
+        enableThinking: Bool
     ) -> ServerPromptCacheMatch {
         guard continuation.count == 1,
               continuation[0].role == .user,
@@ -167,7 +177,8 @@ struct ServerPromptCache: Sendable {
         // the normal encode path, which raises the typed error with the context
         // the caller needs; failing inside the cache probe would report it as a
         // caching problem instead.
-        guard var bridge = try? tokenizer.encodeTextContinuation(userContent: content) else {
+        guard var bridge = try? tokenizer.encodeTextContinuation(
+            userContent: content, enableThinking: enableThinking) else {
             return .miss
         }
         if entry.assistantTurn.rawStopReason == .maxTokens {
@@ -184,7 +195,8 @@ struct ServerPromptCache: Sendable {
         entry: ServerPromptCacheEntry,
         request: ValidatedChatRequest,
         continuation: [GFTokenizer.Message],
-        tokenizer: GFTokenizer
+        tokenizer: GFTokenizer,
+        enableThinking: Bool
     ) -> ServerPromptCacheMatch {
         let calls = entry.assistantTurn.message.toolCalls
         guard entry.assistantTurn.rawStopReason == .toolCalls,
@@ -202,7 +214,8 @@ struct ServerPromptCache: Sendable {
             cachedMessages: entry.inputMessages,
             assistant: entry.assistantTurn.message,
             incomingMessages: request.messages,
-            tools: request.tools),
+            tools: request.tools,
+            enableThinking: enableThinking),
               bridge.first == entry.uncommittedBoundaryTokenIDs.first else {
             return .miss
         }
