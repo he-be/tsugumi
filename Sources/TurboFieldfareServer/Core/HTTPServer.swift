@@ -29,6 +29,7 @@ public actor TurboFieldfareHTTPServer {
     private let coordinator: ServerCoordinator
     private let heartbeatInterval: TimeAmount
     private let imagePolicy: ServerImagePolicy
+    private let thinkingPolicy: ServerThinkingPolicy
     private let childChannels = ChildChannelRegistry()
     private var channel: Channel?
     private var shutdownTask: Task<Void, any Error>?
@@ -38,6 +39,7 @@ public actor TurboFieldfareHTTPServer {
                 backend: any ServerInferenceBackend,
                 heartbeatInterval: TimeAmount = .seconds(5),
                 imagePolicy: ServerImagePolicy = .default,
+                thinkingPolicy: ServerThinkingPolicy = .off,
                 group: MultiThreadedEventLoopGroup = .init(numberOfThreads: 1)) {
         self.group = group
         self.modelID = modelID
@@ -45,6 +47,7 @@ public actor TurboFieldfareHTTPServer {
         self.coordinator = ServerCoordinator(queueLimit: queueLimit)
         self.heartbeatInterval = heartbeatInterval
         self.imagePolicy = imagePolicy
+        self.thinkingPolicy = thinkingPolicy
     }
 
     public func start(port: Int) async throws -> Channel {
@@ -53,6 +56,7 @@ public actor TurboFieldfareHTTPServer {
         let coordinator = self.coordinator
         let heartbeatInterval = self.heartbeatInterval
         let imagePolicy = self.imagePolicy
+        let thinkingPolicy = self.thinkingPolicy
         let childChannels = self.childChannels
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 16)
@@ -69,6 +73,7 @@ public actor TurboFieldfareHTTPServer {
                         coordinator: coordinator,
                         heartbeatInterval: heartbeatInterval,
                         imagePolicy: imagePolicy,
+                        thinkingPolicy: thinkingPolicy,
                         childChannels: childChannels))
                 }
             }
@@ -138,6 +143,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private let coordinator: ServerCoordinator
     private let heartbeatInterval: TimeAmount
     private let imagePolicy: ServerImagePolicy
+    private let thinkingPolicy: ServerThinkingPolicy
     private let maximumBodyBytes: Int
     private let childChannels: ChildChannelRegistry
     private var head: HTTPRequestHead?
@@ -150,12 +156,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
          coordinator: ServerCoordinator,
          heartbeatInterval: TimeAmount,
          imagePolicy: ServerImagePolicy,
+         thinkingPolicy: ServerThinkingPolicy,
          childChannels: ChildChannelRegistry) {
         self.modelID = modelID
         self.backend = backend
         self.coordinator = coordinator
         self.heartbeatInterval = heartbeatInterval
         self.imagePolicy = imagePolicy
+        self.thinkingPolicy = thinkingPolicy
         self.maximumBodyBytes = imagePolicy.maximumBodyBytes
         self.childChannels = childChannels
     }
@@ -235,7 +243,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             let decoded = try JSONDecoder().decode(OpenAIChatRequest.self, from: Data(bytes))
             let request = try OpenAIRequestValidator.validate(decoded,
                                                              modelID: modelID,
-                                                             imagePolicy: imagePolicy)
+                                                             imagePolicy: imagePolicy,
+                                                             thinkingPolicy: thinkingPolicy)
             let responseID = "chatcmpl-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
             let created = Int(Date().timeIntervalSince1970)
             let contextBox = SendableContext(context)
@@ -263,7 +272,9 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             activeTask = childChannels.startTask {
                 defer { streamState.stop() }
                 let started = ContinuousClock.now
-                ServerLog.accepted(id: responseID, streaming: request.stream)
+                ServerLog.accepted(id: responseID,
+                                   streaming: request.stream,
+                                   thinking: request.enableThinking)
                 do {
                     let completion = try await self.coordinator.runPreparing(
                         onQueued: onQueued,
@@ -289,6 +300,12 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                         contextBox.value,
                                         self.chunk(id: responseID, created: created,
                                                    delta: ["content": text],
+                                                   finishReason: nil))
+                                case .reasoning(let text):
+                                    self.writeStreamChunk(
+                                        contextBox.value,
+                                        self.chunk(id: responseID, created: created,
+                                                   delta: ["reasoning_content": text],
                                                    finishReason: nil))
                                 case .toolCall(let call):
                                     self.writeToolCall(contextBox.value,
@@ -345,6 +362,13 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             "role": "assistant",
             "content": encodedContent,
         ]
+        // DeepSeek's field, which the OpenAI-compatible clients here read
+        // (pi's adapter takes reasoning_content, reasoning, or reasoning_text).
+        // Absent rather than empty when the request did not reason, so a
+        // client cannot mistake "no thought channel" for "thought nothing".
+        if !completion.reasoningContent.isEmpty {
+            message["reasoning_content"] = completion.reasoningContent
+        }
         if !completion.toolCalls.isEmpty {
             message["tool_calls"] = completion.toolCalls.map(toolCallObject)
         }

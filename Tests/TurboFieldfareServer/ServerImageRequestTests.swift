@@ -190,10 +190,11 @@ struct ServerImageRequestTests {
         #expect(error?.envelope.error.code == "unsupported_content")
     }
 
-    /// The tool template renders string content only, and a tool result carries
-    /// no image span, so the combination is refused rather than silently
-    /// dropping the picture.
-    @Test func imagesAreRefusedAlongsideTools() throws {
+    /// Images and tools were refused together until 11-S2 showed the tool
+    /// template renders an image content part like any other. Both halves of
+    /// the request survive validation now: the tools are declared, and the
+    /// picture is attached to the turn it came in on.
+    @Test func imagesAreAcceptedAlongsideTools() throws {
         let request = try decode("""
             {"model":"m","messages":[{"role":"user","content":[
                 {"type":"text","text":"look"},
@@ -201,10 +202,28 @@ struct ServerImageRequestTests {
              "tools":[{"type":"function","function":{
                 "name":"f","description":"d","parameters":{"type":"object"}}}]}
             """)
-        let error = #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(request, modelID: "m")
-        }
-        #expect(error?.envelope.error.code == "unsupported_content")
+        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        #expect(validated.tools.count == 1)
+        let vision = try #require(validated.vision)
+        #expect(vision.images.count == 1)
+        #expect(vision.messages.last?.imageCount == 1)
+    }
+
+    /// The same request as pi sends it in an interactive session: tools every
+    /// turn, a picture in the last user turn, and reasoning asked for.
+    @Test func toolsImagesAndReasoningValidateTogether() throws {
+        let request = try decode("""
+            {"model":"m","messages":[{"role":"user","content":[
+                {"type":"text","text":"look"},
+                {"type":"image_url","image_url":{"url":"\(dataURI(width: 8, height: 8))"}}]}],
+             "chat_template_kwargs":{"enable_thinking":true},
+             "tools":[{"type":"function","function":{
+                "name":"f","description":"d","parameters":{"type":"object"}}}]}
+            """)
+        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        #expect(validated.enableThinking)
+        #expect(validated.tools.count == 1)
+        #expect(validated.vision != nil)
     }
 
     @Test func imagesAreRefusedOutsideUserTurns() throws {
@@ -259,10 +278,14 @@ struct ServerImageRequestTests {
     /// lookup and publish — go through this one predicate.
     @Test func promptCacheIsOffForImageRequests() throws {
         let empty = try VisionPrefillInput(spans: [], images: [])
-        #expect(ServerModelSession.promptCacheParticipates(mode: .singlePrefix, vision: nil))
-        #expect(!ServerModelSession.promptCacheParticipates(mode: .singlePrefix, vision: empty))
-        #expect(!ServerModelSession.promptCacheParticipates(mode: .off, vision: nil))
-        #expect(!ServerModelSession.promptCacheParticipates(mode: .off, vision: empty))
+        #expect(ServerModelSession.promptCacheParticipates(
+            mode: .singlePrefix, vision: nil, thinking: false))
+        #expect(!ServerModelSession.promptCacheParticipates(
+            mode: .singlePrefix, vision: empty, thinking: false))
+        #expect(!ServerModelSession.promptCacheParticipates(
+            mode: .off, vision: nil, thinking: false))
+        #expect(!ServerModelSession.promptCacheParticipates(
+            mode: .off, vision: empty, thinking: false))
     }
 
     // MARK: - Over HTTP

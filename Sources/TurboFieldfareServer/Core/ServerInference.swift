@@ -4,6 +4,9 @@ import TurboFieldfare
 
 public enum ServerInferenceEvent: Equatable, Sendable {
     case content(String)
+    /// Thought-channel text, emitted only for a request that rendered the
+    /// channel open. It is streamed as `reasoning_content`, never as content.
+    case reasoning(String)
     case toolCall(ParsedToolCall)
 }
 
@@ -31,6 +34,10 @@ public struct ServerSpeculativeSummary: Equatable, Sendable {
 
 public struct ServerCompletion: Equatable, Sendable {
     public let content: String
+    /// The thought channel's text, empty unless the request rendered it open.
+    /// Its tokens are counted in `usage.completionTokens` like any other
+    /// generated token, because that is what they are.
+    public let reasoningContent: String
     public let toolCalls: [ParsedToolCall]
     public let finishReason: String
     public let usage: OpenAIUsage
@@ -41,8 +48,10 @@ public struct ServerCompletion: Equatable, Sendable {
                 toolCalls: [ParsedToolCall],
                 finishReason: String,
                 usage: OpenAIUsage,
-                speculative: ServerSpeculativeSummary? = nil) {
+                speculative: ServerSpeculativeSummary? = nil,
+                reasoningContent: String = "") {
         self.content = content
+        self.reasoningContent = reasoningContent
         self.toolCalls = toolCalls
         self.finishReason = finishReason
         self.usage = usage
@@ -540,6 +549,14 @@ public actor ServerModelSession: ServerInferenceBackend {
 
     /// Whether the prompt cache may read from or write to this generation.
     ///
+    /// A reasoning request is excluded on both sides. The KV this cache replays
+    /// holds every token the model drew, thought channel included, while a
+    /// fresh render of the same conversation holds none of it — the client
+    /// sends back the answer, not the reasoning. Reusing the KV would therefore
+    /// answer turn 2 from a prompt that a cache miss would never have built,
+    /// which is exactly the reproducibility this project grades on. Turning the
+    /// reuse off costs a re-prefill and keeps the two paths identical.
+    ///
     /// An image request is excluded on both sides. The cache is keyed on the
     /// *text* of the messages (`ServerPromptCache.match`), so two requests with
     /// the same words and different pictures are indistinguishable to it — a
@@ -548,8 +565,9 @@ public actor ServerModelSession: ServerInferenceBackend {
     /// prefix would also shift every image span, which `runRawCompletion`
     /// refuses outright (PLAN_VISION §4-6).
     static func promptCacheParticipates(mode: ServerPromptCacheMode,
-                                        vision: VisionPrefillInput?) -> Bool {
-        mode == .singlePrefix && vision == nil
+                                        vision: VisionPrefillInput?,
+                                        thinking: Bool) -> Bool {
+        mode == .singlePrefix && vision == nil && !thinking
     }
 
     public func prepare(_ request: ValidatedChatRequest) async throws -> ServerPreparedRequest {
@@ -572,6 +590,9 @@ public actor ServerModelSession: ServerInferenceBackend {
             }
         }
         let needsToolTemplate = usesToolTemplate(request)
+        // Since S3 both templates render the thought channel, so what the
+        // request asked for is what the prompt does (11-S2 §1).
+        let thinking = request.enableThinking
         let promptIDs: [Int32]
         let vision: VisionPrefillInput?
         if let alreadyRendered = prepared.promptIDs {
@@ -588,7 +609,9 @@ public actor ServerModelSession: ServerInferenceBackend {
         // Falling into the else branch for an image request is required rather
         // than incidental: it invalidates whatever was cached, and this
         // generation is about to overwrite that KV.
-        if Self.promptCacheParticipates(mode: promptCacheMode, vision: vision) {
+        if Self.promptCacheParticipates(mode: promptCacheMode,
+                                        vision: vision,
+                                        thinking: thinking) {
             switch promptCache.match(
                 domain: promptCacheDomain,
                 request: request,
@@ -620,13 +643,20 @@ public actor ServerModelSession: ServerInferenceBackend {
             maxContext - effectivePromptIDs.count)
         config.stopStrings = []
 
-        let decoder = needsToolTemplate
+        // With thinking on, the generation prompt leaves the thought channel
+        // for the model to open, so its markers arrive in the stream and the
+        // raw deltas would carry the reasoning into the answer. The decoder is
+        // what knows the channel state, so this path needs it too — not only
+        // the tool path it was written for.
+        let decoder = needsToolTemplate || thinking
             ? StructuredAssistantDecoder(
                 tokenizer: tokenizer,
-                allowedTools: Set(request.tools.map(\.name)))
+                allowedTools: Set(request.tools.map(\.name)),
+                emitsReasoning: thinking)
             : nil
         var stopMatcher = StreamingStopMatcher(stops: request.generationConfig.stopStrings)
         var content = ""
+        var reasoningContent = ""
         var calls: [ParsedToolCall] = []
         var decodingError: Error?
         var shouldStop = false
@@ -644,6 +674,13 @@ public actor ServerModelSession: ServerInferenceBackend {
                                 onEvent(.content(visible))
                             }
                             if stopMatcher.isStopped { shouldStop = true }
+                        case .reasoning(let text):
+                            // Stop strings match the answer, not the thinking:
+                            // a client's stop sequence is about the text it
+                            // will show, and cutting a request short on a word
+                            // the model happened to think would surprise it.
+                            reasoningContent += text
+                            onEvent(.reasoning(text))
                         case .toolCall(let call):
                             calls.append(call)
                             onEvent(.toolCall(call))
@@ -771,7 +808,9 @@ public actor ServerModelSession: ServerInferenceBackend {
         } else {
             reason = "stop"
         }
-        if Self.promptCacheParticipates(mode: promptCacheMode, vision: vision) {
+        if Self.promptCacheParticipates(mode: promptCacheMode,
+                                        vision: vision,
+                                        thinking: thinking) {
             promptCache.publish(
                 domain: promptCacheDomain,
                 request: request,
@@ -789,7 +828,8 @@ public actor ServerModelSession: ServerInferenceBackend {
                                completionTokens: result.newTokens,
                                totalTokens: result.prefillTokens + result.newTokens,
                                cachedTokens: result.cachedPromptTokens),
-            speculative: speculativeSummary)
+            speculative: speculativeSummary,
+            reasoningContent: reasoningContent)
     }
 
     private func renderPrompt(
@@ -798,15 +838,17 @@ public actor ServerModelSession: ServerInferenceBackend {
         let promptIDs: [Int32]
         var vision: VisionPrefillInput?
         if let requested = request.vision {
-            let prepared = try renderVisionPrompt(requested)
+            let prepared = try renderVisionPrompt(requested, request: request)
             promptIDs = prepared.tokens
             vision = prepared.vision
         } else if usesToolTemplate(request) {
             promptIDs = try tokenizer.encodeToolChat(
                 messages: request.messages,
-                tools: request.tools)
+                tools: request.tools,
+                enableThinking: request.enableThinking)
         } else {
-            let rendered = try tokenizer.applyChatTemplate(request.messages)
+            let rendered = try tokenizer.applyChatTemplate(
+                request.messages, enableThinking: request.enableThinking)
             promptIDs = tokenizer.encode(rendered, addBOS: false)
         }
         guard promptIDs.count < maxContext else {
@@ -826,7 +868,8 @@ public actor ServerModelSession: ServerInferenceBackend {
     /// mapped to a typed request error. Letting a `VisionError` escape would
     /// report a 400 as a 500.
     private func renderVisionPrompt(
-        _ requested: ValidatedVisionRequest
+        _ requested: ValidatedVisionRequest,
+        request: ValidatedChatRequest
     ) throws -> (tokens: [Int32], vision: VisionPrefillInput) {
         guard model.hasVisionTower else {
             throw ServerRequestError.invalid(
@@ -850,8 +893,21 @@ public actor ServerModelSession: ServerInferenceBackend {
             let images = try requested.images.map {
                 try VisionImagePreprocessor.preprocess(data: $0.data, config: config)
             }
-            let rendered = try tokenizer.applyChatTemplate(multimodal: requested.messages)
-            let tokens = tokenizer.encode(rendered, addBOS: false)
+            // Both templates place the same `<|image|>` marker, so the
+            // assembler that widens it into soft-token spans is shared: only
+            // the rendering in front of it differs (11-S2 §1).
+            let tokens: [Int32]
+            if usesToolTemplate(request) {
+                tokens = try tokenizer.encodeToolChat(
+                    messages: try toolTurns(request),
+                    tools: request.tools,
+                    enableThinking: request.enableThinking)
+            } else {
+                let rendered = try tokenizer.applyChatTemplate(
+                    multimodal: requested.messages,
+                    enableThinking: request.enableThinking)
+                tokens = tokenizer.encode(rendered, addBOS: false)
+            }
             let ids = try VisionMediaTokenIDs(tokenizer: tokenizer)
             return try VisionPromptAssembler.makePrefillPrompt(tokens: tokens,
                                                                images: images,
@@ -866,6 +922,32 @@ public actor ServerModelSession: ServerInferenceBackend {
                 message: "\(error)",
                 param: "messages",
                 code: "invalid_message")
+        }
+    }
+
+    /// The tool path's turns, with each body's image parts kept.
+    ///
+    /// The validator builds the text projection and the parts view of the same
+    /// conversation in lockstep, so they are joined by position here: the roles
+    /// and tool metadata come from one, the bodies from the other.
+    private func toolTurns(
+        _ request: ValidatedChatRequest
+    ) throws -> [GFTokenizer.ToolChatMessage] {
+        guard let vision = request.vision else {
+            return request.messages.map(GFTokenizer.ToolChatMessage.init)
+        }
+        guard vision.messages.count == request.messages.count else {
+            throw ServerRequestError.invalid(
+                message: "message bodies and their parts disagree",
+                param: "messages",
+                code: "invalid_message")
+        }
+        return zip(request.messages, vision.messages).map { message, multimodal in
+            GFTokenizer.ToolChatMessage(role: message.role,
+                                        parts: multimodal.parts,
+                                        toolCalls: message.toolCalls,
+                                        toolCallID: message.toolCallID,
+                                        name: message.name)
         }
     }
 

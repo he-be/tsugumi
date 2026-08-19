@@ -2,6 +2,9 @@ import Foundation
 
 public enum StructuredAssistantEvent: Equatable, Sendable {
     case content(String)
+    /// Thought-channel text, surfaced only when the decoder was built with
+    /// `emitsReasoning`. Never part of the visible answer.
+    case reasoning(String)
     case toolCall(ParsedToolCall)
 }
 
@@ -14,6 +17,12 @@ public final class StructuredAssistantDecoder: @unchecked Sendable {
 
     private let tokenizer: GFTokenizer
     private let allowedTools: Set<String>
+    /// Whether thought-channel text leaves the decoder at all.
+    ///
+    /// Off by default because the caller that only wants the answer would
+    /// otherwise have to filter the reasoning back out; a caller that asked
+    /// for reasoning (the server's `reasoning_content`) turns it on.
+    private let emitsReasoning: Bool
     private let idGenerator: @Sendable () -> String
     private var channel: Channel = .visible
     private var label = ""
@@ -23,11 +32,13 @@ public final class StructuredAssistantDecoder: @unchecked Sendable {
 
     public init(tokenizer: GFTokenizer,
                 allowedTools: Set<String>,
+                emitsReasoning: Bool = false,
                 idGenerator: @escaping @Sendable () -> String = {
                     "call_" + (0..<24).map { _ in String(format: "%x", UInt8.random(in: 0...15)) }.joined()
                 }) {
         self.tokenizer = tokenizer
         self.allowedTools = allowedTools
+        self.emitsReasoning = emitsReasoning
         self.idGenerator = idGenerator
     }
 
@@ -117,7 +128,7 @@ public final class StructuredAssistantDecoder: @unchecked Sendable {
     private func routeText(_ delta: String) -> [StructuredAssistantEvent] {
         switch channel {
         case .thought:
-            return []
+            return emitsReasoning && !delta.isEmpty ? [.reasoning(delta)] : []
         case .visible:
             return delta.isEmpty ? [] : [.content(delta)]
         case .label:
@@ -128,10 +139,12 @@ public final class StructuredAssistantDecoder: @unchecked Sendable {
             let content = String(label[contentStart...])
             channel = name == "final" || name == "answer" ? .visible : .thought
             label = ""
-            if channel == .visible, !content.isEmpty {
-                return [.content(content)]
+            guard !content.isEmpty else { return [] }
+            switch channel {
+            case .visible: return [.content(content)]
+            case .thought: return emitsReasoning ? [.reasoning(content)] : []
+            case .label: return []
             }
-            return []
         }
     }
 

@@ -1,6 +1,17 @@
 import Foundation
 import TurboFieldfare
 
+/// The process default for the chat template's thought channel.
+///
+/// A request may override it per call (`chat_template_kwargs.enable_thinking`
+/// or `reasoning_effort`); this is what applies when it says nothing.
+public enum ServerThinkingPolicy: String, Equatable, Sendable {
+    case off
+    case on
+
+    public var isEnabled: Bool { self == .on }
+}
+
 public struct ServerArguments: Equatable, Sendable {
     public let model: String
     public let port: Int
@@ -16,6 +27,7 @@ public struct ServerArguments: Equatable, Sendable {
     public let verification: ModelIntegrityPolicy
     public let draftBlockSize: Int
     public let imagePolicy: ServerImagePolicy
+    public let thinkingPolicy: ServerThinkingPolicy
 
     public static let usage = """
     usage: TurboFieldfareServer --model <completed .gturbo directory> [options]
@@ -67,6 +79,17 @@ public struct ServerArguments: Equatable, Sendable {
                                  as image_url content parts holding a data: URI;
                                  http(s) URLs are refused, never fetched. Requires a
                                  model installed with a vision tower and --prefill on.
+      --thinking on|off          Default reasoning channel (default off). off closes
+                                 the thought channel in the generation prompt, asking
+                                 for a direct answer; on leads the system turn with
+                                 <|think|> and lets the model reason first. Reasoning
+                                 is generated text: it spends the request's completion
+                                 budget and comes back as reasoning_content, separate
+                                 from the answer. A request overrides the default with
+                                 chat_template_kwargs.enable_thinking or
+                                 reasoning_effort. A request that declares tools runs
+                                 without reasoning either way — the tool-calling
+                                 template pins enable_thinking to false.
       --max-images <n>           Images accepted per request (default 4).
       --max-image-bytes <n>      Decoded bytes accepted per image (default 8388608).
                                  Raises the request-body ceiling to match.
@@ -127,6 +150,7 @@ public struct ServerArguments: Equatable, Sendable {
         var maxImages = ServerImagePolicy.default.maxImagesPerRequest
         var maxImageBytes = ServerImagePolicy.default.maxImageBytes
         var maxImagePixels = ServerImagePolicy.default.maxImagePixels
+        var thinkingPolicy = ServerThinkingPolicy.off
         var index = 0
         while index < input.count {
             let flag = input[index]
@@ -224,6 +248,11 @@ public struct ServerArguments: Equatable, Sendable {
                             .map(String.init).joined(separator: ", "))
                 }
                 imageTokens = parsed
+            case "--thinking":
+                guard let parsed = ServerThinkingPolicy(rawValue: value) else {
+                    throw ServerArgumentError.invalid("--thinking must be on or off")
+                }
+                thinkingPolicy = parsed
             case "--max-images":
                 guard let parsed = Int(value), parsed > 0 else {
                     throw ServerArgumentError.invalid("--max-images must be positive")
@@ -267,7 +296,8 @@ public struct ServerArguments: Equatable, Sendable {
                                    maxSoftTokens: imageTokens,
                                    maxImagesPerRequest: maxImages,
                                    maxImageBytes: maxImageBytes,
-                                   maxImagePixels: maxImagePixels))
+                                   maxImagePixels: maxImagePixels),
+                               thinkingPolicy: thinkingPolicy)
     }
 }
 

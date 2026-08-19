@@ -1,8 +1,13 @@
 import Foundation
 
 enum ServerLog {
-    static func accepted(id: String, streaming: Bool) {
-        write("request \(id) accepted streaming=\(streaming)")
+    /// `thinking` is what the request asked for, not what the prompt rendered:
+    /// a request that declares tools goes through the tool-calling template,
+    /// which reasons in neither case. The completed line's `reasoning` is the
+    /// side that says what actually happened.
+    static func accepted(id: String, streaming: Bool, thinking: Bool) {
+        write("request \(id) accepted streaming=\(streaming) "
+            + "thinking=\(thinking ? "on" : "off")")
     }
 
     static func prepared(id: String, promptTokens: Int?) {
@@ -27,6 +32,9 @@ enum ServerLog {
             + "cached=\(usage.promptTokensDetails.cachedTokens) "
             + "completion=\(usage.completionTokens) "
             + "finish=\(completion.finishReason)"
+        if !completion.reasoningContent.isEmpty {
+            line += " reasoning=\(completion.reasoningContent.utf8.count)B"
+        }
         if let speculative = completion.speculative {
             line += " mtp=\(speculative.blockTokens)"
                 + " rounds=\(speculative.rounds)"

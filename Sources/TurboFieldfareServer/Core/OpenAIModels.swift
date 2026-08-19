@@ -219,10 +219,21 @@ public struct OpenAIChatRequest: Codable, Equatable, Sendable {
     public let logprobs: Bool?
     public let presencePenalty: Float?
     public let frequencyPenalty: Float?
+    /// OpenAI's reasoning switch. Only its on/off sense is honored: the
+    /// template has one thought channel, not a budget, so there is nothing for
+    /// a level to select (`OpenAIReasoning`).
+    public let reasoningEffort: String?
+    /// vLLM's convention, and what pi sends for `thinkingFormat`
+    /// `qwen-chat-template`. Only `enable_thinking` is read; other keys (pi's
+    /// `preserve_thinking`) are accepted and ignored so a client that sends
+    /// its whole kwargs block is not refused for a key this template lacks.
+    public let chatTemplateKwargs: JSONValue?
 
     enum CodingKeys: String, CodingKey {
         case model, messages, stream, temperature, stop, seed, tools, n, logprobs
         case streamOptions = "stream_options"
+        case reasoningEffort = "reasoning_effort"
+        case chatTemplateKwargs = "chat_template_kwargs"
         case topP = "top_p"
         case maxTokens = "max_tokens"
         case maxCompletionTokens = "max_completion_tokens"
@@ -327,6 +338,67 @@ public struct ValidatedVisionRequest: Sendable {
     }
 }
 
+/// How a request asks for the thought channel.
+///
+/// Two spellings reach this server and both are honored, because the clients
+/// that matter here disagree: pi's `openai-completions` adapter sends
+/// `chat_template_kwargs.enable_thinking` (its `qwen-chat-template` thinking
+/// format, the vLLM convention), while an OpenAI-shaped client sends
+/// `reasoning_effort`. The template has one thought channel and no budget, so
+/// an effort level is read only for its on/off sense.
+enum OpenAIReasoning {
+    /// The efforts that mean "do not reason". Everything else that is a known
+    /// OpenAI level means "reason"; an unknown string is refused rather than
+    /// guessed at.
+    static let offEfforts: Set<String> = ["none", "off"]
+    static let onEfforts: Set<String> = ["minimal", "low", "medium", "high", "max"]
+
+    /// The request's answer, or nil when it did not ask either way.
+    static func requested(_ request: OpenAIChatRequest) throws -> Bool? {
+        let fromKwargs = try enableThinking(in: request.chatTemplateKwargs)
+        let fromEffort = try enableThinking(effort: request.reasoningEffort)
+        guard let fromKwargs else { return fromEffort }
+        guard let fromEffort, fromEffort != fromKwargs else { return fromKwargs }
+        throw ServerRequestError.invalid(
+            message: "reasoning_effort and chat_template_kwargs.enable_thinking disagree",
+            param: "reasoning_effort",
+            code: "invalid_value")
+    }
+
+    private static func enableThinking(in kwargs: JSONValue?) throws -> Bool? {
+        guard let kwargs else { return nil }
+        guard let object = kwargs.objectValue else {
+            throw ServerRequestError.invalid(
+                message: "chat_template_kwargs must be an object",
+                param: "chat_template_kwargs",
+                code: "invalid_value")
+        }
+        // Every other key is ignored on purpose: pi sends `preserve_thinking`
+        // alongside, and refusing a kwarg this template has no use for would
+        // fail a request that is otherwise exactly right.
+        guard let value = object["enable_thinking"] else { return nil }
+        guard case .bool(let enabled) = value else {
+            throw ServerRequestError.invalid(
+                message: "chat_template_kwargs.enable_thinking must be a boolean",
+                param: "chat_template_kwargs",
+                code: "invalid_value")
+        }
+        return enabled
+    }
+
+    private static func enableThinking(effort: String?) throws -> Bool? {
+        guard let effort else { return nil }
+        let normalized = effort.lowercased()
+        if offEfforts.contains(normalized) { return false }
+        if onEfforts.contains(normalized) { return true }
+        throw ServerRequestError.invalid(
+            message: "reasoning_effort must be one of "
+                + (offEfforts.union(onEfforts)).sorted().joined(separator: ", "),
+            param: "reasoning_effort",
+            code: "unsupported_value")
+    }
+}
+
 public struct ValidatedChatRequest: Sendable {
     /// The text projection of the conversation. When `vision != nil` the image
     /// parts are *not* in here — rendering goes through `vision.messages`
@@ -338,6 +410,11 @@ public struct ValidatedChatRequest: Sendable {
     public let generationConfig: GenerationConfig
     public let maximumCompletionTokens: Int
     public let vision: ValidatedVisionRequest?
+    /// What this request asked the thought channel to do, after the process
+    /// default. Whether it is actually rendered is a second question the
+    /// template answers (`ServerModelSession`): a request that declares tools
+    /// goes through the tool-calling template, which pins thinking off.
+    public let enableThinking: Bool
 
     public init(messages: [GFTokenizer.Message],
                 tools: [GFTokenizer.FunctionDefinition],
@@ -345,7 +422,8 @@ public struct ValidatedChatRequest: Sendable {
                 includeUsage: Bool,
                 generationConfig: GenerationConfig,
                 maximumCompletionTokens: Int,
-                vision: ValidatedVisionRequest? = nil) {
+                vision: ValidatedVisionRequest? = nil,
+                enableThinking: Bool = false) {
         self.messages = messages
         self.tools = tools
         self.stream = stream
@@ -353,6 +431,7 @@ public struct ValidatedChatRequest: Sendable {
         self.generationConfig = generationConfig
         self.maximumCompletionTokens = maximumCompletionTokens
         self.vision = vision
+        self.enableThinking = enableThinking
     }
 }
 
@@ -383,7 +462,8 @@ private enum OpenAIToolName {
 public enum OpenAIRequestValidator {
     public static func validate(_ request: OpenAIChatRequest,
                                 modelID: String,
-                                imagePolicy: ServerImagePolicy = .default) throws -> ValidatedChatRequest {
+                                imagePolicy: ServerImagePolicy = .default,
+                                thinkingPolicy: ServerThinkingPolicy = .off) throws -> ValidatedChatRequest {
         guard request.model == modelID else { throw ServerRequestError.unknownModel }
         guard request.n == nil || request.n == 1 else {
             throw invalid("only n=1 is supported", "n", "unsupported_value")
@@ -443,19 +523,11 @@ public enum OpenAIRequestValidator {
         }
 
         let tools = try (includeTools ? request.tools ?? [] : []).map(validateTool)
+        // Images and tools used to be refused together (PLAN_VISION §0-I-4),
+        // on the belief that the tool-calling template could not render an
+        // image content part. It can (11-S2 §1), and the marker it writes is
+        // the one the vision assembler widens, so the refusal is gone.
         let validated = try validateMessages(request.messages, imagePolicy: imagePolicy)
-        if validated.vision != nil {
-            guard tools.isEmpty else {
-                throw invalid("images cannot be combined with tools",
-                              "messages", "unsupported_content")
-            }
-            guard !validated.messages.contains(where: {
-                $0.role == .tool || $0.role == .developer || !$0.toolCalls.isEmpty
-            }) else {
-                throw invalid("images cannot be combined with tool calls or developer turns",
-                              "messages", "unsupported_content")
-            }
-        }
         let config = GenerationConfig(maxNewTokens: maximum,
                                       temperature: temperature,
                                       topK: topK,
@@ -463,13 +535,15 @@ public enum OpenAIRequestValidator {
                                       repetitionPenalty: repetitionPenalty,
                                       seed: request.seed,
                                       stopStrings: request.stop?.values ?? [])
+        let enableThinking = try OpenAIReasoning.requested(request) ?? thinkingPolicy.isEnabled
         return ValidatedChatRequest(messages: validated.messages,
                                     tools: tools,
                                     stream: request.stream ?? false,
                                     includeUsage: request.streamOptions?.includeUsage ?? false,
                                     generationConfig: config,
                                     maximumCompletionTokens: maximum,
-                                    vision: validated.vision)
+                                    vision: validated.vision,
+                                    enableThinking: enableThinking)
     }
 
     private static func validateTool(_ tool: OpenAITool) throws -> GFTokenizer.FunctionDefinition {

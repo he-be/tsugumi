@@ -1,9 +1,18 @@
 # TODO
 
-> 2026-08-19: 下の 2 項目 (pi の画像、サーバーの Reasoning on) は
-> [docs/serving/README.md](docs/serving/README.md) の計画 S1〜S3 に昇格した。
-> 128k はサーバー側が対応済み (`--max-context 131072` が許可リストに入っている)。
-> 残りはメモリ判定の実測のみ (同計画の Backlog)。
+> **2026-08-19: 下の 2 項目はどちらも解決した。以下は解決前の調査記録である。**
+>
+> - **サーバーの Reasoning on**: S1 で入った (`--thinking on|off` +
+>   `chat_template_kwargs.enable_thinking` / `reasoning_effort`、応答は
+>   `reasoning_content`。[10-S1-REASONING.md](docs/serving/10-S1-REASONING.md))。
+> - **pi の対話モードで画像が使えない / tools 宣言時に思考が無効**: S3 で
+>   両方閉じた ([12-S3-TOOLS-VISION-THINKING.md](docs/serving/12-S3-TOOLS-VISION-THINKING.md))。
+>   下に「tool-calling 用テンプレートが画像を描画できない」と書いてあるのは
+>   **誤りだった** — 描画できる。制約は `encodeToolChat` 側にあった
+>   ([11-S2-TEMPLATE-PROBE.md](docs/serving/11-S2-TEMPLATE-PROBE.md))。
+>   pi への upstream 要望も不要になった。
+> - **128k**: サーバー側は対応済み (`--max-context 131072` が許可リストにある)。
+>   残りはメモリ判定の実測のみ ([計画の Backlog](docs/serving/README.md))。
 
 ## pi (コーディングエージェント) の対話モードで画像が使えない
 

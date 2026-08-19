@@ -85,7 +85,7 @@ prediction:
 ```bash
 .build/release/TurboFieldfareServer \
   --model scratch/gemma4-qat.gturbo \
-  --expert-cache-slots 80 \
+  --expert-cache-slots 32 \
   --draft-block-size 4
 ```
 
@@ -110,6 +110,52 @@ request chatcmpl-… completed in 18.264s prompt=208 cached=0 completion=600 fin
 
 `accept` is the mean number of accepted drafts per round; `mtp` is the block
 width. They say how the wall clock was spent, never what the answer was.
+
+## Reasoning
+
+The chat template has a thought channel. With it closed the model answers
+directly; with it open the model reasons first and the reasoning comes back in
+its own response field, never mixed into the answer.
+
+`--thinking on` makes reasoning the process default:
+
+```bash
+.build/release/TurboFieldfareServer \
+  --model scratch/gemma4-qat.gturbo \
+  --thinking on
+```
+
+A request overrides the default in either of the two spellings clients use:
+
+```bash
+curl --silent --show-error http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "gemma-4-26b-a4b-it",
+    "messages": [{"role": "user", "content": "9.11 と 9.9 はどちらが大きい?"}],
+    "chat_template_kwargs": {"enable_thinking": true}
+  }'
+```
+
+`{"reasoning_effort": "medium"}` does the same. The template has one thought
+channel and no budget, so an effort level is read only for its on/off sense:
+`none` and `off` mean no reasoning, `minimal`, `low`, `medium`, `high`, and
+`max` mean reasoning. Sending both spellings with opposite answers is a 400.
+
+The reasoning arrives as `reasoning_content` — in `choices[0].message` for a
+JSON response, in `choices[0].delta` for SSE, and absent entirely when the
+request did not reason. It is generated text like any other: its tokens are
+counted in `completion_tokens` and spend the same `max_tokens` budget. A `stop`
+string is matched against the answer only.
+
+Reasoning works alongside function tools and images: a request may declare
+tools, attach a picture, and ask to reason, and the answer comes back with the
+tool calls it decided on, the reasoning separated out, or both.
+
+One limit is worth knowing before turning it on: **prompt reuse is off for a
+reasoning request.** The reused KV holds the thought tokens the model drew,
+which a fresh render of the next turn would not contain, so a reasoning
+conversation re-prefills each turn and `cached_tokens` stays 0.
 
 ## Connect a client
 
@@ -170,12 +216,13 @@ Pi uses its `openai-completions` adapter:
       "compat": {
         "supportsReasoningEffort": false,
         "supportsStrictMode": false,
-        "supportsUsageInStreaming": true
+        "supportsUsageInStreaming": true,
+        "thinkingFormat": "qwen-chat-template"
       },
       "models": [{
         "id": "gemma-4-26b-a4b-it",
         "name": "Gemma 4 26B-A4B IT",
-        "reasoning": false,
+        "reasoning": true,
         "contextWindow": 16384,
         "maxTokens": 4096
       }]
@@ -183,6 +230,14 @@ Pi uses its `openai-completions` adapter:
   }
 }
 ```
+
+`"reasoning": true` with `"thinkingFormat": "qwen-chat-template"` is what makes
+pi's thinking toggle send `chat_template_kwargs.enable_thinking`, which this
+server reads; it also reads `reasoning_content` back out of the response. Leave
+`"reasoning": false` if you would rather drive reasoning from the server's
+`--thinking` flag. Pi declares its built-in tools on every request of an
+interactive session, which the server no longer treats as a reason to skip
+reasoning, so the toggle works in an ordinary session.
 
 Keep the client context setting at or below the server's `--max-context`.
 
@@ -230,9 +285,12 @@ whole number of 48-pixel cells, so the soft tokens it occupies follow its aspect
 ratio: 256 for a square image at the default budget, 266 for a 4:3 one. Those
 tokens are part of `usage.prompt_tokens`.
 
-Two conditions are refused rather than approximated: images together with
-`tools` (the tool template renders text only), and images while the server runs
-`--prefill off` (the unchunked path has nowhere to place a soft token).
+Images may be sent alongside `tools`: the tool-calling template renders an
+image content part with the same `<|image|>` marker the text template uses, so
+an interactive session that declares tools every turn can still show the model
+a picture. One condition is refused rather than approximated: images while the
+server runs `--prefill off`, since the unchunked path has nowhere to place a
+soft token.
 
 Prompt reuse is disabled for any request carrying an image, in both directions:
 such a request never resumes a cached prefix and never publishes one. The cache
@@ -298,7 +356,9 @@ Requests may contain system, developer, user, assistant, and tool messages.
 Message content may be a string or a list of `text` and `image_url` parts.
 Supported options include `temperature`, `top_p`, `top_k`,
 `repetition_penalty`, `seed`, `stop`, `max_tokens`,
-`max_completion_tokens`, and function-tool fields.
+`max_completion_tokens`, `reasoning_effort`,
+`chat_template_kwargs.enable_thinking`, and function-tool fields.
+Responses carry `reasoning_content` when the request reasoned.
 
 The server supports one model and one choice. Images are supported as described
 above; audio and video are not. It does not support the Responses API, legacy

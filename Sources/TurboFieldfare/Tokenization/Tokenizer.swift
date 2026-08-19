@@ -407,15 +407,69 @@ public struct GFTokenizer: @unchecked Sendable {
         return s
     }
 
+    /// A turn on the tool-calling path: `Message`'s metadata with a body that
+    /// can hold images.
+    ///
+    /// The tool template renders content as either a string or a sequence of
+    /// parts, and it needs the tool metadata (`tool_calls`, `tool_call_id`) that
+    /// `MultimodalMessage` has no room for — so the tool path gets its own turn
+    /// type rather than either of the two halves growing the other's fields.
+    public struct ToolChatMessage: Sendable, Equatable {
+        public let role: Role
+        public let parts: [ContentPart]
+        public let toolCalls: [HistoricalToolCall]
+        public let toolCallID: String?
+        public let name: String?
+
+        public init(role: Role,
+                    parts: [ContentPart],
+                    toolCalls: [HistoricalToolCall] = [],
+                    toolCallID: String? = nil,
+                    name: String? = nil) {
+            self.role = role
+            self.parts = parts
+            self.toolCalls = toolCalls
+            self.toolCallID = toolCallID
+            self.name = name
+        }
+
+        public init(_ message: Message) {
+            self.init(role: message.role,
+                      parts: message.content.map { [.text($0)] } ?? [],
+                      toolCalls: message.toolCalls,
+                      toolCallID: message.toolCallID,
+                      name: message.name)
+        }
+
+        public var imageCount: Int {
+            parts.reduce(into: 0) { $0 += ($1 == .image ? 1 : 0) }
+        }
+    }
+
     public func encodeToolChat(messages: [Message],
-                               tools: [FunctionDefinition]) throws -> [Int32] {
+                               tools: [FunctionDefinition],
+                               enableThinking: Bool = false) throws -> [Int32] {
+        try encodeToolChat(messages: messages.map(ToolChatMessage.init),
+                           tools: tools,
+                           enableThinking: enableThinking)
+    }
+
+    /// The same rendering with image placeholders allowed in the bodies.
+    ///
+    /// A turn whose body is one text part is sent as a *string*, exactly as the
+    /// text-only overload always did, so a request that carries no image
+    /// renders byte for byte as before (11-S2 §2). Only a turn that actually
+    /// holds an image is sent as a parts array.
+    public func encodeToolChat(messages: [ToolChatMessage],
+                               tools: [FunctionDefinition],
+                               enableThinking: Bool = false) throws -> [Int32] {
         guard tokenizer.hasChatTemplate else {
             throw GFTokenizerError.missingToolTemplate
         }
         let upstreamMessages: [Tokenizers.Message] = try messages.map { message in
             var value: Tokenizers.Message = [
                 "role": message.role.rawValue,
-                "content": message.content,
+                "content": try Self.toolChatContent(message.parts),
             ]
             if !message.toolCalls.isEmpty {
                 value["tool_calls"] = try message.toolCalls.map { call -> [String: any Sendable] in
@@ -450,8 +504,33 @@ public struct GFTokenizer: @unchecked Sendable {
             truncation: false,
             maxLength: nil,
             tools: upstreamTools,
-            additionalContext: ["enable_thinking": false]
+            additionalContext: ["enable_thinking": enableThinking]
         ).map(Int32.init)
+    }
+
+    /// The `content` value for one tool-path turn.
+    ///
+    /// nil for a turn that carries only tool calls, a string for a plain text
+    /// body, and the template's `[{type: text|image}]` sequence when an image
+    /// is present. Text parts are trimmed here because the template trims a
+    /// string body but not the items of a sequence.
+    private static func toolChatContent(_ parts: [ContentPart]) throws -> (any Sendable)? {
+        guard parts.contains(.image) else {
+            let text = parts.compactMap { part -> String? in
+                if case .text(let text) = part { return text }
+                return nil
+            }.joined()
+            return parts.isEmpty ? nil : text
+        }
+        return try parts.map { part -> [String: any Sendable] in
+            switch part {
+            case .text(let text):
+                try VisionPromptAssembler.rejectMediaMarkers(in: text)
+                return ["type": "text", "text": text]
+            case .image:
+                return ["type": "image"]
+            }
+        } as [any Sendable]
     }
 
     public func encodeTextContinuation(userContent: String) throws -> [Int32] {
