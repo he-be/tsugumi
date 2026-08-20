@@ -325,6 +325,16 @@ public protocol ServerInferenceBackend: Sendable {
     func generate(_ prepared: ServerPreparedRequest,
                   monitor: ServerTimingsMonitor?,
                   onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void) async throws -> ServerCompletion
+    /// SPEC §3 **EP-5** `/tokenize`. `addSpecial` is the reference's
+    /// `add_special`.
+    func tokenize(_ text: String, addSpecial: Bool) async throws -> [Int32]
+    /// EP-5 `/detokenize`.
+    func detokenize(_ tokens: [Int32]) async throws -> String
+    /// EP-5 `/apply-template`, rendered with the variant this server actually
+    /// prefills with (SPEC §12 DEV-12).
+    func applyChatTemplate(_ request: ValidatedChatRequest) async throws -> String
+    /// SPEC §3 **EP-6** `/metrics`: the totals since the process started.
+    func metrics() async -> ServerMetricsSnapshot
 }
 
 public extension ServerInferenceBackend {
@@ -348,6 +358,18 @@ public extension ServerInferenceBackend {
     ) async throws -> ServerCompletion {
         try await generate(prepared, onEvent: onEvent)
     }
+
+    // EP-5 / EP-6 on a backend that holds no tokenizer and takes no
+    // measurements: the empty answer. Only the stubs the HTTP contract is
+    // checked against are in that position — a backend with a model overrides
+    // all four.
+    func tokenize(_ text: String, addSpecial: Bool) async throws -> [Int32] { [] }
+
+    func detokenize(_ tokens: [Int32]) async throws -> String { "" }
+
+    func applyChatTemplate(_ request: ValidatedChatRequest) async throws -> String { "" }
+
+    func metrics() async -> ServerMetricsSnapshot { .zero }
 }
 
 public actor ServerCoordinator {
@@ -442,6 +464,14 @@ public actor ServerCoordinator {
 
     public var queuedCount: Int { waiters.count }
     public var isActive: Bool { active }
+
+    /// SPEC §3 **EP-6**: the answer `/slots` and the two request gauges of
+    /// `/metrics` are made of. It comes from here because this is the only
+    /// thing that knows whether the one generation slot (DEV-3) is busy and how
+    /// many requests are stacked behind it.
+    public var queueState: ServerQueueState {
+        ServerQueueState(slots: [], processingCount: 0, deferredCount: 0)
+    }
 }
 
 public actor ServerModelSession: ServerInferenceBackend {
@@ -472,6 +502,9 @@ public actor ServerModelSession: ServerInferenceBackend {
     /// off the tokenizer once for the same reason.
     private let grammarMarkers: ChatGrammarMarkers
     private var promptCache = ServerPromptCache()
+    /// EP-6 `/metrics`: the totals since this session was loaded, summed from
+    /// what RSP-3 measures per request so the two cannot disagree.
+    private var accumulatedMetrics = ServerMetricsSnapshot.zero
 
     public static func load(modelDirectory: URL,
                             maxContext: Int,
@@ -1144,4 +1177,27 @@ public actor ServerModelSession: ServerInferenceBackend {
     private func usesToolTemplate(_ request: ValidatedChatRequest) -> Bool {
         ServerPromptRenderer.usesToolTemplate(request)
     }
+
+    // MARK: - EP-5 / EP-6
+
+    /// EP-5's three endpoints need the tokenizer and nothing this actor owns
+    /// beyond it, so the work is `ServerTextEndpoints`' and this only forwards.
+    private var textEndpoints: ServerTextEndpoints {
+        ServerTextEndpoints(tokenizer: tokenizer)
+    }
+
+    public func tokenize(_ text: String, addSpecial: Bool) -> [Int32] {
+        textEndpoints.tokenize(text, addSpecial: addSpecial)
+    }
+
+    public func detokenize(_ tokens: [Int32]) -> String {
+        textEndpoints.detokenize(tokens)
+    }
+
+    public func applyChatTemplate(_ request: ValidatedChatRequest) throws -> String {
+        try textEndpoints.applyChatTemplate(request)
+    }
+
+    /// EP-6 `/metrics`.
+    public func metrics() -> ServerMetricsSnapshot { accumulatedMetrics }
 }
