@@ -110,6 +110,18 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         guard openedFD >= 0 else {
             throw StreamerError.openFailed(path: layout.path, errno: errno)
         }
+        // `docs/mtp/46-W3-CODE-ENTROPY.md` §5/§6: this fd deliberately does not
+        // set `F_NOCACHE`, so an expert read is served from the unified buffer
+        // cache whenever the page is still there -- which is why 46 §5a measures
+        // the effective bandwidth moving 3.87 -> 9.09 GB/s with generation
+        // length alone while the bytes stay fixed. How much of today's `io` is
+        // that cache rather than the SSD decides the whole prize of the D branch
+        // (49 §10): `mmap` removes the copy out of the cache, it does not remove
+        // the SSD. Setting this makes the reads bypass the cache, so the two
+        // arms bracket the answer. Instrument only -- never a product setting.
+        if ProcessInfo.processInfo.environment["TF_EXPERT_NOCACHE"] == "1" {
+            _ = fcntl(openedFD, F_NOCACHE, 1)
+        }
         self.fd = openedFD
         var closeFDOnFailure = true
         defer { if closeFDOnFailure { close(openedFD) } }
