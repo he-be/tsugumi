@@ -1,0 +1,12 @@
+Same shapes under production's tile width and row mixture
+(32 §5: 5.7 experts/tile, rows 1:4036 2:1257 3:818 4:449, one
+dispatch, cap = widest block in the tile). us per tile.
+    width  mixture       F      gate/up      down      both
+        6  111123  704      127.5     145.0     272.5
+        6  111123  768      139.4      81.6     221.0
+       16  1111111111222334  704      335.1     410.8     745.9
+       16  1111111111222334  768      365.2     237.3     602.5
+
+Production against its tail-free neighbour, at this group size:
+  F=704: 2+6 = 8 trips, 440 B/row   vs   F=768: 3+0 = 3 trips, 480 B/row
+  D=2816: 11+0 = 11 trips, 1760 B/row   vs   D=2752: 10+6 = 16 trips, 1720 B/row

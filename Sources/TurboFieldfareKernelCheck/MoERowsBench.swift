@@ -311,6 +311,24 @@ private func encodeMoERows(_ stage: MoERowsStage,
                                    count: moeRowsTileExperts))
 }
 
+/// The row mixture a bs=4 verify block actually hands these kernels.
+///
+/// Instrumenting `encodeStreamedRows` over a 48-slot run reads 6560 blocks
+/// across 1144 tiles -- 5.7 experts per tile -- with row counts
+/// 1:4036 2:1257 3:818 4:449 (mean 1.65), which is
+/// `docs/mtp/32-M8-A-ROWS-SPLIT.md` §5. Width 16 reproduces 31 §5's tile.
+private func productionRowMixture(width: Int) -> [Int] {
+    let share = [1: 0.615, 2: 0.192, 3: 0.125, 4: 0.068]
+    var rows: [Int] = []
+    for r in [4, 3, 2] {
+        let n = Int((Double(width) * share[r]!).rounded())
+        rows.append(contentsOf: [Int](repeating: r, count: n))
+    }
+    // Ones fill the rest, so the tile is exactly `width` experts wide.
+    rows.append(contentsOf: [Int](repeating: 1, count: max(0, width - rows.count)))
+    return rows.sorted()
+}
+
 /// `--moe-rows-bench`: the routed MoE rows kernels at the production shapes.
 func runMoERowsBench(groupSize: Int, iterations: Int) throws {
     let context = try makeContext(groupSize: groupSize)
@@ -417,17 +435,7 @@ func runMoERowsBench(groupSize: Int, iterations: Int) throws {
     // across 1144 tiles -- 5.7 experts per tile -- with row counts
     // 1:4036 2:1257 3:818 4:449 (mean 1.65). Those proportions are what
     // `mixture(width:)` lays down; width 16 reproduces 31 §5's tile.
-    func mixture(width: Int) -> [Int] {
-        let share = [1: 0.615, 2: 0.192, 3: 0.125, 4: 0.068]
-        var rows: [Int] = []
-        for r in [4, 3, 2] {
-            let n = Int((Double(width) * share[r]!).rounded())
-            rows.append(contentsOf: [Int](repeating: r, count: n))
-        }
-        // Ones fill the rest, so the tile is exactly `width` experts wide.
-        rows.append(contentsOf: [Int](repeating: 1, count: max(0, width - rows.count)))
-        return rows.sorted()
-    }
+    func mixture(width: Int) -> [Int] { productionRowMixture(width: width) }
 
     /// One scheme: for each stage, the dispatches to encode as (cap, predicate).
     struct MixScheme {
@@ -616,6 +624,49 @@ func runMoERowsShapeSweep(groupSize: Int, iterations: Int, rowsPerExpert: Int) t
             }
         }
     }
+
+    // The sweep above runs a uniform `r` on sixteen experts. Production does
+    // not: `docs/mtp/32-M8-A-ROWS-SPLIT.md` §5 is the record of a prediction
+    // made on the uniform tile (-17%) that came back -7% on `moe` and -0.2% on
+    // t/s, because production tiles are 5.7 experts wide with a 1:4036 2:1257
+    // 3:818 4:449 row mixture and one pipeline specialized to the widest block.
+    // So weight the shapes by that mixture before quoting a number.
+    print("")
+    print("Same shapes under production's tile width and row mixture")
+    print("(32 §5: 5.7 experts/tile, rows 1:4036 2:1257 3:818 4:449, one")
+    print("dispatch, cap = widest block in the tile). us per tile.")
+    print("    width  mixture       F      gate/up      down      both")
+    for width in [6, 16] {
+        let mix = productionRowMixture(width: width)
+        let cap = mix.max() ?? 1
+        for shape in [704, 768] {
+            moeRowsF = shape
+            let fixture = try makeMoERowsFixture(context: context, groupSize: groupSize)
+            var perStage: [MoERowsStage: Double] = [:]
+            for stage in MoERowsStage.allCases {
+                let name = stage == .gateUp
+                    ? "prefill_moe_rows_gate_up_act" : "prefill_moe_rows_down"
+                let pso = try context.pipeline(name, constants: [
+                    MetalFunctionConstant(index: 16, value: .uint32(UInt32(cap)))
+                ])
+                for pass in 0..<2 {
+                    let seconds = try gpuSecondsThrowing(
+                        context: context, iterations: iterations,
+                        label: "\(stage.rawValue) mix w=\(width) F=\(shape)") { cmd in
+                        encodeMoERows(stage, pso: pso, commandBuffer: cmd,
+                                      fixture: fixture, rowCounts: mix)
+                    }
+                    if pass == 1 { perStage[stage] = seconds * 1e6 }
+                }
+            }
+            let gateUp = perStage[.gateUp] ?? 0
+            let down = perStage[.down] ?? 0
+            print(String(format: "    %5d  %-12@ %4d  %9.1f %9.1f %9.1f",
+                         width, mix.map(String.init).joined() as NSString, shape,
+                         gateUp, down, gateUp + down))
+        }
+    }
+    moeRowsF = savedF
 
     print("")
     print("Production against its tail-free neighbour, at this group size:")
