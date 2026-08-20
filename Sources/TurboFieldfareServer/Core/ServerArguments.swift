@@ -94,15 +94,19 @@ public struct ServerArguments: Equatable, Sendable {
       --model <dir>              Required model directory.
       --port <1...65535>         Loopback port (default 8080).
       --model-id <id>            API model identifier (default gemma-4-26b-a4b-it).
-      --max-context <tokens>     4096, 8192, 16384, 32768, 65536, or 131072
-                                 (default 16384). Only the full-attention layers
-                                 grow with the context, but they grow linearly:
-                                 the KV cache measures 1.97 GB at 65536 and
-                                 3.31 GB at 131072, which has to come out of the
-                                 same Metal working set as the expert cache, so
-                                 a long context wants fewer --expert-cache-slots.
-                                 A combination the device cannot keep resident is
-                                 rejected at load with the arithmetic.
+      -c, --ctx-size <tokens>    Context length (default 16384). Any token count
+                                 is accepted and rounded down to a size this
+                                 machine was measured at: 4096, 8192, 16384,
+                                 32768, 65536, or 131072. /props reports the
+                                 value that survived as n_ctx. Only the
+                                 full-attention layers grow with the context, but
+                                 they grow linearly: the KV cache measures
+                                 1.97 GB at 65536 and 3.31 GB at 131072, which
+                                 has to come out of the same Metal working set as
+                                 the expert cache, so a long context wants fewer
+                                 --expert-cache-slots. A combination the device
+                                 cannot keep resident is rejected at load with
+                                 the arithmetic.
       --queue-limit <count>      Maximum queued requests (default 4).
       --expert-cache-slots <n>   Expert-cache slots: 8, 16, 24, or 32 (default 32).
                                  32 is the operating point and the ceiling: on the
@@ -179,14 +183,32 @@ public struct ServerArguments: Equatable, Sendable {
       --help                     Show this help.
     """
 
-    /// FLAG-4. Flags this server used to take and no longer does, each with the
-    /// sentence that tells an operator what to write instead.
+    /// FLAG-1 / FLAG-4. Flags this server used to take and no longer does, each
+    /// with the sentence that tells an operator what to write instead.
     private static let retiredFlags = [
         "--thinking": "use --reasoning-budget 0 to close the thought channel and "
             + "--reasoning-budget -1 (the default) to leave it open",
         "--prompt-cache-mode": "prompt reuse is per request now; send "
             + "cache_prompt: false to opt a request out",
+        "--max-context": "use -c/--ctx-size <tokens>, the reference "
+            + "implementation's spelling; it takes any token count and rounds "
+            + "down to a size this machine can hold",
     ]
+
+    /// FLAG-2 / DEV-2. The context lengths this machine's KV arithmetic was
+    /// measured at. `-c` takes any token count and rounds it down to one of
+    /// these, so a value between the steps — or past the top — is a size, not
+    /// an error; the reference implementation refuses no `-c` either. The value
+    /// that survives is what `/props` answers with as `n_ctx` (EP-4).
+    public static let supportedContextSizes = [4_096, 8_192, 16_384, 32_768, 65_536, 131_072]
+
+    /// The largest supported size no larger than `requested`. Below the
+    /// smallest there is nothing to round down to, so the smallest is the
+    /// floor: the request was for less context than this runtime is wired for,
+    /// and the answer to that is the least it can give, not a refusal.
+    static func supportedContextSize(roundingDown requested: Int) -> Int {
+        supportedContextSizes.last { $0 <= requested } ?? supportedContextSizes[0]
+    }
 
     // Mirrors the CLI's runtime flags so both binaries accept the same options
     // with the same validation, instead of the server pinning production
@@ -274,12 +296,16 @@ public struct ServerArguments: Equatable, Sendable {
                     throw ServerArgumentError.invalid("--model-id must not be empty")
                 }
                 modelID = value
-            case "--max-context":
-                guard let parsed = Int(value),
-                      [4_096, 8_192, 16_384, 32_768, 65_536, 131_072].contains(parsed) else {
-                    throw ServerArgumentError.invalid("--max-context is not supported")
+            case "-c", "--ctx-size":
+                // FLAG-1: the reference implementation's spelling, both halves
+                // of it. FLAG-2: a free token count, rounded down to a size
+                // this machine can hold rather than refused for missing the
+                // enumeration.
+                guard let parsed = Int(value), parsed > 0 else {
+                    throw ServerArgumentError.invalid(
+                        "--ctx-size must be a positive number of tokens")
                 }
-                maxContext = parsed
+                maxContext = Self.supportedContextSize(roundingDown: parsed)
             case "--queue-limit":
                 guard let parsed = Int(value), parsed > 0 else {
                     throw ServerArgumentError.invalid("--queue-limit must be positive")

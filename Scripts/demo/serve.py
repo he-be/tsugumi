@@ -236,7 +236,7 @@ class ModelServer:
         argv = [str(SERVER_BIN),
                 "--model", str(model_path),
                 "--port", str(self.port),
-                "--max-context", str(MAX_CONTEXT),
+                "--ctx-size", str(MAX_CONTEXT),
                 "--expert-cache-slots", str(self.expert_cache_slots),
                 "--verification", "trusted-install",
                 "--draft-block-size", str(DRAFT_BLOCK_SIZE)]

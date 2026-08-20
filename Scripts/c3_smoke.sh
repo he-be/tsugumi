@@ -24,7 +24,7 @@
 #   .build/release/TurboFieldfareServer \
 #     --model scratch/gemma4-qat.gturbo \
 #     --port 8091 \
-#     --max-context 16384 \
+#     --ctx-size 16384 \
 #     --expert-cache-slots 32 \
 #     --verification trusted-install \
 #     --draft-block-size 4
@@ -242,7 +242,7 @@ error: $BASE_URL が答えない。$(head -1 "$RUN_DIR/health.err" 2>/dev/null)
   .build/release/TurboFieldfareServer \\
     --model scratch/gemma4-qat.gturbo \\
     --port 8091 \\
-    --max-context 16384 \\
+    --ctx-size 16384 \\
     --expert-cache-slots 32 \\
     --verification trusted-install \\
     --draft-block-size 4
@@ -839,7 +839,7 @@ check_dev13() {
     begin DEV-13 "リングより深い巻き戻し → 全 prefill に落ち、答えは正しいまま"
     local needle="TF-4821" base branch answer prompt_tokens cached
     if [ -n "$N_CTX" ] && [ "$N_CTX" -lt $(( REWIND_LIMIT + 1024 )) ]; then
-        skip "コンテキストが足りない: n_ctx=$N_CTX、この検査には $(( REWIND_LIMIT + 1024 )) 以上が要る。--max-context を上げたサーバーで走らせる"
+        skip "コンテキストが足りない: n_ctx=$N_CTX、この検査には $(( REWIND_LIMIT + 1024 )) 以上が要る。--ctx-size を上げたサーバーで走らせる"
         finish; return
     fi
 
@@ -857,7 +857,7 @@ check_dev13() {
     }' > "$RUN_DIR/dev13a.req.json"
     post "$RUN_DIR/dev13a.req.json" dev13a || { finish; return; }
     if [ "$LAST_STATUS" = "400" ] && [ "$(capture '.error.type')" = "exceed_context_size_error" ]; then
-        skip "プロンプトがコンテキストに入らない (ERR-4): $(capture '.error.message'). TF_C3_FILLER_LINES を下げるか --max-context を上げる"
+        skip "プロンプトがコンテキストに入らない (ERR-4): $(capture '.error.message'). TF_C3_FILLER_LINES を下げるか --ctx-size を上げる"
         finish; return
     fi
     expect_status 200 || { finish; return; }
