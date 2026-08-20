@@ -30,8 +30,12 @@ import TurboFieldfare
 // that runs on half the SIMD group's lanes. None of 27 §6's three cuts touched
 // that tail.
 
-private let moeRowsD = 2816
-private let moeRowsF = 704
+// Mutable so `--moe-rows-shape-sweep` can walk the reduced dimension; the
+// values here are production's and are what `--moe-rows-bench` reports.
+// `nonisolated(unsafe)`: the bench is a single-threaded command-line pass that
+// sets these before building a fixture and restores them after.
+nonisolated(unsafe) private var moeRowsD = 2816
+nonisolated(unsafe) private var moeRowsF = 704
 private let moeRowsTopK = 8
 private let moeRowsTileExperts = 16
 private let moeRowsMaxPerExpert = 8
@@ -487,5 +491,140 @@ func runMoERowsBench(groupSize: Int, iterations: Int) throws {
                            total * 1e6, total * 1e6 / Double(width))
         }
         print(line)
+    }
+}
+
+// MARK: - Shape sweep: is the row loop paid per byte or per loop iteration?
+//
+// Both rows kernels reduce over their contracted dimension in blocks of
+// `kPrefillRowsGroupsPerBlock` = 8 affine groups -- 32 lanes x 8 elements each,
+// one 128-byte strip per iteration -- and then walk whatever groups are left
+// over one at a time on `kPrefillRowsTailLanes` = 16 lanes (`prefill.metal`,
+// `prefill_moe_rows_down`). Production leaves `down` a six-group tail
+// (F = 704 = 22 groups = 2 blocks + 6) while `gate/up` divides exactly
+// (D = 2816 = 88 groups = 11 blocks + 0). That asymmetry is what
+// `docs/mtp/31-M8-A-ROWS-BENCH.md` §5 measured as "`down` costs twice `gate/up`
+// for half the bytes", and what `docs/mtp/34-M9-PROPOSAL.md` §2b-1 sends to P2.
+//
+// Walking the reduced dimension separates the two candidate cost models:
+//
+//   * paid per byte      -> time follows `groups`, monotone in the shape
+//   * paid per iteration -> time follows `blocks + tail`, and a *larger* shape
+//     can be *faster*: F = 768 is 24 groups in 3 iterations where F = 704 is
+//     22 groups in 8
+//
+// Only the second model can produce a sawtooth, so the sweep is decisive on its
+// own -- no counters needed to tell "bandwidth floor" from "issue bound", which
+// is the fork 34 §5 attaches its kill condition to.
+//
+// The sweep is controlled: varying F changes what `down` reduces over while its
+// output row count (D) and dispatch grid stay put, and varying D does the same
+// for `gate/up` (whose output is F rows). Same grid, same occupancy, one
+// variable.
+
+private struct MoERowsReduction {
+    let elements: Int
+    let groupSize: Int
+
+    /// `kPrefillRowsGroupsPerBlock` = 256 / group: one iteration of the fast
+    /// loop covers a 128-byte strip, which is 256 quantized elements.
+    var groupsPerBlock: Int { 256 / groupSize }
+    /// `kPrefillRowsTailLanes` = group / 2: at group 32 the tail runs on half
+    /// the SIMD group, at group 64 it fills it.
+    var tailLanes: Int { groupSize / 2 }
+    var groups: Int { elements / groupSize }
+    var wholeBlocks: Int { groups / groupsPerBlock }
+    var tailGroups: Int { groups % groupsPerBlock }
+    /// Inner-loop trips: one per whole block, then one per leftover group.
+    var iterations: Int { wholeBlocks + tailGroups }
+    /// Weight bytes one output row reads: 4-bit weights plus bf16 scale/bias.
+    var bytesPerRow: Int { elements / 2 + groups * 4 }
+}
+
+/// `--moe-rows-shape-sweep`: walk the reduced dimension of one rows kernel.
+func runMoERowsShapeSweep(groupSize: Int, iterations: Int, rowsPerExpert: Int) throws {
+    // Multiples of 64 elements = 2 affine groups, so every point is a legal
+    // shape (`row_bytes = F / 2`, `n_groups = F / kPrefillGroupSize`) and the
+    // tail length steps by two.
+    let downShapes = [512, 576, 640, 704, 768, 832]      // F, production 704
+    let gateUpShapes = [2560, 2624, 2688, 2752, 2816, 2880]  // D, production 2816
+
+    print("=== routed MoE rows kernels, reduced dimension swept "
+            + "(group \(groupSize), \(moeRowsTileExperts) experts/tile, "
+            + "r=\(rowsPerExpert), \(iterations) iterations) ===")
+    print("Blocks of 8 groups run 32 lanes wide; leftover groups run one at a")
+    print("time on 16 lanes. `trips` = blocks + tail = inner-loop iterations.")
+    print("If the kernel is paid per byte, `us/group` is flat and `us/trip` is")
+    print("not. If it is paid per trip, the reverse -- and the sweep is a saw.")
+    print("GB/s is weight traffic against the 135 GB/s floor 20-M4.8 §3 measured")
+    print("on the dense k-row kernels (461 MB in 3.41 ms).")
+
+    let savedD = moeRowsD
+    let savedF = moeRowsF
+    defer { moeRowsD = savedD; moeRowsF = savedF }
+    // One context for the whole sweep: `makeContext` compiles the library and
+    // the per-shape pipelines share its cache, so shape 1 does not pay a cost
+    // shapes 2..n avoid.
+    let context = try makeContext(groupSize: groupSize)
+
+    for stage in MoERowsStage.allCases {
+        let name = stage == .gateUp
+            ? "prefill_moe_rows_gate_up_act" : "prefill_moe_rows_down"
+        let shapes = stage == .gateUp ? gateUpShapes : downShapes
+        let axis = stage == .gateUp ? "D" : "F"
+        print("")
+        print("  \(stage.rawValue)  (reduces over \(axis); output rows stay "
+                + "\(stage == .gateUp ? "F" : "D") = "
+                + "\(stage == .gateUp ? savedF : savedD))")
+            // Weight traffic of one dispatch: 16 experts x output rows x row bytes,
+        // doubled for gate/up because gate and up are separate matrices.
+        let outputRows = stage == .gateUp ? savedF : savedD
+        let matrices = stage == .gateUp ? 2 : 1
+        print("    \(axis)     groups  blocks+tail  trips   B/row"
+                + "        us   us/group   us/trip    GB/s")
+        for shape in shapes {
+            if stage == .gateUp { moeRowsD = shape } else { moeRowsF = shape }
+            let reduction = MoERowsReduction(elements: shape, groupSize: groupSize)
+            // Rebuilt per shape: the blob layout, the activation buffer and the
+            // partials buffer all depend on D and F.
+            let fixture = try makeMoERowsFixture(context: context, groupSize: groupSize)
+            let pso = try context.pipeline(name, constants: [
+                MetalFunctionConstant(index: 16,
+                                      value: .uint32(UInt32(rowsPerExpert)))
+            ])
+            for pass in 0..<2 {   // pass 0 is discarded (PSO, residency)
+                let seconds = try gpuSecondsThrowing(
+                    context: context, iterations: iterations,
+                    label: "\(stage.rawValue) \(axis)=\(shape)") { cmd in
+                    encodeMoERows(stage, pso: pso, commandBuffer: cmd,
+                                  fixture: fixture, rowsPerExpert: rowsPerExpert)
+                }
+                guard pass == 1 else { continue }
+                report(seconds)
+            }
+            func report(_ seconds: Double) {
+                let us = seconds * 1e6
+                let bytes = Double(moeRowsTileExperts * outputRows
+                                    * reduction.bytesPerRow * matrices)
+                print(String(format: "    %-6d %6d  %5d+%-5d %5d  %6d  %8.1f   %8.3f  %8.3f  %6.1f",
+                             shape, reduction.groups, reduction.wholeBlocks,
+                             reduction.tailGroups, reduction.iterations,
+                             reduction.bytesPerRow, us,
+                             us / Double(reduction.groups),
+                             us / Double(reduction.iterations),
+                             bytes / seconds / 1e9))
+            }
+        }
+    }
+
+    print("")
+    print("Production against its tail-free neighbour, at this group size:")
+    for (axis, prod, alt) in [("F", savedF, 768), ("D", savedD, 2752)] {
+        let a = MoERowsReduction(elements: prod, groupSize: groupSize)
+        let b = MoERowsReduction(elements: alt, groupSize: groupSize)
+        print(String(format: "  %@=%d: %d+%d = %d trips, %d B/row   vs   "
+                        + "%@=%d: %d+%d = %d trips, %d B/row",
+                     axis, prod, a.wholeBlocks, a.tailGroups, a.iterations, a.bytesPerRow,
+                     axis, alt, b.wholeBlocks, b.tailGroups, b.iterations, b.bytesPerRow))
     }
 }

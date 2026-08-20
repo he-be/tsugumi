@@ -1366,6 +1366,29 @@ if arguments.contains("--moe-rows-bench") {
     exit(0)
 }
 
+// `--moe-rows-shape-sweep` walks the *reduced* dimension of the same two
+// kernels (F for `down`, D for `gate/up`) with the output grid held fixed.
+// `docs/mtp/34-M9-PROPOSAL.md` §2b-1 / §5 asks whether `moe` is at a bandwidth
+// floor or bound by loop trips; a sawtooth in this sweep can only come from the
+// second, because a larger shape reading more bytes cannot be faster otherwise.
+if arguments.contains("--moe-rows-shape-sweep") {
+    var sweepIterations = 50
+    if let index = arguments.firstIndex(of: "--moe-rows-bench-iterations"),
+       index + 1 < arguments.count,
+       let value = Int(arguments[index + 1]) {
+        sweepIterations = value
+    }
+    var rowsPerExpert = 2  // production averages 1.72 rows/expert at bs=4 (27 §6)
+    if let index = arguments.firstIndex(of: "--moe-rows-r"),
+       index + 1 < arguments.count,
+       let value = Int(arguments[index + 1]), (1...8).contains(value) {
+        rowsPerExpert = value
+    }
+    try runMoERowsShapeSweep(groupSize: groupSizes[0], iterations: sweepIterations,
+                             rowsPerExpert: rowsPerExpert)
+    exit(0)
+}
+
 var results: [CaseResult] = []
 
 func printCases(_ cases: [CaseResult]) {

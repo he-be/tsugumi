@@ -1,0 +1,29 @@
+=== routed MoE rows kernels, reduced dimension swept (group 32, 16 experts/tile, r=4, 50 iterations) ===
+Blocks of 8 groups run 32 lanes wide; leftover groups run one at a
+time on 16 lanes. `trips` = blocks + tail = inner-loop iterations.
+If the kernel is paid per byte, `us/group` is flat and `us/trip` is
+not. If it is paid per trip, the reverse -- and the sweep is a saw.
+GB/s is weight traffic against the 135 GB/s floor 20-M4.8 §3 measured
+on the dense k-row kernels (461 MB in 3.41 ms).
+
+  gate/up  (reduces over D; output rows stay F = 704)
+    D     groups  blocks+tail  trips   B/row        us   us/group   us/trip    GB/s
+    2560       80     10+0        10    1600     481.6      6.020    48.161    74.8
+    2624       82     10+2        12    1640     555.7      6.777    46.312    66.5
+    2688       84     10+4        14    1680     629.5      7.494    44.966    60.1
+    2752       86     10+6        16    1720     702.1      8.164    43.881    55.2
+    2816       88     11+0        11    1760     528.7      6.008    48.063    75.0
+    2880       90     11+2        13    1800     605.4      6.726    46.566    67.0
+
+  down  (reduces over F; output rows stay D = 2816)
+    F     groups  blocks+tail  trips   B/row        us   us/group   us/trip    GB/s
+    512        16      2+0         2     320     298.5     18.654   149.231    48.3
+    576        18      2+2         4     360     469.1     26.060   117.268    34.6
+    640        20      2+4         6     400     642.2     32.108   107.026    28.1
+    704        22      2+6         8     440     813.7     36.985   101.708    24.4
+    768        24      3+0         3     480     411.1     17.129   137.032    52.6
+    832        26      3+2         5     520     576.9     22.188   115.379    40.6
+
+Production against its tail-free neighbour, at this group size:
+  F=704: 2+6 = 8 trips, 440 B/row   vs   F=768: 3+0 = 3 trips, 480 B/row
+  D=2816: 11+0 = 11 trips, 1760 B/row   vs   D=2752: 10+6 = 16 trips, 1720 B/row
