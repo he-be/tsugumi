@@ -121,13 +121,28 @@ The chat template has a thought channel. With it closed the model answers
 directly; with it open the model reasons first and the reasoning comes back in
 its own response field, never mixed into the answer.
 
-`--thinking on` makes reasoning the process default:
+Reasoning is the process default. `--reasoning-budget` decides how much of it
+there is: `-1` (the default) is unlimited, `0` closes the channel entirely, and
+a positive number caps the thought at that many tokens. When the cap is reached
+— or when `max_tokens` leaves too little room for an answer — the server forces
+the closing tag into the stream so the model leaves the thought channel and
+writes an answer. It does not hand back a full `reasoning_content` with an
+empty `content`.
 
 ```bash
+# no reasoning at all
 .build/release/TurboFieldfareServer \
   --model scratch/gemma4-qat.gturbo \
-  --thinking on
+  --reasoning-budget 0
 ```
+
+`--reasoning-format` decides where the thought goes: `auto` (the default) puts
+it in `reasoning_content`, and `none` leaves it in `content` as raw text.
+
+The old `--thinking on|off` flag is gone; the server refuses it by name and
+tells you to use `--reasoning-budget`. Note the change of default that comes
+with it: `--thinking` defaulted to **off**, `--reasoning-budget` defaults to
+**unlimited**, so a client that says nothing now reasons.
 
 A request overrides the default in either of the two spellings clients use:
 
@@ -243,7 +258,7 @@ Pi uses its `openai-completions` adapter:
 pi's thinking toggle send `chat_template_kwargs.enable_thinking`, which this
 server reads; it also reads `reasoning_content` back out of the response. Leave
 `"reasoning": false` if you would rather drive reasoning from the server's
-`--thinking` flag. Pi declares its built-in tools on every request of an
+`--reasoning-budget` flag. Pi declares its built-in tools on every request of an
 interactive session, which the server no longer treats as a reason to skip
 reasoning, so the toggle works in an ordinary session.
 

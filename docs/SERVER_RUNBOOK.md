@@ -192,7 +192,7 @@ Reasoning も使える ([docs/serving/SPEC.md](serving/SPEC.md) MSG-6)。
 
 ### (a) 思考を pi 側から切り替えたい場合の設定
 
-サーバーを `--thinking on` で建てるだけでも思考は効くが、pi の Shift-Tab で
+思考は既定で効く (`--reasoning-budget` の既定は -1 = 無制限)。pi の Shift-Tab で
 切り替えたいなら `~/.pi/agent/models.json` の `local-turbofieldfare` に 2 行足す:
 
 ```jsonc
@@ -218,10 +218,10 @@ Reasoning も使える ([docs/serving/SPEC.md](serving/SPEC.md) MSG-6)。
 ### (b) 通しの確認手順
 
 ```bash
-# 1. サーバー (§1(a) に --thinking on を足す)
+# 1. サーバー (§1(a) のまま。思考は既定で効く)
 .build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo \
   --port 8091 --max-context 16384 --expert-cache-slots 32 \
-  --verification trusted-install --draft-block-size 4 --thinking on
+  --verification trusted-install --draft-block-size 4
 
 # 2. 別ターミナルで pi (対話モード = tools 有効のまま)
 pi --provider local-turbofieldfare --model gemma-4-26b-a4b-it
