@@ -1,6 +1,6 @@
 # 引き継ぎ — サーバー再実装ループ
 
-最終更新: 2026-08-20。ブランチ `macos15-support`。**P1-D2 まで済み**。
+最終更新: 2026-08-21。ブランチ `macos15-support`。**P1 は D3 まで済み** (残り D4/D5)。
 
 この文書は**次のセッションが同じループを再開するための唯一の入口**である。
 仕様は書かない ([SPEC.md](docs/serving/SPEC.md) が唯一の規範)。作業の並べ方も
@@ -38,46 +38,48 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
 | 段 | 状態 |
 | --- | --- |
 | **P0** 要求スキーマ | **済** (`a668197` 赤 → `691de9c` 緑)。C0 41 本緑 |
-| **P1** プロンプトキャッシュ → LCP | **D1 済** (`db52a46`)、**D2 済** (2026-08-20、赤 → 緑の 2 コミット)。**D3〜D5 未着手** |
+| **P1** プロンプトキャッシュ → LCP | **D1〜D3 済** (D2: 2026-08-20、D3: 2026-08-21。いずれも赤 → 緑の 2 コミット)。**残り D4 (画像チャンクを走査内で比較) / D5 (名前を SPEC に合わせる)** |
 | **P2** 生成の拘束 | 未着手 (GEN-3/GEN-4 は暫定 501 で入っている) |
 | **P3** ライフサイクル / EP | 未着手 |
 | **P4** 思考 | 未着手 |
 | **P5** 残り | 未着手 |
 
-`swift test --filter TurboFieldfareServerTests` は **154 本すべて緑**
-(C2 の 8 ケースを含む)。**意図的な赤はもう無い** — 次の赤は D3 の入口で書く。
+`swift test` は **960 本すべて緑** (約 100 秒)。**意図的な赤は無い** —
+次の赤は着手する段の入口で書く。
 
-### 次の一手 = P1-D3
+### 次の一手 — **P2 と D4/D5 のどちらか。P2 を勧める**
 
-**D2 が終わったので順序の縛りは解けた** (CONFORMANCE §3 の警告「D2 より先に
-D3 をやるな」は満たされた)。D3 は `ServerPromptCache` の判定を捨てて
-**トークン列の LCP 1 本**にすること (SPEC CACHE-1〜3、CONFORMANCE §4 の
-「巻き直す」表)。
+P1 は残り 2 つ (D4/D5) だが、どちらも**速いか遅いかの話**である。一方 **P2 は
+「動くか動かないか」**で、`response_format: json_schema` / `json_object` と
+`tool_choice: required` / 名前指定が今は **501 を返して失敗する** (GEN-3/GEN-4)。
+エージェント系クライアント (pi / OpenCode) がこれを使う設定だとタスクが通らない
+ので、害の大きさでは P2 が上である。CONFORMANCE §3 の順序も P2 が先。
 
-- 捨てるもの: 意味ゲート 8 個、**ブリッジ合成** (`encodeContinuation` /
-  `encodeToolResultContinuation` とその呼び出し 2 か所 —
-  `ServerPromptCache.swift:298`/`:356`)、`ServerPromptCacheMiss` の 11 分類
-  (SPEC CACHE-6: 観測値は `cached_tokens` の数字 1 種類だけ)。
-- 置く先: `commonPrefixLength` (P0 で入っている)。CACHE-2 の部分一致と
-  CACHE-3 の「全一致なら末尾 1 トークン捨てて再デコード」も同時に入る。
-- **赤テストの書き方**: C2 は「この 2 要求の LCP は N トークン」としか主張しない
-  (CONFORMANCE §1)。「この形は hit する」を書かない。
-- `ServerPromptCache.publish` (`:153`) が合成する assistant ターンは、
-  LCP になれば要らなくなる。**D2 で `reasoningContent` を足したので、
-  合成を残したままにすると等値比較がずれる** — D3 で消すのが正しい順序。
+**P2 の中身**: JSON schema → 文法で tool call と `response_format` を同じ機構に
+載せ、501 を実挙動に置換する。`GemmaToolSchema` の入口 400 を撤去 (GEN-2)。
+参照実装の一次資料は `server-schema.cpp:251` と `server-common.cpp:1246`
+(**ピンで読むこと** — §6 参照)。
 
-**D2 が測った結果** (D1 の破れ幅がそのまま埋まった。`PromptTokenInvariantTests`):
+**P1 の残り**:
+- **D4** — 画像を LCP 走査の中でチャンク比較する (SPEC CACHE-4、参照実装
+  `server-common.cpp:678`)。今は走査がトークンだけを見て、写真の同一性は
+  `ServerPromptCacheEntry.imageDigests` が**別に**検定している。**2 枚の写真は
+  同じ soft token に展開されるのでトークン走査では区別できない** — この
+  ダイジェスト列を消してから走査を直すのではなく、走査を直してから消す。
+- **D5** — 名前を SPEC に合わせる。
 
-| 形 | KV | D1 の LCP | D2 の LCP |
-| --- | --- | --- | --- |
-| 思考 OFF / tools 無 | 28 | 16 | **28** |
-| 思考 OFF / tools 有 | 65 | 53 | **65** |
-| 思考 ON / tools 無 | 43 | 23 | **43** |
-| 思考 ON / tools 有 | 75 | 55 | **75** |
+### D3 で入った形 (次が壊しやすい場所)
 
-**未確認**: 品質影響 (履歴の思考ブロックを毎回描き直すことをモデルがどう読むか)。
-同梱テンプレートは「最後の user より後」の思考しか描かない設計で、こちらは
-**その guard を意図的に外している**。重み無しでは確認できないので **C3 で見る**。
+- **判定は `ServerPromptCache.match` の 20 行**。`domain` の一致だけが会話と
+  無関係のガードで、あとは `commonPrefixLength` と巻き戻し深さの比較しかない。
+- **巻き戻しの深さは `KVCacheManager.maximumSafeRewind`** (SPEC §12 DEV-13)。
+  既定 2048 = `min(maxContext, 1024 + 2048) - 1024`。
+  **`--prefill-chunk-tokens` を下げるとこの深さも縮む。**
+- **`ServerPromptRenderer.variant` を通らない描画でキャッシュを試すとミスする。**
+  テストが `applyChatTemplate` を既定変種で呼ぶと、KV と一致しない列ができる
+  (D3 のテスト巻き直しで実際に踏んだ)。
+- **深い巻き戻しの正しさは未実測。**式 (`position - N <= capacity - slidingWindow`)
+  からの導出であって、実機で確かめていない。**C3 の課題。**
 
 ## 4. P0 で入った土台 (次の段が乗る場所)
 
@@ -88,7 +90,7 @@ D3 をやるな」は満たされた)。D3 は `ServerPromptCache` の判定を�
 | `ChatMessageValidator` | SPEC §5 と §6 の tools 側だけ。旧 `OpenAIRequestValidator` の残骸 |
 | `ServerError.swift` | ERR-1/ERR-2。`type` を決めれば HTTP 番号は自動で決まる |
 | `ServerPromptRenderer` | テキスト/tools 経路の描画。**サーバーが描く変種はここの `static let variant` 1 か所が決める** |
-| `commonPrefixLength` | CACHE-1 の本体。D3 でキャッシュ判定がこれ 1 行に置き換わる |
+| `commonPrefixLength` | CACHE-1 の本体。**D3 でキャッシュ判定はこれ 1 本になった** |
 | `GFTokenizer.ChatTemplateVariant` | D2 で入った。`.modelBundled` (CLI・アプリ・KernelCheck) と `.serverRedraw` (サーバー) の 2 値。**既定は `.modelBundled`** なので、足した経路を明示的に渡さない限り描画は動かない |
 | `ServerChatTemplate` | リポジトリ所有の jinja (`Sources/TurboFieldfare/Templates/server_chat_template.jinja`)。SPEC §12 DEV-12 |
 
@@ -112,7 +114,7 @@ D3 をやるな」は満たされた)。D3 は `ServerPromptCache` の判定を�
   `repeat_penalty` のみを挙げているため、旧名は R1 で無視される。既存
   クライアントがいるなら「別名を足す」を SPEC に書くところから。
 - **`max_tokens: 0` (prefill のみ) は暫定実装。**生成 0 トークンで即応答するが、
-  KV の暖機はしていない。P1 の LCP 化のあとに詰める。
+  KV の暖機はしていない。LCP 化は済んだので、いつ詰めてもよい。
 - **`--thinking` はまだ残っている** (廃止は FLAG-4 / P4)。内部では
   `ChatRequestDefaults` 経由に変えてあるので、P4 では入口の名前だけの話になる。
 - **`docs/mtp/34-M9-PROPOSAL.md` は未追跡のまま置いてある。**サーバーとは
