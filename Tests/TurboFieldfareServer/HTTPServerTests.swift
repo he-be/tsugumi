@@ -583,7 +583,10 @@ struct HTTPServerTests {
         try await server.shutdown()
     }
 
-    @Test func queueLimitBoundsRequestsBeforePreparation() async throws {
+    /// LIF-4: a full generation slot plus a full queue is 503
+    /// `unavailable_error`. The bound is applied before preparation, so a
+    /// refused request has cost nothing but the parse.
+    @Test func LIF_4_full_slot_and_full_queue_returns_503_unavailable() async throws {
         let backend = AdmissionBlockingPreparationBackend()
         let server = TurboFieldfareHTTPServer(
             modelID: "test-model",
@@ -613,8 +616,10 @@ struct HTTPServerTests {
             timeoutMilliseconds: 1_000,
             condition: { $0.contains(#""code":"queue_full""#) })
         // LIF-4: a full slot and a full queue is a 503 the client should retry,
-        // not a 429 — nothing about the request was wrong.
+        // not a 429 — nothing about the request was wrong. ERR-2 ties the
+        // number to the type.
         #expect(rejected.contains("HTTP/1.1 503 Service Unavailable"))
+        #expect(rejected.contains(#""type":"unavailable_error""#))
         #expect(await backend.preparationCount == 2)
 
         await backend.releaseAll()
