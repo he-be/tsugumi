@@ -533,6 +533,12 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             let contextBox = SendableContext(context)
             let streamState = StreamState()
             let phaseState = RequestPhaseState()
+            // RSP-3 `timings_per_token`. Allocated only for a request that asked
+            // for it: without one the backend takes the ordinary path and no
+            // chunk carries running timings. It is read synchronously from
+            // inside the generation callback, which is the only place the route
+            // can learn anything about a generation it is not awaiting.
+            let monitor = request.timingsPerToken ? ServerTimingsMonitor() : nil
             let startStream: @Sendable () -> Void = {
                 guard request.stream,
                       streamState.start(eventLoop: contextBox.value.eventLoop,
@@ -544,7 +550,10 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                     contextBox.value,
                     self.chunk(id: responseID, created: created, model: responseModel,
                                delta: ["role": "assistant"],
-                               finishReason: nil))
+                               finishReason: nil,
+                               // Nil here by construction: the role chunk is
+                               // written before the first token is drawn.
+                               timings: monitor?.current))
                 streamState.setStartFuture(future)
             }
             let onQueued: @Sendable () -> Void = {
@@ -575,7 +584,9 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                             try Task.checkCancellation()
                             phaseState.set("generating")
                             ServerLog.generating(id: responseID)
-                            return try await backend.generate(prepared) { event in
+                            return try await backend.generate(
+                                prepared, monitor: monitor
+                            ) { event in
                                 guard request.stream else { return }
                                 switch event {
                                 case .content(let text):
@@ -584,21 +595,24 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                         self.chunk(id: responseID, created: created,
                                                    model: responseModel,
                                                    delta: ["content": text],
-                                                   finishReason: nil))
+                                                   finishReason: nil,
+                                                   timings: monitor?.current))
                                 case .reasoning(let text):
                                     self.writeStreamChunk(
                                         contextBox.value,
                                         self.chunk(id: responseID, created: created,
                                                    model: responseModel,
                                                    delta: ["reasoning_content": text],
-                                                   finishReason: nil))
+                                                   finishReason: nil,
+                                                   timings: monitor?.current))
                                 case .toolCall(let call):
                                     self.writeToolCall(contextBox.value,
                                                        id: responseID,
                                                        created: created,
                                                        model: responseModel,
                                                        toolIndex: streamState.nextToolIndex(),
-                                                       call: call)
+                                                       call: call,
+                                                       timings: monitor?.current)
                                 }
                             }
                     })
@@ -661,7 +675,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         if !completion.toolCalls.isEmpty {
             message["tool_calls"] = completion.toolCalls.map(toolCallObject)
         }
-        let object: [String: Any] = [
+        var object: [String: Any] = [
             "id": id,
             "object": "chat.completion",
             "created": created,
@@ -677,6 +691,13 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             // answers with as `build_info`.
             "system_fingerprint": ServerProperties.buildInfo,
         ]
+        // RSP-3: what this completion cost. Absent only for a backend that
+        // measures nothing, which is the stubs and not a loaded model — an
+        // invented `timings` would be worse than a missing one, because the
+        // client's context arithmetic is built on it.
+        if let timings = completion.timings {
+            object["timings"] = timings.jsonObject
+        }
         writeJSON(context, status: .ok, object: object)
     }
 
@@ -717,7 +738,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                created: Int,
                                model: String,
                                toolIndex: Int,
-                               call: ParsedToolCall) {
+                               call: ParsedToolCall,
+                               timings: ServerTimings? = nil) {
         let fragments = utf8Fragments(call.argumentsJSON, maximumBytes: 1024)
         for (index, fragment) in fragments.enumerated() {
             var function: [String: Any] = ["arguments": fragment]
@@ -732,7 +754,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 context,
                 chunk(id: id, created: created, model: model,
                       delta: ["tool_calls": [tool]],
-                      finishReason: nil))
+                      finishReason: nil,
+                      timings: timings))
         }
     }
 
@@ -742,13 +765,18 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                               responseModel: String,
                               completion: ServerCompletion,
                               includeUsage: Bool) {
+        // RSP-3 puts the completion's timings on the *final* chunk, and the
+        // final chunk is the usage one when the request asked for it. The
+        // reference writes them onto `deltas.back()` for the same reason
+        // (`server-task.cpp` at the pin) rather than onto a named chunk.
         writeStreamChunk(
             context,
             chunk(id: id, created: created, model: responseModel,
                   delta: [:],
-                  finishReason: completion.finishReason))
+                  finishReason: completion.finishReason,
+                  timings: includeUsage ? nil : completion.timings))
         if includeUsage {
-            writeStreamChunk(context, [
+            var usageChunk: [String: Any] = [
                 "id": id,
                 "object": "chat.completion.chunk",
                 "created": created,
@@ -756,7 +784,11 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 "choices": [],
                 "usage": usageObject(completion.usage),
                 "system_fingerprint": ServerProperties.buildInfo,
-            ])
+            ]
+            if let timings = completion.timings {
+                usageChunk["timings"] = timings.jsonObject
+            }
+            writeStreamChunk(context, usageChunk)
         }
         let contextBox = SendableContext(context)
         context.eventLoop.execute {
@@ -770,9 +802,10 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                        created: Int,
                        model: String,
                        delta: [String: Any],
-                       finishReason: String?) -> [String: Any] {
+                       finishReason: String?,
+                       timings: ServerTimings? = nil) -> [String: Any] {
         let encodedReason: Any = finishReason.map { $0 as Any } ?? NSNull()
-        return [
+        var object: [String: Any] = [
             "id": id,
             "object": "chat.completion.chunk",
             "created": created,
@@ -788,6 +821,13 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             // only ever sees the stream would otherwise never read it.
             "system_fingerprint": ServerProperties.buildInfo,
         ]
+        // RSP-3. Nil on every chunk but the last, unless the request asked for
+        // `timings_per_token` — in which case this is the monitor's reading at
+        // the moment the token that produced this chunk landed.
+        if let timings {
+            object["timings"] = timings.jsonObject
+        }
+        return object
     }
 
     private func writeStreamChunk(_ context: ChannelHandlerContext,
