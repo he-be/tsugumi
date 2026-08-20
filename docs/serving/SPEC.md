@@ -125,7 +125,7 @@
 | CACHE-1 | 再利用判定は**トークン列の最長共通接頭辞 (LCP) のみ** (参照実装 `server-context.cpp:3125` の `get_common_prefix` 1 行)。会話の形 (role の並び・tools・思考・画像の有無) を判定に使わない。意味ゲートとブリッジ合成 (`ServerPromptCache` の現行設計) は廃止。 |
 | CACHE-2 | **部分一致はそのまま使う。**不一致点から後ろだけを prefill する。all-or-nothing にしない。 |
 | CACHE-3 | 全トークン一致時は末尾 1 トークンを捨てて再デコードする (参照実装 `n_past--`)。 |
-| CACHE-4 | 画像は LCP 走査の中でチャンク (ダイジェスト + トークン数) の一致でまとめて飛ばす (参照実装 `server-common.cpp:678`)。 |
+| CACHE-4 | 画像は LCP 走査の中でチャンク (ダイジェスト + トークン数) の一致でまとめて飛ばす (参照実装 `server-common.cpp:678`)。**それまでの暫定**: 走査はトークンだけを見て、写真が同じであることは entry の**ダイジェスト列**が別に検定する — 2 枚の写真は同じ soft token に展開されるので、走査だけでは区別できない。 |
 | CACHE-5 | 要求ごとの `cache_prompt: false` で不参加 (既定 true)。プロセスフラグ `--prompt-cache-mode` は廃止 (FLAG-4)。 |
 | CACHE-6 | **ミス理由の分類はしない。**観測値は `usage.prompt_tokens_details.cached_tokens` と `timings.cache_n` の数字 1 種類のみ。11 種の `ServerPromptCacheMiss` は削除。 |
 | CACHE-7 | `--cache-reuse` (KV の位置ずらし流用) は当面採らない。LCP が安定してから backlog で検討 (参照実装でも画像経路では無効)。 |
@@ -201,6 +201,7 @@
 | DEV-9 | `top_k` の上限 | INT32_MAX | 256 へ丸め | サンプラ実装の partial-sort 上限。クランプであり拒否ではない | サンプラを一般化したら |
 | DEV-10 | `top_p` のサンプラ写像 | 全語彙で nucleus を取る | `top_p < 1` かつ `top_k` 未指定なら `top_k = 256` を補う。`top_p = 0` は貪欲 (`top_k = 1`) として実行 | サンプラが全語彙 nucleus を実装していない (`GenerationConfig.validate`)。R3 の「範囲外は端に丸める」の延長で、拒否ではない | 全語彙 nucleus を実装したら |
 | DEV-12 | チャットテンプレート | 同梱 `chat_template.jinja` をそのまま描く | **サーバーだけリポジトリ所有の変種**を描く (`Sources/TurboFieldfare/Templates/server_chat_template.jinja`、`GFTokenizer.ChatTemplateVariant.serverRedraw`)。同梱版との差分は 1 ハンク: 完了した model ターンに、生成時に KV へ入っていた thought channel (思考 OFF なら空、思考 ON なら思考ブロック) を描き直す | 同梱版は思考ブロックを「最後の user より後」かつ「`tool_calls` を持つ」ターンにしか描かないので、完了した回答を描き直すと必ず生成時とずれる = INV-1 が破れ、毎ターン LCP が 12〜20+ トークン短くなる。CLI・アプリ・KernelCheck は同梱版のまま (既定 `.modelBundled`) なので、それらのトークン列は 1 ビットも動かない | 同梱テンプレートが完了ターンを生成どおりに描くようになったら |
+| DEV-13 | 部分再利用の深さ | 共通接頭辞ならいくらでも遡って再開できる | **KV カーソルを戻せるのはリングの余裕まで** (`min(maxContext, slidingWindow + prefillChunkTokens) - slidingWindow`、既定 **2048 トークン**)。それより深い分岐は接頭辞を捨てて全 prefill | FP16 リングは SWA 層の物理スロットを `capacity` ごとに再利用するので、`[N, position)` を書いた時点で `[N-capacity, position-capacity)` は潰れている。カーネルが読む `[N-slidingWindow, N)` を守る条件がこの式 (`KVCacheManager.maximumSafeRewind`) | リング容量が変わったら自動で追随する。リングを切れば (`fp16RingEnabled = false`) 制限は消える |
 | DEV-11 | 413 Payload Too Large | 無し (本文上限は 500) | 使わない。本文超過・画像サイズ超過・画像枚数超過はすべて 400 `invalid_request_error` | ERR-2 の型 ↔ HTTP 表に 413 の型が無く、型を増やすより 400 に寄せるほうが面積が小さい | 実クライアントが 413 を区別する必要が出たら |
 
 ## 13. この文書の変え方

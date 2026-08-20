@@ -246,20 +246,16 @@ request chatcmpl-… completed in … finish=tool_calls        ← tool 呼び�
   ほど要る (思考 OFF は 29 トークン)。`maxTokens` を絞りすぎると思考だけで
   尽きて本文が出ない (`finish=length`)。
 - **`cached=0` が続くのは異常。**思考 ON でも画像込みでもプロンプトキャッシュは
-  効く ([docs/serving/SPEC.md](serving/SPEC.md) §7)。
-  2 ターン目以降で `cached=0` が続くなら、完了行の `cache_miss=` が理由を
-  名指しする:
+  効く ([docs/serving/SPEC.md](serving/SPEC.md) §7)。再利用は**トークン列の
+  最長共通接頭辞だけ**で決まるので (CACHE-1)、理由の分類は無い —
+  完了行の `cached=` の数字が唯一の観測値である (CACHE-6)。
+  2 ターン目以降で `cached=0` が続くときに疑うのは 3 つだけ:
 
-  | `cache_miss=` | 意味 |
+  | 疑う先 | 見分け方 |
   | --- | --- |
-  | `no_entry` | 直前の生成がキャッシュを残していない (セッション最初の要求、または直前が途中で切れた) |
-  | `thinking` | 思考 ON/OFF を途中で切り替えた。両モードは prefix を共有しない |
-  | `images` | 同じ会話の前半で写真が変わった |
-  | `history` | 会話の前半が書き換わった (クライアント側の圧縮・要約など) |
-  | `assistant_turn` | クライアントが返した assistant ターンが、サーバーが生成したものと一致しない |
-  | `continuation_shape[…]` | 続きのターンの並びにブリッジが無い。角括弧の中が役割の並びなので、そのまま報告すればよい |
-  | `boundary` / `bridge` | ブリッジは組めたが KV の境界に合わなかった。バグの可能性が高い |
-  | `disabled` | `--prompt-cache-mode off` で起動している |
+  | クライアントが履歴を書き換えている (圧縮・要約) | `cached` が 0 ではなく**途中の値**なら、書き換えた地点まで再利用できている。0 なら先頭から違う |
+  | 要求が `cache_prompt: false` を送っている | 要求本文を見る (CACHE-5) |
+  | 巻き戻し深さを超えた | 分岐点が KV の末尾から 2048 トークン以上前 (SPEC §12 DEV-13)。長い会話の先頭付近を書き換えるとこれになる |
 
 ## 6. よくある失敗
 

@@ -153,13 +153,13 @@ tools, attach a picture, and ask to reason, and the answer comes back with the
 tool calls it decided on, the reasoning separated out, or both.
 
 Prompt reuse works the same with reasoning on: a follow-up turn resumes from
-the cached prefix and prefills only what the turn added. Two things follow from
-that. The modes cannot share a prefix, so switching reasoning on or off mid
-conversation costs one full prefill. And a resumed turn keeps the previous
-turn's reasoning in context, which a fresh render does not — the same
-conversation can answer differently depending on whether it resumed, so a
-caller that needs render-exact behavior should run with
-`--prompt-cache-mode off`.
+the cached prefix and prefills only what the turn added. Reuse is decided by
+the longest common prefix of the token sequences and by nothing else, so
+switching reasoning on or off mid conversation simply shortens that prefix at
+the point where the rendering changes. Hand the reasoning back in
+`reasoning_content` and the prefix survives the turn; drop it and the turn that
+produced it is prefilled again. A caller that wants no reuse at all sends
+`cache_prompt: false`.
 
 ## Connect a client
 
@@ -314,8 +314,11 @@ server reuses the verified KV prefix and reports the number of reused tokens in:
 usage.prompt_tokens_details.cached_tokens
 ```
 
-The server retains one prefix. A different or incompatible history replaces
-it. Use `--prompt-cache-mode off` to disable reuse.
+The server retains one prefix. A history that diverges from it is served up to
+the point where it diverges and prefilled from there — unless the divergence is
+more than 2048 tokens back from the end of the cached prefix, which is as far
+as the KV cursor may move (SPEC §12 DEV-13); past that the prompt is prefilled
+whole. Send `cache_prompt: false` to opt a request out of reuse entirely.
 
 ## Tool calls
 
@@ -391,6 +394,6 @@ process at a time and watch memory pressure.
 
 For long requests, stderr reports the request lifecycle as prepared, queued,
 generating, completed, or failed. It includes token counts and timing, but not
-prompt text, tool arguments, headers, or request bodies. A request that
-prefilled from scratch also reports why, as `cache_miss=<reason>`, so a session
-that keeps re-prefilling can be told apart from a session that simply started.
+prompt text, tool arguments, headers, or request bodies. How much of a prompt
+was served from the cache is the `cached=` count on the completed line, which
+is the same number as `usage.prompt_tokens_details.cached_tokens`.
