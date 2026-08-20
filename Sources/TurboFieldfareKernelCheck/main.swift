@@ -1389,6 +1389,22 @@ if arguments.contains("--moe-rows-shape-sweep") {
     exit(0)
 }
 
+// `--bpw-probe`: the same two kernels with the weight format swept instead of
+// the shape. 43 §2 read `gate/up` as sitting on the 135 GB/s floor; if that is
+// right, dropping the redundant BF16 bias (44 §1) and shrinking the BF16 scale
+// to an 8-bit code against a per-row anchor (44 §2) must show up as time, in
+// proportion to the bytes, with the arithmetic held fixed.
+if arguments.contains("--bpw-probe") {
+    var probeIterations = 50
+    if let index = arguments.firstIndex(of: "--moe-rows-bench-iterations"),
+       index + 1 < arguments.count,
+       let value = Int(arguments[index + 1]) {
+        probeIterations = value
+    }
+    try runBpwProbe(groupSize: groupSizes[0], iterations: probeIterations)
+    exit(0)
+}
+
 var results: [CaseResult] = []
 
 func printCases(_ cases: [CaseResult]) {

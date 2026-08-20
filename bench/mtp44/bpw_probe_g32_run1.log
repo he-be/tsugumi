@@ -1,0 +1,46 @@
+=== routed MoE rows kernels, weight format swept (D=2816 F=704 group 32, 16 experts/tile, 50 iterations) ===
+Same arithmetic in all three: two FMAs per group per row, the same
+`sum` of eight activations, the same activation loads. Only the
+weight-side bytes move. GB/s is weight traffic against the 135 GB/s
+floor 20-M4.8 §3 measured (461 MB in 3.41 ms).
+
+  format   scale/group   B/row (gate/up, down)      bpw   expert blob
+  affine    32.00 b     1760     440          5.000     3717120 B
+  sym    16.00 b     1584     396          4.500     3345408 B
+  sym8     8.00 b     1497     375          4.253     3163776 B
+  sym9     9.09 b     1509     381          4.287     3197568 B
+
+us per dispatch of one 16-expert tile, uniform r rows on every expert.
+`vs affine` is the change against production's format at the same r.
+
+  gate/up  (reduces over D = 2816, 88 groups, output 704 rows)
+    format       r=1      r=2      r=4   |  GB/s r=2  |  vs affine r=1/2/4
+    affine    408.6    293.5    526.7   |     135.1  |     .    .    .
+    sym    266.3    263.7    516.4   |     135.3  |  -34.8% -10.2%  -2.0%
+    sym8    251.6    250.2    530.8   |     134.8  |  -38.4% -14.7%  +0.8%
+    sym9    252.3    251.2    538.7   |     135.3  |  -38.2% -14.4%  +2.3%
+
+  down  (reduces over F = 704, 22 groups, output 2816 rows)
+    format       r=1      r=2      r=4   |  GB/s r=2  |  vs affine r=1/2/4
+    affine    167.4    216.3    794.4   |      91.6  |     .    .    .
+    sym    150.2    200.6    783.9   |      89.0  |  -10.3%  -7.3%  -1.3%
+    sym8    155.0    215.3    818.1   |      78.5  |   -7.4%  -0.5%  +3.0%
+    sym9    187.1    248.5    844.3   |      69.1  |  +11.7% +14.8%  +6.3%
+
+  numerical agreement (one expert, r=2; `act` for gate/up, `route_partials` for down)
+    sym8 scale codes alone:   max 0.7752%   rms 0.4096%   bit-exact 50.04% of groups
+    sym9 scale codes alone:   max 0.0000%   rms 0.0000%   bit-exact 100.00% of groups
+    sym   vs affine   gate/up  max 0.0000%  rms 0.0000%   |   down  max 0.0003%  rms 0.0000%
+    sym8  vs sym   gate/up  max 6.8410%  rms 0.7027%   |   down  max 2.0113%  rms 0.4200%
+    sym9  vs sym   gate/up  max 0.0000%  rms 0.0000%   |   down  max 0.0000%  rms 0.0000%
+
+  production row mixture (32 §5: 5.7 experts/tile, rows 1:4036 2:1257 3:818 4:449; one dispatch, cap = widest block)
+    width  mixture         format    gate/up      down      both   vs affine
+        6  111123  affine     119.2     140.6     259.8        .
+        6  111123  sym     107.4     134.5     241.9     -6.9%
+        6  111123  sym8     111.4     143.1     254.5     -2.0%
+        6  111123  sym9     113.9     151.6     265.5     +2.2%
+       16  1111111111222334  affine     317.6     401.8     719.4        .
+       16  1111111111222334  sym     288.1     396.6     684.6     -4.8%
+       16  1111111111222334  sym8     296.3     418.8     715.1     -0.6%
+       16  1111111111222334  sym9     307.8     448.2     756.1     +5.1%
