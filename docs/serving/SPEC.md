@@ -190,7 +190,7 @@
 
 | ID | 規範 |
 | --- | --- |
-| FLAG-1 | 参照実装に同名概念があるフラグは名前を合わせる: `-c/--ctx-size` (旧 `--max-context`)、`--reasoning-budget`、`--reasoning-format`。 |
+| FLAG-1 | 参照実装に同名概念があるフラグは名前を合わせる: `-c/--ctx-size` (旧 `--max-context`)、`--reasoning-budget`、`--reasoning-format`。**旧名は別名として残さず退役させる**が、`--thinking` と同じく**名指しで断って新しい綴りを案内する** — 「不明なフラグ」で突き放すと、動く命令行を持った運用者がどこを直せばよいか分からない。リポジトリの中の呼び出し元 (`Scripts/`、`docs/`) は同じ変更で追随させる。 |
 | FLAG-2 | `--ctx-size` は自由な整数を受け、この機体で確保できる対応値へ**下に丸める** (§12 DEV-2)。実効値は `/props` の `n_ctx` で分かる。列挙外を 400 で拒否しない。`--expert-cache-slots` も同様に丸める。 |
 | FLAG-3 | 機体・エンジン固有で参照実装に対応物が無いフラグはそのまま: `--expert-cache-slots` `--expert-cache-policy` `--draft-block-size` `--prefill` `--prefill-chunk-tokens` `--image-tokens` `--max-image-*` `--verification` `--rdadvise` `--model-id` `--queue-limit`。 |
 | FLAG-4 | 廃止: `--thinking` (→ `--reasoning-budget`)、`--prompt-cache-mode` (→ 要求ごとの `cache_prompt`)。 |
