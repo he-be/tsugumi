@@ -81,6 +81,37 @@ import TurboFieldfareValidationSupport
         func accept(tokenID: Int32) throws { accepted.append(tokenID) }
     }
 
+    /// The shape a real grammar has, which the other stubs do not: it knows
+    /// nothing about stop tokens, so it rejects them like any other id that does
+    /// not continue the structure, and once the structure is complete nothing
+    /// continues it at all. `accept` on an id it did not allow is a hard error —
+    /// the reference's "no surviving stacks".
+    final class GrammarLikeConstraint: GenerationConstraint, @unchecked Sendable {
+        struct NoSurvivingStacks: Error {}
+
+        private let body: [Int32]
+        private(set) var accepted: [Int32] = []
+        private(set) var maskFills = 0
+
+        init(_ body: [Int32]) { self.body = body }
+
+        var mayEndHere: Bool { accepted.count >= body.count }
+
+        func allows(tokenID: Int32) -> Bool {
+            accepted.count < body.count && tokenID == body[accepted.count]
+        }
+
+        func fillAllowedMask(_ allowed: UnsafeMutableBufferPointer<Bool>) throws {
+            maskFills += 1
+            for i in 0..<allowed.count { allowed[i] = allows(tokenID: Int32(i)) }
+        }
+
+        func accept(tokenID: Int32) throws {
+            guard allows(tokenID: tokenID) else { throw NoSurvivingStacks() }
+            accepted.append(tokenID)
+        }
+    }
+
     /// The pathological state GEN-7 calls an error: nothing at all is allowed.
     final class RejectEverythingConstraint: GenerationConstraint, @unchecked Sendable {
         var mayEndHere: Bool { false }
@@ -275,8 +306,10 @@ import TurboFieldfareValidationSupport
 
     // MARK: - GEN-7: accept
 
-    /// `accept` sees exactly the tokens the loop kept, in order, including the
-    /// stop token that ends generation.
+    /// `accept` sees exactly the tokens the loop kept, in order. The loop hands
+    /// every one of them to the gate, including the token that ends generation;
+    /// the gate withholds that one when it is an end-of-generation id the
+    /// constraint never ruled on.
     @Test func GEN_7_acceptReceivesEveryGeneratedTokenInOrder() async throws {
         let tok = try await GFTokenizer.load()
         let idA = tok.encode("a", addBOS: false).first!
@@ -291,7 +324,7 @@ import TurboFieldfareValidationSupport
                                                                  temperature: 0),
                                         constraint: constraint)
         #expect(outcome.emitted == [idA, idB])
-        #expect(constraint.accepted == [idA, idB, tok.endOfTurnID])
+        #expect(constraint.accepted == [idA, idB])
         #expect(outcome.result.newTokens == 3)
     }
 
@@ -314,7 +347,75 @@ import TurboFieldfareValidationSupport
         #expect(outcome.result.reason == .endOfTurn)
         #expect(outcome.result.newTokens == 4)
         #expect(constraint.maskFills == 3, "the stop token was withheld \(constraint.maskFills) times")
-        #expect(constraint.accepted == [idA, idA, idA, tok.endOfTurnID])
+        #expect(constraint.accepted == [idA, idA, idA])
+    }
+
+    /// An end-of-generation id is never run through the constraint: it is
+    /// allowed iff the constraint may end here, on the probe and on the mask
+    /// alike. The reference excludes eog ids from the candidate set entirely
+    /// (`llama_grammar_apply_impl`) — they are decided by `allow_eog` and by
+    /// nothing else.
+    @Test func GEN_7_endOfGenerationBypassesTheConstraintOnProbeAndMask() throws {
+        let eog: Set<Int32> = [1, 2]
+
+        // Mid-structure: the stop ids are masked, the grammar's own id is not.
+        let mid = GrammarLikeConstraint([5, 6])
+        let midGate = ConstraintGate(constraint: mid, endOfGenerationTokenIDs: eog)
+        #expect(midGate.allows(1) == false)
+        #expect(midGate.allows(5) == true)
+        #expect(midGate.allows(6) == false)
+
+        // Complete: the stop ids are allowed even though the grammar itself
+        // rejects everything, and the grammar's ids stay rejected.
+        let done = GrammarLikeConstraint([])
+        let doneGate = ConstraintGate(constraint: done, endOfGenerationTokenIDs: eog)
+        #expect(doneGate.allows(1) == true)
+        #expect(doneGate.allows(2) == true)
+        #expect(doneGate.allows(5) == false)
+
+        var midMask = [Bool](repeating: false, count: 8)
+        try midMask.withUnsafeMutableBufferPointer { try midGate.fillAllowedMask($0) }
+        #expect(midMask[1] == false)
+        #expect(midMask[5] == true)
+
+        var doneMask = [Bool](repeating: false, count: 8)
+        try doneMask.withUnsafeMutableBufferPointer { try doneGate.fillAllowedMask($0) }
+        #expect(doneMask[1] == true)
+        #expect(doneMask[2] == true)
+        #expect(doneMask[5] == false)
+    }
+
+    /// The stop token that ends a completed constraint is not handed to the
+    /// constraint at all — a real one has no state left to advance and throws.
+    /// (`llama_grammar_accept_impl` returns early for an eog token whenever a
+    /// stack is empty.)
+    @Test func GEN_7_endOfGenerationIsNotForwardedToTheConstraint() throws {
+        let done = GrammarLikeConstraint([])
+        let gate = ConstraintGate(constraint: done, endOfGenerationTokenIDs: [1, 2])
+        try gate.accept(1)
+        #expect(done.accepted.isEmpty)
+    }
+
+    /// End to end: a constraint that has been satisfied can terminate. Every
+    /// non-stop id is rejected at that point, so the stop token is the only way
+    /// out — and it has to be allowed, accepted, and reported as the reason.
+    @Test func GEN_7_completedConstraintCanStop() async throws {
+        let tok = try await GFTokenizer.load()
+        let idA = tok.encode("a", addBOS: false).first!
+        let idB = tok.encode("b", addBOS: false).first!
+        let next: [Int32: Int32] = [idA: idB, idB: tok.endOfTurnID]
+        let producer = ScriptedLogitProducer(vocabSize: tok.vocabSize) { input, _ in
+            .argmax(next[input] ?? idA)
+        }
+        let constraint = GrammarLikeConstraint([idA, idB])
+        let outcome = try await runLoop(producer: producer, tokenizer: tok,
+                                        config: GenerationConfig(maxNewTokens: 20,
+                                                                 temperature: 0),
+                                        constraint: constraint)
+        #expect(outcome.emitted == [idA, idB])
+        #expect(outcome.result.reason == .endOfTurn)
+        #expect(outcome.result.newTokens == 3)
+        #expect(constraint.accepted == [idA, idB])
     }
 
     /// The caller's own extra stop tokens follow the same rule.
@@ -333,7 +434,7 @@ import TurboFieldfareValidationSupport
                                         constraint: constraint)
         #expect(outcome.emitted == [idA, idA])
         #expect(outcome.result.reason == .eos)
-        #expect(constraint.accepted == [idA, idA, idB])
+        #expect(constraint.accepted == [idA, idA])
     }
 
     // MARK: - GEN-7: no token at all
