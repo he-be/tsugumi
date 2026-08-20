@@ -225,6 +225,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private let maximumBodyBytes: Int
     private let childChannels: ChildChannelRegistry
     private var head: HTTPRequestHead?
+    /// FLAG-6: the `Origin` of the request being answered, or nil.
+    private var requestOrigin: String?
     private var body = ByteBuffer()
     private var oversized = false
     private var activeTask: Task<Void, Never>?
@@ -256,6 +258,10 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         switch unwrapInboundIn(data) {
         case .head(let head):
             self.head = head
+            // FLAG-6: kept for the whole request, because the response head may
+            // be written long after this — a completion answers from its own
+            // task, and a stream writes its head later still.
+            requestOrigin = head.headers.first(name: "origin")
             body.clear()
             oversized = false
         case .body(var part):
@@ -292,6 +298,19 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                        context: ChannelHandlerContext) {
         let path = head.uri.split(separator: "?", maxSplits: 1,
                                   omittingEmptySubsequences: false).first.map(String.init) ?? head.uri
+        // FLAG-6 / LIF-6: preflight is answered ahead of the load gate and
+        // ahead of the key, and identically for every path. A browser that
+        // cannot preflight cannot read the 503 either, so stopping here would
+        // keep it from even showing that the model is still loading; and it
+        // never puts an `Authorization` on a preflight, so the key cannot
+        // stand in front of it either (FLAG-5). Answering the same way for a
+        // route that exists, one this server does not adopt and one it has
+        // never heard of is what keeps the routing table unreadable from
+        // preflight (EP-7).
+        if head.method == .OPTIONS, corsPolicy.isEnabled {
+            writePreflight(context)
+            return
+        }
         // LIF-2: nothing is answered from the model's side until there is one,
         // and that includes the routes that never touch it — the reference
         // implementation refuses the same way, from a middleware ahead of its
@@ -359,6 +378,39 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                        OpenAIErrorEnvelope(message: "route not found",
                                            type: .notFound,
                                            code: "not_found"))
+        }
+    }
+
+    /// FLAG-6. The origin header pair, on every response this server writes.
+    ///
+    /// `Access-Control-Allow-Credentials` is never among them: this server's
+    /// authentication is a header a client sets on purpose, not a cookie a
+    /// browser attaches by itself, so there is no credentialed cross-origin
+    /// request to allow.
+    private func addCORSHeaders(to headers: inout HTTPHeaders) {
+        guard let allowed = corsPolicy.allowOrigin(for: requestOrigin) else { return }
+        headers.add(name: "access-control-allow-origin", value: allowed)
+        if corsPolicy.variesByOrigin {
+            headers.add(name: "vary", value: "Origin")
+        }
+    }
+
+    /// FLAG-6's preflight answer: the same one for every path, with an empty
+    /// body. What it advertises is this server's own verb set — there is no
+    /// DELETE — and the three headers a client of ours actually sends.
+    private func writePreflight(_ context: ChannelHandlerContext) {
+        var headers = HTTPHeaders()
+        addCORSHeaders(to: &headers)
+        headers.add(name: "access-control-allow-methods", value: "GET, POST, OPTIONS")
+        headers.add(name: "access-control-allow-headers",
+                    value: "authorization, content-type, x-api-key")
+        headers.add(name: "content-length", value: "0")
+        let contextBox = SendableContext(context)
+        context.eventLoop.execute {
+            contextBox.value.write(self.wrapOutboundOut(.head(
+                HTTPResponseHead(version: .http1_1, status: .ok, headers: headers))),
+                promise: nil)
+            contextBox.value.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
         }
     }
 
@@ -637,6 +689,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         headers.add(name: "content-type", value: "text/event-stream")
         headers.add(name: "cache-control", value: "no-cache")
         headers.add(name: "connection", value: "keep-alive")
+        addCORSHeaders(to: &headers)
         let head = HTTPResponseHead(version: .http1_1, status: .ok, headers: headers)
         let contextBox = SendableContext(context)
         let promise = context.eventLoop.makePromise(of: Void.self)
@@ -820,6 +873,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             var headers = HTTPHeaders()
             headers.add(name: "content-type", value: "application/json")
             headers.add(name: "content-length", value: "\(data.count)")
+            self.addCORSHeaders(to: &headers)
             contextBox.value.write(self.wrapOutboundOut(.head(
                 HTTPResponseHead(version: .http1_1, status: status, headers: headers))),
                 promise: nil)

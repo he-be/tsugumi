@@ -26,6 +26,33 @@ public enum ServerCORSPolicy: Equatable, Sendable {
     /// that matched comes back — returning the list verbatim, as the reference
     /// does, is a value no browser accepts (DEV-20).
     case origins([String])
+
+    /// The `Access-Control-Allow-Origin` for a request that presented this
+    /// `Origin`, or nil for no header at all. A request that matches nothing is
+    /// still answered — CORS is enforced by the browser, and refusing here
+    /// would break every non-browser client that happens to send an `Origin`.
+    public func allowOrigin(for requestOrigin: String?) -> String? {
+        switch self {
+        case .disabled:
+            nil
+        case .any:
+            "*"
+        case .origins(let allowed):
+            requestOrigin.flatMap { allowed.contains($0) ? $0 : nil }
+        }
+    }
+
+    /// Whether the answer depends on the request's `Origin`. `*` does not, so
+    /// it needs no `Vary`.
+    public var variesByOrigin: Bool {
+        if case .origins = self { return true }
+        return false
+    }
+
+    /// Whether `OPTIONS` is a preflight at all. Without the flag it is not:
+    /// answering a preflight with no `Access-Control-Allow-Origin` tells a
+    /// browser nothing it can use, so the verb stays what it is today.
+    public var isEnabled: Bool { self != .disabled }
 }
 
 public struct ServerArguments: Equatable, Sendable {
@@ -291,9 +318,11 @@ public struct ServerArguments: Equatable, Sendable {
                 }
                 apiKeys.append(contentsOf: keys)
             case "--cors-origins":
-                // Not implemented yet — the flag is checked so a bad value
-                // still fails at startup, but nothing is carried through.
-                if value.trimmingCharacters(in: .whitespaces) != "*" {
+                // FLAG-6. `*` or a comma-separated list; the list is matched
+                // against the request's `Origin` rather than sent as-is.
+                if value.trimmingCharacters(in: .whitespaces) == "*" {
+                    corsPolicy = .any
+                } else {
                     let origins = value.split(separator: ",")
                         .map { $0.trimmingCharacters(in: .whitespaces) }
                         .filter { !$0.isEmpty }
@@ -301,6 +330,7 @@ public struct ServerArguments: Equatable, Sendable {
                         throw ServerArgumentError.invalid(
                             "--cors-origins must be * or a comma-separated list of origins")
                     }
+                    corsPolicy = .origins(origins)
                 }
             case "--thinking":
                 guard let parsed = ServerThinkingPolicy(rawValue: value) else {

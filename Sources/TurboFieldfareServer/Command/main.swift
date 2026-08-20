@@ -35,7 +35,10 @@ do {
             chatTemplate: try ServerChatTemplate.jinja()),
         // FLAG-5. Empty unless the operator asked for a key, in which case the
         // 127.0.0.1 bind stays the whole defence exactly as it is today.
-        apiKeys: arguments.apiKeys)
+        apiKeys: arguments.apiKeys,
+        // FLAG-6. Disabled unless the operator named origins, so nothing about
+        // a browser's reach changes for anyone who passes neither flag.
+        corsPolicy: arguments.corsPolicy)
     // LIF-1: the port opens before the model does, and everything answers 503
     // `unavailable_error` until the load lands (LIF-2). The load takes tens of
     // seconds; a client that connects during it is told the server is coming
