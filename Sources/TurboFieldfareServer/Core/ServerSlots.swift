@@ -69,11 +69,21 @@ public struct ServerMetricsSnapshot: Equatable, Sendable {
     }
 
     /// `llamacpp:prompt_tokens_seconds`.
-    public var promptTokensPerSecond: Double { 0 }
+    public var promptTokensPerSecond: Double {
+        promptSecondsTotal > 0 ? Double(promptTokensTotal) / promptSecondsTotal : 0
+    }
 
     /// `llamacpp:predicted_tokens_seconds`.
-    public var predictedTokensPerSecond: Double { 0 }
+    public var predictedTokensPerSecond: Double {
+        predictedSecondsTotal > 0 ? Double(predictedTokensTotal) / predictedSecondsTotal : 0
+    }
 
     /// One finished completion added to the running totals.
-    public func adding(_ timings: ServerTimings) -> ServerMetricsSnapshot { self }
+    public func adding(_ timings: ServerTimings) -> ServerMetricsSnapshot {
+        ServerMetricsSnapshot(
+            promptTokensTotal: promptTokensTotal + timings.promptTokens,
+            promptSecondsTotal: promptSecondsTotal + timings.promptMilliseconds / 1_000,
+            predictedTokensTotal: predictedTokensTotal + timings.predictedTokens,
+            predictedSecondsTotal: predictedSecondsTotal + timings.predictedMilliseconds / 1_000)
+    }
 }

@@ -470,7 +470,9 @@ public actor ServerCoordinator {
     /// thing that knows whether the one generation slot (DEV-3) is busy and how
     /// many requests are stacked behind it.
     public var queueState: ServerQueueState {
-        ServerQueueState(slots: [], processingCount: 0, deferredCount: 0)
+        ServerQueueState(slots: [ServerSlotState(id: 0, isProcessing: active)],
+                         processingCount: active ? 1 : 0,
+                         deferredCount: waiters.count)
     }
 }
 
@@ -1069,6 +1071,11 @@ public actor ServerModelSession: ServerInferenceBackend {
                                 vision: vision)
         }
         completed = true
+        // EP-6 `/metrics`: the totals are the sum of what RSP-3 reported for
+        // each finished completion, and of nothing else. (The `max_tokens: 0`
+        // exit above adds nothing — it decodes no token and spends no time.)
+        let timings = ServerTimings(result)
+        accumulatedMetrics = accumulatedMetrics.adding(timings)
         return ServerCompletion(
             content: content,
             toolCalls: calls,
@@ -1083,7 +1090,7 @@ public actor ServerModelSession: ServerInferenceBackend {
             // RSP-3. The authoritative measurement is the decode loop's own,
             // which is why the finished response never carries the running one
             // the monitor published.
-            timings: ServerTimings(result))
+            timings: timings)
     }
 
     private func renderPrompt(
