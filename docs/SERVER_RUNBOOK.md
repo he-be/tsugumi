@@ -243,11 +243,22 @@ request chatcmpl-… completed in … finish=stop reasoning=1246B
 request chatcmpl-… completed in … finish=tool_calls        ← tool 呼び出し
 ```
 
+**「詰まってないか」は stderr で見るのをやめてよい。**`--metrics` を付けて
+建てれば `GET /metrics` が累積のトークン数と秒数を返し、`GET /slots` が
+生成スロットが塞がっているかを返す (`--no-slots` で切れる)。
+
+```bash
+curl -s http://127.0.0.1:8091/slots     # [{"id":0,"is_processing":false}]
+curl -s http://127.0.0.1:8091/metrics   # Prometheus 形式
+```
+
 **思考 ON のときの注意 2 つ:**
 
 - **生成予算を食う。**画像 1 枚の説明で思考が 1,200 字・生成 479 トークン
-  ほど要る (思考 OFF は 29 トークン)。`maxTokens` を絞りすぎると思考だけで
-  尽きて本文が出ない (`finish=length`)。
+  ほど要る (思考 OFF は 29 トークン)。`maxTokens` を絞ると思考の締切が早まり、
+  サーバーが終了タグを差し込んで本文へ移らせる (SPEC RSN-4) — **本文 0 字で
+  `finish=length` にはならない**。答えのために `max_tokens` の 1/4 を
+  取り置く (DEV-21)。
 - **`cached=0` が続くのは異常。**思考 ON でも画像込みでもプロンプトキャッシュは
   効く ([docs/serving/SPEC.md](serving/SPEC.md) §7)。再利用は**トークン列の
   最長共通接頭辞だけ**で決まるので (CACHE-1)、理由の分類は無い —
@@ -264,6 +275,7 @@ request chatcmpl-… completed in … finish=tool_calls        ← tool 呼び�
 
 | 症状 | 原因と対処 |
 | --- | --- |
+| `/slots` が 501 | `--no-slots` で建てた。`/metrics` が 501 なら `--metrics` を付けずに建てた (既定で切ってある) |
 | `exit 2` + usage が出る | フラグの値が受け付けられない。**`-c/--ctx-size` と `--expert-cache-slots` は列挙で断らず、この機体が確保できる値へ下に丸める** (SPEC FLAG-2 / DEV-2) — 断られるのは 0 と負のときだけ。実効値は `/props` の `n_ctx` で読める。列挙で断るのは `--draft-block-size` (0 または 2...8) と `--prefill-chunk-tokens` |
 | `exceeds this device's recommended Metal working set` | §2。スロットを 1 段下げる |
 | `--draft-block-size 4 requires --prefill on` | MTP はチャンク prefill の経路を通る。`--prefill off` とは併用できない |

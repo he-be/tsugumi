@@ -72,10 +72,21 @@ defaults. See [Runtime controls](RUNTIME_CONTROLS.md) for what each one does.
 
 Without these flags the server runs the production defaults: 48 expert-cache
 slots, LFU eviction, chunked prefill on with 2048-token chunks, and read advice
-off. Values are validated before the model loads, so an unsupported one exits
-with the usage text rather than failing partway through startup. Chunked
-prefill needs at least 16 expert-cache slots, so `--expert-cache-slots 8`
-requires `--prefill off`.
+off. Values are validated before the model loads, so an unusable one exits with
+the usage text rather than failing partway through startup — but `-c/--ctx-size`
+and `--expert-cache-slots` are **rounded down** to a value this machine can hold
+rather than refused, and `/props` reports the effective `n_ctx`. Chunked prefill
+needs at least 16 expert-cache slots, so `--expert-cache-slots 8` requires
+`--prefill off`.
+
+Four flags govern the surface rather than the model:
+
+| Flag | Default | What it does |
+| --- | --- | --- |
+| `--api-key <key>[,<key>]` | none | Requires `Authorization: Bearer <key>` (or `X-Api-Key`) on everything except `/health` and `/v1/models`. Repeat the flag to add more keys. |
+| `--cors-origins <origin>[,<origin>]` | none | Sends CORS headers for those origins only. With no flag the server sends none, and the 127.0.0.1 bind is the whole defence. |
+| `--slots` / `--no-slots` | on | Whether `GET /slots` answers. |
+| `--metrics` | off | Whether `GET /metrics` answers. |
 
 The settings are fixed for the life of the process. Restart the server to
 change them.
@@ -375,13 +386,29 @@ Endpoints:
 - `GET /v1/models`, `GET /models`
 - `POST /v1/chat/completions`, `POST /chat/completions`
 - `GET /props` — the effective defaults, the context length actually in force,
-  the chat template, and `modalities`. A client that wants to know what this
-  server can do reads this rather than guessing.
+  the chat template, `build_info`, and `modalities`. A client that wants to know
+  what this server can do reads this rather than guessing.
+- `POST /tokenize`, `POST /detokenize`, `POST /apply-template` — token counts
+  before you send, and the exact prompt this server would render for a
+  conversation. `/apply-template` renders with the template the server actually
+  uses, not the one bundled with the model.
+- `GET /slots`, `GET /metrics` — whether the one generation slot is busy, and
+  cumulative token/second counters in Prometheus text format. **Both are gated
+  at startup**: `/slots` is on unless you pass `--no-slots`, `/metrics` is off
+  unless you pass `--metrics`. A gated-off endpoint answers 501 and names the
+  flag that opens it.
 
 A path this server knowingly does not serve — `/v1/embeddings`, `/v1/responses`,
 `/v1/completions` and the rest of the list in
-[SPEC §3](serving/SPEC.md) — answers **501** `not_supported_error`. Only a path
-that means nothing here is a 404.
+[SPEC §3](serving/SPEC.md) — answers **501** `not_supported_error`, as does an
+endpoint whose startup flag is off. Only a path that means nothing here is a 404.
+
+Every response carries `system_fingerprint`, which identifies the running
+build and is the same string `/props` reports as `build_info`. Every response
+also carries `timings` — the prompt and prediction token counts, milliseconds,
+and rates — on the non-stream body and on the last SSE chunk; send
+`"timings_per_token": true` to get one on every chunk. Context usage is
+`timings.prompt_n + timings.cache_n + timings.predicted_n`.
 
 Chat Completions supports JSON and Server-Sent Events responses. Set
 `"stream": true` for streaming. Set
