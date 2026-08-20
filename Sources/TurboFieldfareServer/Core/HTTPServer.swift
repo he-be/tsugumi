@@ -20,7 +20,7 @@ public actor TurboFieldfareHTTPServer {
 
     private let group: MultiThreadedEventLoopGroup
     private let modelID: String
-    private let backend: any ServerInferenceBackend
+    private let readiness: ServerReadiness
     private let coordinator: ServerCoordinator
     private let heartbeatInterval: TimeAmount
     private let imagePolicy: ServerImagePolicy
@@ -31,23 +31,34 @@ public actor TurboFieldfareHTTPServer {
 
     public init(modelID: String,
                 queueLimit: Int,
-                backend: any ServerInferenceBackend,
+                backend: (any ServerInferenceBackend)?,
                 heartbeatInterval: TimeAmount = .seconds(5),
                 imagePolicy: ServerImagePolicy = .default,
                 defaults: ChatRequestDefaults = ChatRequestDefaults(),
                 group: MultiThreadedEventLoopGroup = .init(numberOfThreads: 1)) {
         self.group = group
         self.modelID = modelID
-        self.backend = backend
+        self.readiness = ServerReadiness(backend)
         self.coordinator = ServerCoordinator(queueLimit: queueLimit)
         self.heartbeatInterval = heartbeatInterval
         self.imagePolicy = imagePolicy
         self.defaults = defaults
     }
 
+    /// LIF-2 → LIF-3. The load finished and the endpoints may answer from the
+    /// model. Until this is called the server is listening but not ready, which
+    /// is the whole point of LIF-1: the client sees a status, never a refused
+    /// connection.
+    public func modelDidLoad(_ backend: any ServerInferenceBackend) {
+        readiness.modelDidLoad(backend)
+    }
+
+    /// LIF-3: whether the load has landed.
+    public var isReady: Bool { readiness.backend != nil }
+
     public func start(port: Int) async throws -> Channel {
         let modelID = self.modelID
-        let backend = self.backend
+        let readiness = self.readiness
         let coordinator = self.coordinator
         let heartbeatInterval = self.heartbeatInterval
         let imagePolicy = self.imagePolicy
@@ -64,7 +75,7 @@ public actor TurboFieldfareHTTPServer {
                 ).flatMap {
                     channel.pipeline.addHandler(ServerHTTPHandler(
                         modelID: modelID,
-                        backend: backend,
+                        readiness: readiness,
                         coordinator: coordinator,
                         heartbeatInterval: heartbeatInterval,
                         imagePolicy: imagePolicy,
@@ -129,12 +140,31 @@ public actor TurboFieldfareHTTPServer {
     }
 }
 
+/// LIF-1: the listening socket is open before the model exists, so the handler
+/// cannot capture a backend when the pipeline is built — it reads one out of
+/// here per request, and finds nothing until the load lands.
+private final class ServerReadiness: Sendable {
+    private let state: Mutex<(any ServerInferenceBackend)?>
+
+    init(_ backend: (any ServerInferenceBackend)?) {
+        state = Mutex(backend)
+    }
+
+    var backend: (any ServerInferenceBackend)? {
+        state.withLock { $0 }
+    }
+
+    func modelDidLoad(_ backend: any ServerInferenceBackend) {
+        state.withLock { $0 = backend }
+    }
+}
+
 private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
 
     private let modelID: String
-    private let backend: any ServerInferenceBackend
+    private let readiness: ServerReadiness
     private let coordinator: ServerCoordinator
     private let heartbeatInterval: TimeAmount
     private let imagePolicy: ServerImagePolicy
@@ -147,14 +177,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private var activeTask: Task<Void, Never>?
 
     init(modelID: String,
-         backend: any ServerInferenceBackend,
+         readiness: ServerReadiness,
          coordinator: ServerCoordinator,
          heartbeatInterval: TimeAmount,
          imagePolicy: ServerImagePolicy,
          defaults: ChatRequestDefaults,
          childChannels: ChildChannelRegistry) {
         self.modelID = modelID
-        self.backend = backend
+        self.readiness = readiness
         self.coordinator = coordinator
         self.heartbeatInterval = heartbeatInterval
         self.imagePolicy = imagePolicy
@@ -233,6 +263,16 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
 
     private func handleCompletion(body: ByteBuffer,
                                   context: ChannelHandlerContext) {
+        guard let backend = readiness.backend else {
+            // The load state is not wired into the routing table yet; until it
+            // is, a request that arrives without a model says so rather than
+            // dereferencing one that is not there.
+            writeError(context, status: .internalServerError,
+                       OpenAIErrorEnvelope(message: "the model is not loaded",
+                                           type: .server,
+                                           code: "not_implemented"))
+            return
+        }
         do {
             let bytes = body.getBytes(at: body.readerIndex, length: body.readableBytes) ?? []
             let request = try ChatRequestParser.parse(
@@ -276,7 +316,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                     let completion = try await self.coordinator.runPreparing(
                         onQueued: onQueued,
                         prepare: {
-                            let prepared = try await self.backend.prepare(request)
+                            let prepared = try await backend.prepare(request)
                             phaseState.set("prepared")
                             ServerLog.prepared(id: responseID,
                                                promptTokens: prepared.promptTokenCount)
@@ -289,7 +329,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                             try Task.checkCancellation()
                             phaseState.set("generating")
                             ServerLog.generating(id: responseID)
-                            return try await self.backend.generate(prepared) { event in
+                            return try await backend.generate(prepared) { event in
                                 guard request.stream else { return }
                                 switch event {
                                 case .content(let text):
