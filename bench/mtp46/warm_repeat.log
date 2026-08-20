@@ -1,0 +1,16 @@
+### run=1
+[stop=maxTokens prefill=11tok new=24tok decode=1.45s tok/s=16.588]
+[expert prefill hit=0.0% 0/998 io=0.270s | decode hit=85.8% 4734/5520 io=0.689s]
+[decode/tok io=28.76ms cb1=0.82ms cb2=0.42ms head=3.39ms]
+### run=2
+[stop=maxTokens prefill=11tok new=24tok decode=1.45s tok/s=16.586]
+[expert prefill hit=0.0% 0/998 io=0.271s | decode hit=85.8% 4734/5520 io=0.675s]
+[decode/tok io=28.15ms cb1=0.69ms cb2=0.33ms head=3.42ms]
+### run=3
+[stop=maxTokens prefill=11tok new=24tok decode=1.42s tok/s=16.868]
+[expert prefill hit=0.0% 0/998 io=0.264s | decode hit=85.8% 4734/5520 io=0.682s]
+[decode/tok io=28.45ms cb1=0.72ms cb2=0.35ms head=3.31ms]
+### run=4
+[stop=maxTokens prefill=11tok new=24tok decode=1.38s tok/s=17.395]
+[expert prefill hit=0.0% 0/998 io=0.269s | decode hit=85.8% 4734/5520 io=0.668s]
+[decode/tok io=27.88ms cb1=0.65ms cb2=0.30ms head=3.28ms]
