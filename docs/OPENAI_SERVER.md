@@ -27,9 +27,13 @@ swift build -c release --product TurboFieldfareServer
   --max-context 16384
 ```
 
-The server loads the model before opening the port. Wait for
-`TurboFieldfareServer ready`, then keep the process running while clients use
-it.
+The server opens the port first and loads the model behind it. While the load
+runs, every endpoint answers 503 `unavailable_error` with `code:
+"model_loading"`, so a client can tell "still loading" apart from "not running"
+— connection refused now means the process is not up. `GET /health` returns
+`{"status":"ok"}` once the model is ready. If the load fails, the process
+prints the reason to stderr and exits 1, so the port closes again. Keep the
+process running while clients use it.
 
 Check the server from another terminal:
 
@@ -280,9 +284,11 @@ Limits, all configurable at startup:
 | `--max-image-bytes` | 8388608 | Decoded bytes per image |
 | `--max-image-pixels` | 50000000 | Pixels per image, read from the header |
 
-Exceeding a limit returns HTTP 413 (`image_too_large`, `too_many_images`). The
-request-body ceiling rises with `--max-images` and `--max-image-bytes`, so
-base64 payloads within the limits are not cut off by the transport.
+Exceeding a limit returns HTTP 400 `invalid_request_error` (`image_too_large`,
+`too_many_images`, or `request_too_large` for the body ceiling). The server
+never answers 413 — see [SPEC §12 DEV-11](serving/SPEC.md). The request-body
+ceiling rises with `--max-images` and `--max-image-bytes`, so base64 payloads
+within the limits are not cut off by the transport.
 
 `--image-tokens` is an upper bound, not the count. Each image is resized to a
 whole number of 48-pixel cells, so the soft tokens it occupies follow its aspect
@@ -350,9 +356,17 @@ use.
 
 Endpoints:
 
-- `GET /health`
-- `GET /v1/models`
-- `POST /v1/chat/completions`
+- `GET /health`, `GET /v1/health`
+- `GET /v1/models`, `GET /models`
+- `POST /v1/chat/completions`, `POST /chat/completions`
+- `GET /props` — the effective defaults, the context length actually in force,
+  the chat template, and `modalities`. A client that wants to know what this
+  server can do reads this rather than guessing.
+
+A path this server knowingly does not serve — `/v1/embeddings`, `/v1/responses`,
+`/v1/completions` and the rest of the list in
+[SPEC §3](serving/SPEC.md) — answers **501** `not_supported_error`. Only a path
+that means nothing here is a 404.
 
 Chat Completions supports JSON and Server-Sent Events responses. Set
 `"stream": true` for streaming. Set

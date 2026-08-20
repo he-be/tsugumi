@@ -103,7 +103,9 @@ nohup .build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo \
 ## 2. なぜコンテキストごとにスロット数が変わるのか (**実測**)
 
 起動時のガードが「常駐させる合計」をこの機体の Metal 推奨作業セット
-**12.88 GB** と比べ、超えていたら**ポートを開く前に exit 2** で落ちる。
+**12.88 GB** と比べ、超えていたら落ちる。**このガードはロードの中にあり、ポートは
+もう開いている**ので、クライアントからは 503 `model_loading` のあと接続断に見える
+(`exit 1`)。フラグの値そのものが許可リストの外なら、ポートを開く前に `exit 2`。
 内訳は実測でこう出る:
 
 この表の「使えるスロット」は**載る上限**であって、常用の設定ではない
@@ -132,8 +134,9 @@ Lower --expert-cache-slots or --max-context.
 
 ## 3. 建ったことの確認
 
-起動には 20〜40 秒かかる (モデルの検証と mmap)。**ポートが開くのはロード後**なので、
-`/v1/models` が返れば準備完了である。
+起動には 20〜40 秒かかる (モデルの検証と mmap)。**ポートは先に開く**ので、
+ロード中も接続はできて、全エンドポイントが 503 `model_loading` を返す。
+`/v1/models` が 200 で返れば準備完了である (`/health` も同じ)。
 
 ```bash
 curl -s http://127.0.0.1:8091/health          # {"status":"ok"}
@@ -266,7 +269,8 @@ request chatcmpl-… completed in … finish=tool_calls        ← tool 呼び�
 | `--draft-block-size 4 requires --prefill on` | MTP はチャンク prefill の経路を通る。`--prefill off` とは併用できない |
 | `needs a model installed with the drafter section` | そのモデルにドラフターが入っていない。`TurboFieldfareRepack --add-draft <model>` で 236 MB を追記する |
 | 500 `prompt contains the special token <\|image\|>` | 貼り付けた本文にテンプレートの特殊トークンが入っている。プロンプト側で取り除く |
-| ポートが開かない / `connection refused` | まだロード中。`/v1/models` が返るまで待つ (20〜40 秒) |
+| 503 `model_loading` が返る | まだロード中。`/v1/models` が 200 になるまで待つ (20〜40 秒) |
+| ポートが開かない / `connection refused` | プロセスが立っていないか、ロードに失敗して落ちた (§2 のガードなど)。stderr の `error:` 行を読む |
 | 起動はするのに極端に遅い | 別の TurboFieldfare プロセスが同時に走っている (§0) |
 
 ## 7. 画像デモから自動で建てる
