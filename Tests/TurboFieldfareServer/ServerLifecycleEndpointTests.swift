@@ -94,6 +94,56 @@ struct ServerLifecycleEndpointTests {
         try await server.shutdown()
     }
 
+    /// EP-8: the reference implementation serves `/models` and
+    /// `/chat/completions` under both spellings, so a client configured with a
+    /// base URL that has no `/v1` on it works either way. Same handler, same
+    /// body — not a redirect.
+    @Test func EP_8_models_and_completions_answer_without_the_v1_prefix() async throws {
+        let (server, port) = try await Self.started()
+
+        let (aliasStatus, aliasBody) = try await Self.send(
+            method: "GET", path: "/models", port: port)
+        let (canonicalStatus, canonicalBody) = try await Self.send(
+            method: "GET", path: "/v1/models", port: port)
+        #expect(aliasStatus == 200)
+        #expect(canonicalStatus == 200)
+        #expect(aliasBody == canonicalBody)
+
+        var request = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = Data(#"""
+        {"model":"test-model","messages":[{"role":"user","content":"hi"}]}
+        """#.utf8)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        let completion = try JSONDecoder().decode(JSONValue.self, from: data)
+        #expect(completion.objectValue?["object"] == .string("chat.completion"))
+
+        try await server.shutdown()
+    }
+
+    /// EP-8 / ERR-2: an alias is the same endpoint, so the wrong verb on it is
+    /// the same 405 — not a 404 and not a 501.
+    @Test func EP_8_aliases_answer_405_for_the_wrong_method() async throws {
+        let (server, port) = try await Self.started()
+
+        let (models, modelsBody) = try await Self.send(
+            method: "POST", path: "/models", port: port)
+        #expect(models == 405)
+        #expect(modelsBody.objectValue?["error"]?.objectValue?["code"]
+                == .string("method_not_allowed"))
+
+        let (completions, completionsBody) = try await Self.send(
+            method: "GET", path: "/chat/completions", port: port)
+        #expect(completions == 405)
+        #expect(completionsBody.objectValue?["error"]?.objectValue?["code"]
+                == .string("method_not_allowed"))
+
+        try await server.shutdown()
+    }
+
     /// EP-4 vs EP-7: the same path, two answers. `GET /props` is the
     /// capability endpoint; `POST /props` is the reference implementation's
     /// write side, which this server does not adopt.
