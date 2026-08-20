@@ -140,7 +140,7 @@ import Testing
             expertsPerLayer: 2, expertStride: expertStride,
             subTensors: [slice])
         let plan = RepackPlan(
-            arch: arch, baseMode: "affine", baseGroupSize: 64,
+            arch: arch, symmetric: false, baseMode: "affine", baseGroupSize: 64,
             bitsOverrideCount: 120, resident: resident, layers: [layer],
             matchedModelID: nil, excludedMultimodalTensorNames: [])
         let zeroSHA = String(repeating: "0", count: 64)

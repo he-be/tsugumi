@@ -5,6 +5,38 @@ using namespace metal;
 #define TURBO_AFFINE_GROUP_SIZE 64
 #endif
 constant constexpr uint kMoEGroupSize = TURBO_AFFINE_GROUP_SIZE;
+
+// Affine zero point -- see the note in dequant_int4.metal. `TURBO_AFFINE_SYMMETRIC`
+// is a whole-model compile-time constant (`MetalContext.affineScheme`); when it
+// is set the bias arrays do not exist and the bindings alias the scales.
+#ifndef TURBO_AFFINE_SYMMETRIC
+#define TURBO_AFFINE_SYMMETRIC 0
+#endif
+
+static inline float moe_int4_bias(device const bfloat* biases, uint index,
+                                     float scale) {
+#if TURBO_AFFINE_SYMMETRIC
+    return -8.0f * scale;
+#else
+    return float(biases[index]);
+#endif
+}
+
+/// `acc + scale * dot + bias * sum` for one group, where `dot` is the group's
+/// integer-weighted activation sum and `sum` its plain activation sum.
+///
+/// The two schemes run the *same* two FMAs in the same order, and `sym`'s
+/// `bias` is `-8 * scale` computed in FP32. That product is exact -- BF16
+/// stores `-8 * scale` without rounding, so converting it back gives the same
+/// float the affine model loaded -- which makes the whole pipeline **bit
+/// identical** to the affine one on a checkpoint that satisfies the identity.
+/// Folding the zero point into `dot` instead would save nothing (`gate/up` is
+/// on the bandwidth floor, so the FMA is free) and would cost that property.
+static inline float moe_int4_accumulate(float acc, float scale, float bias,
+                                           float dot, float sum) {
+    acc = fma(scale, dot, acc);
+    return fma(bias, sum, acc);
+}
 // Vectorized INT4 block geometry — see the note in dequant_int4.metal.
 // A block is a fixed 128 bytes (32 lanes x 4 bytes); the group size decides how
 // many affine groups that spans and how many lanes cover one group.
@@ -331,7 +363,7 @@ static inline float moe_int4_gemv_row_simd_dev_vec(
         const uint w4 = *((device const uint*)(W_row + byte_base));
         const uint g = blk * kMoEGroupsPerBlock + lane / kMoELanesPerGroup;
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = moe_int4_bias(b_row, g, s);
         const uint elem = byte_base * 2u;
         const half4 xa = *((device const half4*)(x + elem));
         const half4 xb = *((device const half4*)(x + elem + 4u));
@@ -356,7 +388,7 @@ static inline float moe_int4_gemv_row_simd_dev_vec(
         // Only the first kMoETailLanes lanes hold a byte of this group.
         if (lane >= kMoETailLanes) break;
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = moe_int4_bias(b_row, g, s);
         const uint8_t byte = W_row[g * (kMoEGroupSize / 2) + lane];
         const float x0 = float(x[g * kMoEGroupSize + lane * 2u]);
         const float x1 = float(x[g * kMoEGroupSize + lane * 2u + 1u]);
@@ -402,9 +434,9 @@ static inline float2 moe_int4_gate_up_rows_simd_dev_vec_u16load(
         const uint uw4 = uint(up[0]) | (uint(up[1]) << 16);
         const uint g = blk * kMoEGroupsPerBlock + lane / kMoELanesPerGroup;
         const float gs = float(gS_row[g]);
-        const float gb = float(gB_row[g]);
+        const float gb = moe_int4_bias(gB_row, g, gs);
         const float us = float(uS_row[g]);
-        const float ub = float(uB_row[g]);
+        const float ub = moe_int4_bias(uB_row, g, us);
         const uint elem = byte_base * 2u;
         const half4 xa = *((device const half4*)(x + elem));
         const half4 xb = *((device const half4*)(x + elem + 4u));
@@ -434,18 +466,16 @@ static inline float2 moe_int4_gate_up_rows_simd_dev_vec_u16load(
         u_dot = fma(float(ub2 & 0x0Fu), e4, u_dot); u_dot = fma(float(ub2 >> 4), e5, u_dot);
         u_dot = fma(float(ub3 & 0x0Fu), e6, u_dot); u_dot = fma(float(ub3 >> 4), e7, u_dot);
 
-        g_acc = fma(gs, g_dot, g_acc);
-        g_acc = fma(gb, sum, g_acc);
-        u_acc = fma(us, u_dot, u_acc);
-        u_acc = fma(ub, sum, u_acc);
+        g_acc = moe_int4_accumulate(g_acc, gs, gb, g_dot, sum);
+        u_acc = moe_int4_accumulate(u_acc, us, ub, u_dot, sum);
     }
     for (uint g = full_blocks * kMoEGroupsPerBlock; g < n_groups; ++g) {
         // Only the first kMoETailLanes lanes hold a byte of this group.
         if (lane >= kMoETailLanes) break;
         const float gs = float(gS_row[g]);
-        const float gb = float(gB_row[g]);
+        const float gb = moe_int4_bias(gB_row, g, gs);
         const float us = float(uS_row[g]);
-        const float ub = float(uB_row[g]);
+        const float ub = moe_int4_bias(uB_row, g, us);
         const uint8_t gbv = gW_row[g * (kMoEGroupSize / 2) + lane];
         const uint8_t ubv = uW_row[g * (kMoEGroupSize / 2) + lane];
         const float x0 = float(x[g * kMoEGroupSize + lane * 2u]);
@@ -455,10 +485,8 @@ static inline float2 moe_int4_gate_up_rows_simd_dev_vec_u16load(
         g_dot = fma(float(uint(gbv >> 4)), x1, g_dot);
         float u_dot = fma(float(uint(ubv & 0x0Fu)), x0, 0.0f);
         u_dot = fma(float(uint(ubv >> 4)), x1, u_dot);
-        g_acc = fma(gs, g_dot, g_acc);
-        g_acc = fma(gb, sum, g_acc);
-        u_acc = fma(us, u_dot, u_acc);
-        u_acc = fma(ub, sum, u_acc);
+        g_acc = moe_int4_accumulate(g_acc, gs, gb, g_dot, sum);
+        u_acc = moe_int4_accumulate(u_acc, us, ub, u_dot, sum);
     }
     return float2(simd_sum(g_acc), simd_sum(u_acc));
 }

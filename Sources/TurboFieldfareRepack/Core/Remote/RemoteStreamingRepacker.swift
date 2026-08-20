@@ -258,10 +258,35 @@ public final class RemoteStreamingRepacker {
         progress(.downloadingMetadata)
         let source = try await bindSource(paths: paths, saved: saved)
         try Task.checkCancellation()
+        // A staged snapshot lets the planner read the source's scale/bias pairs
+        // and decide whether the model can be packed `sym`. A streaming install
+        // cannot: it would have to fetch the bias ranges before it could plan
+        // the file that omits them, so it stays `affine`
+        // (`docs/mtp/44-W1-WEIGHT-DIET.md` §7).
+        let readSourceBytes: ((SourceTensor) throws -> Data)? =
+            source.localShardPaths.isEmpty ? nil : { [audit] tensor in
+                guard let shardPath = source.localShardPaths[tensor.shardPath] else {
+                    throw RepackError.configurationInvalid(
+                        detail: "no staged shard for \(tensor.shardPath)")
+                }
+                let fd = try Posix.openReadNoFollow(shardPath)
+                defer { close(fd) }
+                let count = Int(tensor.sizeBytes)
+                var data = Data(count: count)
+                try data.withUnsafeMutableBytes { raw in
+                    try Posix.preadAll(fd: fd, path: shardPath,
+                                       buf: raw.baseAddress!, count: count,
+                                       offset: tensor.absoluteOffset)
+                }
+                audit.recordRead(bytes: count)
+                return data
+            }
         var plan = try RepackPlanner.plan(meta: source.metadata,
                                           arch: source.arch,
                                           shardHeaders: source.shardHeaders,
-                                          outputDir: paths.partialDirectory)
+                                          outputDir: paths.partialDirectory,
+                                          readSourceBytes: readSourceBytes,
+                                          log: { FileHandle.standardError.write(Data(($0 + "\n").utf8)) })
         let vision = try await bindVisionSource(paths: paths, source: source)
         if let vision {
             plan.vision = try VisionRepackPlanner.plan(

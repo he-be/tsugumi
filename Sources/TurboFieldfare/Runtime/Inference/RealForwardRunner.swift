@@ -379,6 +379,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         // at every entry point, so this is the first place the manifest value
         // is known.
         try context.setAffineGroupSize(model.affineGroupSize)
+        // The drafter is packed `affine` at group 64 while the target may be
+        // `sym` at group 32; each runs on its own context and therefore its own
+        // compiled library, which is what makes the two coexist.
+        try context.setAffineScheme(model.affineScheme)
         // Reject a cache that would not stay resident before allocating any of
         // it: overshooting the working set trades SSD reads for OS compression,
         // which is the opposite of what a large cache is for.

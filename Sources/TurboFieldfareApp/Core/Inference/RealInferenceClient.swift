@@ -204,7 +204,8 @@ actor RealInferenceSession {
             // context carried over from a model quantized at a different group
             // size cannot serve this one. Same physical device either way, so
             // the model loaded above stays valid.
-            if !context.canUseAffineGroupSize(loadedModel.affineGroupSize) {
+            if !context.canUseAffineGroupSize(loadedModel.affineGroupSize)
+                || !context.canUseAffineScheme(loadedModel.affineScheme) {
                 context = try MetalContext()
                 ctx = context
             }

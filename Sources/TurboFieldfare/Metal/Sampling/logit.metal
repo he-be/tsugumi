@@ -615,6 +615,23 @@ constant constexpr uint kLMHeadRowsPerTG = 8;
 #define TURBO_AFFINE_GROUP_SIZE 64
 #endif
 constant constexpr uint kLMHeadGroupSize = TURBO_AFFINE_GROUP_SIZE;
+
+// Affine zero point -- see the note in dequant_int4.metal. `TURBO_AFFINE_SYMMETRIC`
+// is a whole-model compile-time constant (`MetalContext.affineScheme`); when it
+// is set the bias arrays do not exist and the bindings alias the scales.
+#ifndef TURBO_AFFINE_SYMMETRIC
+#define TURBO_AFFINE_SYMMETRIC 0
+#endif
+
+static inline float lmhead_int4_bias(device const bfloat* biases, uint index,
+                                     float scale) {
+#if TURBO_AFFINE_SYMMETRIC
+    return -8.0f * scale;
+#else
+    return float(biases[index]);
+#endif
+}
+
 // Vectorized INT4 block geometry — see the note in dequant_int4.metal.
 // A block is a fixed 128 bytes (32 lanes x 4 bytes); the group size decides how
 // many affine groups that spans and how many lanes cover one group.
@@ -660,7 +677,7 @@ inline float lmhead_int4_gemv_row_simd_dev(device const uint8_t*    W,
         const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
         const uint g  = blk * kLMHeadGroupsPerBlock + lane / kLMHeadLanesPerGroup;
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = lmhead_int4_bias(b_row, g, s);
         const uint elem = byte_base * 2u;
         const half4 xa = *((device const half4*)(x + elem));
         const half4 xb = *((device const half4*)(x + elem + 4u));
@@ -683,7 +700,7 @@ inline float lmhead_int4_gemv_row_simd_dev(device const uint8_t*    W,
         // Only the first kLMHeadTailLanes lanes hold a byte of this group.
         if (lane >= kLMHeadTailLanes) break;
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = lmhead_int4_bias(b_row, g, s);
         const uint8_t byte = W_row[g * (kLMHeadGroupSize / 2) + lane];
         const float x0 = float(x[g * kLMHeadGroupSize + lane * 2u]);
         const float x1 = float(x[g * kLMHeadGroupSize + lane * 2u + 1u]);
@@ -807,7 +824,7 @@ void lm_head_greedy_int4_rows_chunk_block(
             const uint g = blk * kLMHeadGroupsPerBlock
                 + simd_lane_id / kLMHeadLanesPerGroup;
             const float s = float(s_row[g]);
-            const float b = float(b_row[g]);
+            const float b = lmhead_int4_bias(b_row, g, s);
             const uint elem = byte_base * 2u;
             const uint b0 = w4 & 0xFFu, b1 = (w4 >> 8) & 0xFFu;
             const uint b2 = (w4 >> 16) & 0xFFu, b3 = (w4 >> 24) & 0xFFu;
@@ -834,7 +851,7 @@ void lm_head_greedy_int4_rows_chunk_block(
             // Only the first kLMHeadTailLanes lanes hold a byte of this group.
             if (simd_lane_id >= kLMHeadTailLanes) break;
             const float s = float(s_row[g]);
-            const float b = float(b_row[g]);
+            const float b = lmhead_int4_bias(b_row, g, s);
             const uint8_t byte = W_row[g * (kLMHeadGroupSize / 2) + simd_lane_id];
             for (uint t = 0; t < kLMHeadMaxBlockRows; ++t) {
                 if (t >= T) break;
@@ -980,7 +997,7 @@ void lm_head_greedy_int4_rows_chunk_block_wide(
                     (device const ushort*)(W + row * row_bytes + byte_base);
                 const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
                 sv[r] = float(scales[row * n_groups + g]);
-                bv[r] = float(biases[row * n_groups + g]);
+                bv[r] = lmhead_int4_bias(biases, row * n_groups + g, sv[r]);
                 const uint b0 =  w4        & 0xFFu;
                 const uint b1 = (w4 >> 8)  & 0xFFu;
                 const uint b2 = (w4 >> 16) & 0xFFu;
@@ -1025,7 +1042,7 @@ void lm_head_greedy_int4_rows_chunk_block_wide(
                 for (uint r = 0; r < R; ++r) {
                     const uint row = row_of[r];
                     const float s = float(scales[row * n_groups + gg]);
-                    const float b = float(biases[row * n_groups + gg]);
+                    const float b = lmhead_int4_bias(biases, row * n_groups + gg, s);
                     const uint8_t byte =
                         W[row * row_bytes + gg * (kLMHeadGroupSize / 2) + lane];
                     float dot = fma(float(uint(byte & 0x0Fu)), x0, 0.0f);

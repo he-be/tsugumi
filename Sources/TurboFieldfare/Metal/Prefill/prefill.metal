@@ -10,6 +10,52 @@ using namespace mpp::tensor_ops;
 #define TURBO_AFFINE_GROUP_SIZE 64
 #endif
 constant constexpr uint kPrefillGroupSize = TURBO_AFFINE_GROUP_SIZE;
+
+// ---------------------------------------------------------------------------
+// Affine zero point
+//
+// `TURBO_AFFINE_SYMMETRIC` is the second whole-model compile-time constant
+// (`MetalContext.affineScheme`), alongside the group size. When it is set the
+// packer has dropped the bias arrays because the checkpoint satisfies
+// `bias == -8 * scale` as a BF16 bit pattern in every group -- exactly, not
+// approximately (`docs/mtp/44-W1-WEIGHT-DIET.md` §1). The bias *bindings* stay:
+// callers alias them onto the scale buffer, so no kernel signature changes and
+// the pointer below is simply never dereferenced.
+// ---------------------------------------------------------------------------
+#ifndef TURBO_AFFINE_SYMMETRIC
+#define TURBO_AFFINE_SYMMETRIC 0
+#endif
+
+static inline float prefill_int4_bias(device const bfloat* biases, uint index,
+                                     float scale) {
+#if TURBO_AFFINE_SYMMETRIC
+    return -8.0f * scale;
+#else
+    return float(biases[index]);
+#endif
+}
+
+/// `acc + scale * dot + bias * sum` for one group, where `dot` is the group's
+/// integer-weighted activation sum and `sum` its plain activation sum.
+///
+/// Two FMAs in both schemes: the symmetric branch folds the zero point into the
+/// dot product rather than paying a second accumulate, which is the form
+/// measured in 44 §4 (`gate/up` -9.7% at an unchanged 134.8 GB/s).
+/// `acc + scale * dot + bias * sum` for one group, where `dot` is the group's
+/// integer-weighted activation sum and `sum` its plain activation sum.
+///
+/// The two schemes run the *same* two FMAs in the same order, and `sym`'s
+/// `bias` is `-8 * scale` computed in FP32. That product is exact -- BF16
+/// stores `-8 * scale` without rounding, so converting it back gives the same
+/// float the affine model loaded -- which makes the whole pipeline **bit
+/// identical** to the affine one on a checkpoint that satisfies the identity.
+/// Folding the zero point into `dot` instead would save nothing (`gate/up` is
+/// on the bandwidth floor, so the FMA is free) and would cost that property.
+static inline float prefill_int4_accumulate(float acc, float scale, float bias,
+                                           float dot, float sum) {
+    acc = fma(scale, dot, acc);
+    return fma(bias, sum, acc);
+}
 constant constexpr uint kPrefillRmsMaxSimdGroups = 8;
 constant constexpr uint kPrefillPostMaxD = 4096;
 constant constexpr uint kPrefillRouterMaxExperts = 256;
@@ -50,7 +96,7 @@ kernel void prefill_embed_lookup_int4_block(
     const uint8_t byte = row_q[d >> 1];
     const uint q = (d & 1u) == 0u ? uint(byte & 0x0Fu) : uint(byte >> 4);
     const float s = float(row_s[d / kPrefillGroupSize]);
-    const float b = float(row_b[d / kPrefillGroupSize]);
+    const float b = prefill_int4_bias(row_b, d / kPrefillGroupSize, s);
     out[t * D + d] = half((float(q) * s + b) * out_scale);
 }
 
@@ -435,7 +481,7 @@ static inline float prefill_moe_int4_gemv_row_dev(
     float acc = 0.0f;
     for (uint g = 0; g < groups; ++g) {
         const float scale = float(s_row[g]);
-        const float bias = float(b_row[g]);
+        const float bias = prefill_int4_bias(b_row, g, scale);
         device const uint8_t* Wg = W_row + g * (kPrefillGroupSize / 2u);
         device const half* xg = x + g * kPrefillGroupSize;
         float dot_qx = 0.0f;
@@ -471,7 +517,7 @@ static inline float prefill_moe_int4_gemv_row_tg(
     float acc = 0.0f;
     for (uint g = 0; g < groups; ++g) {
         const float scale = float(s_row[g]);
-        const float bias = float(b_row[g]);
+        const float bias = prefill_int4_bias(b_row, g, scale);
         device const uint8_t* Wg = W_row + g * (kPrefillGroupSize / 2u);
         threadgroup const half* xg = x + g * kPrefillGroupSize;
         float dot_qx = 0.0f;
@@ -868,7 +914,7 @@ kernel void prefill_moe_gemm_int4(
             if (w_n < N) {
                 const uint g = (k0 + kk) / kPrefillGroupSize;
                 const float scale = float(s_row[g]);
-                const float bias = float(b_row[g]);
+                const float bias = prefill_int4_bias(b_row, g, scale);
                 device const uint8_t* w_ptr = w_row + ((k0 + kk) >> 1);
                 for (uint q = 0; q < 4u; ++q) {
                     const uint8_t packed = w_ptr[q];
@@ -1043,9 +1089,9 @@ kernel void prefill_moe_rows_gate_up_act(
         const uint uw4 = uint(up[0]) | (uint(up[1]) << 16);
         const uint g = b * kPrefillRowsGroupsPerBlock + lane / kPrefillRowsLanesPerGroup;
         const float gs = float(gS_row[g]);
-        const float gb = float(gB_row[g]);
+        const float gb = prefill_int4_bias(gB_row, g, gs);
         const float us = float(uS_row[g]);
-        const float ub = float(uB_row[g]);
+        const float ub = prefill_int4_bias(uB_row, g, us);
         const uint elem = byte_base * 2u;
         const uint gb0 = gw4 & 0xFFu, gb1 = (gw4 >> 8) & 0xFFu;
         const uint gb2 = (gw4 >> 16) & 0xFFu, gb3 = (gw4 >> 24) & 0xFFu;
@@ -1070,19 +1116,17 @@ kernel void prefill_moe_rows_gate_up_act(
             u_dot = fma(float(ub1 & 0x0Fu), e2, u_dot); u_dot = fma(float(ub1 >> 4), e3, u_dot);
             u_dot = fma(float(ub2 & 0x0Fu), e4, u_dot); u_dot = fma(float(ub2 >> 4), e5, u_dot);
             u_dot = fma(float(ub3 & 0x0Fu), e6, u_dot); u_dot = fma(float(ub3 >> 4), e7, u_dot);
-            g_acc[r] = fma(gs, g_dot, g_acc[r]);
-            g_acc[r] = fma(gb, sum, g_acc[r]);
-            u_acc[r] = fma(us, u_dot, u_acc[r]);
-            u_acc[r] = fma(ub, sum, u_acc[r]);
+            g_acc[r] = prefill_int4_accumulate(g_acc[r], gs, gb, g_dot, sum);
+            u_acc[r] = prefill_int4_accumulate(u_acc[r], us, ub, u_dot, sum);
         }
     }
     for (uint g = full_blocks * kPrefillRowsGroupsPerBlock; g < n_groups; ++g) {
         // Only the first kPrefillRowsTailLanes lanes hold a byte of this group.
         if (lane >= kPrefillRowsTailLanes) break;
         const float gs = float(gS_row[g]);
-        const float gb = float(gB_row[g]);
+        const float gb = prefill_int4_bias(gB_row, g, gs);
         const float us = float(uS_row[g]);
-        const float ub = float(uB_row[g]);
+        const float ub = prefill_int4_bias(uB_row, g, us);
         const uint8_t gbv = gW_row[g * (kPrefillGroupSize / 2u) + lane];
         const uint8_t ubv = uW_row[g * (kPrefillGroupSize / 2u) + lane];
         for (uint r = 0; r < cap; ++r) {
@@ -1094,10 +1138,8 @@ kernel void prefill_moe_rows_gate_up_act(
             g_dot = fma(float(uint(gbv >> 4)), x1, g_dot);
             float u_dot = fma(float(uint(ubv & 0x0Fu)), x0, 0.0f);
             u_dot = fma(float(uint(ubv >> 4)), x1, u_dot);
-            g_acc[r] = fma(gs, g_dot, g_acc[r]);
-            g_acc[r] = fma(gb, sum, g_acc[r]);
-            u_acc[r] = fma(us, u_dot, u_acc[r]);
-            u_acc[r] = fma(ub, sum, u_acc[r]);
+            g_acc[r] = prefill_int4_accumulate(g_acc[r], gs, gb, g_dot, sum);
+            u_acc[r] = prefill_int4_accumulate(u_acc[r], us, ub, u_dot, sum);
         }
     }
 
@@ -1159,7 +1201,7 @@ kernel void prefill_moe_rows_down(
         const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
         const uint g = b * kPrefillRowsGroupsPerBlock + lane / kPrefillRowsLanesPerGroup;
         const float s = float(s_row[g]);
-        const float bias = float(b_row[g]);
+        const float bias = prefill_int4_bias(b_row, g, s);
         const uint elem = byte_base * 2u;
         const uint b0 = w4 & 0xFFu, b1 = (w4 >> 8) & 0xFFu;
         const uint b2 = (w4 >> 16) & 0xFFu, b3 = (w4 >> 24) & 0xFFu;
@@ -1177,14 +1219,13 @@ kernel void prefill_moe_rows_down(
             dot = fma(float(b2 & 0x0Fu), e4, dot); dot = fma(float(b2 >> 4), e5, dot);
             dot = fma(float(b3 & 0x0Fu), e6, dot); dot = fma(float(b3 >> 4), e7, dot);
             const float sum = e0 + e1 + e2 + e3 + e4 + e5 + e6 + e7;
-            acc[r] = fma(s, dot, acc[r]);
-            acc[r] = fma(bias, sum, acc[r]);
+            acc[r] = prefill_int4_accumulate(acc[r], s, bias, dot, sum);
         }
     }
     for (uint g = full_blocks * kPrefillRowsGroupsPerBlock; g < n_groups; ++g) {
         if (lane >= kPrefillRowsTailLanes) break;
         const float s = float(s_row[g]);
-        const float bias = float(b_row[g]);
+        const float bias = prefill_int4_bias(b_row, g, s);
         const uint8_t byte = W_row[g * (kPrefillGroupSize / 2u) + lane];
         for (uint r = 0; r < cap; ++r) {
             if (r >= rows) break;
@@ -1192,8 +1233,7 @@ kernel void prefill_moe_rows_down(
             const float x1 = float(x_row[r][g * kPrefillGroupSize + lane * 2u + 1u]);
             float dot = fma(float(uint(byte & 0x0Fu)), x0, 0.0f);
             dot = fma(float(uint(byte >> 4)), x1, dot);
-            acc[r] = fma(s, dot, acc[r]);
-            acc[r] = fma(bias, x0 + x1, acc[r]);
+            acc[r] = prefill_int4_accumulate(acc[r], s, bias, dot, x0 + x1);
         }
     }
 
@@ -1232,7 +1272,7 @@ kernel void prefill_dequant_int4_qmm_f16_block(
     float acc = 0.0f;
     for (uint g = 0; g < groups; ++g) {
         const float scale = float(s_row[g]);
-        const float bias = float(b_row[g]);
+        const float bias = prefill_int4_bias(b_row, g, scale);
         const uint group_base = g * kPrefillGroupSize;
         for (uint kk = 0; kk < kPrefillGroupSize; ++kk) {
             const uint k = group_base + kk;
@@ -1329,7 +1369,7 @@ kernel void prefill_int4_qmm_simdgroup_f16(
             if (w_n < N) {
                 const uint g = (k0 + kk) / kPrefillGroupSize;
                 const float scale = float(s_row[g]);
-                const float bias = float(b_row[g]);
+                const float bias = prefill_int4_bias(b_row, g, scale);
                 device const uint8_t* w_ptr = w_row + ((k0 + kk) >> 1);
                 for (uint p = 0; p < 4u; ++p) {
                     const uint8_t packed = w_ptr[p];

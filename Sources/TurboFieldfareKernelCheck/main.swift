@@ -105,13 +105,27 @@ func packRows(_ rows: [Quantization.Int4AffineRow])
     (rows.flatMap(\.packed), rows.flatMap(\.scales), rows.flatMap(\.biases))
 }
 
+/// The affine scheme every case in this run builds fixtures for and compiles the
+/// library with. `sym` drops the bias array from the packed model
+/// (`docs/mtp/44-W1-WEIGHT-DIET.md`), so the *same* cases have to pass with the
+/// kernels deriving `-8 * scale` instead of loading it. The fixture still
+/// carries the bias array and the reference is still `dequantizeInt4Affine`, so
+/// a kernel that got the derivation wrong fails against a bias it can see but
+/// no longer reads.
+///
+/// `nonisolated(unsafe)`: the driver is a single-threaded command-line pass that
+/// sets this before building each group of cases.
+nonisolated(unsafe) var affineScheme: Quantization.AffineScheme = .affine
+
 func quantizedRows(count: Int, n: Int, groupSize: Int,
                    rng: inout SplitMix64) -> [Quantization.Int4AffineRow] {
     var rows: [Quantization.Int4AffineRow] = []
     rows.reserveCapacity(count)
     for _ in 0..<count {
         let raw = (0..<n).map { _ in rng.uniform(-0.5, 0.5) }
-        rows.append(Quantization.quantizeInt4Affine(raw, groupSize: groupSize))
+        rows.append(affineScheme == .sym
+            ? Quantization.quantizeInt4Symmetric(raw, groupSize: groupSize)
+            : Quantization.quantizeInt4Affine(raw, groupSize: groupSize))
     }
     return rows
 }
@@ -119,6 +133,7 @@ func quantizedRows(count: Int, n: Int, groupSize: Int,
 func makeContext(groupSize: Int) throws -> MetalContext {
     let context = try MetalContext()
     try context.setAffineGroupSize(groupSize)
+    try context.setAffineScheme(affineScheme)
     return context
 }
 
@@ -198,7 +213,11 @@ func checkRoutedMoE(d: Int, f: Int, groupSize: Int, seed: UInt64) throws -> Case
 
     func quantize(_ matrices: [[[Float]]]) -> [[Quantization.Int4AffineRow]] {
         matrices.map { rows in
-            rows.map { Quantization.quantizeInt4Affine($0, groupSize: groupSize) }
+            rows.map {
+                affineScheme == .sym
+                    ? Quantization.quantizeInt4Symmetric($0, groupSize: groupSize)
+                    : Quantization.quantizeInt4Affine($0, groupSize: groupSize)
+            }
         }
     }
     let quantGates = quantize(gates)
@@ -1418,8 +1437,16 @@ func printCases(_ cases: [CaseResult]) {
 
 if !visionOnly && !modelOnly {
 
+// Every INT4 case runs once per scheme: the `sym` library has to reproduce the
+// `affine` library's answers on weights that satisfy `bias == -8 * scale`. The
+// INT8 and BF16 slots do not have a scheme and simply run twice.
+let schemes: [Quantization.AffineScheme] =
+    arguments.contains("--affine-only") ? [.affine] : [.affine, .sym]
+
 for groupSize in groupSizes {
-    print("=== affine group size \(groupSize) ===")
+  for scheme in schemes {
+    affineScheme = scheme
+    print("=== affine group size \(groupSize), scheme \(scheme.rawValue) ===")
     var pass: [CaseResult] = []
     // Block-only shapes (production hidden dims).
     pass.append(try checkInt4GEMV(m: 128, n: 2816, groupSize: groupSize, seed: 0xA1))
@@ -1448,6 +1475,8 @@ for groupSize in groupSizes {
 
     printCases(pass)
     results.append(contentsOf: pass)
+  }
+  affineScheme = .affine
 }
 }
 

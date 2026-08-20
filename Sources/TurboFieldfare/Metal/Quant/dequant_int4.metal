@@ -22,6 +22,31 @@ using namespace metal;
 #endif
 constant constexpr uint kGroupSize = TURBO_AFFINE_GROUP_SIZE;
 
+// ---------------------------------------------------------------------------
+// Affine zero point
+//
+// `TURBO_AFFINE_SYMMETRIC` is the second whole-model compile-time constant
+// (`MetalContext.affineScheme`), alongside the group size. When it is set the
+// packer has dropped the bias arrays because the checkpoint satisfies
+// `bias == -8 * scale` as a BF16 bit pattern in every group -- exactly, not
+// approximately (`docs/mtp/44-W1-WEIGHT-DIET.md` §1). The bias *bindings* stay:
+// callers alias them onto the scale buffer, so no kernel signature changes and
+// the pointer below is simply never dereferenced.
+// ---------------------------------------------------------------------------
+#ifndef TURBO_AFFINE_SYMMETRIC
+#define TURBO_AFFINE_SYMMETRIC 0
+#endif
+
+static inline float dq4_int4_bias(device const bfloat* biases, uint index,
+                                     float scale) {
+#if TURBO_AFFINE_SYMMETRIC
+    return -8.0f * scale;
+#else
+    return float(biases[index]);
+#endif
+}
+
+
 // Geometry of the vectorized INT4 GEMV block, derived from the group size.
 //
 // A SIMD group consumes a fixed 128 bytes per block (32 lanes x 4 bytes = 256
@@ -95,7 +120,7 @@ kernel void embed_lookup_int4(
     uint8_t byte = row_q[gid >> 1];
     uint    q    = (gid & 1u) ? uint(byte >> 4) : uint(byte & 0xFu);
     float   s    = float(row_s[gid / kGroupSize]);
-    float   b    = float(row_b[gid / kGroupSize]);
+    float   b    = dq4_int4_bias(row_b, gid / kGroupSize, s);
     out[gid] = half((float(q) * s + b) * out_scale);
 }
 
@@ -150,7 +175,7 @@ static inline void dequant_int4_gemv_simd_body(
         const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
         const uint g  = blk * kGroupsPerBlock + lane / kLanesPerGroup;
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = dq4_int4_bias(b_row, g, s);
         const uint elem = byte_base * 2u;
         const half4 xa = *((device const half4*)(x + elem));
         const half4 xb = *((device const half4*)(x + elem + 4u));
@@ -173,7 +198,7 @@ static inline void dequant_int4_gemv_simd_body(
         // Only the first kTailLanes lanes hold a byte of this group.
         if (lane >= kTailLanes) break;
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = dq4_int4_bias(b_row, g, s);
         const uint8_t byte = W_row[g * (kGroupSize / 2) + lane];
         const float x0 = float(x[g * kGroupSize + lane * 2u]);
         const float x1 = float(x[g * kGroupSize + lane * 2u + 1u]);
@@ -257,7 +282,7 @@ static inline void dequant_int4_gemv_rows_simd_body(
         const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
         const uint g  = blk * kGroupsPerBlock + lane / kLanesPerGroup;
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = dq4_int4_bias(b_row, g, s);
         const uint elem = byte_base * 2u;
         const uint b0 =  w4        & 0xFFu;
         const uint b1 = (w4 >> 8)  & 0xFFu;
@@ -284,7 +309,7 @@ static inline void dequant_int4_gemv_rows_simd_body(
         // Only the first kTailLanes lanes hold a byte of this group.
         if (lane >= kTailLanes) break;
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = dq4_int4_bias(b_row, g, s);
         const uint8_t byte = W_row[g * (kGroupSize / 2) + lane];
         for (uint t = 0; t < kInt4MaxRows; ++t) {
             if (t >= T) break;
@@ -508,7 +533,7 @@ kernel void dequant_int4_gemv_rows_wide_simd(
                 (device const ushort*)(W + row * row_bytes + byte_base);
             const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
             sv[r] = float(scales[row * n_groups + g]);
-            bv[r] = float(biases[row * n_groups + g]);
+            bv[r] = dq4_int4_bias(biases, row * n_groups + g, sv[r]);
             const uint b0 =  w4        & 0xFFu;
             const uint b1 = (w4 >> 8)  & 0xFFu;
             const uint b2 = (w4 >> 16) & 0xFFu;
@@ -550,7 +575,7 @@ kernel void dequant_int4_gemv_rows_wide_simd(
             for (uint r = 0; r < R; ++r) {
                 const uint row = row_of[r];
                 const float s = float(scales[row * n_groups + gg]);
-                const float b = float(biases[row * n_groups + gg]);
+                const float b = dq4_int4_bias(biases, row * n_groups + gg, s);
                 const uint8_t byte = W[row * row_bytes + gg * (kGroupSize / 2) + lane];
                 float dot = fma(float(uint(byte & 0x0Fu)), x0, 0.0f);
                 dot = fma(float(uint(byte >> 4)), x1, dot);

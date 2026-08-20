@@ -89,11 +89,12 @@ static inline BpwScale bpw_scale(device const bfloat* s16,
                                  device const uint8_t* s8,
                                  uint anchor, uint g) {
     BpwScale out;
-    out.b = 0.0f;
     if (FC_FMT == 0u) {
         out.s = float(s16[g]);
         out.b = float(b16[g]);
-    } else if (FC_FMT == 1u) {
+        return out;
+    }
+    if (FC_FMT == 1u) {
         out.s = float(s16[g]);
     } else if (FC_FMT == 2u) {
         const uint code = uint(s8[g]);
@@ -108,6 +109,7 @@ static inline BpwScale bpw_scale(device const bfloat* s16,
                           & 0x1FFu;
         out.s = as_type<float>(((anchor - (code >> 7)) << 23) | ((code & 0x7Fu) << 16));
     }
+    out.b = -8.0f * out.s;
     return out;
 }
 
@@ -119,12 +121,13 @@ static inline uint bpw_sym9_row_stride(uint n_groups) {
 
 /// `acc += s * dot + b * sum` for affine, `acc += s * (dot - 8 * sum)` for the
 /// symmetric forms. Two FMAs in both branches.
+/// The same two FMAs in the same order for every scheme -- which is what makes
+/// the symmetric library bit-identical to the affine one on weights that
+/// satisfy the identity, since `-8 * scale` is exact in BF16. `sb.b` is the
+/// loaded bias for `affine` and the derived `-8 * s` for the others.
 static inline float bpw_accumulate(float acc, BpwScale sb, float dot, float sum) {
-    if (FC_FMT == 0u) {
-        acc = fma(sb.s, dot, acc);
-        return fma(sb.b, sum, acc);
-    }
-    return fma(sb.s, fma(-8.0f, sum, dot), acc);
+    acc = fma(sb.s, dot, acc);
+    return fma(sb.b, sum, acc);
 }
 
 kernel void bpw_rows_gate_up(

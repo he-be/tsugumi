@@ -84,6 +84,10 @@ struct LayerFilePlan: Sendable {
 
 struct RepackPlan: Sendable {
     let arch: ArchInfo
+    /// Whether the 4-bit slots are laid out `sym` -- verified to satisfy
+    /// `bias == -8 * scale` in every group, so the bias arrays are not written
+    /// at all (`docs/mtp/44-W1-WEIGHT-DIET.md`).
+    let symmetric: Bool
     let baseMode: String                  // "affine"
     let baseGroupSize: Int                // 64
     let bitsOverrideCount: Int
@@ -165,10 +169,19 @@ enum RepackPlanner {
 
     /// Build the plan from parsed shard headers + source metadata.
     /// - throws: classification + companion + override count failures.
+    /// - parameter readSourceBytes: supplied only when the source shards are
+    ///   local files. With it the planner probes `bias == -8 * scale` over every
+    ///   4-bit tensor and, if it holds everywhere, lays the model out `sym` --
+    ///   no bias arrays, 5.000 -> 4.500 bits per weight
+    ///   (`docs/mtp/44-W1-WEIGHT-DIET.md`). Without it the plan stays `affine`:
+    ///   a streaming install would have to fetch the bias ranges before it could
+    ///   plan the file that omits them.
     static func plan(meta: IndexLoader.SourceMetadata,
                             arch: ArchInfo,
                             shardHeaders: [Safetensors.Header],
-                            outputDir: String) throws -> RepackPlan {
+                            outputDir: String,
+                            readSourceBytes: ((SourceTensor) throws -> Data)? = nil,
+                            log: ((String) -> Void)? = nil) throws -> RepackPlan {
 
         // Companion tensors may live in different shards, so resolve them
         // through one global registry.
@@ -210,10 +223,36 @@ enum RepackPlanner {
         lmResidentBases.sort(by: lmResidentOrdering())
         excludedMultimodalNames.sort()
 
+        // Decide the scheme before laying anything out: it changes which
+        // regions exist, so it cannot be revisited once offsets are assigned.
+        var routedBases: [String] = []
+        for bundle in routedByLayerAndRole.values.sorted(by: { $0.keys.sorted().first ?? "" < $1.keys.sorted().first ?? "" }) {
+            for name in bundle.values.sorted() {
+                routedBases.append(name.hasSuffix(".weight")
+                    ? String(name.dropLast(".weight".count)) : name)
+            }
+        }
+        let probeBases = lmResidentBases.compactMap { name -> String? in
+            guard name.hasSuffix(".weight"), registry[name]?.dtype == .u32 else { return nil }
+            return String(name.dropLast(".weight".count))
+        } + routedBases.sorted()
+
+        var symmetric = false
+        if let readSourceBytes {
+            let result = SymmetricProbe.probe(bases: probeBases, registry: registry,
+                                              readBytes: readSourceBytes)
+            symmetric = result.symmetric
+            log?("[repack] affine scheme — \(result.summary)")
+        } else {
+            log?("[repack] affine scheme — affine: source shards are not local, "
+                    + "the bias identity cannot be probed before planning")
+        }
+
         let residentPath = (outputDir as NSString).appendingPathComponent("model_weights.bin")
         let resident = try planResidentFile(path: residentPath,
                                             baseNames: lmResidentBases,
-                                            registry: registry, meta: meta)
+                                            registry: registry, meta: meta,
+                                            symmetric: symmetric)
 
         let layersDir = (outputDir as NSString).appendingPathComponent("packed_experts")
         var layerPlans: [LayerFilePlan] = []
@@ -237,13 +276,15 @@ enum RepackPlanner {
                 .appendingPathComponent("layer_\(String(format: "%02d", layer)).bin")
             let lp = try planLayerFile(path: path, layer: layer,
                                        gateName: gName, upName: uName, downName: dName,
-                                       registry: registry, meta: meta, arch: arch)
+                                       registry: registry, meta: meta, arch: arch,
+                                       symmetric: symmetric)
             layerPlans.append(lp)
         }
 
         let matched = SourceFingerprint.modelID(forIndexSha256: meta.indexSha256Hex)
 
         return RepackPlan(arch: arch,
+                          symmetric: symmetric,
                           baseMode: meta.baseMode,
                           baseGroupSize: meta.baseGroupSize,
                           bitsOverrideCount: bitsOverrideCount,
@@ -284,7 +325,8 @@ enum RepackPlanner {
     private static func planResidentFile(path: String,
                                          baseNames: [String],
                                          registry: [String: SourceTensor],
-                                         meta: IndexLoader.SourceMetadata) throws
+                                         meta: IndexLoader.SourceMetadata,
+                                         symmetric: Bool) throws
                                         -> ResidentFilePlan {
         let (stringTable, offsets, indexSize) = residentIndexLayout(names: baseNames)
 
@@ -318,8 +360,11 @@ enum RepackPlanner {
                 let wSize = weight.sizeBytes
                 let sOff = wOff + wSize
                 let sSize = scales.sizeBytes
+                // `sym` writes no bias region. The entry reports zero length
+                // and the runtime aliases the binding onto the scales.
+                let dropBias = symmetric && spec.bits == 4
                 let bOff = sOff + sSize
-                let bSize = biases.sizeBytes
+                let bSize = dropBias ? 0 : biases.sizeBytes
                 fileCursor = bOff + bSize
 
                 entries.append(ResidentEntry(
@@ -327,9 +372,13 @@ enum RepackPlanner {
                     logicalShape4: padTo4(logical),
                     fileOffset: wOff, sizeBytes: wSize,
                     scaleOffset: sOff, scaleSize: sSize,
-                    biasOffset: bOff, biasSize: bSize,
+                    // v1 requires an absent payload to carry a zero offset;
+                    // the runtime aliases the binding onto the scales when it
+                    // sees `biasSize == 0` (`Model.residentView`).
+                    biasOffset: dropBias ? 0 : bOff, biasSize: bSize,
                     quantSpec: spec,
-                    sourceWeight: weight, sourceScales: scales, sourceBiases: biases))
+                    sourceWeight: weight, sourceScales: scales,
+                    sourceBiases: dropBias ? nil : biases))
             } else {
                 // Unquantized (BF16 norm / scalar) — no companions.
                 let off = fileCursor
@@ -363,7 +412,8 @@ enum RepackPlanner {
                                       gateName: String, upName: String, downName: String,
                                       registry: [String: SourceTensor],
                                       meta: IndexLoader.SourceMetadata,
-                                      arch: ArchInfo) throws -> LayerFilePlan {
+                                      arch: ArchInfo,
+                                      symmetric: Bool) throws -> LayerFilePlan {
         let expertCount = arch.numExperts
         let roles: [(role: String, name: String)] = [
             ("gate", gateName), ("up", upName), ("down", downName)
@@ -416,15 +466,21 @@ enum RepackPlanner {
                 sourceOffsetPerExpert: perExpertScaleSize, sourceTensor: s,
                 bitsForWeights: nil)
             blobCursor += perExpertScaleSize
-            let bSlice = PerExpertTensorSlice(
-                role: role, component: "biases", dtype: GTurboFormatV1.DType.bf16.rawValue,
-                logicalShape: biasesLogical,
-                offsetInExpertBlob: blobCursor, sizeInExpertBlob: perExpertBiasSize,
-                sourceOffsetPerExpert: perExpertBiasSize, sourceTensor: b,
-                bitsForWeights: nil)
-            blobCursor += perExpertBiasSize
+            subs.append(wSlice); subs.append(sSlice)
 
-            subs.append(wSlice); subs.append(sSlice); subs.append(bSlice)
+            // `sym` omits the bias sub-tensor entirely: the expert blob loses
+            // 10% of its bytes and `expertStride` lands on the value a
+            // group-64 affine model already uses (44 §6).
+            if !(symmetric && spec.bits == 4) {
+                subs.append(PerExpertTensorSlice(
+                    role: role, component: "biases",
+                    dtype: GTurboFormatV1.DType.bf16.rawValue,
+                    logicalShape: biasesLogical,
+                    offsetInExpertBlob: blobCursor, sizeInExpertBlob: perExpertBiasSize,
+                    sourceOffsetPerExpert: perExpertBiasSize, sourceTensor: b,
+                    bitsForWeights: nil))
+                blobCursor += perExpertBiasSize
+            }
         }
 
         let expertStride = roundUpToPage(blobCursor)

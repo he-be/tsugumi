@@ -45,6 +45,18 @@ public struct Model {
         manifest.quant?.embedding.groupSize ?? Quantization.groupSize
     }
 
+    /// How this model's 4-bit groups encode their zero point. Uniform across
+    /// every 4-bit slot for the same reason the group size is — one compiled
+    /// shader library serves all of them — so the embedding slot speaks for the
+    /// whole model. `sym` means the bias arrays are not in the file at all
+    /// (`docs/mtp/44-W1-WEIGHT-DIET.md`).
+    public var affineScheme: Quantization.AffineScheme {
+        if let forced = ProcessInfo.processInfo.environment["TF_FORCE_AFFINE_SCHEME"] {
+            return forced == "sym" ? .sym : .affine
+        }
+        return manifest.quant?.embedding.scheme.lowercased() == "sym" ? .sym : .affine
+    }
+
     let residentBuffer: ResidentBuffer
     let residentIndex: ResidentIndex
     let packedExpertsLayout: PackedExpertsLayout
@@ -306,8 +318,14 @@ public struct Model {
             entry.fileOffset, size: entry.sizeBytes, field: "weights")
         let scaleRel = try checkedRelativeOffset(
             entry.scaleOffset, size: entry.scaleSize, field: "scales")
-        let biasRel = try checkedRelativeOffset(
-            entry.biasOffset, size: entry.biasSize, field: "biases")
+        // A `sym` model stores no bias array (`docs/mtp/44-W1-WEIGHT-DIET.md`):
+        // the entry carries `biasSize == 0` and the binding aliases the scales,
+        // so every kernel keeps its signature and the shader -- compiled with
+        // `TURBO_AFFINE_SYMMETRIC` -- derives `-8 * scale` without reading it.
+        let biasRel = entry.biasSize == 0
+            ? scaleRel
+            : try checkedRelativeOffset(entry.biasOffset, size: entry.biasSize,
+                                        field: "biases")
         return TensorView(
             buffer: residentBuffer.buffer,
             offset: relativeOffset,
@@ -717,7 +735,7 @@ extension Model {
                   entry.shape.2 == 0, entry.shape.3 == 0,
                   entry.sizeBytes == expected.weight,
                   entry.scaleSize == expected.aux,
-                  entry.biasSize == expected.aux,
+                  entry.biasSize == (slot.storesBias ? expected.aux : 0),
                   entry.fileOffset % primaryAlignment == 0,
                   entry.scaleOffset % UInt64(MemoryLayout<UInt16>.alignment) == 0,
                   entry.biasOffset % UInt64(MemoryLayout<UInt16>.alignment) == 0 else {
@@ -808,17 +826,27 @@ extension Model {
                     rows: rows, columns: columns,
                     slot: quant.routedExpert,
                     field: "routed layer \(layer.layer) \(role)")
-                let expectedRoles: [(String, String, [UInt32], Int?, UInt64, UInt64)] = [
+                var expectedRoles: [(String, String, [UInt32], Int?, UInt64, UInt64)] = [
                     (role, "U32", [sizes.shape.0, sizes.shape.1],
                      quant.routedExpert.weightBits, sizes.weight,
                      UInt64(MemoryLayout<UInt32>.alignment)),
                     ("\(role)_scales", "BF16",
                      [sizes.shape.0, UInt32(columns / quant.routedExpert.groupSize)],
                      nil, sizes.aux, UInt64(MemoryLayout<UInt16>.alignment)),
-                    ("\(role)_biases", "BF16",
-                     [sizes.shape.0, UInt32(columns / quant.routedExpert.groupSize)],
-                     nil, sizes.aux, UInt64(MemoryLayout<UInt16>.alignment)),
                 ]
+                // A `sym` expert blob carries no bias sub-tensor at all: the
+                // schema requires its absence as strictly as it requires the
+                // other two to be present.
+                if quant.routedExpert.storesBias {
+                    expectedRoles.append(
+                        ("\(role)_biases", "BF16",
+                         [sizes.shape.0, UInt32(columns / quant.routedExpert.groupSize)],
+                         nil, sizes.aux, UInt64(MemoryLayout<UInt16>.alignment)))
+                } else if reference.subTensors["\(role)_biases"] != nil {
+                    throw ModelError.indexCorrupt(
+                        detail: "routed layer \(layer.layer) declares scheme "
+                            + "\(quant.routedExpert.scheme) but still carries \(role)_biases")
+                }
                 for (name, dtype, shape, bits, size, alignment) in expectedRoles {
                     guard let expected = reference.subTensors[name] else {
                         throw ModelError.indexCorrupt(

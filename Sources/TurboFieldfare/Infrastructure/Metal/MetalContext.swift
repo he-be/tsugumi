@@ -9,6 +9,7 @@ enum MetalError: Error, CustomStringConvertible {
     case libraryCompileFailed(String)
     case unsupportedGroupSize(Int)
     case groupSizeLockedByCompiledLibrary(current: Int, requested: Int)
+    case affineSchemeLockedByCompiledLibrary(current: String, requested: String)
 
     public var description: String {
         switch self {
@@ -23,6 +24,12 @@ enum MetalError: Error, CustomStringConvertible {
         case .groupSizeLockedByCompiledLibrary(let current, let requested):
             return """
                 affine group size is already baked into the compiled shader \
+                library as \(current); cannot switch to \(requested). Set it \
+                before the first pipeline() or library access.
+                """
+        case .affineSchemeLockedByCompiledLibrary(let current, let requested):
+            return """
+                affine scheme is already baked into the compiled shader \
                 library as \(current); cannot switch to \(requested). Set it \
                 before the first pipeline() or library access.
                 """
@@ -87,6 +94,7 @@ public final class MetalContext: @unchecked Sendable {
     private let libraryLock = NSLock()
     private var compiledLibrary: MTLLibrary?
     private var groupSize: Int = Quantization.groupSize
+    private var scheme: Quantization.AffineScheme = .affine
 
     public init() throws {
         guard let dev = MTLCreateSystemDefaultDevice() else { throw MetalError.noDevice }
@@ -138,6 +146,38 @@ public final class MetalContext: @unchecked Sendable {
         groupSize = value
     }
 
+    /// The affine scheme the shader library is (or will be) compiled for.
+    public var affineScheme: Quantization.AffineScheme {
+        libraryLock.lock()
+        defer { libraryLock.unlock() }
+        return scheme
+    }
+
+    /// Select the affine scheme for this context, with the same lifecycle rule
+    /// as `setAffineGroupSize`: before the first pipeline or library access.
+    ///
+    /// `sym` compiles the library with `TURBO_AFFINE_SYMMETRIC = 1`, which
+    /// turns every group's zero point into `-8 * scale` and stops the kernels
+    /// reading the bias arrays. The bias *bindings* stay -- callers alias them
+    /// onto the scale buffer -- so no kernel signature depends on the scheme.
+    public func setAffineScheme(_ value: Quantization.AffineScheme) throws {
+        libraryLock.lock()
+        defer { libraryLock.unlock() }
+        if scheme == value { return }
+        if compiledLibrary != nil {
+            throw MetalError.affineSchemeLockedByCompiledLibrary(current: scheme.rawValue,
+                                                                 requested: value.rawValue)
+        }
+        scheme = value
+    }
+
+    /// Whether `setAffineScheme(value)` would succeed.
+    public func canUseAffineScheme(_ value: Quantization.AffineScheme) -> Bool {
+        libraryLock.lock()
+        defer { libraryLock.unlock() }
+        return scheme == value || compiledLibrary == nil
+    }
+
     /// Whether `setAffineGroupSize(value)` would succeed. False once the
     /// library has been compiled for a different size — a long-lived context
     /// (the Mac app reuses one across model loads) has to be replaced rather
@@ -156,7 +196,8 @@ public final class MetalContext: @unchecked Sendable {
             defer { libraryLock.unlock() }
             if let compiledLibrary { return compiledLibrary }
             let built = try Self.compileShaderLibrary(device: device,
-                                                      affineGroupSize: groupSize)
+                                                      affineGroupSize: groupSize,
+                                                      affineScheme: scheme)
             compiledLibrary = built
             return built
         }
@@ -216,18 +257,23 @@ public final class MetalContext: @unchecked Sendable {
     /// `TURBO_AFFINE_GROUP_SIZE` is what every `k*GroupSize` constant in the
     /// shaders resolves to; each `.metal` file still carries an `#ifndef`
     /// fallback of 64 so the sources compile standalone.
-    private static func compileOptions(affineGroupSize: Int) -> MTLCompileOptions {
+    private static func compileOptions(affineGroupSize: Int,
+                                       affineScheme: Quantization.AffineScheme)
+        -> MTLCompileOptions {
         let opts = MTLCompileOptions()
         // The MPP prefill path requires MSL 4.0 tensor operations.
         opts.languageVersion = shaderLanguageVersion
         opts.preprocessorMacros = [
             "TURBO_AFFINE_GROUP_SIZE": NSNumber(value: affineGroupSize),
+            "TURBO_AFFINE_SYMMETRIC": NSNumber(value: affineScheme == .sym ? 1 : 0),
         ]
         return opts
     }
 
-    private static func compileShaderLibrary(device: MTLDevice,
-                                             affineGroupSize: Int) throws -> MTLLibrary {
+    private static func compileShaderLibrary(
+        device: MTLDevice,
+        affineGroupSize: Int,
+        affineScheme: Quantization.AffineScheme) throws -> MTLLibrary {
         var combined = ""
         for name in shaderModules {
             guard let url = shaderURL(module: name) else {
@@ -239,7 +285,8 @@ public final class MetalContext: @unchecked Sendable {
         do {
             return try device.makeLibrary(
                 source: combined,
-                options: compileOptions(affineGroupSize: affineGroupSize))
+                options: compileOptions(affineGroupSize: affineGroupSize,
+                                        affineScheme: affineScheme))
         } catch {
             throw MetalError.libraryCompileFailed("\(error)")
         }
@@ -248,7 +295,8 @@ public final class MetalContext: @unchecked Sendable {
     /// Compile a shader module separately from the shared runtime library.
     public static func moduleLibrary(device: MTLDevice,
                                      module: String,
-                                     affineGroupSize: Int = Quantization.groupSize)
+                                     affineGroupSize: Int = Quantization.groupSize,
+                                     affineScheme: Quantization.AffineScheme = .affine)
         throws -> MTLLibrary {
         guard let url = shaderURL(module: module) else {
             throw MetalError.missingShaderResource(module)
@@ -257,7 +305,8 @@ public final class MetalContext: @unchecked Sendable {
         do {
             return try device.makeLibrary(
                 source: src,
-                options: compileOptions(affineGroupSize: affineGroupSize))
+                options: compileOptions(affineGroupSize: affineGroupSize,
+                                        affineScheme: affineScheme))
         } catch {
             throw MetalError.libraryCompileFailed("\(error)")
         }

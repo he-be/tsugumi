@@ -62,16 +62,25 @@ extension Model {
             }
             return offset
         }
+        /// A `sym` expert blob has no bias region, so the bias binding aliases
+        /// the scales: a valid address the `TURBO_AFFINE_SYMMETRIC` kernels
+        /// never dereference (`docs/mtp/44-W1-WEIGHT-DIET.md`). Keeping the
+        /// binding is what lets the kernel signatures stay scheme-independent.
+        func biasOffset(_ role: String) -> UInt32 {
+            expert.subTensors["\(role)_biases"] != nil
+                ? offset("\(role)_biases")
+                : offset("\(role)_scales")
+        }
         return MoEExpertOffsets(
             gateWOff: offset("gate"),
             gateSOff: offset("gate_scales"),
-            gateBOff: offset("gate_biases"),
+            gateBOff: biasOffset("gate"),
             upWOff: offset("up"),
             upSOff: offset("up_scales"),
-            upBOff: offset("up_biases"),
+            upBOff: biasOffset("up"),
             downWOff: offset("down"),
             downSOff: offset("down_scales"),
-            downBOff: offset("down_biases"))
+            downBOff: biasOffset("down"))
     }
 
     public func routedExpertPhysicalOffsets(layer: Int) -> [UInt64] {

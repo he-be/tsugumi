@@ -79,11 +79,15 @@ enum GTurboJSON {
                     biasType: "none",
                     groupSize: plan.baseGroupSize)
             }
+            // Only the 4-bit lattice can be symmetric: an INT8 group's zero
+            // point is real data, so an INT8 slot keeps its bias array even in
+            // a model whose 4-bit slots dropped theirs.
+            let symmetric = plan.symmetric && weightBits == 4
             return GTurboManifestQuantSlotV1(
                 weightBits: weightBits,
-                scheme: plan.baseMode,
+                scheme: symmetric ? "sym" : plan.baseMode,
                 scaleType: "BF16",
-                biasType: "BF16",
+                biasType: symmetric ? "none" : "BF16",
                 groupSize: plan.baseGroupSize)
         }
         let quant = GTurboManifestQuantV1(

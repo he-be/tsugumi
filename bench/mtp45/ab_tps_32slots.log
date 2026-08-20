@@ -1,0 +1,36 @@
+### round=1 model=gemma4-qat
+
+[stop=maxTokens prefill=33tok new=256tok decode=10.79s tok/s=23.715]
+[load=0.763s layerVerify=0.000s/30layers prefill=1.144s ttft=1.144s peak=4.85GB rss=3.81GB]
+[expert prefill hit=0.0% 0/1329 io=0.782s | decode hit=84.0% 51394/61200 io=4.113s]
+[decode/tok io=16.10ms cb1=0.66ms cb2=0.28ms head=3.60ms]
+### round=1 model=gemma4-qat-sym
+
+[stop=maxTokens prefill=33tok new=256tok decode=9.92s tok/s=25.796]
+[load=0.649s layerVerify=0.000s/30layers prefill=1.149s ttft=1.149s peak=4.48GB rss=3.60GB]
+[expert prefill hit=0.0% 0/1329 io=0.816s | decode hit=84.0% 51394/61200 io=3.628s]
+[decode/tok io=14.21ms cb1=0.64ms cb2=0.27ms head=3.27ms]
+### round=2 model=gemma4-qat
+
+[stop=maxTokens prefill=33tok new=256tok decode=10.86s tok/s=23.574]
+[load=0.765s layerVerify=0.000s/30layers prefill=1.250s ttft=1.250s peak=4.88GB rss=3.81GB]
+[expert prefill hit=0.0% 0/1329 io=0.884s | decode hit=84.0% 51394/61200 io=4.120s]
+[decode/tok io=16.16ms cb1=0.65ms cb2=0.28ms head=3.62ms]
+### round=2 model=gemma4-qat-sym
+
+[stop=maxTokens prefill=33tok new=256tok decode=9.91s tok/s=25.845]
+[load=0.670s layerVerify=0.000s/30layers prefill=1.158s ttft=1.158s peak=4.48GB rss=3.61GB]
+[expert prefill hit=0.0% 0/1329 io=0.811s | decode hit=84.0% 51394/61200 io=3.621s]
+[decode/tok io=14.18ms cb1=0.66ms cb2=0.27ms head=3.27ms]
+### round=3 model=gemma4-qat
+
+[stop=maxTokens prefill=33tok new=256tok decode=10.77s tok/s=23.768]
+[load=0.789s layerVerify=0.000s/30layers prefill=1.286s ttft=1.286s peak=4.89GB rss=3.87GB]
+[expert prefill hit=0.0% 0/1329 io=0.890s | decode hit=84.0% 51394/61200 io=4.100s]
+[decode/tok io=16.06ms cb1=0.66ms cb2=0.28ms head=3.60ms]
+### round=3 model=gemma4-qat-sym
+
+[stop=maxTokens prefill=33tok new=256tok decode=9.93s tok/s=25.776]
+[load=0.671s layerVerify=0.000s/30layers prefill=1.165s ttft=1.165s peak=4.46GB rss=3.60GB]
+[expert prefill hit=0.0% 0/1329 io=0.815s | decode hit=84.0% 51394/61200 io=3.634s]
+[decode/tok io=14.26ms cb1=0.65ms cb2=0.26ms head=3.27ms]

@@ -25,7 +25,8 @@ final class MPPPrefillInt4QMM {
         do {
             let library = try Self.compileTensorOpsLibrary(
                 device: context.device,
-                affineGroupSize: context.affineGroupSize)
+                affineGroupSize: context.affineGroupSize,
+                affineScheme: context.affineScheme)
             guard let function = library.makeFunction(
                 name: "mpp_prefill_affine_threadgroup_f16") else {
                 throw MetalError.missingFunction("mpp_prefill_affine_threadgroup_f16")
@@ -87,10 +88,17 @@ final class MPPPrefillInt4QMM {
         return .affineThreadgroupF16
     }
 
+    /// `tensorops` is compiled outside the combined runtime library, so it has
+    /// to be handed the same two whole-model constants the combined one bakes
+    /// in. Missing the scheme here would leave this path loading a bias array
+    /// that a `sym` model does not have.
     private static func compileTensorOpsLibrary(device: MTLDevice,
-                                                affineGroupSize: Int) throws -> MTLLibrary {
+                                                affineGroupSize: Int,
+                                                affineScheme: Quantization.AffineScheme) throws
+        -> MTLLibrary {
         try MetalContext.moduleLibrary(device: device,
                                        module: "tensorops",
-                                       affineGroupSize: affineGroupSize)
+                                       affineGroupSize: affineGroupSize,
+                                       affineScheme: affineScheme)
     }
 }

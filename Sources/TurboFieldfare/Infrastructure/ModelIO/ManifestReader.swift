@@ -36,6 +36,10 @@ public struct ManifestQuantSlot: Decodable, Equatable, Sendable {
     public let scaleType: String
     public let biasType: String
     public let groupSize: Int
+    /// Whether this slot stores a per-group zero point. `sym` does not: the
+    /// bias is `-8 * scale` and the shader derives it.
+    public var storesBias: Bool { scheme.lowercased() != "sym" }
+
 }
 
 public struct ManifestQuant: Decodable, Equatable, Sendable {
@@ -229,6 +233,17 @@ public enum ManifestReader {
                       slot.biasType.lowercased() == "none" else {
                     throw ModelError.indexCorrupt(detail: "unsupported quantization for \(name)")
                 }
+            } else if slot.scheme.lowercased() == "sym" {
+                // `sym` drops the bias array: the checkpoint satisfies
+                // `bias == -8 * scale` in every group, so the shader library --
+                // compiled with `TURBO_AFFINE_SYMMETRIC` -- derives it
+                // (`docs/mtp/44-W1-WEIGHT-DIET.md`). Only the 4-bit lattice has
+                // that property; an INT8 group's zero point is real data.
+                guard slot.weightBits == 4,
+                      slot.scaleType.lowercased() == "bf16",
+                      slot.biasType.lowercased() == "none" else {
+                    throw ModelError.indexCorrupt(detail: "unsupported quantization for \(name)")
+                }
             } else {
                 guard slot.scheme.lowercased() == "affine",
                       slot.scaleType.lowercased() == "bf16",
@@ -236,6 +251,17 @@ public enum ManifestReader {
                     throw ModelError.indexCorrupt(detail: "unsupported quantization for \(name)")
                 }
             }
+        }
+        // The scheme is a whole-model property for the same reason the group
+        // size is: one compiled shader library serves every 4-bit slot. Slots
+        // that carry no affine metadata (the BF16 router, an INT8 shared
+        // expert) are exempt and keep their own scheme string.
+        let symmetricSlots = slots.filter { $0.1.weightBits == 4 }
+        let symmetric = symmetricSlots.map { $0.1.scheme.lowercased() == "sym" }
+        guard symmetric.allSatisfy({ $0 == symmetric[0] }) else {
+            throw ModelError.indexCorrupt(
+                detail: "4-bit slots disagree on the affine scheme: "
+                    + symmetricSlots.map { "\($0.0)=\($0.1.scheme)" }.joined(separator: ", "))
         }
         // The affine group size is a whole-model property: the shader library is
         // compiled with one baked-in value (`MetalContext.affineGroupSize`), and
