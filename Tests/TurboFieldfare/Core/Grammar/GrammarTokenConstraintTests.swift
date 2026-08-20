@@ -303,11 +303,103 @@ struct GrammarTokenConstraintTests {
         #expect(!constraint.allows(tokenID: self.letterToken))
     }
 
+    // MARK: - GEN-7: 棄却経路の復号表 (意味を動かさない最適化)
+
+    /// 復号は語彙表と同じ寿命で 1 度だけ払う。
+    @Test("GEN_7_the_decoded_code_point_table_covers_every_candidate")
+    func decodedTableCoversCandidates() {
+        #expect(vocab.decodedCodePoints.count == vocab.candidates.count)
+        #expect(vocab.decodedPartials.count == vocab.candidates.count)
+        #expect(vocab.candidateTokenIDs.count == vocab.candidates.count)
+        #expect(vocab.baseWork.count == vocab.candidates.count)
+
+        let filled = min(vocab.decodedCodePoints.count,
+                         min(vocab.decodedPartials.count,
+                             min(vocab.candidateTokenIDs.count, vocab.baseWork.count)))
+        for slot in stride(from: 0, to: min(vocab.candidates.count, filled), by: 379) {
+            let candidate = vocab.candidates[slot]
+            let reference = GrammarMatcher.decodeUTF8(candidate.piece, GrammarPartialUTF8())
+            #expect(vocab.decodedCodePoints[slot] == reference.codePoints)
+            #expect(vocab.decodedPartials[slot] == reference.partial)
+            #expect(vocab.candidateTokenIDs[slot] == candidate.tokenID)
+            #expect(vocab.baseWork[slot].slot == slot)
+            #expect(vocab.baseWork[slot].offset == 0)
+        }
+    }
+
+    /// 最適化前の計算そのもの: 生の `GrammarMatcher.rejectedIndices` から
+    /// 組んだマスク。これと `fillAllowedMask` が**全語彙で**一致すること。
+    private func referenceMask(_ matcher: GrammarMatcher) -> [Bool] {
+        var table = [Bool](repeating: false, count: tok.vocabSize)
+        for candidate in vocab.candidates where candidate.index < table.count {
+            table[candidate.index] = true
+        }
+        for index in matcher.rejectedIndices(vocab.candidates) where index < table.count {
+            table[index] = false
+        }
+        return table
+    }
+
+    private func makeMatcher(_ source: String, feeding ids: [Int32]) throws -> GrammarMatcher {
+        var matcher = try GrammarMatcher(GBNFGrammar(source))
+        for id in ids { try matcher.accept(piece: vocab.piece(for: id), tokenID: id) }
+        return matcher
+    }
+
+    @Test("GEN_7_the_mask_equals_the_uncached_engine_result_over_the_whole_vocabulary")
+    func maskEqualsUncachedResult() throws {
+        for prefix in ["", "{", "{ab", "{ab:1,"] {
+            let ids = prefix.isEmpty ? [] : tok.encode(prefix, addBOS: false)
+            let constraint = try GrammarTokenConstraint(Self.jsonish, vocabulary: vocab)
+            for id in ids { try constraint.accept(tokenID: id) }
+            let mine = try mask(constraint)
+            let reference = referenceMask(try makeMatcher(Self.jsonish, feeding: ids))
+            #expect(mine == reference, "接頭辞 \"\(prefix)\" でマスクがずれた")
+        }
+    }
+
+    /// `partialUTF8` が空でない状態 — 多バイト文字の途中で切れた piece を
+    /// 食べた直後。ここでは復号表をそのまま使えないので、実装は復号し直す。
+    @Test("GEN_7_a_pending_partial_utf8_still_matches_the_uncached_result")
+    func partialUTF8StillMatches() throws {
+        guard let lead = singleToken("<0xC3>"), let tail = singleToken("<0xA9>") else {
+            Issue.record("バイトフォールバックのトークンが語彙に無い")
+            return
+        }
+        // "é" は C3 A9。先頭バイトだけ食べると多バイト列の途中で止まる。
+        let grammar = #"""
+            root ::= "é" "x"
+            """#
+        let constraint = try GrammarTokenConstraint(grammar, vocabulary: vocab)
+        try constraint.accept(tokenID: lead)
+
+        var matcher = try GrammarMatcher(GBNFGrammar(grammar))
+        try matcher.accept(piece: vocab.piece(for: lead), tokenID: lead)
+        #expect(matcher.partialUTF8.remaining != 0, "この状態は partialUTF8 を残さない")
+
+        let mine = try mask(constraint)
+        #expect(mine == referenceMask(matcher), "partialUTF8 が残る状態でマスクがずれた")
+        #expect(mine[Int(tail)] == true)
+        #expect(constraint.allows(tokenID: tail))
+
+        // 途中の状態でも単発判定と一致する。
+        for id in stride(from: 0, to: tok.vocabSize, by: 379) {
+            #expect(mine[id] == constraint.allows(tokenID: Int32(id)), "id \(id)")
+        }
+
+        try constraint.accept(tokenID: tail)
+        for id in tok.encode("x", addBOS: false) { try constraint.accept(tokenID: id) }
+        #expect(constraint.mayEndHere)
+    }
+
     // MARK: - 費用 (報告用。閾値は置かない)
 
     @Test("GEN_1_measures_the_table_build_and_the_two_hot_paths")
     func measuresCost() throws {
-        let fresh = ContinuousClock().measure { _ = GrammarVocabulary(tok) }
+        var built: GrammarVocabulary?
+        let before = Self.physFootprint()
+        let fresh = ContinuousClock().measure { built = GrammarVocabulary(tok) }
+        let after = Self.physFootprint()
         let cached = ContinuousClock().measure { _ = GrammarVocabulary.shared(for: tok) }
 
         let constraint = try GrammarTokenConstraint(Self.jsonish, vocabulary: vocab)
@@ -321,12 +413,41 @@ struct GrammarTokenConstraintTests {
         let batch = try buffer.withUnsafeMutableBufferPointer { pointer in
             try ContinuousClock().measure { try constraint.fillAllowedMask(pointer) }
         }
+        // partialUTF8 が残る = 復号表を使えない側の経路。
+        let slow: Duration
+        if let lead = singleToken("<0xC3>") {
+            let partial = try GrammarTokenConstraint(#"root ::= "é" "x""#, vocabulary: vocab)
+            try partial.accept(tokenID: lead)
+            slow = try buffer.withUnsafeMutableBufferPointer { pointer in
+                try ContinuousClock().measure { try partial.fillAllowedMask(pointer) }
+            }
+        } else {
+            slow = .zero
+        }
 
+        let pieceBytes = (0..<tok.vocabSize).reduce(0) { $0 + vocab.piece(for: Int32($1)).count }
+        let codePoints = vocab.decodedCodePoints.reduce(0) { $0 + $1.count }
         print("""
-            [GrammarTokenConstraint] 語彙表の構築 \(fresh) (\(vocab.count) 個) / \
+            [GrammarTokenConstraint] 語彙表の構築 \(fresh) (\(vocab.count) 個, \
+            phys_footprint +\((after &- before) / 1_048_576) MB) / \
             共有の再取得 \(cached) / allows 1 回 \(probe / probes) / \
-            fillAllowedMask 1 回 \(batch)
+            fillAllowedMask 1 回 \(batch) / partialUTF8 有りの回 \(slow) / \
+            piece 合計 \(pieceBytes) B / コードポイント合計 \(codePoints)
             """)
         #expect(vocab.count == tok.vocabSize)
+        #expect(built?.count == tok.vocabSize)
+    }
+
+    /// このプロセスの実メモリ使用量 (バイト)。取れなければ 0。
+    private static func physFootprint() -> UInt64 {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { pointer in
+            pointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? info.phys_footprint : 0
     }
 }

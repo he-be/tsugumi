@@ -49,6 +49,25 @@ public struct GrammarVocabulary: Sendable {
     /// 同じバッファを指すだけ (CoW) なので、二重に持っても中身は 1 部。
     let candidates: [GrammarCandidate]
 
+    /// `candidates` と同じ並びの、**空の `partialUTF8` から復号した**
+    /// コードポイント列 (GEN-7 の棄却経路用)。
+    ///
+    /// `GrammarMatcher.rejectedIndices` は候補ごとに毎回 UTF-8 を復号し直す
+    /// (参照実装 `llama_grammar_apply_impl` と同じ形)。実測ではそれが棄却
+    /// 1 回の 43% を占める。復号は**文法の状態に依らない** — 唯一の例外は
+    /// 直前の piece から続く多バイト列 (`GrammarMatcher.partialUTF8`) で、
+    /// そこが空でありさえすれば `decodeUTF8` の出力は piece だけで決まる。
+    /// なので語彙表と同じ寿命で 1 度だけ作って使い回す。
+    let decodedCodePoints: [[UInt32]]
+    /// `decodedCodePoints` と対の、復号後に残った不完全列。
+    let decodedPartials: [GrammarPartialUTF8]
+    /// `candidates` と同じ並びのトークン ID (棄却経路が slot で引く)。
+    let candidateTokenIDs: [Int32]
+    /// 棄却経路の初期作業列 (全 slot、offset 0)。平らな配列 1 本なので、
+    /// 毎回作り直しても要素ごとの確保は起きないが、共有できるものを毎回
+    /// 作る理由も無い。
+    let baseWork: [GrammarMatcher.WorkCandidate]
+
     /// 表を 1 本作る。**要求ごとに作らないこと** — `shared(for:)` を使うか、
     /// tokenizer の隣に 1 個持って毎要求に渡す。
     public init(_ tokenizer: GFTokenizer) {
@@ -76,6 +95,11 @@ public struct GrammarVocabulary: Sendable {
 
         self.pieces = pieces
         self.candidates = candidates
+        // TODO(P2-G4a 緑): 復号表を 1 度だけ作る。
+        self.decodedCodePoints = []
+        self.decodedPartials = []
+        self.candidateTokenIDs = []
+        self.baseWork = []
     }
 
     /// トークン 1 個の piece。範囲外の ID は空バイト列 (= 文法が常に拒む)。
