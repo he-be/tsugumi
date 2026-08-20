@@ -57,7 +57,7 @@ struct ChatRequestSchemaConformanceTests {
         #expect(request.double("top_p") == 1.0)
         #expect(request.int("seed") == -1)
         #expect(request.int("max_tokens") == -1)
-        #expect(request["stop"] == nil)
+        #expect(request["stop"] == .array([]))
     }
 
     @Test("REQ-model / R5: any model name is accepted verbatim")
@@ -311,6 +311,26 @@ struct ChatRequestSchemaConformanceTests {
     }
 
     // MARK: - the table itself
+
+    /// EP-4: `/props.default_generation_settings` is "the effective value of
+    /// every SPEC §4 row that has a default", and it is built by walking this
+    /// table. So a row whose §4 line prints a default and whose `defaultValue`
+    /// is nil is a default the client cannot read — four of them were.
+    @Test("EP-4: every default SPEC §4 prints is in the table, so /props reports it")
+    func EP_4_the_table_carries_every_printed_default() throws {
+        let printed: [String: JSONValue] = [
+            "stop": .array([]),
+            "tools": .array([]),
+            "response_format": .object(["type": .string("text")]),
+            "chat_template_kwargs": .object([:]),
+        ]
+        for (name, expected) in printed {
+            let field = try #require(ChatRequestSchema.field(named: name), "\(name)")
+            #expect(field.defaultValue == expected, "\(name)")
+            // And the default is what a request that says nothing gets.
+            #expect(try Self.normalized()[name] == expected, "\(name)")
+        }
+    }
 
     @Test("the table covers every field the parser reads, with no duplicate spelling")
     func schema_table_is_well_formed() {
