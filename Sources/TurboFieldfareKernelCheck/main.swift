@@ -1441,6 +1441,50 @@ if arguments.contains("--mmap-residency-probe") {
     exit(0)
 }
 
+// `--mmap-p5-probe`: 48 §13. The fault cost 48 §11 found inside the command
+// buffer (4.00 ms of the 4.25, with every page already in the page cache) is
+// what decides whether D is worth anything, so this sweeps the four ways of
+// trying to move it out -- `MTLResidencySet` requested off-thread, a CPU
+// pre-touch, both, against today's `useResource`.
+if arguments.contains("--mmap-p5-probe") {
+    var probeModel = "scratch/gemma4-qat-sym.gturbo"
+    if let index = arguments.firstIndex(of: "--mmap-probe-model"), index + 1 < arguments.count {
+        probeModel = arguments[index + 1]
+    }
+    var probeRounds = 10
+    if let index = arguments.firstIndex(of: "--mmap-p5-rounds"),
+       index + 1 < arguments.count, let value = Int(arguments[index + 1]) {
+        probeRounds = value
+    }
+    var probeOrder = MmapP5Order.palindrome
+    if let index = arguments.firstIndex(of: "--mmap-p5-order"),
+       index + 1 < arguments.count,
+       let value = MmapP5Order(rawValue: arguments[index + 1]) {
+        probeOrder = value
+    }
+    var probePollute = 0
+    if let index = arguments.firstIndex(of: "--mmap-p5-pollute"),
+       index + 1 < arguments.count, let value = Int(arguments[index + 1]) {
+        probePollute = value
+    }
+    var probeExperts = 8
+    if let index = arguments.firstIndex(of: "--mmap-p5-experts"),
+       index + 1 < arguments.count, let value = Int(arguments[index + 1]) {
+        probeExperts = max(1, min(bpwTileExperts, value))
+    }
+    var probeOnly: MmapP5Arm?
+    if let index = arguments.firstIndex(of: "--mmap-p5-only"), index + 1 < arguments.count {
+        let wanted = arguments[index + 1]
+        probeOnly = MmapP5Arm.allCases.first { $0.rawValue.hasPrefix(wanted + " ") }
+    }
+    try runMmapP5FaultProbe(groupSize: groupSizes[0], modelPath: probeModel,
+                            rounds: probeRounds, order: probeOrder,
+                            pollute: probePollute, only: probeOnly,
+                            fixtureEarly: arguments.contains("--mmap-p5-fixture-early"),
+                            experts: probeExperts)
+    exit(0)
+}
+
 if arguments.contains("--bpw-probe") {
     var probeIterations = 50
     if let index = arguments.firstIndex(of: "--moe-rows-bench-iterations"),
