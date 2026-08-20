@@ -18,7 +18,19 @@ import Testing
 struct ChatGrammarBuilderTests {
     // MARK: - Fixtures
 
+    private static let channelStartID: Int32 = 105
+    private static let channelEndID: Int32 = 106
+
     private static let markers = ChatGrammarMarkers(
+        toolCallStart: "<|tool_call>",
+        toolCallEnd: "<tool_call|>",
+        toolCallStartTokenID: 7,
+        channelStartTokenID: channelStartID,
+        channelEndTokenID: channelEndID)
+
+    /// The same markers with no thought channel — a caller that opts out of
+    /// the GEN-13 prefix.
+    private static let markersWithoutChannel = ChatGrammarMarkers(
         toolCallStart: "<|tool_call>",
         toolCallEnd: "<tool_call|>",
         toolCallStartTokenID: 7)
@@ -50,7 +62,8 @@ struct ChatGrammarBuilderTests {
         tools: [GFTokenizer.FunctionDefinition] = [],
         toolChoice: ChatToolChoice = .auto,
         parallelToolCalls: Bool = true,
-        responseFormat: ChatGrammarBuilder.ResponseFormat = .text
+        responseFormat: ChatGrammarBuilder.ResponseFormat = .text,
+        markers: ChatGrammarMarkers = markers
     ) -> ChatGrammarConstraint? {
         ChatGrammarBuilder.constraint(
             tools: tools,
@@ -70,6 +83,37 @@ struct ChatGrammarBuilderTests {
         }
         return matcher.isComplete
     }
+
+    /// Walk a token sequence and then a string through the grammar, the way
+    /// the sampler does: `TOKEN` / `TOKEN_NOT` elements are matched by id, and
+    /// everything after them by text. `thought` is `nil` for "the model wrote
+    /// no thought block at all".
+    private static func walk(_ grammar: String,
+                             thought: [(Int32, String)]?,
+                             then text: String) throws -> Bool {
+        var matcher = try GrammarMatcher(try GBNFGrammar(grammar))
+        do {
+            for (tokenID, piece) in thought ?? [] {
+                try matcher.accept(piece: Array(piece.utf8), tokenID: tokenID)
+            }
+            try matcher.accept(text: text)
+        } catch {
+            return false
+        }
+        return matcher.isComplete
+    }
+
+    /// `<|channel>thought\n` … `<channel|>` as the model emits it when thinking
+    /// is on: the template writes none of it into the generation prompt, so
+    /// every token here is generated.
+    private static let thoughtBlock: [(Int32, String)] = [
+        (channelStartID, "<|channel>"),
+        (900, "thought"),
+        (901, "\n"),
+        (902, "Kyoto"),
+        (903, " in July"),
+        (channelEndID, "<channel|>"),
+    ]
 
     /// Every rule body, without the `space` rule's own definition.
     private static func ruleBodies(_ grammar: String) -> [String] {
@@ -111,12 +155,16 @@ struct ChatGrammarBuilderTests {
             Self.constraint(tools: [Self.weather], toolChoice: .required))
         #expect(!required.isLazy)
         #expect(required.trigger == nil)
-        // Non-lazy means the start marker is itself part of the grammar; it is
-        // the same text either way, only the application differs.
+        // Non-lazy means the start marker is itself part of the grammar. The
+        // call rules are the same as `auto`'s; only the application and the
+        // GEN-13 thought prefix differ.
         let auto = try #require(
             Self.constraint(tools: [Self.weather], toolChoice: .auto))
-        #expect(required.grammar == auto.grammar)
         #expect(required.grammar.contains(#""<|tool_call>call:get_weather""#))
+        for line in auto.grammar.split(separator: "\n")
+        where !line.hasPrefix("root ::=") {
+            #expect(required.grammar.contains(line + "\n"), "\(line)")
+        }
     }
 
     @Test("GEN-4/DEV-17: a named choice keeps only that function")
@@ -274,7 +322,7 @@ struct ChatGrammarBuilderTests {
         #expect(!constraint.isLazy)
         #expect(constraint.trigger == nil)
         #expect(constraint.approximations.isEmpty)
-        #expect(constraint.grammar.contains("root ::= object\n"))
+        #expect(constraint.grammar.contains("response-format ::= object\n"))
         #expect(try Self.accepts(constraint.grammar, #"{"a": [1, true]}"#))
         // R4: being asked for JSON and answering with prose is the one failure
         // forbidden at every stage.
@@ -306,7 +354,7 @@ struct ChatGrammarBuilderTests {
         // it is the empty schema.
         let empty = try #require(
             Self.constraint(responseFormat: .jsonSchema(schema: nil)))
-        #expect(empty.grammar.contains("root ::= object\n"))
+        #expect(empty.grammar.contains("response-format ::= object\n"))
     }
 
     private static let citySchema = JSONValue.object([
@@ -355,6 +403,88 @@ struct ChatGrammarBuilderTests {
         #expect(collision.approximations.contains {
             $0.hasPrefix("response-format-overrides-tool-choice")
         })
+    }
+
+    // MARK: - GEN-13: a non-lazy grammar swallows the thought block
+
+    @Test("GEN-13: a non-lazy tool grammar swallows an optional leading thought block")
+    func GEN_13_non_lazy_tool_grammar_swallows_the_thought_block() throws {
+        let constraint = try #require(Self.constraint(
+            tools: [Self.weather], toolChoice: .required, parallelToolCalls: false))
+        #expect(!constraint.isLazy)
+        #expect(constraint.grammar.contains("root ::= thought? tool-call\n"))
+        // "the opener, then any run of tokens that is not the closer, then the
+        // closer" — `!<[N]>` is the only way to say that.
+        #expect(constraint.grammar.contains("thought ::= <[105]> !<[106]>* <[106]>\n"))
+
+        // Thinking on: the generation prompt ends at `<|turn>model\n`, so the
+        // model writes the whole channel itself before the call.
+        #expect(try Self.walk(constraint.grammar,
+                              thought: Self.thoughtBlock,
+                              then: Self.canonicalCall))
+        // Thinking off: the template already wrote a closed empty channel into
+        // the prompt, so the first generated token is the call itself.
+        #expect(try Self.walk(constraint.grammar,
+                              thought: nil,
+                              then: Self.canonicalCall))
+        // An empty thought block is still a thought block.
+        #expect(try Self.walk(
+            constraint.grammar,
+            thought: [(Self.channelStartID, "<|channel>"),
+                      (Self.channelEndID, "<channel|>")],
+            then: Self.canonicalCall))
+        // The body still has to be the canonical call afterwards.
+        #expect(try !Self.walk(
+            constraint.grammar,
+            thought: Self.thoughtBlock,
+            then: #"<|tool_call>call:get_weather{city:"Kyoto",days:3}<tool_call|>"#))
+    }
+
+    @Test("GEN-13: a non-lazy response-format grammar swallows it too")
+    func GEN_13_response_format_grammar_swallows_the_thought_block() throws {
+        let constraint = try #require(Self.constraint(
+            responseFormat: .jsonSchema(schema: Self.citySchema)))
+        #expect(!constraint.isLazy)
+        #expect(constraint.grammar.contains("root ::= thought? response-format\n"))
+        #expect(try Self.walk(constraint.grammar,
+                              thought: Self.thoughtBlock,
+                              then: #"{"city": "Kyoto"}"#))
+        #expect(try Self.walk(constraint.grammar,
+                              thought: nil,
+                              then: #"{"city": "Kyoto"}"#))
+        #expect(try !Self.walk(constraint.grammar,
+                               thought: Self.thoughtBlock,
+                               then: "Sure! Here you go."))
+    }
+
+    @Test("GEN-13: a lazy grammar keeps the trigger rule as its root")
+    func GEN_13_lazy_grammar_has_no_prefix() throws {
+        // A lazy grammar is not applied until the trigger fires, so its root
+        // never sees the thought block. GEN-6 owns that case.
+        let constraint = try #require(
+            Self.constraint(tools: [Self.weather], toolChoice: .auto))
+        #expect(constraint.isLazy)
+        #expect(constraint.grammar.contains("root ::= tool-call\n"))
+        #expect(!constraint.grammar.contains("thought"))
+        #expect(try !Self.walk(constraint.grammar,
+                               thought: Self.thoughtBlock,
+                               then: Self.canonicalCall))
+    }
+
+    @Test("GEN-13: a caller that gives no channel ids gets no prefix")
+    func GEN_13_without_channel_ids_there_is_no_prefix() throws {
+        let tools = try #require(Self.constraint(
+            tools: [Self.weather], toolChoice: .required, parallelToolCalls: false,
+            markers: Self.markersWithoutChannel))
+        #expect(tools.grammar.contains("root ::= tool-call\n"))
+        #expect(!tools.grammar.contains("thought"))
+        #expect(try Self.accepts(tools.grammar, Self.canonicalCall))
+
+        let format = try #require(Self.constraint(
+            responseFormat: .jsonSchema(schema: Self.citySchema),
+            markers: Self.markersWithoutChannel))
+        #expect(format.grammar.contains("root ::= response-format\n"))
+        #expect(try Self.accepts(format.grammar, #"{"city": "Kyoto"}"#))
     }
 
     // MARK: - GEN-2: schema content never produces an error

@@ -15,18 +15,33 @@ public struct ChatGrammarMarkers: Equatable, Sendable {
     /// The id of the token whose text is `toolCallStart`. Only the lazy
     /// grammar needs it; a non-lazy grammar spells the marker as text.
     public let toolCallStartTokenID: Int32
+    /// `<|channel>` / `<channel|>` — the thought block a non-lazy grammar has
+    /// to swallow before the constrained body (GEN-13). Written as token ids
+    /// rather than text because the body between them is "any token that is
+    /// not the closer", which only `TOKEN_NOT` can say. Both `nil` opts out of
+    /// the prefix entirely.
+    public let channelStartTokenID: Int32?
+    public let channelEndTokenID: Int32?
 
-    public init(toolCallStart: String, toolCallEnd: String, toolCallStartTokenID: Int32) {
+    public init(toolCallStart: String,
+                toolCallEnd: String,
+                toolCallStartTokenID: Int32,
+                channelStartTokenID: Int32? = nil,
+                channelEndTokenID: Int32? = nil) {
         self.toolCallStart = toolCallStart
         self.toolCallEnd = toolCallEnd
         self.toolCallStartTokenID = toolCallStartTokenID
+        self.channelStartTokenID = channelStartTokenID
+        self.channelEndTokenID = channelEndTokenID
     }
 
     /// The markers as this model writes them.
     public init(tokenizer: GFTokenizer) {
         self.init(toolCallStart: ChatGrammarMarkers.gemmaToolCallStart,
                   toolCallEnd: ChatGrammarMarkers.gemmaToolCallEnd,
-                  toolCallStartTokenID: tokenizer.toolCallStartID)
+                  toolCallStartTokenID: tokenizer.toolCallStartID,
+                  channelStartTokenID: tokenizer.channelStartID,
+                  channelEndTokenID: tokenizer.channelEndID)
     }
 
     public static let gemmaToolCallStart = "<|tool_call>"
