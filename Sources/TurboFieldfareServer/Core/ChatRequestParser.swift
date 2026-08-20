@@ -1,12 +1,36 @@
 import Foundation
 import TurboFieldfare
 
-/// REQ-tool-choice's four shapes.
+/// REQ-tool-choice's four shapes (GEN-4).
+///
+/// All four are the grammar's business: `none` emits no grammar, `auto` a lazy
+/// one, and `required` / `function` constrain from the first token. The named
+/// shape pins the function name itself (DEV-17).
 public enum ChatToolChoice: Equatable, Sendable {
     case auto
     case none
     case required
     case function(name: String)
+}
+
+/// REQ-response-format's three types, already unwrapped (GEN-3).
+///
+/// The schema is carried as it was sent, from the place each type keeps it:
+/// `json_schema` from `response_format.json_schema.schema`, `json_object` from
+/// `response_format.schema` (`server-common.cpp:1150`). A `nil` schema is not
+/// an error and not "unconstrained" — it is "no schema was sent", and what
+/// that constrains to is DEV-18, decided by the grammar stage.
+public enum ChatResponseFormat: Equatable, Sendable {
+    case text
+    case jsonObject(schema: JSONValue?)
+    case jsonSchema(schema: JSONValue?)
+
+    /// Whether this format constrains generation at all. `text` does not, so
+    /// it never collides with a forced tool call (GEN-12).
+    public var isConstraining: Bool {
+        if case .text = self { return false }
+        return true
+    }
 }
 
 /// REQ-reasoning-format / RSN-3.

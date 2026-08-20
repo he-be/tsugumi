@@ -193,13 +193,19 @@ struct ChatRequestSchemaConformanceTests {
         #expect(try Self.refusal(#""top_logprobs":3"#).type == .notSupported)
     }
 
-    @Test("REQ-tool-choice / GEN-4: auto and none work now, required and named are 501")
+    /// GEN-4: all four shapes are the grammar's now, so the table accepts them
+    /// all and hands them on unchanged. What the four *mean* is
+    /// `ChatRequestConstraintTests`; this row only says none of them is refused.
+    @Test("REQ-tool-choice / GEN-4: the table accepts all four shapes")
     func REQ_tool_choice_shapes() throws {
         #expect(try Self.normalized()["tool_choice"] == .string("auto"))
         #expect(try Self.normalized(#""tool_choice":"none""#)["tool_choice"] == .string("none"))
-        #expect(try Self.refusal(#""tool_choice":"required""#).type == .notSupported)
+        #expect(try Self.normalized(#""tool_choice":"required""#)["tool_choice"]
+            == .string("required"))
         let named = #""tool_choice":{"type":"function","function":{"name":"f"}}"#
-        #expect(try Self.refusal(named).type == .notSupported)
+        #expect(try Self.normalized(named)["tool_choice"]
+            == .object(["type": .string("function"),
+                        "function": .object(["name": .string("f")])]))
     }
 
     @Test("REQ-tool-choice: a value outside the four shapes is a 400")
@@ -216,15 +222,18 @@ struct ChatRequestSchemaConformanceTests {
             .bool("parallel_tool_calls") == false)
     }
 
-    @Test("GEN-3: json_object and json_schema are 501 until the grammar exists")
-    func GEN_3_structured_output_is_not_supported_yet() throws {
-        #expect(throws: Never.self) {
-            _ = try Self.normalized(#""response_format":{"type":"text"}"#)
+    /// GEN-3: structured output rides the grammar, which now exists, so all
+    /// three types are accepted here. What each one constrains is
+    /// `ChatRequestConstraintTests`.
+    @Test("GEN-3: the table accepts text, json_object and json_schema")
+    func GEN_3_structured_output_types_are_accepted() throws {
+        for format in [#"{"type":"text"}"#,
+                       #"{"type":"json_object"}"#,
+                       #"{"type":"json_schema","json_schema":{"name":"s","schema":{}}}"#] {
+            #expect(throws: Never.self, "\(format)") {
+                _ = try Self.normalized(#""response_format":"# + format)
+            }
         }
-        #expect(try Self.refusal(#""response_format":{"type":"json_object"}"#)
-            .type == .notSupported)
-        let schema = #""response_format":{"type":"json_schema","json_schema":{"name":"s","schema":{}}}"#
-        #expect(try Self.refusal(schema).type == .notSupported)
     }
 
     @Test("REQ-response-format: an unknown type is a 400")

@@ -34,12 +34,24 @@ struct OpenAIValidationTests {
         #expect(ids.count <= 16_384 - 4_096)
     }
 
-    @Test func requiredToolChoiceIsRejected() throws {
-        let data = Data(#"""
+    /// GEN-4: `required` used to be a 501 placeholder for the grammar. The
+    /// grammar exists, so the choice is carried — but only when there is a
+    /// tool to force, because an empty grammar would answer a contract
+    /// parameter with a free-form completion (R4).
+    @Test func GEN_4_required_tool_choice_is_carried_when_a_tool_is_declared() throws {
+        let withTool = Data(#"""
+        {"model":"m","messages":[{"role":"user","content":"x"}],
+         "tool_choice":"required",
+         "tools":[{"type":"function","function":{"name":"lookup","parameters":{
+           "type":"object","properties":{"q":{"type":"string"}}}}}]}
+        """#.utf8)
+        #expect(try ChatRequestParser.parse(withTool).toolChoice == .required)
+
+        let withoutTools = Data(#"""
         {"model":"m","messages":[{"role":"user","content":"x"}],"tool_choice":"required"}
         """#.utf8)
         #expect(throws: ServerRequestError.self) {
-            try ChatRequestParser.parse(data)
+            try ChatRequestParser.parse(withoutTools)
         }
     }
 

@@ -260,10 +260,13 @@ public struct ValidatedChatRequest: Sendable {
     /// R5: the name the client asked for, written back into the response
     /// unexamined. A single-model server has nothing to check it against.
     public let model: String
-    /// REQ-tool-choice. `required` and named choices need the grammar (GEN-4),
-    /// so the parser refuses them with 501 until it exists; this only ever
-    /// carries a choice the server can actually honor.
+    /// REQ-tool-choice, all four shapes (GEN-4). The two that force a call —
+    /// `required` and a named function — are only ever carried here with a
+    /// tool the grammar can actually pin (the parser refuses the rest).
     public let toolChoice: ChatToolChoice
+    /// REQ-response-format (GEN-3). What the answer must be shaped like, for
+    /// the grammar stage to turn into a constraint. `text` is no constraint.
+    public let responseFormat: ChatResponseFormat
     public let parallelToolCalls: Bool
     /// REQ-cache-prompt. Whether this request may read from or write to the
     /// prompt cache (CACHE-5).
@@ -289,6 +292,7 @@ public struct ValidatedChatRequest: Sendable {
                 enableThinking: Bool = false,
                 model: String = "",
                 toolChoice: ChatToolChoice = .auto,
+                responseFormat: ChatResponseFormat = .text,
                 parallelToolCalls: Bool = true,
                 cachePrompt: Bool = true,
                 reasoningEffort: String? = nil,
@@ -306,6 +310,7 @@ public struct ValidatedChatRequest: Sendable {
         self.enableThinking = enableThinking
         self.model = model
         self.toolChoice = toolChoice
+        self.responseFormat = responseFormat
         self.parallelToolCalls = parallelToolCalls
         self.cachePrompt = cachePrompt
         self.reasoningEffort = reasoningEffort
