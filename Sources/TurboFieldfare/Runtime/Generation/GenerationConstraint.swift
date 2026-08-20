@@ -16,8 +16,9 @@ import Foundation
 /// work; `fillAllowedMask` — the expensive one — runs only on a rejection.
 ///
 /// The implementation is a class because it *advances*: `accept(tokenID:)` is
-/// called once for every token the decode loop keeps, in order, and every other
-/// member answers for the state that leaves behind.
+/// called once for every token the decode loop keeps, in order — bar the
+/// end-of-generation token that ends it, which no constraint rules on — and
+/// every other member answers for the state that leaves behind.
 public protocol GenerationConstraint: AnyObject, Sendable {
     /// Whether the sequence may legally stop at the current state.
     ///
@@ -25,11 +26,14 @@ public protocol GenerationConstraint: AnyObject, Sendable {
     /// `src/llama-grammar.cpp`): while it is false, every end-of-generation
     /// token — the tokenizer's stop ids and the caller's `extraStopTokens` — is
     /// masked, so generation cannot end in the middle of the constrained
-    /// structure. While it is true they are left alone and behave exactly as
-    /// they do in an unconstrained run.
+    /// structure. While it is true they are allowed, and generation can end.
     ///
-    /// The constraint does not need to know which ids those are: the decode
-    /// loop knows them, and `ConstraintGate` applies the rule.
+    /// This answer is the *only* thing consulted about those ids: they are never
+    /// passed to `allows`, never left in the mask by the constraint's own
+    /// verdict, and the one that ends generation is never passed to `accept`. So
+    /// a constraint does not special-case stop tokens — it does not need to know
+    /// which ids they are. The decode loop knows them, and `ConstraintGate`
+    /// applies the whole rule in one place.
     var mayEndHere: Bool { get }
 
     /// The cheap single-token probe, called once per generated token on the
@@ -50,8 +54,9 @@ public protocol GenerationConstraint: AnyObject, Sendable {
     /// Runs only on the rejection path.
     func fillAllowedMask(_ allowed: UnsafeMutableBufferPointer<Bool>) throws
 
-    /// Advance the state by one token the decode loop kept. Called in
-    /// generation order, including for the token that ends generation.
+    /// Advance the state by one token the decode loop kept, in generation
+    /// order. The token that ends generation is included unless it is an
+    /// end-of-generation id the constraint never ruled on — see `mayEndHere`.
     func accept(tokenID: Int32) throws
 }
 
@@ -101,22 +106,40 @@ struct ConstraintGate {
         self.endOfGenerationTokenIDs = endOfGenerationTokenIDs
     }
 
+    /// An end-of-generation id is decided by `mayEndHere` and by nothing else —
+    /// it is never put to the constraint. The reference keeps eog ids out of the
+    /// candidate set entirely (`llama_grammar_apply_impl` masks them when
+    /// `!allow_eog` and otherwise leaves them alone; either way they are not
+    /// among the candidates the rules reject). Asking the constraint instead is
+    /// how a completed constraint ends up unable to stop: a grammar that has
+    /// nothing left to match rejects `<end_of_turn>` along with everything else.
     func allows(_ tokenID: Int32) -> Bool {
-        if !constraint.mayEndHere, endOfGenerationTokenIDs.contains(tokenID) {
-            return false
+        if endOfGenerationTokenIDs.contains(tokenID) {
+            return constraint.mayEndHere
         }
         return constraint.allows(tokenID: tokenID)
     }
 
+    /// The same rule, applied after the constraint has filled the buffer, so the
+    /// mask and the probe cannot drift apart. The constraint deliberately does
+    /// not special-case stop tokens; this is the one place that does.
     func fillAllowedMask(_ allowed: UnsafeMutableBufferPointer<Bool>) throws {
         try constraint.fillAllowedMask(allowed)
-        guard !constraint.mayEndHere else { return }
+        let mayEnd = constraint.mayEndHere
         for id in endOfGenerationTokenIDs where id >= 0 && Int(id) < allowed.count {
-            allowed[Int(id)] = false
+            allowed[Int(id)] = mayEnd
         }
     }
 
+    /// The token that ends generation is not forwarded: a constraint that may
+    /// end here has no state left for it to advance, and a real one throws on
+    /// it. `llama_grammar_accept_impl` returns early for exactly this case.
+    ///
+    /// An eog id while `mayEndHere` is false cannot occur — the mask forbade it,
+    /// and the reference calls the same situation fatal — so it is passed
+    /// through and the constraint decides what to do with it.
     func accept(_ tokenID: Int32) throws {
+        if constraint.mayEndHere, endOfGenerationTokenIDs.contains(tokenID) { return }
         try constraint.accept(tokenID: tokenID)
     }
 }

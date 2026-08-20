@@ -175,8 +175,10 @@ public func runRawCompletion(producer: any LogitProducer,
                                      history: history, config: config,
                                      position: generated, constraint: gate).id
         }
-        // Every token the loop keeps is accepted, in order, including the one
-        // that ends generation.
+        // Every token the loop keeps goes to the gate, in order, including the
+        // one that ends generation. The gate decides what reaches the
+        // constraint: an end-of-generation id it allowed on `mayEndHere` alone
+        // is not something the constraint has state for.
         try gate?.accept(tokenID)
         generated += 1
         if generated == 1 {
