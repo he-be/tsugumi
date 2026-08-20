@@ -62,6 +62,17 @@ public struct RawCompletionScratch: @unchecked Sendable {
     }
 }
 
+/// A producer that may answer with a GPU argmax instead of writing the logits
+/// buffer. `RealForwardRunner` is the production conformer; the constraint hook
+/// has to be able to ask the question without owning that concrete type, both
+/// because the answer is a policy decision (GEN-7 cannot mask logits that were
+/// never written) and because it has to be checkable without a model.
+protocol FusedGreedyReporting: LogitProducer {
+    var usesFusedGreedyHead: Bool { get }
+}
+
+extension RealForwardRunner: FusedGreedyReporting {}
+
 extension GenerationConfig {
     /// A pure-greedy config can use the fused head's GPU argmax
     /// (`RealForwardRunner.lastGreedyToken`) instead of sampling from the
@@ -85,6 +96,7 @@ public func runRawCompletion(producer: any LogitProducer,
                              tokenizer: GFTokenizer,
                              promptIds: [Int32],
                              config: GenerationConfig,
+                             constraint: (any GenerationConstraint)? = nil,
                              context: MetalContext,
                              scratch: RawCompletionScratch,
                              prefillConfig: PrefillRuntimeConfig = .defaultChunked,
@@ -92,6 +104,10 @@ public func runRawCompletion(producer: any LogitProducer,
                              start: RawCompletionStart = .reset,
                              shouldStop: () -> Bool = { false },
                              onProgress: (RawDecodeProgress) -> Void) async throws -> RawDecodeResult {
+    if constraint != nil {
+        throw GenerationConstraintError.notImplemented(
+            "P2 G3: GEN-7 の拘束フックは未実装")
+    }
     let prepared = try await prepareGeneration(producer: producer,
                                                promptIds: promptIds,
                                                config: config,
@@ -127,13 +143,15 @@ public func runRawCompletion(producer: any LogitProducer,
                 tokenID = Int32(bitPattern: token)
             case .logitsWritten:
                 tokenID = try sampleOnce(scratch: scratch, context: context,
-                                         history: history, config: config, position: generated)
+                                         history: history, config: config,
+                                         position: generated)
             }
         } else if fusedGreedy {
             tokenID = Int32(bitPattern: fusedRunner!.lastGreedyToken)
         } else {
             tokenID = try sampleOnce(scratch: scratch, context: context,
-                                     history: history, config: config, position: generated)
+                                     history: history, config: config,
+                                     position: generated)
         }
         generated += 1
         if generated == 1 {

@@ -98,6 +98,7 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
                                      tokenizer: GFTokenizer,
                                      promptIds: [Int32],
                                      config: GenerationConfig,
+                                     constraint: (any GenerationConstraint)? = nil,
                                      context: MetalContext,
                                      scratch: RawCompletionScratch,
                                      speculative: SpeculativeScratch,
@@ -107,6 +108,10 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
                                      shouldStop: () -> Bool = { false },
                                      onProgress: (RawDecodeProgress) -> Void) async throws
     -> SpeculativeDecodeResult {
+    if constraint != nil {
+        throw GenerationConstraintError.notImplemented(
+            "P2 G3: DEV-14 の判定は未実装")
+    }
     guard var drafting = producer as? any SpeculativeDrafting else {
         throw SpeculativeDraftError.unsupportedConfig(
             "this producer cannot draft; run with --draft-block-size 0")

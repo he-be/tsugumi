@@ -64,6 +64,26 @@ enum SamplePath: Sendable, Equatable {
     case greedyGPU
     case gpuSampled
     case hostPenalty
+    /// GEN-7: the first draw was rejected by the constraint and the token
+    /// reported came from the masked redraw.
+    case constraintResampled
+}
+
+/// One draw with the GEN-7 constraint hook: draw normally, probe the drawn
+/// token, and only on a rejection mask the vocabulary and draw again.
+///
+/// `constraint` nil is the unconstrained path and delegates to the plain
+/// `sampleOnce` unchanged, so a caller that passes no constraint draws the same
+/// token, from the same seed, as it did before this hook existed.
+func sampleOnce(scratch: RawCompletionScratch, context: MetalContext,
+                history: [Int32], config: GenerationConfig, position: Int,
+                constraint gate: ConstraintGate?) throws -> (id: Int32, path: SamplePath) {
+    let drawn = try sampleOnce(scratch: scratch, context: context,
+                              history: history, config: config, position: position)
+    let path = scratch.sampler.lastPath
+    guard gate != nil else { return (drawn, path) }
+    throw GenerationConstraintError.notImplemented(
+        "P2 G3: GEN-7 の棄却サンプリングは未実装")
 }
 
 /// Turns `GenerationConfig` + a logits buffer into one token id, staying
@@ -89,6 +109,9 @@ final class Sampler {
     private let topK64Kernel: SampleTopK64
     let vocab: Int
     private let logitSoftcap: Float
+    /// Path of the most recent `sample(...)`, so a caller that wraps the draw
+    /// (the GEN-7 rejection path) can report it without re-deriving it.
+    private(set) var lastPath: SamplePath = .greedyGPU
 
     init(context: MetalContext, vocab: Int = 262_144,
                 logitSoftcap: Float = 30.0) throws {
@@ -124,6 +147,23 @@ final class Sampler {
         softcap.encode(commandBuffer: commandBuffer,
                        logits: logits, probs: probs, v: v, softcap: logitSoftcap)
 
+        let drawn = encodeDraw(commandBuffer: commandBuffer, probs: probs,
+                               config: config, position: position, outToken: outToken)
+
+        let path: SamplePath = appliedPenalty ? .hostPenalty : drawn
+        lastPath = path
+        return path
+    }
+
+    /// Encode the draw kernel alone, from a `probs` buffer somebody else has
+    /// already prepared. Split out of `sample` so the GEN-7 rejection path can
+    /// redraw from a masked distribution without re-running the front end.
+    @discardableResult
+    func encodeDraw(commandBuffer: MTLCommandBuffer,
+                    probs: MTLBuffer,
+                    config: GenerationConfig,
+                    position: Int,
+                    outToken: MTLBuffer) -> SamplePath {
         let isGreedy = config.temperature == 0
         let seed = Self.seedFor(config: config, position: position)
         if config.temperature > 0,
@@ -136,15 +176,13 @@ final class Sampler {
                                 seed: seed)
         } else {
             sampleKernel.encode(commandBuffer: commandBuffer,
-                                probs: probs, outToken: outToken, v: v,
+                                probs: probs, outToken: outToken, v: UInt32(vocab),
                                 temperature: isGreedy ? 0.0 : config.temperature,
                                 topK: UInt32(config.topK ?? 0),
                                 topP: config.topP ?? 1.0,
                                 seed: seed,
                                 position: UInt32(position))
         }
-
-        if appliedPenalty { return .hostPenalty }
         return isGreedy ? .greedyGPU : .gpuSampled
     }
 
