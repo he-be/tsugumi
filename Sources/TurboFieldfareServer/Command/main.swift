@@ -26,7 +26,13 @@ do {
         queueLimit: arguments.queueLimit,
         backend: nil,
         imagePolicy: arguments.imagePolicy,
-        defaults: ChatRequestDefaults(thinking: arguments.thinkingPolicy))
+        defaults: ChatRequestDefaults(thinking: arguments.thinkingPolicy),
+        // EP-4. All of it is known before the model is, which is what lets
+        // `/props` be answered by a server that is still loading one.
+        properties: ServerProperties(
+            modelPath: modelURL.path,
+            contextLength: arguments.maxContext,
+            chatTemplate: try ServerChatTemplate.jinja()))
     // LIF-1: the port opens before the model does, and everything answers 503
     // `unavailable_error` until the load lands (LIF-2). The load takes tens of
     // seconds; a client that connects during it is told the server is coming

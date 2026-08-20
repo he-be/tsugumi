@@ -295,6 +295,10 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                              created: 0,
                              ownedBy: "turbofieldfare")])
             writeCodable(context, status: .ok, response)
+        // EP-4: the capability answer. Nothing here needs the model, but it is
+        // behind the readiness gate with everything else (LIF-2).
+        case (.GET, "/props"):
+            writeCodable(context, status: .ok, Self.props(properties))
         case (.POST, "/v1/chat/completions"):
             guard head.headers.first(name: "content-type")?
                 .lowercased().hasPrefix("application/json") == true else {
@@ -304,7 +308,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 return
             }
             handleCompletion(body: body, context: context)
-        case (_, "/health"), (_, "/v1/health"), (_, "/v1/models"),
+        case (_, "/health"), (_, "/v1/health"), (_, "/v1/models"), (_, "/props"),
              (_, "/v1/chat/completions"):
             writeError(context, status: .methodNotAllowed,
                        OpenAIErrorEnvelope(message: "method not allowed",
@@ -314,6 +318,29 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                        OpenAIErrorEnvelope(message: "route not found",
                                            code: "not_found"))
         }
+    }
+
+    /// EP-4's body.
+    ///
+    /// `default_generation_settings` is read off `ChatRequestSchema` — the same
+    /// table the request parser applies — because SPEC §4 makes `/props` the
+    /// truth about the defaults, and a second hand-written copy is a second
+    /// thing to keep in step.
+    private static func props(_ properties: ServerProperties) -> JSONValue {
+        var settings: [String: JSONValue] = [:]
+        for field in ChatRequestSchema.fields {
+            guard let defaultValue = field.defaultValue else { continue }
+            settings[field.name] = defaultValue
+        }
+        settings["n_ctx"] = .integer(Int64(properties.contextLength))
+        return .object([
+            "default_generation_settings": .object(settings),
+            "total_slots": .integer(Int64(ServerProperties.totalSlots)),
+            "model_path": .string(properties.modelPath),
+            "chat_template": .string(properties.chatTemplate),
+            "modalities": .object(["vision": .bool(true)]),
+            "build_info": .string(ServerProperties.buildInfo),
+        ])
     }
 
     /// LIF-2, quoted. The one body SPEC writes out in full, because a client
