@@ -1,7 +1,8 @@
 # 引き継ぎ — サーバー再実装ループ
 
-最終更新: 2026-08-22。ブランチ `macos15-support`。**P0〜P4 が済み、P5 が残り**。
-`swift test` は 1195 本前後で全緑 (約 110 秒)。**意図的な赤は無い。**
+最終更新: 2026-08-22。ブランチ `macos15-support`。**P0〜P5 が全部済み。**
+`swift test` は **1229 本で全緑** (約 110 秒)。**意図的な赤は無い。**
+CONFORMANCE §2 の赤リストは**空**であり、§5 完了の定義の 1 つ目を満たしている。
 
 この文書は**次のセッションが同じループを再開するための唯一の入口**である。
 仕様は書かない ([SPEC.md](docs/serving/SPEC.md) が唯一の規範)。作業の並べ方も
@@ -43,19 +44,28 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
 | **P2** 生成の拘束 | **済** (2026-08-22)。下の §3.1 |
 | **P3** ライフサイクル / EP | **済** (2026-08-22)。listen 先行 + ロード中 503、`/v1/health`、`/props`、採らないパスの 501、`/v1` 無しの別名、ERR-2 の 401/405/415、413 の撤去 |
 | **P4** 思考 | **済** (2026-08-22)。`--reasoning-budget` / `--reasoning-format` へ改名、`--thinking` 退役、予算切れの終了タグ強制 (RSN-4) |
-| **P5** 残り | **一部**。FLAG-5 (`--api-key`) / FLAG-6 (CORS) / FLAG-1 / FLAG-2 は済。**残り: RSP-3 `timings`、RSP-5 `system_fingerprint`、EP-5 `/tokenize` 系、EP-6 `/slots`・`/metrics`** |
+| **P5** 残り | **済** (2026-08-22)。`timings` (RSP-3)、`system_fingerprint` (RSP-5)、`/tokenize` `/detokenize` `/apply-template` (EP-5)、`/slots` `/metrics` (EP-6、FLAG-7 でゲート)、`--api-key` (FLAG-5)、CORS (FLAG-6)、`-c/--ctx-size` と `--expert-cache-slots` の丸め (FLAG-1/FLAG-2) |
 
-### 次の一手 — **P5 の残り**
+### 次の一手 — **C3 を実機で走らせる**
 
-CONFORMANCE §2 の赤リストに残っているのは 2 行だけ:
+**赤いテストはもう無い。**残っているのは「書けたが実機で見ていない」ことで、
+それは CONFORMANCE §5 完了の定義の 2 つ目と 3 つ目である:
 
-- **RSP-3 / RSP-5** — `timings` オブジェクトと `system_fingerprint`。SPEC EP-4 で
-  `build_info` と `system_fingerprint` は**同じ値**と決めてある。
-- **EP-5 / EP-6** — `/tokenize` `/detokenize` `/apply-template` と `/slots` `/metrics`。
-  `apply-template` は **DEV-12 のサーバー変種**で描くこと (同梱版で答えると、
-  このサーバーが実際に使わないテンプレートについて答えることになる)。
+1. **`Scripts/c3_smoke.sh` を走らせる** (14 検査)。**まだ 1 度も走っていない。**
+   人が建てたサーバーに当てる — 走らせ方はスクリプト冒頭のコメントにある。
+   AGENTS.md の「Test rules」を先に満たすこと。**結果は CONFORMANCE §2 に
+   書き足す** — 書けたことと通ったことは別である。
+2. **pi の既定セッション** (tools ON + 画像 + Reasoning ON + MTP) を通しで動かす。
+3. **OpenAI 公式 Python SDK の素朴なコード**がそのまま動くことを見る。
 
-そのあとに残るのは **P1-D5 (改名)** と、下の §6 の「実機で見ていないもの」。
+そこで症状が出たら、直す道は 1 つしかない: 参照実装を確認 → SPEC に行を足す →
+赤テスト → 実装 (SPEC §13)。**症状から実装へ直行しない。**
+
+残っている小さな仕事:
+
+- **P1-D5** — 名前を SPEC に合わせる。中身は薄い。
+- `docs/serving/README.md` の「残る計画」(CLI 対話モード = 旧 S4、既定値の
+  自動選択 = 旧 S5) は **P2 のあと**という条件を満たした。
 
 ### 3.1 P2 で入った形 (次が壊しやすい場所)
 
@@ -128,8 +138,7 @@ CONFORMANCE §2 の赤リストに残っているのは 2 行だけ:
   無関係 (MTP の提案書)。前回のセッション中に外から現れたもので、意図的に
   触っていない。
 - `docs/OPENAI_SERVER.md` / `docs/SERVER_RUNBOOK.md` / `docs/RUNTIME_CONTROLS.md` は
-  **P4 と FLAG-1/2 まで追随済み**。P5 の残り (`timings`・`/tokenize` 系・`/slots`) が
-  入ったらまた直す。
+  **P5 まで追随済み** (2026-08-22)。
 - **追い残し (SPEC の話ではなく実装の話)**: `GrammarMatcher` の `RejectContext.decoded` が
   `[[UInt32]]` なので語彙のコードポイント表を平坦化できず、`GrammarTokenConstraint` が
   `rejectedIndices` の候補組み立てを複製している。直すならエンジン側の型から。
