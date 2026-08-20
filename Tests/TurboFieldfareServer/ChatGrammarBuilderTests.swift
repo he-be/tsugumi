@@ -198,7 +198,12 @@ struct ChatGrammarBuilderTests {
         // the fallback is the generic object and not the generic JSON value.
         // (`tool-ping-args` and `object` are `JSONSchemaGrammar`'s rules.)
         #expect(constraint.grammar.contains("tool-ping-args ::= object\n"))
-        #expect(constraint.grammar.contains(#"object ::= "{""#))
+        #expect(try Self.accepts(constraint.grammar,
+                                 "<|tool_call>call:ping{}<tool_call|>"))
+        #expect(try Self.accepts(constraint.grammar,
+                                 #"<|tool_call>call:ping{loud:true}<tool_call|>"#))
+        #expect(try !Self.accepts(constraint.grammar,
+                                  "<|tool_call>call:ping3<tool_call|>"))
     }
 
     // MARK: - GEN-8: only the canonical template form (round trip)
@@ -362,12 +367,17 @@ struct ChatGrammarBuilderTests {
             tools: [brittle], toolChoice: .required, parallelToolCalls: false))
         #expect(!constraint.approximations.isEmpty)
         #expect(constraint.approximations.contains { $0.contains("#/definitions/missing") })
-        // Still a grammar, and still the canonical call syntax around it: the
-        // unresolvable reference fell back to the generic JSON value.
+        // Still a loadable grammar, and still the canonical call syntax around
+        // it: the unresolvable reference fell back to the generic JSON value.
         #expect(constraint.grammar.contains(
             "tool-lookup ::= \"<|tool_call>call:lookup\" "
             + "tool-lookup-args \"<tool_call|>\"\n"))
         #expect(constraint.grammar.contains("tool-lookup-args-id ::= value\n"))
+        #expect(try Self.accepts(constraint.grammar,
+                                 "<|tool_call>call:lookup{id:3}<tool_call|>"))
+        #expect(try Self.accepts(
+            constraint.grammar,
+            #"<|tool_call>call:lookup{id:{q:<|"|>x<|"|>}}<tool_call|>"#))
 
         // The same on the response-format side.
         let format = try #require(Self.constraint(
