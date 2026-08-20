@@ -82,8 +82,8 @@ public enum ChatRequestParser {
     ) throws -> ValidatedChatRequest {
         let request = try ChatRequestSchema.normalize(body)
 
-        let toolChoice: ChatToolChoice =
-            request.string("tool_choice") == "none" ? .none : .auto
+        let toolChoice = Self.toolChoice(request["tool_choice"])
+        let responseFormat = Self.responseFormat(request["response_format"])
         let messages = try decode([OpenAIChatMessage].self,
                                   from: request["messages"] ?? .array([]),
                                   param: "messages")
@@ -97,6 +97,9 @@ public enum ChatRequestParser {
                          from: request["tools"] ?? .array([]),
                          param: "tools")
         let tools = try declaredTools.map(ChatMessageValidator.validateTool)
+        try Self.checkConstraintsAreSatisfiable(toolChoice: toolChoice,
+                                                responseFormat: responseFormat,
+                                                tools: tools)
 
         let maximumCompletionTokens = request.int("max_tokens") ?? -1
         let reasoningEffort = request.string("reasoning_effort")
@@ -116,6 +119,7 @@ public enum ChatRequestParser {
                                                defaults: defaults),
             model: request.string("model") ?? "",
             toolChoice: toolChoice,
+            responseFormat: responseFormat,
             parallelToolCalls: request.bool("parallel_tool_calls") ?? true,
             cachePrompt: request.bool("cache_prompt") ?? true,
             reasoningEffort: reasoningEffort,
@@ -124,6 +128,95 @@ public enum ChatRequestParser {
             reasoningFormat: ReasoningFormat(
                 rawValue: request.string("reasoning_format") ?? "auto") ?? .auto,
             timingsPerToken: request.bool("timings_per_token") ?? false)
+    }
+
+    /// REQ-tool-choice → GEN-4's four shapes. The table has already refused
+    /// anything that is not one of them, so every branch here is reachable and
+    /// the fallback is the default.
+    private static func toolChoice(_ value: JSONValue?) -> ChatToolChoice {
+        switch value {
+        case .string("none"):
+            return .none
+        case .string("required"):
+            return .required
+        case .object(let choice):
+            guard case .object(let function)? = choice["function"],
+                  case .string(let name)? = function["name"] else { return .auto }
+            // DEV-17: OpenAI's meaning — call this one function. The reference
+            // implementation drops the object shape on the floor and behaves
+            // as `auto`; that is its defect, not the norm.
+            return .function(name: name)
+        default:
+            return .auto
+        }
+    }
+
+    /// REQ-response-format → GEN-3's three types, each with the schema from
+    /// the place that type keeps it (`server-common.cpp:1146-1159`).
+    ///
+    /// Nothing about the schema's *content* is checked: GEN-2 forbids a 400
+    /// for schema content, and what a missing schema constrains to is the
+    /// grammar stage's decision (DEV-18), not this layer's.
+    private static func responseFormat(_ value: JSONValue?) -> ChatResponseFormat {
+        guard case .object(let format)? = value else { return .text }
+        switch format["type"] {
+        case .string("json_object"):
+            return .jsonObject(schema: sent(format["schema"]))
+        case .string("json_schema"):
+            guard case .object(let wrapper)? = format["json_schema"] else {
+                return .jsonSchema(schema: nil)
+            }
+            return .jsonSchema(schema: sent(wrapper["schema"]))
+        default:
+            return .text
+        }
+    }
+
+    /// R2 again, one level down: a `null` schema is a schema that was not sent.
+    private static func sent(_ value: JSONValue?) -> JSONValue? {
+        value == .null ? nil : value
+    }
+
+    /// The two contract parameters read together (GEN-4, GEN-12).
+    ///
+    /// Both refusals here exist because the alternative is worse: a grammar
+    /// that cannot be written would otherwise be written as *no* grammar, and
+    /// the request would get a free-form completion with a 200 — exactly the
+    /// answer-in-the-wrong-shape R4 forbids. They cannot live in the §4 table
+    /// because each one needs a second field beside `tool_choice`.
+    private static func checkConstraintsAreSatisfiable(
+        toolChoice: ChatToolChoice,
+        responseFormat: ChatResponseFormat,
+        tools: [GFTokenizer.FunctionDefinition]
+    ) throws {
+        // GEN-12: "always call a tool" and "answer in this JSON shape" are two
+        // constraints on the same tokens, and honoring either one silently
+        // drops the other.
+        if responseFormat.isConstraining {
+            switch toolChoice {
+            case .required, .function:
+                throw ServerRequestError.invalid(
+                    message: "tool_choice forces a tool call and response_format forces "
+                        + "a JSON answer; the two cannot both be honored",
+                    param: "response_format",
+                    code: "response_format_conflicts_with_tool_choice")
+            case .auto, .none:
+                break
+            }
+        }
+        // GEN-4: the grammar has to have an alternative to spell.
+        switch toolChoice {
+        case .required where tools.isEmpty:
+            throw ServerRequestError.invalid(
+                message: "tool_choice \"required\" needs at least one tool in \"tools\"",
+                param: "tool_choice", code: "invalid_tool_choice")
+        case .function(let name) where !tools.contains(where: { $0.name == name }):
+            throw ServerRequestError.invalid(
+                message: "tool_choice names \(name), which is not declared in \"tools\"",
+                param: "tool_choice", code: "invalid_tool_choice")
+        default:
+            break
+        }
     }
 
     /// The clamped table values as the sampler takes them.

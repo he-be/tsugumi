@@ -137,21 +137,18 @@ public enum ChatRequestSchema {
               }),
         .init(id: "REQ-tools", name: "tools",
               kinds: [.array], rule: .passthrough),
-        // GEN-4. `required` and a named function are grammar work; until the
-        // grammar exists they are 501, because answering them with a free-form
-        // completion would be a 200 in the wrong shape.
+        // GEN-4. All four shapes are the grammar's now, so this row only says
+        // which four exist; a fifth is still a 400. What each one does to
+        // generation — and the two refusals a grammar cannot express (a named
+        // choice for an undeclared tool, `required` with no tools) — needs the
+        // request's `tools` beside it, so it lives in `ChatRequestParser`.
         .init(id: "REQ-tool-choice", name: "tool_choice",
               kinds: [.string, .object], rule: .passthrough,
               defaultValue: .string("auto"),
               handler: { value in
                   switch value {
-                  case .string("auto"), .string("none"):
+                  case .string("auto"), .string("none"), .string("required"):
                       return value
-                  case .string("required"):
-                      throw ServerRequestError.notSupported(
-                          message: "tool_choice \"required\" needs grammar-constrained "
-                              + "generation, which is not implemented",
-                          param: "tool_choice", code: "tool_choice_not_supported")
                   case .object(let choice):
                       guard choice["type"] == .string("function"),
                             case .object(let function)? = choice["function"],
@@ -161,10 +158,7 @@ public enum ChatRequestSchema {
                                   + "or {\"type\":\"function\",\"function\":{\"name\":…}}",
                               param: "tool_choice", code: "invalid_tool_choice")
                       }
-                      throw ServerRequestError.notSupported(
-                          message: "a named tool_choice needs grammar-constrained "
-                              + "generation, which is not implemented",
-                          param: "tool_choice", code: "tool_choice_not_supported")
+                      return value
                   default:
                       throw ServerRequestError.invalid(
                           message: "tool_choice must be \"auto\", \"none\", \"required\", "
@@ -175,22 +169,20 @@ public enum ChatRequestSchema {
         .init(id: "REQ-parallel", name: "parallel_tool_calls",
               kinds: [.boolean], rule: .passthrough, defaultValue: .bool(true)),
         // GEN-3. Structured output rides the same grammar machinery as tool
-        // calls. Until it exists this is 501 and never a 200 holding prose:
-        // being asked for JSON and answering with Markdown is the one failure
-        // R4 forbids at every stage.
+        // calls, and that machinery exists, so all three types pass. A fourth
+        // type is still a 400 (the reference implementation refuses it at
+        // `server-common.cpp:1156`), because being asked for JSON and answered
+        // with prose at 200 is the one failure R4 forbids at every stage.
+        // The schema inside is never inspected here: GEN-2 keeps schema
+        // content out of the 400 business entirely.
         .init(id: "REQ-response-format", name: "response_format",
               kinds: [.object], rule: .passthrough,
               handler: { value in
                   guard case .object(let format) = value else { return nil }
                   switch format["type"] {
-                  case nil, .null, .string(""), .string("text"):
+                  case nil, .null, .string(""), .string("text"),
+                       .string("json_object"), .string("json_schema"):
                       return value
-                  case .string("json_object"), .string("json_schema"):
-                      throw ServerRequestError.notSupported(
-                          message: "structured output needs grammar-constrained "
-                              + "generation, which is not implemented",
-                          param: "response_format",
-                          code: "response_format_not_supported")
                   default:
                       throw ServerRequestError.invalid(
                           message: "response_format.type must be \"text\", "
