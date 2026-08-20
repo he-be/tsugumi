@@ -98,6 +98,16 @@ D3 をやるな」は満たされた)。D3 は `ServerPromptCache` の判定を�
 
 ## 5. 積み残し・注意 (SPEC には書けていない実務メモ)
 
+- **同梱テンプレートが 2 本あり、テストとサーバーで別々のものを引いていた**
+  (2026-08-20 実測)。`GFTokenizer.load()` (引数なし、テストが使う) は HF キャッシュの
+  `~/.cache/huggingface/hub/models--google--gemma-4-26B-A4B-it/snapshots/4d7ae4984b…/chat_template.jinja`
+  (390 行、sha `ae53464b…`、ヘッダに `Published: 2026-07-09`)、サーバーは
+  `scratch/gemma4.gturbo/tokenizer/chat_template.jinja` (362 行、sha `36e3a42e…`) を引く。
+  **D2 の変種はサーバーが実際に使っている 362 行版から取った** (差分 1 ハンクに保つため)
+  ので、tools 経路については**テストとサーバーが同じテンプレートを見るようになった**のは
+  D2 の副産物である。ただし 390 行版にある `arguments is none` 対応・`image_url` /
+  `input_audio` の別名・continuation 判定の O(1) 化・`raise_exception` は**変種に入っていない**。
+  取り込むなら SPEC に行を足してから (§13)。**症状が出るまで触らない。**
 - **`repetition_penalty` は効かなくなった。**SPEC REQ-repeat-penalty が
   `repeat_penalty` のみを挙げているため、旧名は R1 で無視される。既存
   クライアントがいるなら「別名を足す」を SPEC に書くところから。
