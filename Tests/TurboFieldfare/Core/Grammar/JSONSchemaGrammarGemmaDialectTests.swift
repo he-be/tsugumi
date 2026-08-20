@@ -20,6 +20,11 @@ import Testing
 /// 3. **文字列は `<|"|>…<|"|>` のみ。**JSON の `"…"` は生成では許さない
 ///    (読む側 `GemmaToolCallParser` は互換のため両方受けるが、それは読みの話で
 ///    あって生成の契約ではない)。
+/// 4. **GEN-9**: 文字列の本体は `[^"\]*` — `"` と `\` を含まない任意の文字。
+///    JSON のエスケープ形は一切許さない (テンプレートは値を素のまま書く)。
+///    JSON の `char` 規則は使わず、この方言専用の `text-char` を使う。
+/// 5. **GEN-10**: 汎用の値の選択肢から `null` を外す。スキーマが null を明示
+///    的に要求したときだけ許し、近似 `null-not-redrawable` を記録する。
 ///
 /// 理由は §7 INV-1: 完了した tool call ターンは parse 済みの値から描き直される
 /// ので、生成が正準形でなければ描き直しと必ずずれ、毎ターン LCP が切れる。
@@ -44,23 +49,31 @@ struct JSONSchemaGrammarGemmaDialectTests {
         #expect(!result.grammar.contains(##""\"""##))
     }
 
-    /// GEN-8: 空白を一切入れない。どの規則の本体も `space` を参照しない。
-    @Test("どの規則も space を参照しない",
+    /// GEN-8: 空白を一切入れない。この方言では `space` という名前が文法の
+    /// どこにも出てこない (参照されない規則は文法の雑音でしかない)。
+    @Test("文法に space という名前が出てこない",
           arguments: JSONSchemaGrammarGemmaCases.all)
-    func emitsNoSpaceReference(_ testCase: JSONSchemaGrammarCase) throws {
+    func emitsNoSpaceRule(_ testCase: JSONSchemaGrammarCase) throws {
         let result = try JSONSchemaGrammarFixture.convert(
             testCase.schema, dialect: .gemmaToolArguments)
-        for line in result.grammar.split(separator: "\n") {
-            guard let separator = line.range(of: " ::= ") else { continue }
-            let name = String(line[..<separator.lowerBound])
-            let body = String(line[separator.upperBound...])
-            if name == "space" {
-                // 空文字列しか受けない。
-                #expect(body == ##""""##)
-                continue
-            }
-            #expect(!JSONSchemaGrammarFixture.references(body).contains("space"),
-                    "\(name) が space を参照している")
+        #expect(!result.grammar.contains("space"))
+    }
+
+    /// GEN-9 / GEN-10: 描き直せない値は文法から外す。ただし**文法を充足不能に
+    /// はしない** — 生成を止めるほうが害が大きい (GEN-2 と同じ原則)。
+    @Test("描き直せない値は近似に落ちる",
+          arguments: JSONSchemaGrammarGemmaCases.unrepresentable)
+    func degradesUnrepresentableValues(
+        _ testCase: JSONSchemaGrammarGemmaCases.UnrepresentableCase
+    ) throws {
+        let result = try JSONSchemaGrammarFixture.convert(
+            testCase.schema, dialect: .gemmaToolArguments)
+        #expect(result.approximations == testCase.approximations)
+        #expect(JSONSchemaGrammarFixture.body(of: "root", in: result.grammar)
+                == testCase.rootRule)
+        if let absent = testCase.absent {
+            // 文法がその値を綴れないことを、綴りが文法のどこにも無いことで見る。
+            #expect(!result.grammar.contains(absent))
         }
     }
 
@@ -84,34 +97,12 @@ struct JSONSchemaGrammarGemmaDialectTests {
 }
 
 extension JSONSchemaGrammarFixture {
-    /// 規則本体が参照している規則名。
-    static func references(_ body: String) -> Set<String> {
-        var names: Set<String> = []
-        var current = ""
-        var inLiteral = false
-        var escaped = false
-        var inClass = false
-        for character in body {
-            if inLiteral {
-                if escaped { escaped = false } else if character == "\\" { escaped = true }
-                else if character == "\"" { inLiteral = false }
-                continue
-            }
-            if inClass {
-                if escaped { escaped = false } else if character == "\\" { escaped = true }
-                else if character == "]" { inClass = false }
-                continue
-            }
-            if character == "\"" { inLiteral = true; continue }
-            if character == "[" { inClass = true; continue }
-            if character.isLetter || character.isNumber || character == "-" {
-                current.append(character)
-                continue
-            }
-            if !current.isEmpty { names.insert(current); current = "" }
+    /// 名前つき規則の本体。
+    static func body(of name: String, in grammar: String) -> String? {
+        for line in grammar.split(separator: "\n") where line.hasPrefix(name + " ::= ") {
+            return String(line.dropFirst(name.count + 5))
         }
-        if !current.isEmpty { names.insert(current) }
-        return names
+        return nil
     }
 
     /// 決定的な文法 (選択も繰り返しも無い) が受ける唯一の文字列。
@@ -186,6 +177,18 @@ enum JSONSchemaGrammarGemmaCases {
         var testDescription: String { name }
     }
 
+    struct UnrepresentableCase: Sendable, CustomTestStringConvertible {
+        let name: String
+        let schema: String
+        let approximations: [String]
+        /// 落とし先の `root` の本体。
+        let rootRule: String
+        /// 文法のどこにも出てこないはずの綴り (nil なら見ない)。
+        let absent: String?
+
+        var testDescription: String { name }
+    }
+
     /// 引数辞書から「値を全部 `const` で固定した」スキーマを作る。
     static func constSchema(_ arguments: JSONValue) -> JSONValue {
         guard case .object(let members) = arguments else { return .object([:]) }
@@ -229,10 +232,65 @@ enum JSONSchemaGrammarGemmaCases {
             name: "empty array value",
             arguments: ##"{"o": []}"##,
             canonical: ##"{o:[]}"##),
+        // GEN-9: `"` と `\` 以外は素のまま往復する。空白も句読点も括弧も、
+        // テンプレートは何も逃がさずに書く。
+        CanonicalCase(
+            name: "string with spaces and punctuation round-trips",
+            arguments: ##"{"note": "hello, world! (ok)"}"##,
+            canonical: ##"{note:<|"|>hello, world! (ok)<|"|>}"##),
+    ]
+
+    /// GEN-9 / GEN-10: 描き直せない値。文法からは外れるが、文法は充足可能な
+    /// まま (`string` / 明示的な `null`) にする。
+    static let unrepresentable: [UnrepresentableCase] = [
+        // `"` はテンプレートの終端子 `<|"|>` の一部なので、素で書くと読む側が
+        // 途中で切ってしまう。const は綴りを固定できないので汎用の `string`
+        // (= `[^"\]*`) に落ちる — つまり文法はこの値を綴れない。
+        UnrepresentableCase(
+            name: "const string containing a double quote",
+            schema: ##"{"const": "say \"hi\""}"##,
+            approximations: [##"unrepresentable-string-value: say "hi""##],
+            rootRule: "string",
+            absent: "say"),
+        // `\` は読む側 (`GemmaToolCallParser.gemmaString`) がエスケープ導入と
+        // 解釈するので、同じく往復しない。
+        UnrepresentableCase(
+            name: "const string containing a backslash",
+            schema: ##"{"const": "back\\slash"}"##,
+            approximations: [##"unrepresentable-string-value: back\slash"##],
+            rootRule: "string",
+            absent: "back"),
+        // enum は書ける値だけが綴りのまま残り、書けない値は `string` に開く。
+        UnrepresentableCase(
+            name: "enum with one unrepresentable value",
+            schema: ##"{"type": "string", "enum": ["ok", "bad\"quote"]}"##,
+            approximations: [##"unrepresentable-string-value: bad"quote"##],
+            rootRule: ##"("<|\"|>ok<|\"|>" | string)"##,
+            absent: "quote"),
+        // GEN-10: null を明示的に要求されたら許すが、記録は残す。
+        UnrepresentableCase(
+            name: "explicit null type",
+            schema: ##"{"type": "null"}"##,
+            approximations: ["null-not-redrawable"],
+            rootRule: ##""null""##,
+            absent: nil),
+        UnrepresentableCase(
+            name: "nullable string (type array)",
+            schema: ##"{"type": ["string", "null"]}"##,
+            approximations: ["null-not-redrawable"],
+            rootRule: "string | null",
+            absent: nil),
+        UnrepresentableCase(
+            name: "const null",
+            schema: ##"{"const": null}"##,
+            approximations: ["null-not-redrawable"],
+            rootRule: ##""null""##,
+            absent: nil),
     ]
 
     static let all: [JSONSchemaGrammarCase] = [
         // 平たいオブジェクト。キーは裸、文字列は学習形式のみ、空白なし。
+        // 文字列の本体は JSON の `char` ではなく `text-char` (GEN-9)。
         JSONSchemaGrammarCase(
             name: "gemma flat object",
             schema: ##"""
@@ -248,12 +306,11 @@ enum JSONSchemaGrammarGemmaCases {
             grammar: ##"""
             a-kv ::= "a" ":" integer
             b-kv ::= "b" ":" string
-            char ::= [^"\\\x7F\x00-\x1F] | [\\] (["\\bfnrt] | "u" [0-9a-fA-F]{4})
             integer ::= ("-"? integral-part)
             integral-part ::= [0] | [1-9] [0-9]{0,15}
             root ::= "{" a-kv "," b-kv "}"
-            space ::= ""
-            string ::= "<|\"|>" char* "<|\"|>"
+            string ::= "<|\"|>" text-char* "<|\"|>"
+            text-char ::= [^"\\]
             """##),
         // 入れ子のオブジェクト。
         JSONSchemaGrammarCase(
@@ -272,13 +329,12 @@ enum JSONSchemaGrammarGemmaCases {
             }
             """##,
             grammar: ##"""
-            char ::= [^"\\\x7F\x00-\x1F] | [\\] (["\\bfnrt] | "u" [0-9a-fA-F]{4})
             outer ::= "{" outer-inner-kv "}"
             outer-inner-kv ::= "inner" ":" string
             outer-kv ::= "outer" ":" outer
             root ::= "{" outer-kv "}"
-            space ::= ""
-            string ::= "<|\"|>" char* "<|\"|>"
+            string ::= "<|\"|>" text-char* "<|\"|>"
+            text-char ::= [^"\\]
             """##),
         // オブジェクトの配列。区切りは `,` だけで空白は入らない。
         JSONSchemaGrammarCase(
@@ -299,7 +355,6 @@ enum JSONSchemaGrammarGemmaCases {
             item ::= "{" item-n-kv "}"
             item-n-kv ::= "n" ":" integer
             root ::= "[" (item ("," item)*)? "]"
-            space ::= ""
             """##),
         // enum。列挙の順は与えられたまま。値は学習形式の 1 本だけ。
         JSONSchemaGrammarCase(
@@ -312,7 +367,6 @@ enum JSONSchemaGrammarGemmaCases {
             """##,
             grammar: ##"""
             root ::= ("<|\"|>red<|\"|>" | "<|\"|>green<|\"|>")
-            space ::= ""
             """##),
         // additionalProperties。`additional-k` はキーの字集合から宣言済みの
         // キーを引いたもので、参照実装の `["] … ["]` の囲いと末尾 `?` は無い。
@@ -330,15 +384,15 @@ enum JSONSchemaGrammarGemmaCases {
             a-kv ::= "a" ":" integer
             additional-k ::= ( [a] key-char+ | [0-9A-Zb-z_\-.$] key-char* )
             additional-kv ::= additional-k ":" string
-            char ::= [^"\\\x7F\x00-\x1F] | [\\] (["\\bfnrt] | "u" [0-9a-fA-F]{4})
             integer ::= ("-"? integral-part)
             integral-part ::= [0] | [1-9] [0-9]{0,15}
             key-char ::= [0-9A-Za-z_\-.$]
             root ::= "{" a-kv ( "," ( additional-kv ( "," additional-kv )* ) )? "}"
-            space ::= ""
-            string ::= "<|\"|>" char* "<|\"|>"
+            string ::= "<|\"|>" text-char* "<|\"|>"
+            text-char ::= [^"\\]
             """##),
-        // 型無しの自由な値。`object` / `array` の原始規則にも空白は入らない。
+        // 型無しの自由な値。**`value` に `null` の枝が無い** (GEN-10) こと、
+        // `object` / `array` の原始規則にも空白が入らないことがここで決まる。
         JSONSchemaGrammarCase(
             name: "gemma free-form value",
             schema: ##"""
@@ -351,20 +405,18 @@ enum JSONSchemaGrammarGemmaCases {
             grammar: ##"""
             array ::= "[" ( value ("," value)* )? "]"
             boolean ::= ("true" | "false")
-            char ::= [^"\\\x7F\x00-\x1F] | [\\] (["\\bfnrt] | "u" [0-9a-fA-F]{4})
             decimal-part ::= [0-9]{1,16}
             integral-part ::= [0] | [1-9] [0-9]{0,15}
             key ::= key-char+
             key-char ::= [0-9A-Za-z_\-.$]
-            null ::= "null"
             number ::= ("-"? integral-part) ("." decimal-part)? ([eE] [-+]? integral-part)?
             object ::= "{" ( key ":" value ("," key ":" value)* )? "}"
             payload ::= object
             payload-kv ::= "payload" ":" payload
             root ::= "{" payload-kv "}"
-            space ::= ""
-            string ::= "<|\"|>" char* "<|\"|>"
-            value ::= object | array | string | number | boolean | null
+            string ::= "<|\"|>" text-char* "<|\"|>"
+            text-char ::= [^"\\]
+            value ::= object | array | string | number | boolean
             """##),
     ]
 }
