@@ -670,25 +670,9 @@ struct ServerArgumentTests {
         }
     }
 
-    @Test func parsesEveryAllowedContextAndRejectsOthers() throws {
-        for tokens in [4_096, 8_192, 16_384, 32_768, 65_536, 131_072] {
-            let arguments = try ServerArguments.parse([
-                "--model", "model.gturbo",
-                "--max-context", String(tokens),
-            ])
-            #expect(arguments.maxContext == tokens)
-        }
-        // 128K is the widest the runtime is wired for, and the values between
-        // the steps are not sizes the KV ring was measured at.
-        for tokens in ["2048", "100000", "262144"] {
-            #expect(throws: ServerArgumentError.self) {
-                try ServerArguments.parse([
-                    "--model", "model.gturbo",
-                    "--max-context", tokens,
-                ])
-            }
-        }
-    }
+    // The context-length flag moved to the reference implementation's spelling
+    // and its enumeration became a rounding rule (FLAG-1 / FLAG-2); both live
+    // in `ServerContextSizeFlagTests`.
 
     @Test func draftBlockSizeRequiresChunkedPrefill() throws {
         #expect(throws: ServerArgumentError.self) {
