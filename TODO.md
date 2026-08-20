@@ -1,6 +1,7 @@
 # 引き継ぎ — サーバー再実装ループ
 
-最終更新: 2026-08-21。ブランチ `macos15-support`。**P1 は D4 まで済み** (残り D5)。**P2 に着手中**。
+最終更新: 2026-08-22。ブランチ `macos15-support`。**P0〜P4 が済み、P5 が残り**。
+`swift test` は 1195 本前後で全緑 (約 110 秒)。**意図的な赤は無い。**
 
 この文書は**次のセッションが同じループを再開するための唯一の入口**である。
 仕様は書かない ([SPEC.md](docs/serving/SPEC.md) が唯一の規範)。作業の並べ方も
@@ -37,51 +38,52 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
 
 | 段 | 状態 |
 | --- | --- |
-| **P0** 要求スキーマ | **済** (`a668197` 赤 → `691de9c` 緑)。C0 41 本緑 |
-| **P1** プロンプトキャッシュ → LCP | **D1〜D4 済** (D2: 2026-08-20、D3/D4: 2026-08-21。いずれも赤 → 緑の 2 コミット)。**残り D5 (名前を SPEC に合わせる)** |
-| **P2** 生成の拘束 | **着手中**。G1 (GBNF エンジン) / G2 (Schema→GBNF) / G3 (エンジン結線) / G4 (サーバー結線) / G5 (C3) の 5 段。SPEC に GEN-5/6/7 と DEV-14〜18 を先に足した |
-| **P3** ライフサイクル / EP | 未着手 |
-| **P4** 思考 | 未着手 |
-| **P5** 残り | 未着手 |
+| **P0** 要求スキーマ | **済** (2026-08-19)。C0 の表駆動テスト |
+| **P1** プロンプトキャッシュ → LCP | **D1〜D4 済**。**残り D5 (名前を SPEC に合わせる)** — 中身は薄く、後回しでよい |
+| **P2** 生成の拘束 | **済** (2026-08-22)。下の §3.1 |
+| **P3** ライフサイクル / EP | **済** (2026-08-22)。listen 先行 + ロード中 503、`/v1/health`、`/props`、採らないパスの 501、`/v1` 無しの別名、ERR-2 の 401/405/415、413 の撤去 |
+| **P4** 思考 | **済** (2026-08-22)。`--reasoning-budget` / `--reasoning-format` へ改名、`--thinking` 退役、予算切れの終了タグ強制 (RSN-4) |
+| **P5** 残り | **一部**。FLAG-5 (`--api-key`) / FLAG-6 (CORS) / FLAG-1 / FLAG-2 は済。**残り: RSP-3 `timings`、RSP-5 `system_fingerprint`、EP-5 `/tokenize` 系、EP-6 `/slots`・`/metrics`** |
 
-`swift test` は **960 本すべて緑** (約 100 秒)。**意図的な赤は無い** —
-次の赤は着手する段の入口で書く。
+### 次の一手 — **P5 の残り**
 
-### 次の一手 — **P2 と D4/D5 のどちらか。P2 を勧める**
+CONFORMANCE §2 の赤リストに残っているのは 2 行だけ:
 
-P1 は残り 2 つ (D4/D5) だが、どちらも**速いか遅いかの話**である。一方 **P2 は
-「動くか動かないか」**で、`response_format: json_schema` / `json_object` と
-`tool_choice: required` / 名前指定が今は **501 を返して失敗する** (GEN-3/GEN-4)。
-エージェント系クライアント (pi / OpenCode) がこれを使う設定だとタスクが通らない
-ので、害の大きさでは P2 が上である。CONFORMANCE §3 の順序も P2 が先。
+- **RSP-3 / RSP-5** — `timings` オブジェクトと `system_fingerprint`。SPEC EP-4 で
+  `build_info` と `system_fingerprint` は**同じ値**と決めてある。
+- **EP-5 / EP-6** — `/tokenize` `/detokenize` `/apply-template` と `/slots` `/metrics`。
+  `apply-template` は **DEV-12 のサーバー変種**で描くこと (同梱版で答えると、
+  このサーバーが実際に使わないテンプレートについて答えることになる)。
 
-**P2 の中身**: JSON schema → 文法で tool call と `response_format` を同じ機構に
-載せ、501 を実挙動に置換する。`GemmaToolSchema` の入口 400 を撤去 (GEN-2)。
-参照実装の一次資料は `server-schema.cpp:251` と `server-common.cpp:1246`
-(**ピンで読むこと** — §6 参照)。
+そのあとに残るのは **P1-D5 (改名)** と、下の §6 の「実機で見ていないもの」。
 
-**P1 の残り**:
-- **D4** — 画像を LCP 走査の中でチャンク比較する (SPEC CACHE-4、参照実装
-  `server-common.cpp:678`)。今は走査がトークンだけを見て、写真の同一性は
-  `ServerPromptCacheEntry.imageDigests` が**別に**検定している。**2 枚の写真は
-  同じ soft token に展開されるのでトークン走査では区別できない** — この
-  ダイジェスト列を消してから走査を直すのではなく、走査を直してから消す。
-- **D5** — 名前を SPEC に合わせる。
+### 3.1 P2 で入った形 (次が壊しやすい場所)
 
-### D3 で入った形 (次が壊しやすい場所)
+| 型 | 役割 |
+| --- | --- |
+| `GBNFGrammar` / `GrammarMatcher` | GBNF のパーサと逐次マッチャ。ピン `34af94cd9` の `llama-grammar.cpp` の移植。**ピンの GBNF は公開文書より新しく、`TOKEN` / `TOKEN_NOT` (`<[42]>`, `!<[42]>`) がある** — Gemma の特殊トークンを文法要素として直接書けるのはこれのおかげ |
+| `JSONSchemaGrammar` | JSON Schema → GBNF。方言が 2 つ (`.json` と `.gemmaToolArguments`)。参照実装の 73 本の期待値をそのまま持っている — **`.json` 側が 1 バイトでも動いたら、それは移植を壊したということ** |
+| `GrammarTokenConstraint` | 語彙の piece 表 + マッチャ → `GenerationConstraint`。`GrammarVocabulary.shared(for:)` は**プロセスに 1 つ** (0.4 秒 / 25 MB)。要求ごとに作らないこと |
+| `GenerationConstraint` / `ConstraintGate` | サンプラ側の口。**終了トークンの扱いは gate が持つ** — 拘束の実装は停止トークンを特別扱いしてはいけない |
+| `ChatGrammarBuilder` | 要求 → 文法テキスト + 遅延かどうか + トリガ |
+| `ServerGenerationPlan` | 要求 → 「何で拘束するか」の決定。**推論を持たない純粋な型なので、ここが検定の本体**。`ServerInference` はこの決定を実行するだけ |
+| `ReasoningBudgetForcer` / `ServerReasoningPlan` | RSN-4。予算を数えて終了タグを強制する状態機械 |
 
-- **判定は `ServerPromptCache.match` の 20 行**。`domain` の一致だけが会話と
-  無関係のガードで、あとは `commonPrefixLength` と巻き戻し深さの比較しかない。
-- **巻き戻しの深さは `KVCacheManager.maximumSafeRewind`** (SPEC §12 DEV-13)。
-  既定 2048 = `min(maxContext, 1024 + 2048) - 1024`。
-  **`--prefill-chunk-tokens` を下げるとこの深さも縮む。**
-- **`ServerPromptRenderer.variant` を通らない描画でキャッシュを試すとミスする。**
-  テストが `applyChatTemplate` を既定変種で呼ぶと、KV と一致しない列ができる
-  (D3 のテスト巻き直しで実際に踏んだ)。
-- **深い巻き戻しの正しさは未実測。**式 (`position - N <= capacity - slidingWindow`)
-  からの導出であって、実機で確かめていない。**C3 の課題。**
+**踏みやすい罠:**
 
-## 4. P0 で入った土台 (次の段が乗る場所)
+- **拘束は棄却サンプリングで入る** (GEN-7)。通常どおり 1 トークン引き、
+  適合しなければ**全語彙マスクで引き直す**。マスクは debug で 0.14 秒/棄却。
+  棄却が増える形の文法を書くと、そのぶん素直に遅くなる。
+- **`-Float16.infinity` は softcap カーネルを通らない** (`tanh(-inf) = -1` で
+  確率が 0 にならない)。マスクは host で softmax を計算し直して 0 を書く。
+- **文法拘束と強制挿入がある要求は投機デコードを使わない** (DEV-14)。
+- **tool call の文法はテンプレートの正準形しか許さない** (GEN-8〜GEN-11)。
+  空白なし・裸キー昇順・`<|"|>` 文字列・エスケープ無し・null 無し・桁数制限。
+  **緩めると INV-1 が破れて毎ターン LCP が切れる**。数値のずれだけは受け入れている。
+- **非遅延の文法は先頭に思考ブロックを飲む** (GEN-13)。ここを外すと
+  思考 ON + `response_format` が最初のトークンで詰まる。
+
+## 4. 土台 (P0〜P4 で入った、次の段が乗る場所)
 
 | 型 | 役割 |
 | --- | --- |
@@ -93,6 +95,8 @@ P1 は残り 2 つ (D4/D5) だが、どちらも**速いか遅いかの話**で�
 | `commonPrefixLength` | CACHE-1 の本体。**D3 でキャッシュ判定はこれ 1 本になった** |
 | `GFTokenizer.ChatTemplateVariant` | D2 で入った。`.modelBundled` (CLI・アプリ・KernelCheck) と `.serverRedraw` (サーバー) の 2 値。**既定は `.modelBundled`** なので、足した経路を明示的に渡さない限り描画は動かない |
 | `ServerChatTemplate` | リポジトリ所有の jinja (`Sources/TurboFieldfare/Templates/server_chat_template.jinja`)。SPEC §12 DEV-12 |
+| `ServerReadiness` / `ServerProperties` | P3。ロード状態は経路表より手前で見る。`/props` は `ChatRequestSchema` の表を歩いて作る — **既定値の第 2 の写しを作らないこと** |
+| `Scripts/c3_smoke.sh` | C3 の 14 検査。**まだ 1 度も走っていない** (§6) |
 
 削除済み: `OpenAIRequestValidator`、`OpenAIChatRequest`、`OpenAIStop`、
 `OpenAIStreamOptions`、`OpenAIReasoning`、`ServerRequestError.payloadTooLarge` /
@@ -115,13 +119,22 @@ P1 は残り 2 つ (D4/D5) だが、どちらも**速いか遅いかの話**で�
   クライアントがいるなら「別名を足す」を SPEC に書くところから。
 - **`max_tokens: 0` (prefill のみ) は暫定実装。**生成 0 トークンで即応答するが、
   KV の暖機はしていない。LCP 化は済んだので、いつ詰めてもよい。
-- **`--thinking` はまだ残っている** (廃止は FLAG-4 / P4)。内部では
-  `ChatRequestDefaults` 経由に変えてあるので、P4 では入口の名前だけの話になる。
+- **思考の既定が変わった。**`--thinking` の既定は off だったが、後継の
+  `--reasoning-budget` の既定は **-1 (無制限)** なので、何も言わないクライアントは
+  これから思考する。SPEC RSN-1 のとおりだが、トークンの消費が変わる。
+- **`max_tokens` の 1/4 を答えのために取り置く** (DEV-21)。RSN-4 が分け方を
+  決めていなかったので実装が決めた数字であり、**測って動かしてよい**。
 - **`docs/mtp/34-M9-PROPOSAL.md` は未追跡のまま置いてある。**サーバーとは
   無関係 (MTP の提案書)。前回のセッション中に外から現れたもので、意図的に
   触っていない。
-- `docs/OPENAI_SERVER.md` と `docs/SERVER_RUNBOOK.md` は P0 の範囲だけ追随済み。
-  FLAG の改名 (P4) とロード中 503 (P3) が入ったらまた直す。
+- `docs/OPENAI_SERVER.md` / `docs/SERVER_RUNBOOK.md` / `docs/RUNTIME_CONTROLS.md` は
+  **P4 と FLAG-1/2 まで追随済み**。P5 の残り (`timings`・`/tokenize` 系・`/slots`) が
+  入ったらまた直す。
+- **追い残し (SPEC の話ではなく実装の話)**: `GrammarMatcher` の `RejectContext.decoded` が
+  `[[UInt32]]` なので語彙のコードポイント表を平坦化できず、`GrammarTokenConstraint` が
+  `rejectedIndices` の候補組み立てを複製している。直すならエンジン側の型から。
+- **`swift test -c release` は swift-testing の suite を走らせない** (XCTest の
+  shim だけが動く)。文法マスクの release 実測ができていないのはこれが理由。
 
 ## 6. 環境メモ
 
@@ -139,4 +152,12 @@ P1 は残り 2 つ (D4/D5) だが、どちらも**速いか遅いかの話**で�
   (OAI 層とエラー封筒)、`server-context.cpp` (キャッシュ)、`README.md`。
   ピンを上げるときは差分を読んで SPEC の該当行を先に直す。
 - モデル同梱テンプレート: `scratch/gemma4.gturbo/tokenizer/chat_template.jinja`。
-  D2 で読むことになる。
+- **実機で見ていないもの** (すべて C3 送り、`Scripts/c3_smoke.sh` に検査がある):
+  棄却サンプリングと遅延文法と思考中の抑止 (GEN-5/6/7) が本物のサンプラで
+  動くこと、予算切れの終了タグ強制 (RSN-4) がモデルの上で本文を書かせること、
+  リングより深い巻き戻し (DEV-13)、拘束された tool call が次のターンの
+  描き直しと一致すること (INV-1 × GEN-8)。**「書けた」と「通った」は別**なので、
+  走らせた結果は CONFORMANCE §2 に書き足すこと。
+- サブエージェントを使うときは**共有インデックスに注意**。`git add` だけでは
+  他のエージェントが stage したファイルを巻き込むので、**`git commit -- <paths>`**
+  で経路を限ること。実際に 2 回巻き込みが起きた。
