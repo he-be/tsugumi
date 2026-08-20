@@ -108,7 +108,9 @@ public struct ServerArguments: Equatable, Sendable {
                                  cannot keep resident is rejected at load with
                                  the arithmetic.
       --queue-limit <count>      Maximum queued requests (default 4).
-      --expert-cache-slots <n>   Expert-cache slots: 8, 16, 24, or 32 (default 32).
+      --expert-cache-slots <n>   Expert-cache slots (default 32). Any count is
+                                 accepted and rounded down to one this machine was
+                                 measured at: 8, 16, 24, or 32.
                                  32 is the operating point and the ceiling: on the
                                  default expert path (mmap) a slot is not a private
                                  copy, so more slots do not show up as footprint --
@@ -207,7 +209,22 @@ public struct ServerArguments: Equatable, Sendable {
     /// floor: the request was for less context than this runtime is wired for,
     /// and the answer to that is the least it can give, not a refusal.
     static func supportedContextSize(roundingDown requested: Int) -> Int {
-        supportedContextSizes.last { $0 <= requested } ?? supportedContextSizes[0]
+        Self.roundedDown(requested, to: supportedContextSizes)
+    }
+
+    /// FLAG-2 / DEV-2, the other flag the rule covers. `--expert-cache-slots`
+    /// rounds down the same way `-c` does, to the counts this machine's
+    /// working-set arithmetic was measured at
+    /// (`RuntimeConfiguration.allowedExpertCacheSlots`); 32 is the operating
+    /// point and the ceiling, so asking for more is answered with the ceiling.
+    static func supportedExpertCacheSlots(roundingDown requested: Int) -> Int {
+        Self.roundedDown(requested, to: RuntimeConfiguration.allowedExpertCacheSlots)
+    }
+
+    /// The largest value in `supported` (ascending) that is no larger than
+    /// `requested`, with the smallest as the floor.
+    private static func roundedDown(_ requested: Int, to supported: [Int]) -> Int {
+        supported.last { $0 <= requested } ?? supported[0]
     }
 
     // Mirrors the CLI's runtime flags so both binaries accept the same options
@@ -312,14 +329,13 @@ public struct ServerArguments: Equatable, Sendable {
                 }
                 queueLimit = parsed
             case "--expert-cache-slots":
-                guard let parsed = Int(value),
-                      RuntimeConfiguration.allowedExpertCacheSlots.contains(parsed) else {
+                // FLAG-2: a free slot count, rounded down to one this machine
+                // can hold, exactly as `-c` is (DEV-2 covers both).
+                guard let parsed = Int(value), parsed > 0 else {
                     throw ServerArgumentError.invalid(
-                    "--expert-cache-slots must be one of "
-                    + RuntimeConfiguration.allowedExpertCacheSlots
-                        .map(String.init).joined(separator: ", "))
+                        "--expert-cache-slots must be a positive number of slots")
                 }
-                expertCacheSlots = parsed
+                expertCacheSlots = Self.supportedExpertCacheSlots(roundingDown: parsed)
             case "--expert-cache-policy":
                 guard let parsed = RuntimeExpertCachePolicy(rawValue: value) else {
                     throw ServerArgumentError.invalid("--expert-cache-policy must be lfu or lru")

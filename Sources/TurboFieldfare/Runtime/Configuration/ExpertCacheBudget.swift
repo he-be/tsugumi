@@ -148,9 +148,13 @@ public enum ExpertCacheBudgetError: Error, CustomStringConvertible {
     public var description: String {
         switch self {
         case .exceedsRecommendedWorkingSet(let budget):
+            // 梃子は語で言い、起動フラグの綴りは書かない。この文は CLI と
+            // サーバーの両方が読むが、文脈長のフラグの綴りは二つで違う
+            // (CLI は `--max-context`、サーバーは SPEC §11 FLAG-1 でそれを
+            // 退役させた)。どちらかを名指しすると読者の半分に嘘になる。
             let lever = budget.expertCacheBytes == 0
-                ? "Lower --max-context"          // mmap: スロットは合計に入らない
-                : "Lower --expert-cache-slots or --max-context"
+                ? "Lower the context size"       // mmap: スロットは合計に入らない
+                : "Lower the expert-cache slots or the context size"
             return """
                 expert cache configuration exceeds this device's recommended Metal \
                 working set — \(budget.summary). \(lever).

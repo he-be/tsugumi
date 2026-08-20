@@ -747,8 +747,12 @@ struct ServerArgumentTests {
         }
     }
 
+    // FLAG-2: a slot count between the steps is rounded down now, not refused
+    // (`ServerExpertCacheSlotFlagTests`); zero is still not a slot count. The
+    // prefill chunk width keeps its enumeration — FLAG-2 covers the context
+    // size and the slots, and nothing else.
     @Test(arguments: [
-        ["--expert-cache-slots", "12"],
+        ["--expert-cache-slots", "0"],
         ["--expert-cache-policy", "mru"],
         ["--prefill", "maybe"],
         ["--prefill-chunk-tokens", "96"],
