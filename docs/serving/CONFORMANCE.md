@@ -39,10 +39,8 @@ C3 だけがモデルを積む。
 初期状態。**このリストを上から緑にしていくのが作業のすべて**であり、
 緑になった行はこの表から消す (履歴は git log)。
 
-| SPEC ID | 現状 (実測 2026-08-19) | 段 |
-| --- | --- | --- |
-| RSP-3 / RSP-5 | `timings` / `system_fingerprint` 無し | P5 |
-| EP-5 / EP-6 | `/tokenize` 系・`/slots`・`/metrics` 無し | P5 |
+**この表は空になった** (2026-08-22)。§5 完了の定義の 1 つ目を満たしている。
+残っているのは「書けたが実機で見ていない」もの — 下の C3 の段落を読むこと。
 
 緑になった行: **INV-1** (2026-08-20、P1-D2、SPEC §12 DEV-12 のサーバー変種 +
 MSG-5 の `reasoning_content` 入力)。**MSG-5** の入力側も同時。
@@ -85,6 +83,11 @@ C3 だけで、まだ走っていない。
 `ExpertCacheBudgetTests`)。`--max-context` は退役し、名指しで新しい綴りを
 案内する。`-c/--ctx-size` と `--expert-cache-slots` は列挙で断らず下に丸める。
 
+**RSP-3 / RSP-5 / EP-4 の `build_info` / EP-5 / EP-6、FLAG-7** (2026-08-22、P5。
+`ServerTimingsTests` + `ServerBuildIdentityTests` + `ServerTokenizeRoutesTests` +
+`ServerSlotsMetricsTests` + `ServerEndpointGateTests`)。5 つの経路はロードゲート・
+API キー・CORS preflight の内側にあることをテストで固定してある。
+
 **C3 は書けた** (2026-08-22、`Scripts/c3_smoke.sh`、14 検査)。**まだ 1 度も
 走っていない** — 実機で走らせるのは人であり、走らせた結果はここに書き足す。
 
@@ -103,7 +106,7 @@ ERR-1 の封筒の形、および P0 で緑にした REQ-* 全行 (C0 の 41 本
 | ~~**P2**~~ | **済** (2026-08-22)。**G1** GBNF エンジン → **G2** JSON Schema → GBNF (2 方言、8 段) → **G3** エンジン結線 (棄却サンプリング GEN-7、投機は落とす DEV-14) → **G4a** 語彙水準の拘束 → **G4b** 文法の組み立て → **G4c** 要求と推論の結線 → **G5** C3 スモーク。実装中に出た仕様の穴は GEN-8〜GEN-13 と DEV-14〜DEV-20 として先に SPEC へ入れた | — |
 | **P3** | ライフサイクルとエンドポイント。listen 先行 + ロード中 503、`/v1/health`、`/props`、採らないパスの 501 | LIF-*, EP-1/4/7 |
 | ~~**P4**~~ | **済** (2026-08-22)。`--reasoning-budget` / `--reasoning-format` へ改名し、`--thinking` を退役。予算切れで終了タグを強制挿入する (RSN-4)。`max_tokens` の分け方は §12 **DEV-21** | — |
-| **P5** | 残り: `timings`、`system_fingerprint`、`/tokenize` 系、`/slots`・`/metrics`、`--api-key`、CORS | RSP-3/5, EP-5/6, FLAG-5 |
+| ~~**P5**~~ | **済** (2026-08-22)。`timings`、`system_fingerprint`、`/tokenize` 系、`/slots`・`/metrics`、`--api-key`、CORS、`-c/--ctx-size` と `--expert-cache-slots` の丸め | — |
 
 CLI 対話モード (旧 S4) と既定値の自動選択 (旧 S5) は **P2 のあと**。
 今の受理規則・キャッシュを CLI に複製すると乖離が 2 か所に増えるため。

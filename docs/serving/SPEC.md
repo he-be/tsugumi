@@ -57,9 +57,9 @@
 | EP-2 | `GET /v1/models` | OpenAI 形。1 モデルを返す。**API キー不要** (参照実装 `get_public_endpoints` と同じ) — クライアントは設定が済む前に health とモデル一覧を引くため | 実装済 |
 | EP-8 | `/v1` を外した別名: `GET /models`、`POST /chat/completions` | 参照実装が同じものを両方の綴りで出しているため合わせる。中身は EP-2 / EP-3 と同一 | P3 |
 | EP-3 | `POST /v1/chat/completions` | §4〜§9 | 実装済 (乖離多数 — [CONFORMANCE §2](CONFORMANCE.md)) |
-| EP-4 | `GET /props` | `default_generation_settings` (§4 の既定値の実効値)、`total_slots`、`model_path`、`chat_template`、`modalities` (`{"vision": true}`)、`build_info`、実効 `n_ctx`。クライアントの能力判定はここを見る。`build_info` はビルドを一意に指す文字列で、RSP-5 の `system_fingerprint` と**同じ値**を使う | P3 (`build_info` の中身は P5) |
-| EP-5 | `POST /tokenize`, `/detokenize`, `/apply-template` | 参照実装と同形。トークン数の事前計算用 | P5 |
-| EP-6 | `GET /slots`, `GET /metrics` | 参照実装と同形・同じく起動フラグでゲート。runbook の「詰まってないか」を stderr で見るのをやめる | P5 |
+| EP-4 | `GET /props` | `default_generation_settings` (§4 の既定値の実効値)、`total_slots`、`model_path`、`chat_template`、`modalities` (`{"vision": true}`)、`build_info`、実効 `n_ctx`。クライアントの能力判定はここを見る。`build_info` はビルドを一意に指す文字列で、RSP-5 の `system_fingerprint` と**同じ値**を使う | 実装済 |
+| EP-5 | `POST /tokenize`, `/detokenize`, `/apply-template` | 参照実装と同形。トークン数の事前計算用。`/apply-template` は **DEV-12 のサーバー変種**で描く | 実装済 |
+| EP-6 | `GET /slots`, `GET /metrics` | 参照実装と同形・同じく起動フラグでゲート (FLAG-7)。runbook の「詰まってないか」を stderr で見るのをやめる | 実装済 |
 | EP-7 | **採らない既知パス** (§12 DEV-7) は **501** + `not_supported_error` を返す。未知パスだけが 404。**`OPTIONS` は preflight として先に答える**ので、501 のパスにも 404 のパスにも同じ preflight 応答が返る (FLAG-6) — 経路の存在は preflight からは読み取れない | P3 |
 
 採らない既知パス: `/v1/embeddings` `/embedding` `/reranking` `/rerank` `/infill`
@@ -173,9 +173,9 @@
 | --- | --- | --- |
 | RSP-1 | 非ストリーム応答は OpenAI の chat.completion 形。`usage` は常に載せ、`prompt_tokens_details.cached_tokens` を含む | 実装済 |
 | RSP-2 | SSE: `delta.role` チャンク → `delta.content` / `delta.reasoning_content` / `delta.tool_calls` → `finish_reason` チャンク → (include_usage 時) `choices: []` + `usage` → `data: [DONE]`。無音時は `: ping` コメント (5 秒) | 実装済 (旧 16 §3 で適合を実測) |
-| RSP-3 | `timings` オブジェクト (`cache_n`, `prompt_n`, `prompt_ms`, `prompt_per_second`, `predicted_n`, `predicted_ms`, `predicted_per_token_ms`, `predicted_per_second`) を非ストリーム応答と最終チャンクに載せる。`timings_per_token: true` で毎チャンク。コンテキスト使用量は `prompt_n + cache_n + predicted_n` で計算できる | P5 |
+| RSP-3 | `timings` オブジェクト (`cache_n`, `prompt_n`, `prompt_ms`, `prompt_per_second`, `predicted_n`, `predicted_ms`, `predicted_per_token_ms`, `predicted_per_second`) を非ストリーム応答と最終チャンクに載せる。`timings_per_token: true` で毎チャンク。コンテキスト使用量は `prompt_n + cache_n + predicted_n` で計算できる | 実装済 |
 | RSP-4 | `finish_reason`: `stop` / `length` / `tool_calls` | 実装済 |
-| RSP-5 | `system_fingerprint`: ビルドのハッシュ | P5 |
+| RSP-5 | `system_fingerprint`: ビルドのハッシュ。EP-4 の `build_info` と**同じ値**を 1 か所から読む | 実装済 |
 
 ## 10. エラー (ERR)
 
@@ -195,6 +195,7 @@
 | FLAG-3 | 機体・エンジン固有で参照実装に対応物が無いフラグはそのまま: `--expert-cache-slots` `--expert-cache-policy` `--draft-block-size` `--prefill` `--prefill-chunk-tokens` `--image-tokens` `--max-image-*` `--verification` `--rdadvise` `--model-id` `--queue-limit`。 |
 | FLAG-4 | 廃止: `--thinking` (→ `--reasoning-budget`)、`--prompt-cache-mode` (→ 要求ごとの `cache_prompt`)。 |
 | FLAG-5 | `--api-key` はキー 1 つ、またはカンマ区切りの並び。フラグを繰り返すと追加される (入れ替え作業が 1 行に収まる)。受ける綴りは `Authorization: Bearer <key>` / 同ヘッダの裸の値 / `X-Api-Key` の 3 つ (参照実装と同じ)。**検査の位置はロードゲート (LIF-2/LIF-6) の後、経路表の前** (参照実装 `server-http.cpp:302` と同じ順) — ロード中のキー無し要求は 401 ではなく 503 であり、認証されていない相手は 501 と 404 の差から経路の地図を作れない。**キー不要は EP-1 と EP-2 だけ。**`/props` は要る (能力の答えであって起動時の足場ではない)。失敗は **401** + `invalid_request_error` + `code: invalid_api_key` (ERR-2)。フラグが無ければ検査しない — 守りは 127.0.0.1 バインドのみ (現行どおり)。 |
+| FLAG-7 | EP-6 のゲートは参照実装と同じ綴り: `--slots` / `--no-slots` (**既定は有効**) と `--metrics` (**既定は無効**)。切ってあるときは EP-7 と同じ **501** `not_supported_error` を返し、`message` にどのフラグで開くかを書く。 |
 | FLAG-6 | `--cors-origins` はカンマ区切りのオリジン並び、または `*`。**フラグが無ければ CORS ヘッダを一切出さない** (DEV-20)。並びのときは要求の `Origin` を照合し、**一致した 1 つだけ**を `Access-Control-Allow-Origin` に返し、`Vary: Origin` を添える (並びをそのまま返す参照実装の書き方はブラウザが受けない — DEV-20)。`*` のときは `*` を返し `Vary` は要らない。**`Access-Control-Allow-Credentials` は決して出さない** — こちらの認証は明示ヘッダであって cookie ではないので、資格情報を伴う要求を許す理由が無い。preflight (`OPTIONS`) はロードゲートより先・API キーより先に答え (LIF-6、ブラウザは preflight に `Authorization` を付けない)、どのパスにも同じ応答を返す。広告する内容は `Access-Control-Allow-Methods: GET, POST, OPTIONS` (DELETE は持たない) と `Access-Control-Allow-Headers: authorization, content-type, x-api-key`。`Access-Control-Max-Age` は出さない。`--cors-methods` / `--cors-headers` / `--cors-credentials` / `--api-key-file` は採らない。 |
 
 ## 12. 逸脱登録簿 (DEV)
