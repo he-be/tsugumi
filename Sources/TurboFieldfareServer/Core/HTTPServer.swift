@@ -61,6 +61,7 @@ public actor TurboFieldfareHTTPServer {
     private let imagePolicy: ServerImagePolicy
     private let defaults: ChatRequestDefaults
     private let properties: ServerProperties
+    private let apiKeys: [String]
     private let childChannels = ChildChannelRegistry()
     private var channel: Channel?
     private var shutdownTask: Task<Void, any Error>?
@@ -72,6 +73,7 @@ public actor TurboFieldfareHTTPServer {
                 imagePolicy: ServerImagePolicy = .default,
                 defaults: ChatRequestDefaults = ChatRequestDefaults(),
                 properties: ServerProperties = ServerProperties(),
+                apiKeys: [String] = [],
                 group: MultiThreadedEventLoopGroup = .init(numberOfThreads: 1)) {
         self.group = group
         self.modelID = modelID
@@ -81,6 +83,7 @@ public actor TurboFieldfareHTTPServer {
         self.imagePolicy = imagePolicy
         self.defaults = defaults
         self.properties = properties
+        self.apiKeys = apiKeys
     }
 
     /// LIF-2 → LIF-3. The load finished and the endpoints may answer from the
@@ -102,6 +105,7 @@ public actor TurboFieldfareHTTPServer {
         let imagePolicy = self.imagePolicy
         let defaults = self.defaults
         let properties = self.properties
+        let apiKeys = self.apiKeys
         let childChannels = self.childChannels
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 16)
@@ -120,6 +124,7 @@ public actor TurboFieldfareHTTPServer {
                         imagePolicy: imagePolicy,
                         defaults: defaults,
                         properties: properties,
+                        apiKeys: apiKeys,
                         childChannels: childChannels))
                 }
             }
@@ -210,6 +215,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private let imagePolicy: ServerImagePolicy
     private let defaults: ChatRequestDefaults
     private let properties: ServerProperties
+    private let apiKeys: [String]
     private let maximumBodyBytes: Int
     private let childChannels: ChildChannelRegistry
     private var head: HTTPRequestHead?
@@ -224,6 +230,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
          imagePolicy: ServerImagePolicy,
          defaults: ChatRequestDefaults,
          properties: ServerProperties,
+         apiKeys: [String],
          childChannels: ChildChannelRegistry) {
         self.modelID = modelID
         self.readiness = readiness
@@ -232,6 +239,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         self.imagePolicy = imagePolicy
         self.defaults = defaults
         self.properties = properties
+        self.apiKeys = apiKeys
         self.maximumBodyBytes = imagePolicy.maximumBodyBytes
         self.childChannels = childChannels
     }

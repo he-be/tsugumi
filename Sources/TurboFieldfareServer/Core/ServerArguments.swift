@@ -27,6 +27,9 @@ public struct ServerArguments: Equatable, Sendable {
     public let draftBlockSize: Int
     public let imagePolicy: ServerImagePolicy
     public let thinkingPolicy: ServerThinkingPolicy
+    /// FLAG-5. Empty means no authentication, which is the default and is what
+    /// every existing runbook starts.
+    public let apiKeys: [String]
 
     public static let usage = """
     usage: TurboFieldfareServer --model <completed .gturbo directory> [options]
@@ -97,6 +100,12 @@ public struct ServerArguments: Equatable, Sendable {
                                  Raises the request-body ceiling to match.
       --max-image-pixels <n>     Pixels accepted per image (default 50000000), read
                                  from the container header before any decode.
+      --api-key <key[,key...]>   Require this bearer token on every endpoint that
+                                 reaches the model (default: none, no
+                                 authentication). Repeat the flag or separate
+                                 keys with commas to accept more than one.
+                                 /health, /v1/health, /models and /v1/models stay
+                                 open. The server binds 127.0.0.1 either way.
       --help                     Show this help.
     """
 
@@ -152,6 +161,7 @@ public struct ServerArguments: Equatable, Sendable {
         var maxImageBytes = ServerImagePolicy.default.maxImageBytes
         var maxImagePixels = ServerImagePolicy.default.maxImagePixels
         var thinkingPolicy = ServerThinkingPolicy.off
+        var apiKeys: [String] = []
         var index = 0
         while index < input.count {
             let flag = input[index]
@@ -243,6 +253,17 @@ public struct ServerArguments: Equatable, Sendable {
                             .map(String.init).joined(separator: ", "))
                 }
                 imageTokens = parsed
+            case "--api-key":
+                // Not implemented yet — the flag is parsed so the spec line has
+                // somewhere to be tested from, and rejected values still fail
+                // at startup rather than silently.
+                let keys = value.split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .filter { !$0.isEmpty }
+                guard !keys.isEmpty else {
+                    throw ServerArgumentError.invalid("--api-key must not be empty")
+                }
+                _ = keys
             case "--thinking":
                 guard let parsed = ServerThinkingPolicy(rawValue: value) else {
                     throw ServerArgumentError.invalid("--thinking must be on or off")
@@ -291,7 +312,8 @@ public struct ServerArguments: Equatable, Sendable {
                                    maxImagesPerRequest: maxImages,
                                    maxImageBytes: maxImageBytes,
                                    maxImagePixels: maxImagePixels),
-                               thinkingPolicy: thinkingPolicy)
+                               thinkingPolicy: thinkingPolicy,
+                               apiKeys: apiKeys)
     }
 }
 
