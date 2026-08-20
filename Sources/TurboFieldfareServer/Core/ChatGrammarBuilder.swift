@@ -72,8 +72,16 @@ public struct ChatGrammarConstraint: Equatable, Sendable {
 /// SPEC §6: a request's `tools` / `tool_choice` / `parallel_tool_calls` /
 /// `response_format` turned into the grammar that constrains generation.
 ///
-/// **Not implemented yet** — every request comes back unconstrained, which is
-/// what `ChatGrammarBuilderTests` is red about.
+/// This is the reference implementation's `build_grammar` step
+/// (`~/LLM/llama.cpp` pin `34af94cd9`, `common/chat-auto-parser-generator.cpp`
+/// lines 78-150 and `common/chat-peg-parser.cpp` `standard_json_tools`), in our
+/// markers and our dialect: a per-tool alternative that pins the tool name as a
+/// literal and expands that tool's `parameters` schema for the arguments, a
+/// section rule wrapping the call in the markers, and `parallel_tool_calls`
+/// deciding whether repeats are allowed.
+///
+/// Nothing here touches the HTTP layer, the request schema, or the inference
+/// loop; it is a pure function from what the request asked for to GBNF text.
 public enum ChatGrammarBuilder {
     /// REQ-response-format's three shapes, already unwrapped: `json_schema`
     /// carries `response_format.json_schema.schema` (GEN-3). A `nil` schema is
@@ -82,9 +90,30 @@ public enum ChatGrammarBuilder {
         case text
         case jsonObject(schema: JSONValue?)
         case jsonSchema(schema: JSONValue?)
+
+        /// The schema to constrain to, or `nil` for "do not constrain".
+        var schema: JSONValue? {
+            switch self {
+            case .text: return nil
+            case .jsonObject(let schema), .jsonSchema(let schema):
+                // DEV-18: an absent schema still constrains — to the empty
+                // schema, which is every JSON value.
+                return schema ?? .object([:])
+            }
+        }
     }
 
     /// The whole stage. Returns `nil` when the request asks for no constraint.
+    ///
+    /// **A response format and tools in one request**: the response format
+    /// wins and no tool grammar is emitted. That is what the reference does at
+    /// the pin (`chat-auto-parser-generator.cpp`: the response-format branch is
+    /// taken before the tools branch, and `grammar_lazy =
+    /// !has_response_format && …`). Under `tool_choice` `auto`/`none` nothing
+    /// is broken by it — a tool call was optional. Under `required` or a named
+    /// function the two asks genuinely collide, so the collision is reported in
+    /// `approximations` for the caller to log or refuse; this function never
+    /// errors (GEN-2).
     public static func constraint(
         tools: [GFTokenizer.FunctionDefinition],
         toolChoice: ChatToolChoice,
@@ -92,6 +121,123 @@ public enum ChatGrammarBuilder {
         responseFormat: ResponseFormat,
         markers: ChatGrammarMarkers
     ) -> ChatGrammarConstraint? {
-        nil
+        if let schema = responseFormat.schema {
+            return responseFormatConstraint(schema: schema,
+                                            tools: tools,
+                                            toolChoice: toolChoice)
+        }
+        return toolConstraint(tools: tools,
+                              toolChoice: toolChoice,
+                              parallelToolCalls: parallelToolCalls,
+                              markers: markers)
+    }
+
+    // MARK: - GEN-3
+
+    private static func responseFormatConstraint(
+        schema: JSONValue,
+        tools: [GFTokenizer.FunctionDefinition],
+        toolChoice: ChatToolChoice
+    ) -> ChatGrammarConstraint {
+        var approximations: [String] = []
+        switch toolChoice {
+        case .required, .function:
+            if !tools.isEmpty {
+                approximations.append(
+                    "response-format-overrides-tool-choice: the response format "
+                    + "constrains generation, so no tool call can be produced")
+            }
+        case .auto, .none:
+            break
+        }
+        let result = JSONSchemaGrammar.grammar(for: schema, dialect: .json)
+        return ChatGrammarConstraint(grammar: result.grammar,
+                                     isLazy: false,
+                                     trigger: nil,
+                                     approximations: approximations + result.approximations)
+    }
+
+    // MARK: - GEN-1 / GEN-4 / GEN-8
+
+    private static func toolConstraint(
+        tools: [GFTokenizer.FunctionDefinition],
+        toolChoice: ChatToolChoice,
+        parallelToolCalls: Bool,
+        markers: ChatGrammarMarkers
+    ) -> ChatGrammarConstraint? {
+        let selected: [GFTokenizer.FunctionDefinition]
+        switch toolChoice {
+        // GEN-4: `none` is no tool grammar at all.
+        case .none:
+            return nil
+        case .auto, .required:
+            selected = tools
+        // DEV-17: a named choice pins that one function.
+        case .function(let name):
+            selected = tools.filter { $0.name == name }
+        }
+        // No alternative to spell. A named choice that names an undeclared
+        // tool lands here too; refusing that request is the request layer's
+        // job, not the grammar's.
+        guard !selected.isEmpty else { return nil }
+
+        let isLazy = toolChoice == .auto
+        let result = JSONSchemaGrammar.build(dialect: .gemmaToolArguments) { builder in
+            var alternatives: [String] = []
+            for tool in selected {
+                // GEN-8: the canonical template form, with no whitespace
+                // anywhere. The braces come from the schema's own object rule,
+                // so this rule must not add its own.
+                let arguments = builder.addSchema("tool-\(tool.name)-args",
+                                                  argumentsSchema(tool.parameters))
+                alternatives.append(builder.addRule(
+                    "tool-\(tool.name)",
+                    literal(markers.toolCallStart + "call:" + tool.name)
+                        + " " + arguments
+                        + " " + literal(markers.toolCallEnd)))
+            }
+            let body = alternatives.count == 1
+                ? alternatives[0]
+                : "(" + alternatives.joined(separator: " | ") + ")"
+            // The section rule — the one the trigger starts. The template
+            // writes parallel calls back to back with no separator.
+            let section = builder.addRule("tool-call",
+                                          parallelToolCalls ? body + "+" : body)
+            _ = builder.addRule("root", section)
+        }
+        return ChatGrammarConstraint(
+            grammar: result.grammar,
+            isLazy: isLazy,
+            // GEN-5: the tool-call start token.
+            trigger: isLazy
+                ? ChatGrammarTrigger(tokenID: markers.toolCallStartTokenID,
+                                     text: markers.toolCallStart)
+                : nil,
+            approximations: result.approximations)
+    }
+
+    /// The template always writes the arguments as `{…}`, so a tool that
+    /// declares nothing usable still gets the generic object rather than the
+    /// generic JSON value.
+    private static func argumentsSchema(_ parameters: JSONValue) -> JSONValue {
+        if case .object(let members) = parameters, !members.isEmpty {
+            return parameters
+        }
+        return .object(["type": .string("object")])
+    }
+
+    /// The reference's `GRAMMAR_LITERAL_ESCAPE_RE` = `[\r\n"\\]`.
+    private static func literal(_ text: String) -> String {
+        var out = "\""
+        for character in text {
+            switch character {
+            case "\r": out += #"\r"#
+            case "\n": out += #"\n"#
+            case "\"": out += #"\""#
+            case "\\": out += #"\\"#
+            default: out.append(character)
+            }
+        }
+        return out + "\""
     }
 }
