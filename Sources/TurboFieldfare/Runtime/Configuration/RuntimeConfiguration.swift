@@ -30,7 +30,22 @@ public struct RuntimeConfiguration: Sendable, Equatable {
     /// `numLayers * slots * expertStride` (about 100 MB per slot for
     /// gemma-4-26b-a4b), and `ExpertCacheBudget` rejects a configuration that
     /// would push past the Metal device's recommended working set.
-    public static let allowedExpertCacheSlots = [8, 16, 24, 32, 48, 64, 80, 96, 112]
+    ///
+    /// **その 100 MB は私有スロットの話である。**既定の mmap 経路
+    /// (`docs/mtp/52-D-P7-PREFILL-QUEUE-DEPTH.md` §8) はスロットを 1 本も確保せず、
+    /// 同じバイトは層ファイルのページを residency set が常駐要求する形になる。
+    /// 実測の peak は運用点 (32) で 4.5 GB → 1.3 GB に落ちた。
+    /// **ガードは今も上の式で数えている** — 常駐要求ぶんを working set に
+    /// 数えるべきかは**未検証**なので、算術は動かしていない (40 §2a)。
+    /// **上限は運用点の 32 である** (ユーザー確定 2026-08-20)。48 以上は
+    /// `Scripts/demo/serve.py` も CLI もサーバーも使わない設定で、mmap の腕では
+    /// スロットが footprint を動かさないぶん**踏み込んでも気付きにくい** —
+    /// 64 スロットは peak 1.27 GB のまま tok/s が半分になり (52 §9)、112 は
+    /// 常駐要求 11.3 GB で機械をスワップさせる。**受け付けないのが一番安い。**
+    public static let allowedExpertCacheSlots = [8, 16, 24, 32]
+    /// 前面が受け付けるコンテキスト長の上限 (ユーザー確定 2026-08-20)。
+    /// 128K は 32 スロットの mmap の腕で通る (52 §9、peak 3.88 GB)。
+    public static let maximumContextTokens = 131_072
     /// Chunk widths the front ends will accept. The width sets how many unique
     /// routed experts one layer touches per chunk, and therefore how many expert
     /// bytes the SSD has to move per token: 128 tokens costs about 62 MB/token,
@@ -52,26 +67,17 @@ public struct RuntimeConfiguration: Sendable, Equatable {
 
     /// Expert I/O overlaps the shared-MLP GPU work, so slots buy throughput only
     /// while the misses they remove were still poking out from behind that work.
-    /// Past that point they buy hit rate and nothing else: on the group-32 QAT
-    /// checkpoint, 96 slots reach a 97.7% decode hit rate against 64 slots'
-    /// 90.6% — better than the group-64 baseline manages — at identical tokens
-    /// per second.
+    /// Past that point they buy hit rate and nothing else.
     ///
-    /// 48 is where that ceiling is reached with the least memory. The QAT
-    /// checkpoint measures within noise of 64 slots there (+1.2% to +1.8%, three
-    /// interleaved runs) while its peak footprint drops 1.8 GB, and 32 is the
-    /// cliff (-6% to -7%, hit rate 72-77%). It has more GPU work per token than
-    /// the group-64 lineage, so it hides more I/O and tolerates a smaller cache.
-    ///
-    /// This costs the group-64 baseline about 4.5%, which was measured when 64
-    /// was the default and is not re-measured here: 64 is that checkpoint's knee,
-    /// where its 99.2% decode hit rate stops improving. Pass
-    /// `--expert-cache-slots 64` to get it back.
+    /// **既定は 32 = 運用点である** (`Scripts/demo/serve.py`、ユーザー確定
+    /// 2026-08-20)。以前の既定 48 と「64 で取り戻せる」という註は、私有スロットが
+    /// メモリと速度を交換していた頃のもので、**上限が 32 になったので落とした**
+    /// (根拠は `allowedExpertCacheSlots` の註)。
     ///
     /// Machines that cannot hold the cache are rejected by `ExpertCacheBudget` at
     /// runner construction with an actionable error rather than silently
     /// swapping.
-    public init(expertCacheSlots: Int = 48,
+    public init(expertCacheSlots: Int = 32,
                 expertCachePolicy: RuntimeExpertCachePolicy = .lfu,
                 rdadvisePolicy: RDAdvicePolicyMode = .off,
                 prefillEnabled: Bool = true,

@@ -92,7 +92,7 @@ struct InspectorView: View {
                 .labelsHidden()
                 .fixedSize()
             }
-            Text("More slots can improve decode speed by keeping more experts in memory, but they also use more RAM. Changes are compared with 4K context and 48 slots and apply after reloading the model.")
+            Text("More slots can improve decode speed by keeping more experts in memory, but they also use more RAM. Changes are compared with 4K context and 32 slots and apply after reloading the model.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }

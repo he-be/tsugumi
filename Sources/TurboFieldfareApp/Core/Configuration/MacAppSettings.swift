@@ -6,7 +6,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
 
     var version: Int = currentVersion
     var contextTokens: Int = AppContextLengthOption.fourK.tokens
-    var expertCacheSlots: Int = 48
+    var expertCacheSlots: Int = 32
     var temperature: Double = 1.0
     var topKEnabled: Bool = true
     var topK: Int = 64
@@ -34,7 +34,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
 
     init(version: Int = currentVersion,
          contextTokens: Int = AppContextLengthOption.fourK.tokens,
-         expertCacheSlots: Int = 48,
+         expertCacheSlots: Int = 32,
          temperature: Double = 1.0,
          topKEnabled: Bool = true,
          topK: Int = 64,

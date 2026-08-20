@@ -30,6 +30,10 @@ public struct Model {
     public let device: MTLDevice
     public let config: ArchConfig
     public let streamingMode: ExpertStreamingMode
+    /// どちらの腕でエキスパートを読むか。**既定は mmap**
+    /// (`docs/mtp/52-D-P7-PREFILL-QUEUE-DEPTH.md` §8、`TF_EXPERT_MMAP=0` で外れる)。
+    /// ストリーマーを開くところと `ExpertCacheBudget` はここだけを読む。
+    public var usesMappedExperts: Bool { MmapExpertMapping.isEnabled }
     public let expertCachePolicy: ExpertCachePolicy
     public let integrityPolicy: ModelIntegrityPolicy
     public var modelID: String { manifest.modelID }
@@ -435,7 +439,7 @@ public struct Model {
             slotCount: slotCount,
             cachePolicy: expertCachePolicy,
             fileDescriptor: layerFD,
-            useMmap: MmapExpertMapping.isEnabled)
+            useMmap: usesMappedExperts)
         streamersBox.layerVerified[L] = true
     }
 

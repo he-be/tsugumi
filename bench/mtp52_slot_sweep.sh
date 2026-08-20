@@ -4,6 +4,9 @@
 # 40 §4-3: 切り替え直後はページインを払うので、設定ごとに暖機を 1 本入れる。
 set -u
 mkdir -p bench/mtp52
+# 注意: **64 は現在の CLI が受け付けない** (上限 32。52 §9 / 2026-08-20)。
+# このスクリプトは 52 §1 を取ったときの形をそのまま残してある。回すなら
+# `RuntimeConfiguration.allowedExpertCacheSlots` を一時的に広げること。
 for SLOTS in 16 64; do
   echo "=== warmup slots=$SLOTS ==="
   TF_EXPERT_MMAP=0 ./.build/release/TurboFieldfareCLI \

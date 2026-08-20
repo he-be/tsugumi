@@ -47,9 +47,14 @@ public struct ServerArguments: Equatable, Sendable {
       --queue-limit <count>      Maximum queued requests (default 4).
       --prompt-cache-mode <off|single-prefix>
                                  Prompt KV reuse mode (default single-prefix).
-      --expert-cache-slots <n>   Expert-cache slots: 8, 16, 24, 32, 48, 64, 80, 96, or 112
-                                 (default 48). Costs about 100 MB per slot; a value
-                                 the device cannot keep resident is rejected at load.
+      --expert-cache-slots <n>   Expert-cache slots: 8, 16, 24, or 32 (default 32).
+                                 32 is the operating point and the ceiling: on the
+                                 default expert path (mmap) a slot is not a private
+                                 copy, so more slots do not show up as footprint --
+                                 they show up as pages asked to stay resident, and
+                                 past this point that costs throughput rather than
+                                 buying it. The load-time guard still rejects a
+                                 combination this device cannot hold.
       --expert-cache-policy <s>  Expert-cache policy: lfu or lru (default lfu).
       --prefill on|off           Enable or disable chunked prompt prefill (default on).
                                  Chunked prefill requires 16 or more cache slots.

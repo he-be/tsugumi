@@ -43,7 +43,7 @@ MTP の続きを進めて。
 | 外し方 | **`TF_EXPERT_MMAP=0`** で 51 までの私有スロット + `pread` に丸ごと戻る。`TF_EXPERT_MMAP_ADVISE=1/0` は advise だけを腕と無関係に固定する (52 §5 のドライバがそう回す) |
 | 目印 | CLI の footer の **`[expert mmap layers=30 …]`** の行、サーバーの ready 行の **`expert_io=mmap`**、デモの見出しの `expert mmap` のピル |
 | テスト | `PreadExpertStreamer` を直に作るテストは **`useMmap: false` が既定**なので `pread` のまま (17 テスト green) |
-| 確認した (**n=1 の疎通確認。スコアではない** — 40 §4-1) | CLI (17×23 の説明、96 tok、32 スロット、temp 0、連続 2 run): mmap `peak 1.29 GB / 24.88 tok/s`、`TF_EXPERT_MMAP=0` `4.90 GB / 16.79 tok/s`。表示された範囲の生成文は一致。**測定として読むのは 52 §4 の表であり、この 2 行ではない** |
+| 確認した (**n=1 の疎通確認。スコアではない** — 40 §4-1。8192 での 8 run は 52 §9) | CLI (17×23 の説明、96 tok、32 スロット、temp 0、連続 2 run): mmap `peak 1.29 GB / 24.88 tok/s`、`TF_EXPERT_MMAP=0` `4.90 GB / 16.79 tok/s`。表示された範囲の生成文は一致。**測定として読むのは 52 §4 の表であり、この 2 行ではない** |
 
 **bench の腕は動かない** — `bench/mtp5*` は `TF_EXPERT_MMAP` を明示的に 0/1 で
 渡す。**動いたのは advise の既定のほう**なので、advise 以前のログを再現する
@@ -77,12 +77,13 @@ MTP の続きを進めて。
 含んでいる。**残っている 3 つ、優先順**:
 
 1. **既定の形での検証** (§2a で既定にしたので、残りは確認である) —
-   **`iogpu.wired_limit_mb` を既定 8192 に戻した run**、**サーバー経路
-   (`Scripts/demo/serve.py`) の数字**、**`story` と MTP (bs=4) での advise**。
-   いずれも**未実施**。**`--expert-cache-slots` の振り直しは済んだ**
+   **`iogpu.wired_limit_mb` 8192 の run は済んだ** (52 §9: 既定 32 スロットは
+   素の 8192 で通る。peak 1.25 GB。**ガードが確保しないバイトで 128K を弾いていた**
+   ので、52 §9a で**受け付ける範囲を 32 スロット / 128K に絞り**、ガードは
+   **確保するバイトだけ**を数えるようにした。既定のスロットは 48 → **32**)。**残りは サーバー経路 (`Scripts/demo/serve.py`) の数字**と
+   **`story` と MTP (bs=4) での advise**、いずれも**未実施**。
+   **`--expert-cache-slots` の振り直しは済んだ**
    (52 §1: prefill はスロットに依存しない。要求 1963 / ヒット 0% が 16/32/64 で不動)。
-   **既定が mmap になったので、48 スロットの `wired_limit` 前提も測り直す価値がある**
-   (私有スロットが無いぶん peak は 1.3 GB で、スロット数はもう占有を動かさない)。
 2. **decode も速くなった理由を分ける** (52 §6) — 19.56 → 27.41 GB/s。decode 経路は
    既に advise を出しているはずなので、**`shouldSkipRDAdvice` が落としている**か
    **タイミングが悪い**かのどちらか。`rdadvisePolicyMode` を振っていない。
@@ -141,9 +142,13 @@ rows 2 本で −23%)。**実装の前に分子を 1 つ潰す** — rows 2 本�
   画像の実体はリポジトリ外 (`~/Pictures/sample_imgs`、写真 46 枚 + ロゴ類 4 枚。
   `TF_SAMPLE_IMGS` で差し替え、`.gitignore:53-54` で追跡外)。
   **10〜20KB のロゴ類 4 枚はキャプション課題の代表にならない**ので除外してある。
-- **運用点は 32 スロット** (`Scripts/demo/serve.py:62`、peak 4.97GB)。
-  **48 スロットには `sudo sysctl iogpu.wired_limit_mb=14336` が要る** (再起動で 8192 に戻る)
-  が、**48 は運用点ではない** — `c(slots)` のトレンドを見るために振った点である。
+- **運用点は 32 スロット**、そして **2026-08-20 からは前面が受け付ける上限でもある**
+  (`RuntimeConfiguration.allowedExpertCacheSlots = [8, 16, 24, 32]`、52 §9a)。
+  mmap の既定では peak は 32 スロットで **1.25〜1.31 GB**。
+  **48 以上を測るには `allowedExpertCacheSlots` を一時的に広げる必要がある**
+  (`bench/mtp52_slot_sweep.sh` の 64 は今のままでは回らない)。
+  `sudo sysctl iogpu.wired_limit_mb=14336` は**受け付ける範囲では不要になった** —
+  128K / 32 スロットも素の 8192 で通る (52 §9)。
 - **llama.cpp は再実行しない** (35 の校正値を既定値として読むだけ)。
 
 ## 4. 落とし穴 (実際に踏んだもの)

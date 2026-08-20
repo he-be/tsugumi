@@ -262,7 +262,7 @@ func runVerifyBlockChecks(modelPath: String,
     // this is a measurement knob, like the `TF_MTP_ROWS_*` switches.
     let runtime = RuntimeConfiguration(
         expertCacheSlots: Int(ProcessInfo.processInfo
-            .environment["TF_EXPERT_CACHE_SLOTS"] ?? "") ?? 48,
+            .environment["TF_EXPERT_CACHE_SLOTS"] ?? "") ?? 32,
         expertCachePolicy: ProcessInfo.processInfo
             .environment["TF_EXPERT_CACHE_POLICY"] == "lru" ? .lru : .lfu)
     let model = try Model.load(directoryURL: directoryURL,

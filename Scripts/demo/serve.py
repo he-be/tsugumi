@@ -74,14 +74,20 @@ DEFAULT_MODEL = "scratch/gemma4-qat.gturbo"
 
 # SERVER_RUNBOOK.md §1(a): the 16K configuration, the fastest one that fits.
 MAX_CONTEXT = 8192
-# 32 slots is the setting a 16 GB machine has room for (peak 5.1 GB). It is also
-# the setting where decode is bound by expert I/O rather than by the GPU: a
-# verify block reads about 470 MB from the file, and 48 slots (peak 6.8 GB)
-# takes the same caption from ~24 to ~29 tok/s (docs/mtp/27-M7-RESULTS.md §7).
-# `--expert-cache-slots 48` tries that without editing this file.
+# 32 slots is the operating point and the ceiling the front ends accept
+# (docs/mtp/40-HANDOFF.md §3). It is the setting where decode is bound by expert
+# I/O rather than by the GPU: a verify block reads about 470 MB from the file.
+#
+# Since the mmap path became the default (docs/mtp/52 §8) a slot copies nothing,
+# so peak sits near 1.3 GB here instead of the ~5 GB the older notes quote, and
+# slots no longer trade footprint for speed. What they still cost is pages asked
+# to stay resident, which is why the ceiling is 32 rather than higher (52 §9).
+# `--expert-io pread` puts the old private-slot trade back.
 EXPERT_CACHE_SLOTS = 32
 DRAFT_BLOCK_SIZE = 4
-ALLOWED_EXPERT_CACHE_SLOTS = (8, 16, 24, 32, 48, 64, 80, 96, 112)
+# Mirrors RuntimeConfiguration.allowedExpertCacheSlots: 32 is the operating
+# point and the ceiling (docs/mtp/52-D-P7-PREFILL-QUEUE-DEPTH.md §9).
+ALLOWED_EXPERT_CACHE_SLOTS = (8, 16, 24, 32)
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 
@@ -587,8 +593,9 @@ def main() -> int:
                         help="do not open a browser window")
     parser.add_argument("--expert-cache-slots", type=int, default=EXPERT_CACHE_SLOTS,
                         choices=ALLOWED_EXPERT_CACHE_SLOTS,
-                        help=f"expert-cache slots (default: {EXPERT_CACHE_SLOTS}; "
-                             "48 is faster and needs about 1.8 GB more)")
+                        help=f"expert-cache slots (default and ceiling: "
+                             f"{EXPERT_CACHE_SLOTS}; fewer slots trade hit rate "
+                             "for working set)")
     parser.add_argument("--expert-io", choices=("mmap", "pread"), default=None,
                         help="routed-expert path (default: the server's own, mmap; "
                              "pread is the private-slot path from before docs/mtp/52)")

@@ -5,7 +5,8 @@ import Testing
     @Test func productionDefaultsAreStable() {
         let runtime = RuntimeConfiguration.production
         #expect(runtime.fp16RingEnabled)
-        #expect(runtime.expertCacheSlots == 48)
+        // 32 = 運用点。上限も 32 になった (2026-08-20、docs/mtp/52 §9)。
+        #expect(runtime.expertCacheSlots == 32)
         #expect(runtime.expertCachePolicy == .lfu)
         #expect(runtime.rdadvisePolicy == .off)
         #expect(!runtime.rdadviseEnabled)

@@ -136,8 +136,8 @@ extension Args {
       --seed <uint64>            Deterministic sampling seed (default off).
       --stop <string>            Stop substring (repeatable).
       --quiet                    Suppress the timing footer.
-      --expert-cache-slots <n>   Expert-cache slots: 8, 16, 24, 32, 48, 64, 80, 96, or 112
-                                 (default 48). Costs about 100 MB per slot; a value
+      --expert-cache-slots <n>   Expert-cache slots: 8, 16, 24, or 32 (default 32).
+                                 32 is the operating point and the ceiling; a value
                                  the device cannot keep resident is rejected at load.
       --expert-cache-policy <s>  Expert-cache policy: lfu or lru (default lfu).
       --prefill on|off           Enable or disable chunked prompt prefill (default on).
@@ -253,7 +253,10 @@ extension Args {
                 maxNew = parsed
             case "--max-context":
                 let value = try takeValue(argv, &index, flag: flag)
-                guard let parsed = Int(value), parsed > 0 else {
+                // 上限は 128K (`RuntimeConfiguration.maximumContextTokens`)。
+                // これより上は測っていないし、KV だけで working set を使い切る。
+                guard let parsed = Int(value), parsed > 0,
+                      parsed <= RuntimeConfiguration.maximumContextTokens else {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 maxContext = parsed
