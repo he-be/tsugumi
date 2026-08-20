@@ -13,6 +13,41 @@ extension ServerRequestError {
     }
 }
 
+/// What `/props` answers with about this process (EP-4).
+///
+/// Everything here is known before the model is: the flags say the path and the
+/// context, and the template is the repo's own file. That is what lets `/props`
+/// be one value handed to the server at startup rather than a question asked of
+/// a backend that may not exist yet (LIF-1).
+public struct ServerProperties: Equatable, Sendable {
+    /// EP-4 `model_path`: the directory this server was started with.
+    public let modelPath: String
+    /// EP-4's effective `n_ctx` — the value `--ctx-size` rounded down to
+    /// (FLAG-2), which a client has no other way to read.
+    public let contextLength: Int
+    /// EP-4 `chat_template`: the template the server actually renders with,
+    /// which is the repo-owned variant of DEV-12 and not the file the
+    /// checkpoint ships.
+    public let chatTemplate: String
+
+    /// EP-4 `total_slots`. Generation is one slot on this machine, fixed
+    /// (DEV-3), so this is a constant and not a flag.
+    public static let totalSlots = 1
+
+    /// EP-4 `build_info`. SPEC names the field but not its contents, and this
+    /// checkout stamps no build number, so the honest value is the name of the
+    /// binary answering.
+    public static let buildInfo = "TurboFieldfareServer"
+
+    public init(modelPath: String = "",
+                contextLength: Int = 0,
+                chatTemplate: String = "") {
+        self.modelPath = modelPath
+        self.contextLength = contextLength
+        self.chatTemplate = chatTemplate
+    }
+}
+
 public actor TurboFieldfareHTTPServer {
     /// The text-only body ceiling. Kept as the name it always had; a server
     /// configured for images raises its own ceiling from `ServerImagePolicy`.
@@ -25,6 +60,7 @@ public actor TurboFieldfareHTTPServer {
     private let heartbeatInterval: TimeAmount
     private let imagePolicy: ServerImagePolicy
     private let defaults: ChatRequestDefaults
+    private let properties: ServerProperties
     private let childChannels = ChildChannelRegistry()
     private var channel: Channel?
     private var shutdownTask: Task<Void, any Error>?
@@ -35,6 +71,7 @@ public actor TurboFieldfareHTTPServer {
                 heartbeatInterval: TimeAmount = .seconds(5),
                 imagePolicy: ServerImagePolicy = .default,
                 defaults: ChatRequestDefaults = ChatRequestDefaults(),
+                properties: ServerProperties = ServerProperties(),
                 group: MultiThreadedEventLoopGroup = .init(numberOfThreads: 1)) {
         self.group = group
         self.modelID = modelID
@@ -43,6 +80,7 @@ public actor TurboFieldfareHTTPServer {
         self.heartbeatInterval = heartbeatInterval
         self.imagePolicy = imagePolicy
         self.defaults = defaults
+        self.properties = properties
     }
 
     /// LIF-2 → LIF-3. The load finished and the endpoints may answer from the
@@ -63,6 +101,7 @@ public actor TurboFieldfareHTTPServer {
         let heartbeatInterval = self.heartbeatInterval
         let imagePolicy = self.imagePolicy
         let defaults = self.defaults
+        let properties = self.properties
         let childChannels = self.childChannels
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 16)
@@ -80,6 +119,7 @@ public actor TurboFieldfareHTTPServer {
                         heartbeatInterval: heartbeatInterval,
                         imagePolicy: imagePolicy,
                         defaults: defaults,
+                        properties: properties,
                         childChannels: childChannels))
                 }
             }
@@ -169,6 +209,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private let heartbeatInterval: TimeAmount
     private let imagePolicy: ServerImagePolicy
     private let defaults: ChatRequestDefaults
+    private let properties: ServerProperties
     private let maximumBodyBytes: Int
     private let childChannels: ChildChannelRegistry
     private var head: HTTPRequestHead?
@@ -182,6 +223,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
          heartbeatInterval: TimeAmount,
          imagePolicy: ServerImagePolicy,
          defaults: ChatRequestDefaults,
+         properties: ServerProperties,
          childChannels: ChildChannelRegistry) {
         self.modelID = modelID
         self.readiness = readiness
@@ -189,6 +231,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         self.heartbeatInterval = heartbeatInterval
         self.imagePolicy = imagePolicy
         self.defaults = defaults
+        self.properties = properties
         self.maximumBodyBytes = imagePolicy.maximumBodyBytes
         self.childChannels = childChannels
     }
