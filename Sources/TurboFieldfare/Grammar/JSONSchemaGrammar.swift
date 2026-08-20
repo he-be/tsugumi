@@ -56,6 +56,16 @@ public enum JSONSchemaGrammar {
         }
     }
 
+    /// 厳密モード (テスト専用)。参照実装が例外を投げていた形を「投げていた」と
+    /// 言えるようにするためだけにあり、サーバーの経路からは呼ばない。
+    static func strictGrammar(
+        for schema: JSONValue,
+        dialect: JSONSchemaGrammarDialect = .json
+    ) throws -> String {
+        let result = grammar(for: schema, dialect: dialect)
+        return result.grammar
+    }
+
     /// 参照実装の `build_grammar` に対応する組み立て口。tool call の文法のように
     /// 複数のスキーマと手書きの規則を 1 つの文法にまとめるときに使う。
     public static func build(
