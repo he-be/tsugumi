@@ -24,7 +24,7 @@ swift build -c release --product TurboFieldfareServer
 .build/release/TurboFieldfareServer \
   --model scratch/gemma4.gturbo \
   --port 8080 \
-  --max-context 16384
+  --ctx-size 16384
 ```
 
 The server opens the port first and loads the model behind it. While the load
@@ -262,7 +262,7 @@ server reads; it also reads `reasoning_content` back out of the response. Leave
 interactive session, which the server no longer treats as a reason to skip
 reasoning, so the toggle works in an ordinary session.
 
-Keep the client context setting at or below the server's `--max-context`.
+Keep the client context setting at or below the server's `-c/--ctx-size`.
 
 ## Images
 

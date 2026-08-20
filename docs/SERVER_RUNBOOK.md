@@ -55,7 +55,7 @@ swift build -c release --product TurboFieldfareServer   # 初回とコード変�
 .build/release/TurboFieldfareServer \
   --model scratch/gemma4-qat.gturbo \
   --port 8091 \
-  --max-context 16384 \
+  --ctx-size 16384 \
   --expert-cache-slots 32 \
   --verification trusted-install \
   --draft-block-size 4
@@ -67,7 +67,7 @@ swift build -c release --product TurboFieldfareServer   # 初回とコード変�
 .build/release/TurboFieldfareServer \
   --model scratch/gemma4-qat.gturbo \
   --port 8091 \
-  --max-context 65536 \
+  --ctx-size 65536 \
   --expert-cache-slots 32 \
   --verification trusted-install \
   --draft-block-size 4
@@ -79,7 +79,7 @@ swift build -c release --product TurboFieldfareServer   # 初回とコード変�
 .build/release/TurboFieldfareServer \
   --model scratch/gemma4-qat.gturbo \
   --port 8091 \
-  --max-context 131072 \
+  --ctx-size 131072 \
   --expert-cache-slots 32 \
   --verification trusted-install \
   --draft-block-size 4
@@ -96,7 +96,7 @@ swift build -c release --product TurboFieldfareServer   # 初回とコード変�
 
 ```bash
 nohup .build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo \
-  --port 8091 --max-context 65536 --expert-cache-slots 32 \
+  --port 8091 --ctx-size 65536 --expert-cache-slots 32 \
   --verification trusted-install --draft-block-size 4 > /tmp/tf-server.log 2>&1 &
 ```
 
@@ -220,7 +220,7 @@ Reasoning も使える ([docs/serving/SPEC.md](serving/SPEC.md) MSG-6)。
 ```bash
 # 1. サーバー (§1(a) のまま。思考は既定で効く)
 .build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo \
-  --port 8091 --max-context 16384 --expert-cache-slots 32 \
+  --port 8091 --ctx-size 16384 --expert-cache-slots 32 \
   --verification trusted-install --draft-block-size 4
 
 # 2. 別ターミナルで pi (対話モード = tools 有効のまま)
