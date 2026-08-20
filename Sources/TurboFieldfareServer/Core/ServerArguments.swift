@@ -70,6 +70,11 @@ public struct ServerArguments: Equatable, Sendable {
     public let draftBlockSize: Int
     public let imagePolicy: ServerImagePolicy
     public let thinkingPolicy: ServerThinkingPolicy
+    /// RSN-1 / FLAG-1. `-1` is unlimited and the default; `0` closes the
+    /// thought channel. P4 (赤): まだ入口が無い。
+    public let reasoningBudget: Int
+    /// RSN-3 / FLAG-1. P4 (赤): まだ入口が無い。
+    public let reasoningFormat: ReasoningFormat
     /// FLAG-5. Empty means no authentication, which is the default and is what
     /// every existing runbook starts.
     public let apiKeys: [String]
@@ -381,6 +386,8 @@ public struct ServerArguments: Equatable, Sendable {
                                    maxImageBytes: maxImageBytes,
                                    maxImagePixels: maxImagePixels),
                                thinkingPolicy: thinkingPolicy,
+                               reasoningBudget: -1,
+                               reasoningFormat: .auto,
                                apiKeys: apiKeys,
                                corsPolicy: corsPolicy)
     }

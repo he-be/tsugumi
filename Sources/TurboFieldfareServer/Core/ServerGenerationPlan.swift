@@ -105,6 +105,82 @@ struct ServerGenerationPlan: Equatable, Sendable {
     }
 }
 
+/// SPEC §8: one request's *decision* about the thought channel, with none of
+/// the decode loop in it — `ServerGenerationPlan`'s sibling.
+///
+/// Everything RSN-1 … RSN-5 asks of a single request is a pure function of the
+/// validated request, the two process defaults (`--reasoning-budget`,
+/// `--reasoning-format`), and the completion budget the session resolved. That
+/// is what this is, so the whole reasoning surface is checkable without a
+/// model; what is left in `ServerModelSession` is building a
+/// `ReasoningBudgetForcer` from `budget`/`deadline` and routing the decoder's
+/// events through `route`.
+struct ServerReasoningPlan: Equatable, Sendable {
+    /// RSN-1 / RSN-2: whether this request's prompt left the thought channel
+    /// open. The resolution order is `ChatRequestParser.enableThinking`'s and
+    /// is not repeated here.
+    let isThinking: Bool
+    /// RSN-3.
+    let format: ReasoningFormat
+    /// RSN-4, first half: tokens the thought block may spend.
+    /// `ReasoningBudgetForcer.unlimited` for no bound.
+    let budget: Int
+    /// RSN-4, second half: the last generation index at which the forced
+    /// closing tag may start and still leave the answer its reserve.
+    /// `Int.max` when `max_tokens` set no bound.
+    let deadline: Int
+
+    /// RSN-3: `auto` splits the thought out into `reasoning_content`; `none`
+    /// leaves it in the answer as raw text.
+    var separatesReasoning: Bool { format == .auto }
+
+    /// RSN-4: whether this request needs a `ReasoningBudgetForcer` at all. A
+    /// request whose thought channel is closed cannot overrun it, and one with
+    /// neither half of the budget bounded asked for exactly that.
+    var forcesClosingTag: Bool {
+        isThinking && (budget >= 0 || deadline != Int.max)
+    }
+
+    /// DEV-14's rule, for the same reason: forcing changes the token at a
+    /// position, and every later position of a verified block was drafted
+    /// against a prefix that then never happened. The caller branches to
+    /// `runRawCompletion`, exactly as it already does for a grammar and for a
+    /// repetition penalty.
+    var allowsSpeculativeDecoding: Bool { !forcesClosingTag }
+
+    init(request: ValidatedChatRequest,
+         defaultBudget: Int,
+         defaultFormat: ReasoningFormat,
+         maxNewTokens: Int,
+         forcedTokenCount: Int) {
+        // P4 (赤): 解決はまだしない。
+        self.isThinking = request.enableThinking
+        self.format = .auto
+        self.budget = ReasoningBudgetForcer.unlimited
+        self.deadline = Int.max
+    }
+
+    /// RSN-3. The one place the format changes what the client sees.
+    func route(_ event: StructuredAssistantEvent) -> StructuredAssistantEvent {
+        guard !separatesReasoning, case .reasoning(let text) = event else { return event }
+        return .content(text)
+    }
+
+    /// RSN-4: how much of `max_tokens` the answer is guaranteed.
+    ///
+    /// The thought block is not allowed to spend the last quarter of the
+    /// completion budget, floored at one token. Some reserve is forced by
+    /// arithmetic — "本文 0 字を返さない" cannot hold if the closing tag lands on
+    /// the final position — and a fixed fraction is the least-invented rule
+    /// that scales with the request instead of pinning a magic token count.
+    /// The reference implementation has no equivalent: its budget is the
+    /// explicit `reasoning_budget_tokens` alone, and RSN-4's second half is
+    /// this server's own line.
+    static func answerReserve(maxNewTokens: Int) -> Int {
+        max(1, maxNewTokens / 4)
+    }
+}
+
 /// GEN-6: whether the grammar is suppressed right now because the model is
 /// inside its thought block.
 ///

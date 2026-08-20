@@ -122,6 +122,49 @@ struct ServerReasoningRequestTests {
         #expect(agreeing.enableThinking)
     }
 
+    /// RSN-2, the order itself and not just its outcomes. The SPEC line names
+    /// four steps (`server-common.cpp:1278-1304`); this walks them in order,
+    /// each against a process default that says the opposite, so a step that
+    /// stopped running would be visible.
+    @Test func RSN_2_the_resolution_order_is_the_references() throws {
+        // 1. the process default, when the request is silent.
+        #expect(try ChatRequestParser.parse(
+            request(#"{"model":"m","messages":[{"role":"user","content":"hi"}]}"#),
+            defaults: ChatRequestDefaults(thinking: .on)).enableThinking)
+
+        // 2. `enable_thinking` overrides it, in both directions.
+        #expect(!(try ChatRequestParser.parse(
+            request(#"""
+            {"model":"m","messages":[{"role":"user","content":"hi"}],
+             "chat_template_kwargs":{"enable_thinking":false}}
+            """#),
+            defaults: ChatRequestDefaults(thinking: .on)).enableThinking))
+
+        // 3. only when `enable_thinking` is absent does `reasoning_effort`'s
+        //    presence decide — any level other than "none" asks to reason.
+        #expect(try ChatRequestParser.parse(
+            request(#"""
+            {"model":"m","messages":[{"role":"user","content":"hi"}],
+             "reasoning_effort":"low"}
+            """#),
+            defaults: ChatRequestDefaults(thinking: .off)).enableThinking)
+
+        // 4. "none" and a zero budget close the channel last, over anything
+        //    the earlier steps decided.
+        #expect(!(try ChatRequestParser.parse(
+            request(#"""
+            {"model":"m","messages":[{"role":"user","content":"hi"}],
+             "reasoning_effort":"none","chat_template_kwargs":{"enable_thinking":true}}
+            """#),
+            defaults: ChatRequestDefaults(thinking: .on)).enableThinking))
+        #expect(!(try ChatRequestParser.parse(
+            request(#"""
+            {"model":"m","messages":[{"role":"user","content":"hi"}],
+             "chat_template_kwargs":{"enable_thinking":true},"reasoning_budget_tokens":0}
+            """#),
+            defaults: ChatRequestDefaults(thinking: .on)).enableThinking))
+    }
+
     /// RSN-1: a budget of zero says "do not reason" the third way.
     @Test func REQ_reasoning_budget_zero_closes_the_channel() throws {
         let validated = try ChatRequestParser.parse(
@@ -162,19 +205,80 @@ struct ServerReasoningRequestTests {
             opinionated, defaults: ChatRequestDefaults(thinking: .on)).enableThinking))
     }
 
-    @Test func serverArgumentsCarryTheThinkingPolicy() throws {
-        #expect(try ServerArguments.parse(["--model", "m.gturbo"]).thinkingPolicy == .off)
-        #expect(try ServerArguments.parse(
-            ["--model", "m.gturbo", "--thinking", "on"]).thinkingPolicy == .on)
-        #expect(throws: ServerArgumentError.self) {
-            try ServerArguments.parse(["--model", "m.gturbo", "--thinking", "yes"])
+    /// RSN-1 / FLAG-1. The process default is `--reasoning-budget N`:
+    /// `-1` is unlimited and the default, `0` closes the thought channel, and
+    /// `N > 0` is a ceiling on it. The value range is REQ-reasoning-budget's,
+    /// so the flag and the request field refuse the same numbers.
+    @Test func RSN_1_the_process_default_is_the_reasoning_budget_flag() throws {
+        let byDefault = try ServerArguments.parse(["--model", "m.gturbo"])
+        #expect(byDefault.reasoningBudget == -1)
+        #expect(byDefault.thinkingPolicy == .on, "-1 は無制限であって無効ではない")
+
+        let off = try ServerArguments.parse(
+            ["--model", "m.gturbo", "--reasoning-budget", "0"])
+        #expect(off.reasoningBudget == 0)
+        #expect(off.thinkingPolicy == .off)
+
+        let capped = try ServerArguments.parse(
+            ["--model", "m.gturbo", "--reasoning-budget", "128"])
+        #expect(capped.reasoningBudget == 128)
+        #expect(capped.thinkingPolicy == .on)
+
+        for value in ["-2", "half", ""] {
+            #expect(throws: ServerArgumentError.self) {
+                try ServerArguments.parse(["--model", "m.gturbo", "--reasoning-budget", value])
+            }
         }
+    }
+
+    /// FLAG-1. `--reasoning-format` takes the reference implementation's
+    /// spelling, and RSN-3's two values.
+    @Test func FLAG_1_reasoning_format_is_a_process_flag() throws {
+        #expect(try ServerArguments.parse(["--model", "m.gturbo"]).reasoningFormat == .auto)
+        #expect(try ServerArguments.parse(
+            ["--model", "m.gturbo", "--reasoning-format", "none"]).reasoningFormat == .none)
+        #expect(try ServerArguments.parse(
+            ["--model", "m.gturbo", "--reasoning-format", "auto"]).reasoningFormat == .auto)
+        #expect(throws: ServerArgumentError.self) {
+            try ServerArguments.parse(["--model", "m.gturbo", "--reasoning-format", "deepseek"])
+        }
+    }
+
+    /// FLAG-4. Retired means it stops being accepted: `--thinking` is a usage
+    /// error like any other unknown flag (exit 2 + usage, from `main.swift`),
+    /// but it is refused by name so the message can say what replaced it —
+    /// "unknown flag" would leave an operator with a working command line and
+    /// no idea which half to change.
+    @Test func FLAG_4_thinking_is_retired_and_the_error_names_its_replacement() throws {
+        for arguments in [["--model", "m.gturbo", "--thinking", "on"],
+                          ["--model", "m.gturbo", "--thinking", "off"],
+                          ["--model", "m.gturbo", "--thinking"]] {
+            let error = #expect(throws: ServerArgumentError.self) {
+                try ServerArguments.parse(arguments)
+            }
+            #expect(error?.description.contains("--reasoning-budget") == true,
+                    "\(arguments) の誤りが置き換え先を示していない")
+        }
+        // The other half of FLAG-4, retired with the prompt cache in P1.
+        let cacheMode = #expect(throws: ServerArgumentError.self) {
+            try ServerArguments.parse(["--model", "m.gturbo", "--prompt-cache-mode", "off"])
+        }
+        #expect(cacheMode?.description.contains("cache_prompt") == true)
+        // An unknown flag is still just an unknown flag.
+        #expect(throws: ServerArgumentError.self) {
+            try ServerArguments.parse(["--model", "m.gturbo", "--reasoning", "on"])
+        }
+        #expect(!ServerArguments.usage.contains("--thinking"))
+        #expect(ServerArguments.usage.contains("--reasoning-budget"))
+        #expect(ServerArguments.usage.contains("--reasoning-format"))
     }
 
     /// Since S3 the tool-calling template reasons too: `enableThinking` is
     /// passed through instead of being pinned to false, and the marker lands in
     /// the same system turn that carries the tool declarations.
-    @Test func toolPromptsCarryTheThoughtMarkerWhenThinkingIsOn() async throws {
+    ///
+    /// RSN-5: 宣言された tools は思考を閉じない。
+    @Test func RSN_5_tools_do_not_close_the_thought_channel() async throws {
         let tokenizer = try await GFTokenizer.load()
         let tools = [GFTokenizer.FunctionDefinition(
             name: "read",
@@ -188,6 +292,18 @@ struct ServerReasoningRequestTests {
 
         let plain = try tokenizer.encodeToolChat(messages: messages, tools: tools)
         #expect(!tokenizer.decode(plain, skipSpecialTokens: false).contains("<|think|>"))
+
+        // …and the request side agrees: declaring tools is not one of the
+        // things RSN-2 lets close the channel, whichever way it was opened.
+        let declared = try ChatRequestParser.parse(request(#"""
+        {"model":"m","messages":[{"role":"user","content":"read /tmp/a"}],
+         "chat_template_kwargs":{"enable_thinking":true},
+         "tools":[{"type":"function","function":{"name":"read","description":"Read a file",
+          "parameters":{"type":"object"}}}]}
+        """#))
+        #expect(declared.enableThinking)
+        #expect(declared.tools.count == 1)
+        #expect(ServerPromptRenderer.usesToolTemplate(declared))
     }
 
     /// A tool request with no image renders byte for byte as it did before the
@@ -246,6 +362,113 @@ struct ServerReasoningRequestTests {
         #expect(try decoder.consume(tokenID: tokenizer.channelStartID, delta: "").isEmpty)
         #expect(try decoder.consume(tokenID: tokenizer.bosID, delta: "thought\nhidden").isEmpty)
         #expect(try decoder.consume(tokenID: tokenizer.bosID, delta: "more").isEmpty)
+    }
+}
+
+/// SPEC §8 as one request's decision (`ServerReasoningPlan`): the budget
+/// arithmetic of RSN-4 and the routing of RSN-3, both without a model.
+@Suite("Server reasoning plan")
+struct ServerReasoningPlanTests {
+    private func plan(_ body: String,
+                      defaultBudget: Int = -1,
+                      defaultFormat: ReasoningFormat = .auto,
+                      maxNewTokens: Int,
+                      thinking: ServerThinkingPolicy = .on) throws -> ServerReasoningPlan {
+        let request = try ChatRequestParser.parse(
+            Data(body.utf8), defaults: ChatRequestDefaults(thinking: thinking))
+        return ServerReasoningPlan(request: request,
+                                   defaultBudget: defaultBudget,
+                                   defaultFormat: defaultFormat,
+                                   maxNewTokens: maxNewTokens,
+                                   forcedTokenCount: 1)
+    }
+
+    private let thinkingRequest = #"""
+    {"model":"m","messages":[{"role":"user","content":"hi"}],
+     "chat_template_kwargs":{"enable_thinking":true}}
+    """#
+
+    /// RSN-4, first half: the request's own budget, and the process default it
+    /// falls back to. `-1` in the request means "whatever the server was
+    /// started with", exactly as in the reference (`server-common.cpp:1340`).
+    @Test func RSN_4_the_request_budget_falls_back_to_the_process_default() throws {
+        #expect(try plan(thinkingRequest, defaultBudget: 128, maxNewTokens: -1).budget == 128)
+        #expect(try plan(#"""
+        {"model":"m","messages":[{"role":"user","content":"hi"}],
+         "chat_template_kwargs":{"enable_thinking":true},"reasoning_budget_tokens":24}
+        """#, defaultBudget: 128, maxNewTokens: -1).budget == 24)
+        #expect(try plan(thinkingRequest, defaultBudget: -1, maxNewTokens: -1).budget == -1)
+    }
+
+    /// RSN-4, second half: `max_tokens` bounds the thought block even when no
+    /// budget was named. The deadline is the last index at which the forced tag
+    /// may start and still leave the answer its reserve — with `max_tokens: 80`
+    /// (CONFORMANCE §2's measurement) that is 80 - 20 - 1.
+    @Test func RSN_4_max_tokens_bounds_the_thought_block_on_its_own() throws {
+        let measured = try plan(#"""
+        {"model":"m","messages":[{"role":"user","content":"hi"}],
+         "chat_template_kwargs":{"enable_thinking":true},"max_tokens":80}
+        """#, maxNewTokens: 80)
+        #expect(measured.budget == -1)
+        #expect(measured.deadline == 80 - ServerReasoningPlan.answerReserve(maxNewTokens: 80) - 1)
+        #expect(measured.deadline == 59)
+        #expect(measured.forcesClosingTag)
+        // DEV-14's rule: a forced token invalidates a verified block.
+        #expect(!measured.allowsSpeculativeDecoding)
+    }
+
+    /// `max_tokens: -1` is unlimited (REQ-max-tokens), so there is no deadline
+    /// to derive from it. With an unlimited budget too, nothing is forced —
+    /// which is what "無制限" means — and speculative decoding stays available
+    /// for pi's default session (tools + 画像 + Reasoning + MTP).
+    @Test func RSN_4_an_unbounded_request_forces_nothing() throws {
+        let unbounded = try plan(thinkingRequest, maxNewTokens: 4_096)
+        #expect(unbounded.budget == -1)
+        #expect(unbounded.deadline == Int.max)
+        #expect(!unbounded.forcesClosingTag)
+        #expect(unbounded.allowsSpeculativeDecoding)
+    }
+
+    /// A closed thought channel cannot overrun a budget, so it never carries a
+    /// forcer — including the RSN-1 spelling that closes it, a budget of zero.
+    @Test func RSN_4_a_closed_channel_forces_nothing() throws {
+        let off = try plan(#"""
+        {"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":80}
+        """#, maxNewTokens: 80, thinking: .off)
+        #expect(!off.isThinking)
+        #expect(!off.forcesClosingTag)
+
+        let zeroBudget = try plan(#"""
+        {"model":"m","messages":[{"role":"user","content":"hi"}],
+         "chat_template_kwargs":{"enable_thinking":true},
+         "reasoning_budget_tokens":0,"max_tokens":80}
+        """#, maxNewTokens: 80)
+        #expect(!zeroBudget.isThinking)
+        #expect(!zeroBudget.forcesClosingTag)
+    }
+
+    /// RSN-3. `auto` (the default) splits the thought channel out into
+    /// `reasoning_content`; `none` leaves it in the answer as raw text. Either
+    /// side may ask for `none`: the flag sets the process default, and the
+    /// request field is REQ-reasoning-format.
+    @Test func RSN_3_the_reasoning_format_decides_where_the_thought_goes() throws {
+        let auto = try plan(thinkingRequest, maxNewTokens: 64)
+        #expect(auto.format == .auto)
+        #expect(auto.separatesReasoning)
+        #expect(auto.route(.reasoning("weighing")) == .reasoning("weighing"))
+        #expect(auto.route(.content("hello")) == .content("hello"))
+
+        let byFlag = try plan(thinkingRequest, defaultFormat: .none, maxNewTokens: 64)
+        #expect(byFlag.format == .none)
+        #expect(!byFlag.separatesReasoning)
+        #expect(byFlag.route(.reasoning("weighing")) == .content("weighing"))
+
+        let byRequest = try plan(#"""
+        {"model":"m","messages":[{"role":"user","content":"hi"}],
+         "chat_template_kwargs":{"enable_thinking":true},"reasoning_format":"none"}
+        """#, maxNewTokens: 64)
+        #expect(byRequest.format == .none)
+        #expect(byRequest.route(.reasoning("weighing")) == .content("weighing"))
     }
 }
 

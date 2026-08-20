@@ -103,11 +103,18 @@ extension GenerationConfig {
 /// existed, down to the sampler call, so an unconstrained caller draws the same
 /// tokens it always did. Non-nil applies rejection sampling per token and rules
 /// out the fused-greedy shortcut, which never writes the logits a mask needs.
+///
+/// `forcer` is the RSN-4 hook, and it is the other shape: it does not narrow a
+/// draw, it replaces one. A token it names is emitted without reading logits at
+/// all, and then travels the rest of this loop exactly as a sampled token does
+/// — through the constraint, the detokenizer, `onProgress`, and the history
+/// that becomes `kvBackedTokenIDs` (SPEC §7 INV-1).
 public func runRawCompletion(producer: any LogitProducer,
                              tokenizer: GFTokenizer,
                              promptIds: [Int32],
                              config: GenerationConfig,
                              constraint: (any GenerationConstraint)? = nil,
+                             forcer: (any ForcedTokenSource)? = nil,
                              context: MetalContext,
                              scratch: RawCompletionScratch,
                              prefillConfig: PrefillRuntimeConfig = .defaultChunked,
