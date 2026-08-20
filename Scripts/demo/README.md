@@ -11,12 +11,12 @@ python3 Scripts/demo/serve.py          # http://127.0.0.1:8799/ が開く
 
 止めるのは Control-C。**この起動したサーバーだけ**を止めてから終了する。
 必要なのは `swift build -c release --product TurboFieldfareServer` と
-`scratch/gemma4-qat.gturbo` (vision タワーとドラフターを含むもの) だけで、
+`scratch/gemma4-qat-sym.gturbo` (vision タワーとドラフターを含むもの) だけで、
 Python の追加パッケージは要らない。
 
 | フラグ | 既定 | 意味 |
 | --- | --- | --- |
-| `--model` | `scratch/gemma4-qat.gturbo` | 使うモデル |
+| `--model` | `scratch/gemma4-qat-sym.gturbo` | 使うモデル |
 | `--model-port` | 8091 | TurboFieldfareServer 側のポート |
 | `--port` | 8799 | このデモ UI のポート |
 | `--no-open` | — | ブラウザを自動で開かない |

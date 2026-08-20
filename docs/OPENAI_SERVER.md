@@ -99,7 +99,7 @@ prediction:
 
 ```bash
 .build/release/TurboFieldfareServer \
-  --model scratch/gemma4-qat.gturbo \
+  --model scratch/gemma4-qat-sym.gturbo \
   --expert-cache-slots 32 \
   --draft-block-size 4
 ```
@@ -143,7 +143,7 @@ empty `content`.
 ```bash
 # no reasoning at all
 .build/release/TurboFieldfareServer \
-  --model scratch/gemma4-qat.gturbo \
+  --model scratch/gemma4-qat-sym.gturbo \
   --reasoning-budget 0
 ```
 

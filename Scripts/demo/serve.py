@@ -70,7 +70,7 @@ def _images_dir() -> Path:
 
 IMAGES_DIR = _images_dir()
 SERVER_BIN = REPO_ROOT / ".build" / "release" / "TurboFieldfareServer"
-DEFAULT_MODEL = "scratch/gemma4-qat.gturbo"
+DEFAULT_MODEL = "scratch/gemma4-qat-sym.gturbo"
 
 # SERVER_RUNBOOK.md §1(a): the 16K configuration, the fastest one that fits.
 MAX_CONTEXT = 8192

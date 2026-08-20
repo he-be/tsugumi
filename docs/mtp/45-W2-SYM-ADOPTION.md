@@ -127,8 +127,8 @@ routed MoE gate/up 本体**が `float(gB_row[g])` という綴りで bias を読
   ここは開いたままである。
 - **drafter は `affine` のまま。**別リポジトリ由来の group-64 量子化で、
   恒等式は 29.35% の群で破れる (44 §1)。自分のコンテキストで自分のライブラリを
-  持つので同居に問題は無い。
-- **vision は無関係** (タワーは BF16)。
+  持つので同居に問題は無い。**2026-08-21 に実際に同居させた — §9 に測定がある。**
+- **vision は無関係** (タワーは BF16)。**これも 2026-08-21 に実測した** (§9)。
 - **`checkRoutedMoE` は decode の gate/up カーネルを通らない** (§3a)。
   今回はモデルで捕まえたが、次は捕まらないかもしれない。
 - **測ったのは 32 スロット × 1 プロンプト × temp 0 である。**42 の採点基準 v2
@@ -157,6 +157,15 @@ swift build -c release
 TF_FORCE_AFFINE_SCHEME=sym ./.build/release/TurboFieldfareCLI --model <affine> ...
 ```
 
+塔とドラフターは別に足す (§9)。`--include-vision` / `--include-draft` を
+`--source-snapshot` と一緒に渡す道もあるが、13 GB の再パックを伴うので
+既存のバンドルには追記のほうが安い:
+
+```bash
+./.build/release/TurboFieldfareRepack --add-vision --input-gturbo scratch/gemma4-qat-sym.gturbo
+./.build/release/TurboFieldfareRepack --add-draft  --input-gturbo scratch/gemma4-qat-sym.gturbo
+```
+
 `TF_FORCE_AFFINE_SCHEME` は**計器であって設定ではない**。恒等式を満たさない
 チェックポイントに `sym` を強制すれば出力は壊れる。
 
@@ -175,3 +184,65 @@ TF_FORCE_AFFINE_SCHEME=sym ./.build/release/TurboFieldfareCLI --model <affine> .
 | `TurboFieldfareRepack/Core/{Planning,Format,Remote}/` | `sym` レイアウトの計画・manifest 出力・ローカル入力の配線 |
 | `TurboFieldfareKernelCheck/main.swift` | 全 INT4 ケースを両スキームで回す (`--affine-only` で従来どおり) |
 | `bench/mtp45/` | 新規。一次ログ 4 本 |
+| `MTP/DraftContextPlan.swift` | 新規 (2026-08-21、§9c)。draft context を group size と**スキームの両方**で分ける 1 か所きりの判断 |
+| `MTP/DraftWeights.swift` | `DraftConfig.quantScheme` — manifest の `draft.quant.scheme` を読む |
+| `Runtime/Inference/RealForwardRunner.swift` | `ensureDrafter` / `ensureProbe` の 2 か所が `DraftContextPlan` を通る |
+
+## 9. 塔とドラフターを `sym` バンドルに載せる (**実測**、2026-08-21)
+
+45 を書いた時点の `scratch/gemma4-qat-sym.gturbo` は**本体だけ**だった。
+`--add-vision` / `--add-draft` を順に当てて v1.0 → v1.2 にし、
+affine バンドルと同じ 3 点セットにした。**追記は `quant` を持ち越すので
+`sym` は壊れない** (`VisionAppendInstaller.manifestAddingVision`、
+`DraftAppendInstaller.manifestAddingDraft`)。
+
+```
+$ ./.build/release/TurboFieldfareRepack --add-vision --input-gturbo scratch/gemma4-qat-sym.gturbo
+Tower: 356 tensors, 1145588832 bytes    Re-verified 38 files (15445129364 bytes)
+$ ./.build/release/TurboFieldfareRepack --add-draft  --input-gturbo scratch/gemma4-qat-sym.gturbo
+Drafter: 48 tensors, 236114440 bytes    Re-verified 39 files (15681261432 bytes)
+```
+
+**追記された 2 ファイルは affine バンドルのものと sha256 まで一致する** —
+塔は BF16、ドラフターは別リポジトリの group-64 で、どちらもスキームの
+外側にあるという §6 の主張の直接の証拠である。manifest の `vision` /
+`draft` セクションも一字一句同じで、違うのは `quant` だけ:
+`quant.embedding.scheme = sym` / `draft.quant.scheme = affine`。
+**1 つの manifest の中でスキームが 2 つ立っている**のはこれが初めてである。
+
+### 9a. 受け入れ
+
+| 検定 | 結果 |
+| --- | --- |
+| `KernelCheck --vision-tower` | **147/147 PASS** exit 0。soft-token の最悪値は affine と同一 (max 5.684e-3 / rms 3.805e-4、§RESULTS_VISION 1 の表と一致) |
+| `KernelCheck --verify-block --verify-block-size 4 --verify-rounds 8` | 12 中 **9 PASS / 3 FAIL**。**同ビルドで affine バンドルを対照に取り、12 ケースの rel / tol / median / worst / 分岐位置が全部一致**した (差は壁時計の 0.1〜0.2 秒だけ)。3 FAIL は RESULTS_MTP §6 が受け入れ済みとして記録しているものと同一 (pos 25、block=2897 scalar=11442、margin 1.0e-3) |
+| 画像 + MTP のバイト一致 | 柴犬 1 枚 + `bench/mtp_goal_prompt.json`、temp 0 / 32 スロット / bs=4。**873 B が affine とバイト一致** |
+| 画像・MTP なしのバイト一致 | 同条件で `--draft-block-size 0`。**852 B が affine とバイト一致** |
+| MTP の受理 | `rounds=81 accept=1.210/3 tok/round=2.185 accepted=26,23,21,11` が**両バンドルで同一**。decode hit も `88.6% (30688/34651)` で同一 |
+
+**受理列が 1 つも動かない**のが本節で一番強い証拠である。sym のターゲットに
+affine のドラフターを当てて、提案の受理／棄却が affine バンドルと 1 回も
+食い違わない。§6 の「同居に問題は無い」は、これで**未確認**ではなくなった。
+
+なお同一バンドル内の MTP on/off は 873 B 対 852 B で分岐するが、これは
+RESULTS_MTP ゲート 1 が記録済みの現象 (ブロック経路とスカラー経路の FP16
+丸め差、日本語散文で数百トークンに 1 回) であり、**両バンドルで同じように
+起きる**。スキームとは無関係である。
+
+### 9b. 速度は測っていない
+
+1 回ずつしか走らせていないので数字は**置くだけ**にする
+(affine 35.228 → sym 37.461 tok/s、mapped 14.28 → 12.90 GB)。
+反復も交互も無く、§4 のような比較にはなっていない。**運用点の t/s は §4 が
+3 往復で測った +8.8% が引き続き唯一の測定値**である。
+
+### 9c. 直したもの
+
+同居を実際に作ったことで、`RealForwardRunner` が draft context を
+**group size だけで**決めていたのが見えた (2 か所)。今のピンでは新しい
+context の既定値 `.affine` に助けられて正しく動くが、group 32 の
+ドラフターが来ると `sym` のライブラリを共有して静かに壊れる — §3a と
+同じ壊れ方である。`DraftContextPlan` に判断を集め、group size と
+スキームの**両方**で分けるようにした。`DraftConfig.quantScheme` は
+manifest の `draft.quant.scheme` から読む (packer は D1 から書いていて、
+読む側だけが無かった)。

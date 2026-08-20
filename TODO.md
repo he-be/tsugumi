@@ -59,6 +59,11 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
    「開きの無い閉じ」になる。マーカーを文法要素 `TOKEN` (`<[id]>`) にして
    (SPEC GEN-8 / §12 DEV-22)、**2 回目は 14 緑**。CONFORMANCE §2 に記録済み。
 2. **pi の既定セッション** (tools ON + 画像 + Reasoning ON + MTP) を通しで動かす。
+   **前提は 2026-08-21 に揃えた** — `scratch/gemma4-qat-sym.gturbo` は本体だけで、
+   画像もドラフターも入っていなかった。`--add-vision` / `--add-draft` を当てて
+   v1.2 にし、affine バンドルとのバイト一致まで見てある
+   ([docs/mtp/45](docs/mtp/45-W2-SYM-ADOPTION.md) §9)。
+   `Scripts/demo/serve.py` の既定と `Scripts/c3_smoke.sh` の例もこのバンドルに向けた。
 3. **OpenAI 公式 Python SDK の素朴なコード**がそのまま動くことを見る。
 
 そこで症状が出たら、直す道は 1 つしかない: 参照実装を確認 → SPEC に行を足す →

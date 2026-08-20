@@ -15,6 +15,11 @@ import Foundation
 /// where the file stores a real zero point, so it keeps producing tokens —
 /// just not the right ones. That is the failure mode
 /// `docs/mtp/45-W2-SYM-ADOPTION.md` §3a describes.
+///
+/// A `sym` drafter cannot reach here yet: `DraftWeights` checks every quantized
+/// entry against a full-size bias array, so a file without one is refused
+/// before the plan is asked for. The scheme is still read and carried rather
+/// than assumed, because assuming it is what made this wrong the first time.
 enum DraftContextPlan: Equatable, Sendable {
     /// The drafter runs on the target's context.
     case shareTarget

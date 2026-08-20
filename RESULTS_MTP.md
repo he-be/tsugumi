@@ -5,6 +5,9 @@ commit `a533171` + M6 の作業ツリー (Server の `--draft-block-size`)
 Apple Swift 6.3.3 / target arm64-apple-macosx15.0
 モデル: `scratch/gemma4-qat.gturbo` (QAT 15 GB + vision tower 1.15 GB + ドラフター 236 MB、
 `--add-draft` で追記)
+**追記 (2026-08-21):** 同じドラフターを `sym` バンドルにも載せた。ファイルは sha256 まで同一で、
+受理列 (`accepted=26,23,21,11`) も `--verify-block` の 12 ケースも一致する
+([docs/mtp/45](docs/mtp/45-W2-SYM-ADOPTION.md) §9)。**本書の測定はすべて affine バンドルのものである。**
 プロトコル: PLAN §6 / [docs/mtp/22-GOAL-RESET.md](docs/mtp/22-GOAL-RESET.md) §4-5
 (`.build/release` 直叩き、同一セッションの on/off 交互 A/B、絶対 t/s は採点に使わない)
 

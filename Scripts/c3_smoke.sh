@@ -22,7 +22,7 @@
 #   # 2. 建てる (docs/SERVER_RUNBOOK.md §1(a) の 16K 構成をそのまま)
 #   swift build -c release --product TurboFieldfareServer
 #   .build/release/TurboFieldfareServer \
-#     --model scratch/gemma4-qat.gturbo \
+#     --model scratch/gemma4-qat-sym.gturbo \
 #     --port 8091 \
 #     --ctx-size 16384 \
 #     --expert-cache-slots 32 \
@@ -240,7 +240,7 @@ error: $BASE_URL が答えない。$(head -1 "$RUN_DIR/health.err" 2>/dev/null)
 (docs/SERVER_RUNBOOK.md §1(a)、先に AGENTS.md のプロセス検査):
 
   .build/release/TurboFieldfareServer \\
-    --model scratch/gemma4-qat.gturbo \\
+    --model scratch/gemma4-qat-sym.gturbo \\
     --port 8091 \\
     --ctx-size 16384 \\
     --expert-cache-slots 32 \\

@@ -4,6 +4,9 @@
 commit `e4be236` + V6 の作業ツリー (Server の `image_url` 入口)
 Apple Swift 6.3.3 / target arm64-apple-macosx15.0
 モデル: `scratch/gemma4-qat.gturbo` (QAT / 15 GB + tower 1.15 GB、`--add-vision` で追記)
+**追記 (2026-08-21):** 同じ塔を `sym` バンドル (`scratch/gemma4-qat-sym.gturbo`) にも載せた。
+塔のファイルは sha256 までここのものと同一で、`--vision-tower` の数値も一致する
+([docs/mtp/45](docs/mtp/45-W2-SYM-ADOPTION.md) §9)。**本書の測定はすべて affine バンドルのものである。**
 プロトコル: PLAN §6 / PLAN_VISION §7 (`.build/release` 直叩き、footer 全文を記録)
 
 表記は PLAN と同じ: **実測** / **導出** / **未確認**
