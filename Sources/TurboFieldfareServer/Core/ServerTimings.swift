@@ -49,19 +49,42 @@ public struct ServerTimings: Equatable, Sendable {
     }
 
     /// RSP-3's last sentence: what this request left in the context.
-    public var contextTokens: Int { 0 }
+    public var contextTokens: Int { cacheTokens + promptTokens + predictedTokens }
+
+    /// Decode steps spent generating. The first token is free — it comes out of
+    /// the logits the last prompt batch already wrote — so it is not a step,
+    /// which is the divisor the reference uses for both generated rates
+    /// (`server_slot_stats::n_gen_steps`).
+    var predictedSteps: Int { predictedTokens > 0 ? predictedTokens - 1 : 0 }
 
     /// `prompt_per_second`.
-    public var promptTokensPerSecond: Double { 0 }
+    public var promptTokensPerSecond: Double {
+        promptMilliseconds > 0 ? 1_000 / promptMilliseconds * Double(promptTokens) : 0
+    }
 
     /// `predicted_per_token_ms`.
-    public var predictedMillisecondsPerToken: Double { 0 }
+    public var predictedMillisecondsPerToken: Double {
+        predictedSteps > 0 ? predictedMilliseconds / Double(predictedSteps) : 0
+    }
 
     /// `predicted_per_second`.
-    public var predictedTokensPerSecond: Double { 0 }
+    public var predictedTokensPerSecond: Double {
+        predictedMilliseconds > 0 ? 1_000 / predictedMilliseconds * Double(predictedSteps) : 0
+    }
 
     /// The `timings` object as it goes on the wire.
-    public var jsonObject: [String: Any] { [:] }
+    public var jsonObject: [String: Any] {
+        [
+            "cache_n": cacheTokens,
+            "prompt_n": promptTokens,
+            "prompt_ms": promptMilliseconds,
+            "prompt_per_second": promptTokensPerSecond,
+            "predicted_n": predictedTokens,
+            "predicted_ms": predictedMilliseconds,
+            "predicted_per_token_ms": predictedMillisecondsPerToken,
+            "predicted_per_second": predictedTokensPerSecond,
+        ]
+    }
 }
 
 /// RSP-3's `timings_per_token: true`: the timings of a generation still in
@@ -114,6 +137,20 @@ struct ServerLiveTimings {
     /// The timings as of this progress event, or nil for an event that is not a
     /// generated token — prefill progress and the flushed tail move no counter.
     mutating func observe(_ progress: RawDecodeProgress, at now: Date) -> ServerTimings? {
-        nil
+        guard case .token(let index, _, _) = progress else { return nil }
+        let generationStart: Date
+        if let firstTokenAt {
+            generationStart = firstTokenAt
+        } else {
+            firstTokenAt = now
+            generationStart = now
+            promptMilliseconds = now.timeIntervalSince(startedAt) * 1_000
+        }
+        return ServerTimings(
+            cacheTokens: cacheTokens,
+            promptTokens: promptTokens,
+            promptMilliseconds: promptMilliseconds,
+            predictedTokens: index + 1,
+            predictedMilliseconds: now.timeIntervalSince(generationStart) * 1_000)
     }
 }

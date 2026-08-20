@@ -596,7 +596,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
     ) async throws -> ServerCompletion {
         let prepared = try await prepare(request)
-        return try await generate(prepared, onEvent: onEvent)
+        return try await generate(prepared, monitor: nil, onEvent: onEvent)
     }
 
     /// SPEC CACHE-2: how far the KV cursor may be moved back to serve a
@@ -614,6 +614,14 @@ public actor ServerModelSession: ServerInferenceBackend {
 
     public func generate(
         _ prepared: ServerPreparedRequest,
+        onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
+    ) async throws -> ServerCompletion {
+        try await generate(prepared, monitor: nil, onEvent: onEvent)
+    }
+
+    public func generate(
+        _ prepared: ServerPreparedRequest,
+        monitor: ServerTimingsMonitor?,
         onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
     ) async throws -> ServerCompletion {
         let request = prepared.request
@@ -711,7 +719,15 @@ public actor ServerModelSession: ServerInferenceBackend {
                                    completionTokens: 0,
                                    totalTokens: promptIDs.count,
                                    cachedTokens: 0),
-                approximations: plan.approximations)
+                approximations: plan.approximations,
+                // RSP-3 over a request that ran nothing: the partition still has
+                // to be the one `usage` reports, and every wall clock is zero
+                // because no clock ran.
+                timings: ServerTimings(cacheTokens: 0,
+                                       promptTokens: promptIDs.count,
+                                       promptMilliseconds: 0,
+                                       predictedTokens: 0,
+                                       predictedMilliseconds: 0))
         }
 
         // SPEC §8: what this request asks of the thought channel. Like
@@ -798,6 +814,17 @@ public actor ServerModelSession: ServerInferenceBackend {
                 emitsReasoning: thinking)
             : nil
         var stopMatcher = StreamingStopMatcher(stops: request.generationConfig.stopStrings)
+        // RSP-3, `timings_per_token`. The prompt half of the timings is settled
+        // before a single token is drawn — the cache decided how much of the
+        // prompt is computed — so the only thing left to follow is the count of
+        // generated tokens and the clock. Started just before the completion
+        // call below, because the decode loop reports its own prefill
+        // measurement only when it returns.
+        let cachedPromptTokens: Int = switch completionStart {
+        case .reset: 0
+        case .resume(let cached): cached
+        }
+        var live: ServerLiveTimings?
         var content = ""
         var reasoningContent = ""
         var calls: [ParsedToolCall] = []
@@ -806,6 +833,12 @@ public actor ServerModelSession: ServerInferenceBackend {
 
         func onProgress(_ progress: RawDecodeProgress) {
             guard decodingError == nil else { return }
+            // RSP-3: published before the events this token produced are
+            // handled, so the chunk a route writes from inside `onEvent` reads
+            // the timings of the token it is writing.
+            if let monitor, let timings = live?.observe(progress, at: Date()) {
+                monitor.record(timings)
+            }
             do {
                 func handle(_ events: [StructuredAssistantEvent]) {
                     for event in events {
@@ -888,6 +921,12 @@ public actor ServerModelSession: ServerInferenceBackend {
         // as a backstop, not as the mechanism.
         let result: RawDecodeResult
         var speculativeSummary: ServerSpeculativeSummary?
+        if monitor != nil {
+            live = ServerLiveTimings(
+                cacheTokens: cachedPromptTokens,
+                promptTokens: effectivePromptIDs.count - cachedPromptTokens,
+                startedAt: Date())
+        }
         // RSN-4 joins that list for the same reason and by the same rule: a
         // forced token is a token the block was not verified against, so a
         // request that can force one takes the plain path. `runRawCompletion`
@@ -1007,7 +1046,11 @@ public actor ServerModelSession: ServerInferenceBackend {
                                cachedTokens: result.cachedPromptTokens),
             speculative: speculativeSummary,
             reasoningContent: reasoningContent,
-            approximations: plan.approximations)
+            approximations: plan.approximations,
+            // RSP-3. The authoritative measurement is the decode loop's own,
+            // which is why the finished response never carries the running one
+            // the monitor published.
+            timings: ServerTimings(result))
     }
 
     private func renderPrompt(
