@@ -115,12 +115,22 @@ struct JSONSchemaGrammarBuiltinRule {
 }
 
 extension JSONSchemaGrammarDialect {
-    /// `space` 規則。`.gemmaToolArguments` は **GEN-8** により空文字列しか
-    /// 受けない (どの規則も参照しないが、参照実装と規則表の形を揃えて残す)。
-    var spaceRule: String {
+    /// 文法の初期状態。`.json` は参照実装と同じく `space` を 1 本置く。
+    /// `.gemmaToolArguments` は **GEN-8** により空白を一切入れないので
+    /// `space` は要らない — 参照されない規則を文法に残さない。
+    var seedRules: [String: String] {
         switch self {
-        case .json: return #"| " " | "\n"{1,2} [ \t]{0,20}"#
-        case .gemmaToolArguments: return #""""#
+        case .json: return ["space": #"| " " | "\n"{1,2} [ \t]{0,20}"#]
+        case .gemmaToolArguments: return [:]
+        }
+    }
+
+    /// 文字列本体の 1 文字を表す原始規則の名前。**GEN-9**: gemma 方言は JSON の
+    /// `char` (エスケープ形を許す) ではなく専用の `text-char` を使う。
+    var stringCharacterRule: String {
+        switch self {
+        case .json: return "char"
+        case .gemmaToolArguments: return "text-char"
         }
     }
 
@@ -160,25 +170,40 @@ extension JSONSchemaGrammarDialect {
                 #"("-"? integral-part) ("." decimal-part)? ([eE] [-+]? integral-part)?"#,
                 ["integral-part", "decimal-part"]),
             "integer": .init(#"("-"? integral-part)"#, ["integral-part"]),
-            "value": .init(
-                "object | array | string | number | boolean | null",
-                ["object", "array", "string", "number", "boolean", "null"]),
+
 
             "uuid": .init(quoted(
                 "[0-9a-fA-F]{8} \"-\" [0-9a-fA-F]{4} \"-\" [0-9a-fA-F]{4} \"-\" "
                 + "[0-9a-fA-F]{4} \"-\" [0-9a-fA-F]{12}")),
             "char": .init(#"[^"\\\x7F\x00-\x1F] | [\\] (["\\bfnrt] | "u" [0-9a-fA-F]{4})"#),
-            "string": .init(quoted("char*"), ["char"]),
+
             "null": .init(#""null""#),
         ]
         switch self {
         case .json:
+            table["string"] = .init(quoted("char*"), ["char"])
+            table["value"] = .init(
+                "object | array | string | number | boolean | null",
+                ["object", "array", "string", "number", "boolean", "null"])
             table["array"] = .init(
                 #""[" space ( value ("," space value)* )? space "]""#, ["value"])
             table["object"] = .init(
                 #""{" space ( string ":" space value ("," space string ":" space value)* )? space "}""#,
                 ["string", "value"])
         case .gemmaToolArguments:
+            // GEN-9: 文字列の本体は `"` と `\` を含まない任意の文字。テンプレ
+            // ートは値を素のまま書くので、JSON のエスケープ形は 1 つも許さない。
+            // 除く 2 文字はテンプレートと `GemmaToolCallParser` の組が曖昧に
+            // なる文字である (`"` は終端子 `<|"|>` の一部、`\` は読む側が
+            // エスケープ導入と解釈する)。
+            table["text-char"] = .init(#"[^"\\]"#)
+            table["string"] = .init(quoted("text-char*"), ["text-char"])
+            // GEN-10: 汎用の値の選択肢から `null` を外す。テンプレートの
+            // `format_argument` に none の枝が無く、null は `null` とは
+            // 描かれないため。明示的に要求されたときだけ `null` を使う。
+            table["value"] = .init(
+                "object | array | string | number | boolean",
+                ["object", "array", "string", "number", "boolean"])
             // GEN-8: 空白を一切入れない。
             table["array"] = .init(
                 #""[" ( value ("," value)* )? "]""#, ["value"])
@@ -262,7 +287,7 @@ struct JSONSchemaGrammarConverter {
         self.primitives = dialect.primitiveRules
         self.formats = dialect.stringFormatRules
         self.reserved = dialect.reservedNames
-        self.rules = ["space": dialect.spaceRule]
+        self.rules = dialect.seedRules
     }
 
     /// 参照実装が `space` を差し込む位置に入るもの。**GEN-8** により
@@ -439,8 +464,18 @@ struct JSONSchemaGrammarConverter {
     private mutating func gemmaConstantRule(_ value: JSONValue) -> String {
         switch value {
         case .string(let text):
+            // GEN-9: `"` と `\` を含む値は素で書けない。文法を充足不能に
+            // するより、汎用の文字列に開いて記録に残す (GEN-2 と同じ原則)。
+            guard !text.contains("\"") && !text.contains("\\") else {
+                approximate("unrepresentable-string-value: \(text)", fatal: false)
+                return addPrimitive("string")
+            }
             // GEN-8: 学習形式のみ。JSON の `"…"` は生成では許さない。
             return Self.formatLiteral("<|\"|>" + text + "<|\"|>")
+        case .null:
+            // GEN-10: テンプレートは null を `null` とは描かない。
+            approximate("null-not-redrawable", fatal: false)
+            return Self.formatLiteral("null")
         case .array(let items):
             let body = items.map { gemmaConstantRule($0) }.joined(separator: #" "," "#)
             return items.isEmpty ? #""[]""# : #""[" "# + body + #" "]""#
@@ -824,7 +859,7 @@ struct JSONSchemaGrammarConverter {
         }
         if schemaType == .string("string"),
            Self.member(schema, "minLength") != nil || Self.member(schema, "maxLength") != nil {
-            let charRule = addPrimitive("char")
+            let charRule = addPrimitive(dialect.stringCharacterRule)
             let minLength = Self.int(Self.member(schema, "minLength")) ?? 0
             let maxLength = Self.int(Self.member(schema, "maxLength")) ?? Int.max
             return addRule(ruleName, dialect.quoted(Self.buildRepetition(
@@ -848,6 +883,10 @@ struct JSONSchemaGrammarConverter {
               primitives[typeName] != nil else {
             approximate("unrecognized-schema: \(Self.jsonDump(schema))")
             return addRule(ruleName, addPrimitive("value"))
+        }
+        if dialect == .gemmaToolArguments, typeName == "null" {
+            // GEN-10: 明示的に要求されたので許すが、描き直しはずれる。
+            approximate("null-not-redrawable", fatal: false)
         }
         return addPrimitive(ruleName == "root" ? "root" : typeName,
                             primitives[typeName]!)

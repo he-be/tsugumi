@@ -30,6 +30,11 @@ extension JSONSchemaGrammarConverter {
             return nil
         }
         let sub = Array(bytes[1..<(bytes.count - 1)])
+        if dialect == .gemmaToolArguments, sub.contains(UInt8(ascii: "\"")) {
+            // GEN-9: 正規表現が `"` を綴らせると、描き直しでずれる値が出る。
+            // 文法は出す (止めるほうが害が大きい) が、記録は残す。
+            approximate("unrepresentable-string-character: \(pattern)", fatal: false)
+        }
         let length = sub.count
         var index = 0
         var subRuleIDs: [String: String] = [:]
@@ -43,7 +48,14 @@ extension JSONSchemaGrammarConverter {
             var seq: [Piece] = []
 
             func addDot() -> String {
-                let rule = dotall ? #"[\U00000000-\U0010FFFF]"# : #"[^\x0A\x0D]"#
+                // GEN-9: gemma 方言では `"` と `\` は文字列本体に置けない。
+                let rule: String
+                switch (dialect, dotall) {
+                case (.json, true): rule = #"[\U00000000-\U0010FFFF]"#
+                case (.json, false): rule = #"[^\x0A\x0D]"#
+                case (.gemmaToolArguments, true): rule = #"[^"\\]"#
+                case (.gemmaToolArguments, false): rule = #"[^"\\\x0A\x0D]"#
+                }
                 return addRule("dot", rule)
             }
 
