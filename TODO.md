@@ -129,7 +129,10 @@ D3 をやるな」は満たされた)。D3 は `ServerPromptCache` の判定を�
   「Test rules」を満たすこと — 特に
   `pgrep -fl 'TurboFieldfareServer|TurboFieldfareMac|…'` が空であること。
   **既にあるモデルプロセスを止めない。**
-- 参照実装: `~/LLM/llama.cpp`、ピン `34af94cd9`。一次資料は
+- 参照実装: `~/LLM/llama.cpp`、ピン `34af94cd9`。**作業ツリーはピンより先に
+  進んでいる** (2026-08-20 時点で `fe8156f78`)。素の `grep` はピンでないコードを
+  読むので、**必ず `git show 34af94cd9:tools/server/<file>` で引くこと。**
+  一次資料は
   `tools/server/server-schema.cpp` (要求スキーマ)、`server-common.cpp`
   (OAI 層とエラー封筒)、`server-context.cpp` (キャッシュ)、`README.md`。
   ピンを上げるときは差分を読んで SPEC の該当行を先に直す。
