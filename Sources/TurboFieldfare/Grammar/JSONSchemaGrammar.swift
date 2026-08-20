@@ -115,17 +115,27 @@ struct JSONSchemaGrammarBuiltinRule {
 }
 
 extension JSONSchemaGrammarDialect {
-    static let spaceRule = #"| " " | "\n"{1,2} [ \t]{0,20}"#
+    /// `space` 規則。`.gemmaToolArguments` は **GEN-8** により空文字列しか
+    /// 受けない (どの規則も参照しないが、参照実装と規則表の形を揃えて残す)。
+    var spaceRule: String {
+        switch self {
+        case .json: return #"| " " | "\n"{1,2} [ \t]{0,20}"#
+        case .gemmaToolArguments: return #""""#
+        }
+    }
 
-    /// 文字列の 2 形式。`.json` は `"…"` だけ、`.gemmaToolArguments` は
-    /// `"…"` と `<|"|>…<|"|>` の選択 (`<|"|>` は `"` を含むので、`char` が
-    /// 生の `"` を拒む限り本文が終端子を飲み込むことはない)。
+    /// 文字列の書き方。`.json` は JSON の `"…"`、`.gemmaToolArguments` は
+    /// **GEN-8** により学習形式 `<|"|>…<|"|>` **のみ** — テンプレートが
+    /// 描き直すのはこの形だけなので、JSON 形式を許すと INV-1 が破れる
+    /// (読む側 `GemmaToolCallParser` が両方受けるのは読みの互換の話)。
+    /// `<|"|>` は `"` を含むので、`char` が生の `"` を拒む限り本文が終端子を
+    /// 飲み込むことはない。
     func quoted(_ body: String) -> String {
         switch self {
         case .json:
             return #""\"" "# + body + #" "\"""#
         case .gemmaToolArguments:
-            return #""\"" "# + body + #" "\"" | "<|\"|>" "# + body + #" "<|\"|>""#
+            return #""<|\"|>" "# + body + #" "<|\"|>""#
         }
     }
 
@@ -153,7 +163,7 @@ extension JSONSchemaGrammarDialect {
             "value": .init(
                 "object | array | string | number | boolean | null",
                 ["object", "array", "string", "number", "boolean", "null"]),
-            "array": .init(#""[" space ( value ("," space value)* )? space "]""#, ["value"]),
+
             "uuid": .init(quoted(
                 "[0-9a-fA-F]{8} \"-\" [0-9a-fA-F]{4} \"-\" [0-9a-fA-F]{4} \"-\" "
                 + "[0-9a-fA-F]{4} \"-\" [0-9a-fA-F]{12}")),
@@ -163,12 +173,17 @@ extension JSONSchemaGrammarDialect {
         ]
         switch self {
         case .json:
+            table["array"] = .init(
+                #""[" space ( value ("," space value)* )? space "]""#, ["value"])
             table["object"] = .init(
                 #""{" space ( string ":" space value ("," space string ":" space value)* )? space "}""#,
                 ["string", "value"])
         case .gemmaToolArguments:
+            // GEN-8: 空白を一切入れない。
+            table["array"] = .init(
+                #""[" ( value ("," value)* )? "]""#, ["value"])
             table["object"] = .init(
-                #""{" space ( key ":" space value ("," space key ":" space value)* )? space "}""#,
+                #""{" ( key ":" value ("," key ":" value)* )? "}""#,
                 ["key", "value"])
             table["key-char"] = .init(Self.characterClass(excluding: []))
             table["key"] = .init("key-char+", ["key-char"])
@@ -247,8 +262,12 @@ struct JSONSchemaGrammarConverter {
         self.primitives = dialect.primitiveRules
         self.formats = dialect.stringFormatRules
         self.reserved = dialect.reservedNames
-        self.rules = ["space": JSONSchemaGrammarDialect.spaceRule]
+        self.rules = ["space": dialect.spaceRule]
     }
+
+    /// 参照実装が `space` を差し込む位置に入るもの。**GEN-8** により
+    /// `.gemmaToolArguments` では何も入らない。
+    var space: String { dialect == .json ? "space " : "" }
 
     var approximations: [String] { diagnostics.map(\.message) }
     var hasFatalApproximation: Bool { diagnostics.contains { $0.fatal } }
@@ -420,9 +439,8 @@ struct JSONSchemaGrammarConverter {
     private mutating func gemmaConstantRule(_ value: JSONValue) -> String {
         switch value {
         case .string(let text):
-            let json = Self.formatLiteral(Self.dumpString(text))
-            let trained = Self.formatLiteral("<|\"|>" + text + "<|\"|>")
-            return "(\(json) | \(trained))"
+            // GEN-8: 学習形式のみ。JSON の `"…"` は生成では許さない。
+            return Self.formatLiteral("<|\"|>" + text + "<|\"|>")
         case .array(let items):
             let body = items.map { gemmaConstantRule($0) }.joined(separator: #" "," "#)
             return items.isEmpty ? #""[]""# : #""[" "# + body + #" "]""#
@@ -622,7 +640,7 @@ struct JSONSchemaGrammarConverter {
             let propertyRule = visit(propertySchema, prefix + propertyName)
             kvRuleNames[propertyName] = addRule(
                 prefix + propertyName + "-kv",
-                keyLiteral(propertyName) + " space \":\" space " + propertyRule)
+                keyLiteral(propertyName) + " " + space + "\":\" " + space + propertyRule)
             if required.contains(propertyName) {
                 requiredProps.append(propertyName)
             } else {
@@ -647,25 +665,26 @@ struct JSONSchemaGrammarConverter {
             let keyRule = propertyNames.isEmpty
                 ? addPrimitive(dialect == .gemmaToolArguments ? "key" : "string")
                 : addRule(subName + "-k", notStrings(propertyNames))
-            let kvRule = addRule(subName + "-kv", keyRule + " \":\" space " + valueRule)
+            let kvRule = addRule(
+                subName + "-kv", keyRule + " \":\" " + space + valueRule)
             kvRuleNames["*"] = kvRule
             optionalProps.append("*")
         }
 
-        var rule = "\"{\" space "
+        var rule = "\"{\" " + space
         for (index, key) in requiredProps.enumerated() {
-            if index > 0 { rule += " \",\" space " }
+            if index > 0 { rule += " \",\" " + space }
             rule += kvRuleNames[key]!
         }
 
         if !optionalProps.isEmpty {
             rule += " ("
-            if !requiredProps.isEmpty { rule += " \",\" space ( " }
+            if !requiredProps.isEmpty { rule += " \",\" " + space + "( " }
 
             func recursiveRefs(_ keys: ArraySlice<String>, firstIsOptional: Bool) -> String {
                 guard let key = keys.first else { return "" }
                 let kvRuleName = kvRuleNames[key]!
-                let commaRef = "( \",\" space " + kvRuleName + " )"
+                let commaRef = "( \",\" " + space + kvRuleName + " )"
                 var result: String
                 if firstIsOptional {
                     result = commaRef + (key == "*" ? "*" : "?")
@@ -689,7 +708,7 @@ struct JSONSchemaGrammarConverter {
             rule += " )?"
         }
 
-        rule += " space \"}\""
+        rule += " " + space + "\"}\""
         return rule
     }
 
@@ -774,20 +793,21 @@ struct JSONSchemaGrammarConverter {
         if schemaType == nil || schemaType == .string("array"),
            let items = Self.member(schema, "items") ?? Self.member(schema, "prefixItems") {
             if case .array(let tuple) = items {
-                var rule = "\"[\" space "
+                var rule = "\"[\" " + space
                 for (index, item) in tuple.enumerated() {
-                    if index > 0 { rule += " \",\" space " }
+                    if index > 0 { rule += " \",\" " + space }
                     rule += visit(item, name + (name.isEmpty ? "" : "-") + "tuple-" + String(index))
                 }
-                rule += " space \"]\""
+                rule += " " + space + "\"]\""
                 return addRule(ruleName, rule)
             }
             let itemRule = visit(items, name + (name.isEmpty ? "" : "-") + "item")
             let minItems = Self.int(Self.member(schema, "minItems")) ?? 0
             let maxItems = Self.int(Self.member(schema, "maxItems")) ?? Int.max
-            return addRule(ruleName, "\"[\" space " + Self.buildRepetition(
+            return addRule(ruleName, "\"[\" " + space + Self.buildRepetition(
                 itemRule, minItems: minItems, maxItems: maxItems,
-                separator: "\",\" space") + " space \"]\"")
+                separator: dialect == .json ? "\",\" space" : "\",\"")
+                + " " + space + "\"]\"")
         }
         if schemaType == nil || schemaType == .string("string"),
            let patternRule = visitPatternIfSupported(schema, ruleName: ruleName) {
