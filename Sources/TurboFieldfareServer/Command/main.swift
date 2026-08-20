@@ -21,6 +21,39 @@ do {
 do {
     let signals = ServerTerminationSignals()
     let modelURL = URL(fileURLWithPath: arguments.model).standardizedFileURL
+    let server = TurboFieldfareHTTPServer(
+        modelID: arguments.modelID,
+        queueLimit: arguments.queueLimit,
+        backend: nil,
+        imagePolicy: arguments.imagePolicy,
+        defaults: ChatRequestDefaults(thinking: arguments.thinkingPolicy))
+    // LIF-1: the port opens before the model does, and everything answers 503
+    // `unavailable_error` until the load lands (LIF-2). The load takes tens of
+    // seconds; a client that connects during it is told the server is coming
+    // up, which a refused connection cannot say.
+    _ = try await server.start(port: arguments.port)
+    print("TurboFieldfareServer listening at http://127.0.0.1:\(arguments.port) loading model=\(arguments.modelID)")
+    // stdout はパイプに繋がれると全バッファリングになる (`Scripts/demo/serve.py`
+    // は子プロセスの stdout を読む)。この行は「もう繋がる」の合図で、
+    // プロセスが終わるまで見えないのでは意味がないので、ここで押し出す。
+    fflush(stdout)
+
+    // LIF-5: SIGINT / SIGTERM ends the process, and it has to do so during the
+    // load as well — which is only reachable now that the listener is up
+    // first. The load is not cancellable, so termination does not wait for it.
+    let terminator: Task<Void, Never> = Task {
+        _ = await signals.wait()
+        // A second signal kills outright. `ServerTerminationSignals` had to
+        // set SIG_IGN for its dispatch source to see the first one, so the
+        // default disposition goes back before a shutdown that a client (or a
+        // model still loading) can make the operator wait on.
+        Darwin.signal(SIGINT, SIG_DFL)
+        Darwin.signal(SIGTERM, SIG_DFL)
+        try? await server.shutdown()
+        await signals.cancel()
+        exit(0)
+    }
+
     let backend = try await ServerModelSession.load(
         modelDirectory: modelURL,
         maxContext: arguments.maxContext,
@@ -28,25 +61,15 @@ do {
         integrityPolicy: arguments.verification,
         draftBlockSize: arguments.draftBlockSize,
         imagePolicy: arguments.imagePolicy)
-    let server = TurboFieldfareHTTPServer(
-        modelID: arguments.modelID,
-        queueLimit: arguments.queueLimit,
-        backend: backend,
-        imagePolicy: arguments.imagePolicy,
-        defaults: ChatRequestDefaults(thinking: arguments.thinkingPolicy))
-    _ = try await server.start(port: arguments.port)
+    // LIF-3: from here `/health` is 200 and the endpoints answer for real.
+    await server.modelDidLoad(backend)
     // `expert_io`: どちらの腕で回っているか。既定は mmap (docs/mtp/52 §5a)。
     // `TF_EXPERT_MMAP=0` で pread に戻る。
     let expertIO = MmapExpertMapping.isEnabled ? "mmap" : "pread"
     print("TurboFieldfareServer ready at http://127.0.0.1:\(arguments.port) model=\(arguments.modelID) context=\(arguments.maxContext) slots=\(runtimeConfiguration.expertCacheSlots) expert_io=\(expertIO) mtp=\(arguments.draftBlockSize) thinking=\(arguments.thinkingPolicy.rawValue)")
-    // stdout はパイプに繋がれると全バッファリングになる (`Scripts/demo/serve.py`
-    // は子プロセスの stdout を読む)。この 1 行は「もう受け付けている」の合図で、
-    // プロセスが終わるまで見えないのでは意味がないので、ここで押し出す。
     fflush(stdout)
 
-    _ = await signals.wait()
-    try await server.shutdown()
-    await signals.cancel()
+    await terminator.value
 } catch {
     FileHandle.standardError.write(Data("error: \(error)\n".utf8))
     exit(1)

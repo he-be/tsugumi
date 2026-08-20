@@ -230,8 +230,19 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                        context: ChannelHandlerContext) {
         let path = head.uri.split(separator: "?", maxSplits: 1,
                                   omittingEmptySubsequences: false).first.map(String.init) ?? head.uri
+        // LIF-2: nothing is answered from the model's side until there is one,
+        // and that includes the routes that never touch it — the reference
+        // implementation refuses the same way, from a middleware ahead of its
+        // routing table (`server-http.cpp:255`). A client that gets this knows
+        // the server exists and is coming up, which "connection refused" cannot
+        // tell it (LIF-1).
+        guard readiness.backend != nil else {
+            writeError(context, status: .serviceUnavailable, Self.loadingEnvelope)
+            return
+        }
         switch (head.method, path) {
-        case (.GET, "/health"):
+        // EP-1: one handler, both spellings, no API key.
+        case (.GET, "/health"), (.GET, "/v1/health"):
             writeJSON(context, status: .ok, object: ["status": "ok"])
         case (.GET, "/v1/models"):
             let response = OpenAIModelList(
@@ -250,7 +261,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 return
             }
             handleCompletion(body: body, context: context)
-        case (_, "/health"), (_, "/v1/models"), (_, "/v1/chat/completions"):
+        case (_, "/health"), (_, "/v1/health"), (_, "/v1/models"),
+             (_, "/v1/chat/completions"):
             writeError(context, status: .methodNotAllowed,
                        OpenAIErrorEnvelope(message: "method not allowed",
                                            code: "method_not_allowed"))
@@ -261,16 +273,20 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         }
     }
 
+    /// LIF-2, quoted. The one body SPEC writes out in full, because a client
+    /// has to be able to match on it.
+    private static let loadingEnvelope = OpenAIErrorEnvelope(
+        message: "Loading model",
+        type: .unavailable,
+        param: nil,
+        code: "model_loading")
+
     private func handleCompletion(body: ByteBuffer,
                                   context: ChannelHandlerContext) {
+        // LIF-2 has already turned every request away while this is nil, so
+        // reaching here without a model is not a state the server has.
         guard let backend = readiness.backend else {
-            // The load state is not wired into the routing table yet; until it
-            // is, a request that arrives without a model says so rather than
-            // dereferencing one that is not there.
-            writeError(context, status: .internalServerError,
-                       OpenAIErrorEnvelope(message: "the model is not loaded",
-                                           type: .server,
-                                           code: "not_implemented"))
+            writeError(context, status: .serviceUnavailable, Self.loadingEnvelope)
             return
         }
         do {
