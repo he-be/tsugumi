@@ -826,6 +826,14 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// エキスパートは追い出さない」ので、32 スロットが埋まりきっていれば
     /// `nil` が返る。層はそこに着いたときに普通に読むだけなので、諦めても
     /// 失われるのは前倒しの利益だけである。
+    /// D の試作: エキスパートを読むコマンドバッファにこの層の residency set を
+    /// 掛ける (49 §9)。既定 (`pread`) では set が無いので 1 行も効かない。
+    /// **`useResource` は外していない** — set は上乗せである (49 §2 の腕 B*)。
+    private func attachExpertResidency(_ commandBuffer: MTLCommandBuffer, layer: Int) {
+        guard let set = model.routedExpertResidencySet(layer: layer) else { return }
+        commandBuffer.useResidencySet(set)
+    }
+
     private func issueExpertPrefetch(layer: Int, candidates: [Int]) throws {
         guard ExpertPrefetch.topN > 0, !candidates.isEmpty,
               !expertPrefetch.isPending(layer: layer) else { return }
@@ -2373,6 +2381,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         guard let tileCB = ctx.queue.makeCommandBuffer() else {
                             throw ModelError.residentBufferWrapFailed
                         }
+                        attachExpertResidency(tileCB, layer: L)
                         let groupStart = Int(tile.groupStart)
                         let tileGroups = Array(
                             routes.groups[groupStart..<(groupStart + Int(tile.groupCount))])
@@ -3061,6 +3070,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                 if let argBuf = phase1HitSplitArgBuf, plan.hits > 0, !plan.misses.isEmpty {
                     writeActiveSlots(phase1HitSlots, into: moeHitActiveSlots)
                     let cb = ctx.queue.makeCommandBuffer()!
+                    attachExpertResidency(cb, layer: L)
                     encodeRoutedPhase1Subset(
                         cb,
                         argBuf: argBuf,
@@ -3155,6 +3165,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                  layerScalar: layerScalar)
             }
             let routedCB = ctx.queue.makeCommandBuffer()!
+            attachExpertResidency(routedCB, layer: L)
             let splitArgBuf = phase1HitCB != nil && !phase1MissSlots.isEmpty
                 ? phase1HitSplitArgBuf
                 : nil

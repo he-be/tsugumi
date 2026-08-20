@@ -65,6 +65,12 @@ public final class PreadExpertStreamer: @unchecked Sendable {
     private let fd: Int32
     private let slotPointers: [UnsafeMutableRawPointer]
     private let slotBuffers: [MTLBuffer]
+    /// D の試作 (`TF_EXPERT_MMAP=1`)。非 nil のときスロットは 1 本も無く、
+    /// エキスパートはファイルのマッピングから直接 GPU に渡る
+    /// (`MmapExpertMapping`、docs/mtp/49 §9)。プランと LFU の帳簿はそのままで、
+    /// 変わるのは**ミスが何をするか**だけ — `pread` でコピーする代わりに
+    /// residency set を更新する。
+    let mmap: MmapExpertMapping?
 
     private var nextSlot = 0
     private let cursorLock = NSLock()
@@ -98,7 +104,8 @@ public final class PreadExpertStreamer: @unchecked Sendable {
                  device: MTLDevice,
                  slotCount: Int,
                  cachePolicy: ExpertCachePolicy = .lfu,
-                 fileDescriptor: Int32?) throws {
+                 fileDescriptor: Int32?,
+                 useMmap: Bool = MmapExpertMapping.isEnabled) throws {
         precondition(slotCount > 0, "slotCount must be positive")
         self.layout = layout
         self.slotCount = slotCount
@@ -152,13 +159,20 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         pointers.reserveCapacity(slotCount)
         buffers.reserveCapacity(slotCount)
 
+        // D の試作: スロットを 1 個も持たない。私有 anonymous の 3.22 GB
+        // (32 スロット x 30 層) が消えるのが D の残る根拠である (50 §4)。
+        self.mmap = useMmap
+            ? try MmapExpertMapping(layout: layout, device: device,
+                                    fileDescriptor: openedFD)
+            : nil
+
         func unwind() {
             for index in buffers.count..<pointers.count {
                 free(pointers[index])
             }
         }
 
-        for _ in 0..<slotCount {
+        for _ in 0..<(useMmap ? 0 : slotCount) {
             var raw: UnsafeMutableRawPointer?
             let result = posix_memalign(&raw, Self.scratchAlignment, allocationSize)
             guard result == 0, let pointer = raw else {
@@ -207,9 +221,16 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         guard slot >= 0 && slot < slotCount else {
             throw StreamerError.slotOutOfRange(slot)
         }
+        guard expert >= 0, expert < layout.expertsPerLayer else {
+            throw StreamerError.offsetOutOfRange(UInt64(max(0, expert)))
+        }
         let regionOffset = layout.expertOffset(layer: layer, expert: expert)
         guard regionOffset + layout.expertStride <= layout.streamSize else {
             throw StreamerError.offsetOutOfRange(regionOffset)
+        }
+        // D の試作ではバイトは既に GPU から見えるアドレスに居る。コピーは無い。
+        if let mmap {
+            return (mmap.expertBuffers[expert], 0, layout.expertStride)
         }
         try readFull(
             into: slotPointers[slot],
@@ -352,6 +373,27 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         precondition(plan.assignedSlots.count == plan.experts.count,
                      "expert cache plan slot count mismatch")
 
+        // D の試作: 読むものが無い。ミスがすることは「residency set に足す」
+        // だけで、それは帳簿を更新したあとに 1 回だけ出す (49 §9)。
+        if let mmap {
+            mmap.syncResidency {
+                cacheLock.lock()
+                defer { cacheLock.unlock() }
+                for index in plan.misses {
+                    let slot = plan.assignedSlots[index]
+                    let expert = plan.experts[index]
+                    releaseSlotLocked(slot)
+                    slotExpert[slot] = expert
+                    if expert >= 0, expert < expertResidency.count {
+                        expertResidency[expert] += 1
+                        expertSlotHint[expert] = slot
+                    }
+                }
+                return Set(slotExpert.filter { $0 >= 0 })
+            }
+            return expertCachePlanBuffers(plan)
+        }
+
         let errorLock = NSLock()
         nonisolated(unsafe) var firstError: Error?
         DispatchQueue.concurrentPerform(iterations: plan.misses.count) { missOffset in
@@ -389,6 +431,11 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         -> [(buffer: MTLBuffer, offset: UInt64, size: UInt64)] {
         precondition(plan.assignedSlots.count == plan.experts.count,
                      "expert cache plan slot count mismatch")
+        if let mmap {
+            return plan.experts.map { expert in
+                (mmap.expertBuffers[expert], UInt64(0), layout.expertStride)
+            }
+        }
         return plan.assignedSlots.map { slot in
             (slotBuffers[slot], UInt64(0), layout.expertStride)
         }
@@ -427,6 +474,7 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         cursorLock.lock()
         nextSlot = 0
         cursorLock.unlock()
+        mmap?.dropResidency()
     }
 
     /// Which of `experts` a plan made now would find in a slot.

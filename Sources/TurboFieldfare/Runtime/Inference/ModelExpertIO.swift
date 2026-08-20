@@ -159,6 +159,18 @@ extension Model {
         return RoutedExpertFetchPlan(layer: layer, cachePlan: cachePlan)
     }
 
+    /// D の試作 (`TF_EXPERT_MMAP=1`) でこの層の `MTLResidencySet` を返す。
+    /// 既定 (`pread`) では nil で、呼び手は何もしない。
+    ///
+    /// 掛けるのは**エキスパートを読むコマンドバッファだけ**である。set は
+    /// `useResource` の代わりではなく上乗せなので (49 §2 の腕 B\*)、掛け忘れた
+    /// コマンドバッファも正しく動く — 遅くなるだけである。
+    func routedExpertResidencySet(layer: Int) -> (any MTLResidencySet)? {
+        guard MmapExpertMapping.isEnabled, layer >= 0,
+              layer < streamersBox.streamers.count else { return nil }
+        return streamersQueue.sync { streamersBox.streamers[layer]?.mmap?.residencySet }
+    }
+
     public func routedExpertCacheSlotCount(layer _: Int) -> Int? {
         guard case .pread(let slotCount) = streamingMode else { return nil }
         return slotCount

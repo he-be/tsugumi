@@ -299,6 +299,17 @@ private func statsFooter(loadSeconds: Double,
         lines += " towerLoad=\(s(runner.visionLoadSeconds))s]\n"
     }
 
+    // D の試作 (`TF_EXPERT_MMAP=1`) のときだけ。residency set の更新が
+    // 何回・何 ms 掛かったか = 49 §3 の prep が production でいくらか。
+    let mm = MmapExpertMapping.stats
+    if mm.layers > 0 {
+        lines += "[expert mmap layers=\(mm.layers)"
+        lines += " mapped=\(gb(UInt64(mm.mappedBytes)))GB"
+        lines += " sync=\(mm.syncs)(+\(mm.added)/-\(mm.removed)) noop=\(mm.skipped)"
+        lines += " residency=\(s(Double(mm.nanos) / 1e9))s"
+        lines += " /tok=\(ms(mm.nanos, per: newTokens))ms]\n"
+    }
+
     lines += "[decode/tok io=\(ms(runner.totalIoNanos, per: newTokens))ms"
     lines += " cb1=\(ms(runner.totalCb1Nanos, per: newTokens))ms"
     lines += " cb2=\(ms(runner.totalCb2Nanos, per: newTokens))ms"
