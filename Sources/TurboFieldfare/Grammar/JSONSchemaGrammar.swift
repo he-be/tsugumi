@@ -204,6 +204,20 @@ extension JSONSchemaGrammarDialect {
             table["value"] = .init(
                 "object | array | string | number | boolean",
                 ["object", "array", "string", "number", "boolean"])
+            // GEN-11: 数の桁は**描き直しの制約**であって JSON Schema の制約
+            // ではない。`JSONValue.jinjaSendableValue()` が `Decimal` →
+            // `Double` → `Decimal` の往復を要求し、通らなければ投げるので、
+            // 通る幅 — 有効 10 進 15 桁 (`Double` の `DBL_DIG`) — に絞る。
+            // GBNF は小数点をまたいで桁を数えられないので、十分条件として
+            // 両半分を 7 桁ずつ (7+7=14 ≤ 15、8+8=16 は超える) にし、小数部を
+            // 持たない整数形だけ 15 桁の予算を丸ごと使う。指数形は落とす —
+            // `Decimal(string:)` が `1e300` を受けないので、許すと読む側が
+            // 先に落ちる。
+            table["integral-part"] = .init("[0] | [1-9] [0-9]{0,14}")
+            table["decimal-part"] = .init("[0-9]{1,7}")
+            table["number"] = .init(
+                #"("-"? integral-part) | ("-"? ([0] | [1-9] [0-9]{0,6}) "." decimal-part)"#,
+                ["integral-part", "decimal-part"])
             // GEN-8: 空白を一切入れない。
             table["array"] = .init(
                 #""[" ( value ("," value)* )? "]""#, ["value"])
