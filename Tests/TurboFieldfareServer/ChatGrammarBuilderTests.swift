@@ -20,11 +20,17 @@ struct ChatGrammarBuilderTests {
 
     private static let channelStartID: Int32 = 105
     private static let channelEndID: Int32 = 106
+    /// `<|tool_call>` / `<tool_call|>` as ids: the grammar spells the two
+    /// markers as `TOKEN` elements, so every assertion about a call goes
+    /// through these and never through their text.
+    private static let toolCallStartID: Int32 = 7
+    private static let toolCallEndID: Int32 = 8
 
     private static let markers = ChatGrammarMarkers(
         toolCallStart: "<|tool_call>",
         toolCallEnd: "<tool_call|>",
-        toolCallStartTokenID: 7,
+        toolCallStartTokenID: toolCallStartID,
+        toolCallEndTokenID: toolCallEndID,
         channelStartTokenID: channelStartID,
         channelEndTokenID: channelEndID)
 
@@ -33,7 +39,8 @@ struct ChatGrammarBuilderTests {
     private static let markersWithoutChannel = ChatGrammarMarkers(
         toolCallStart: "<|tool_call>",
         toolCallEnd: "<tool_call|>",
-        toolCallStartTokenID: 7)
+        toolCallStartTokenID: toolCallStartID,
+        toolCallEndTokenID: toolCallEndID)
 
     /// `get_weather(city: string, days: integer)` — both required, so the
     /// canonical call is `{city:<|"|>Kyoto<|"|>,days:3}`.
@@ -84,35 +91,64 @@ struct ChatGrammarBuilderTests {
         return matcher.isComplete
     }
 
-    /// Walk a token sequence and then a string through the grammar, the way
-    /// the sampler does: `TOKEN` / `TOKEN_NOT` elements are matched by id, and
-    /// everything after them by text. `thought` is `nil` for "the model wrote
-    /// no thought block at all".
-    private static func walk(_ grammar: String,
-                             thought: [(Int32, String)]?,
-                             then text: String) throws -> Bool {
+    /// One step of a generated stream: a token the grammar matches **by id**
+    /// (a `TOKEN` / `TOKEN_NOT` element), or a run of ordinary tokens the
+    /// grammar matches by their bytes.
+    private enum Emission {
+        case token(Int32, String)
+        case text(String)
+    }
+
+    /// Walk a generated stream through the grammar the way the sampler does.
+    private static func walk(_ grammar: String, _ script: [Emission]) throws -> Bool {
         var matcher = try GrammarMatcher(try GBNFGrammar(grammar))
         do {
-            for (tokenID, piece) in thought ?? [] {
-                try matcher.accept(piece: Array(piece.utf8), tokenID: tokenID)
+            for step in script {
+                switch step {
+                case .token(let tokenID, let piece):
+                    try matcher.accept(piece: Array(piece.utf8), tokenID: tokenID)
+                case .text(let text):
+                    try matcher.accept(text: text)
+                }
             }
-            try matcher.accept(text: text)
         } catch {
             return false
         }
         return matcher.isComplete
     }
 
+    private static func walk(_ grammar: String,
+                             thought: [Emission]?,
+                             then script: [Emission]) throws -> Bool {
+        try walk(grammar, (thought ?? []) + script)
+    }
+
+    /// One tool call as the model emits it: the two markers are the marker
+    /// **tokens** (GEN-8 — the grammar spells them as ids), and `body` is
+    /// everything between them.
+    private static func call(_ body: String) -> [Emission] {
+        [.token(toolCallStartID, "<|tool_call>"),
+         .text(body),
+         .token(toolCallEndID, "<tool_call|>")]
+    }
+
+    /// The same call spelled out as plain text, marker characters and all —
+    /// what a model that writes `<`, `|`, `tool`, … instead of the marker
+    /// token produces. The grammar must not accept it.
+    private static func callSpelledAsText(_ body: String) -> [Emission] {
+        [.text("<|tool_call>" + body + "<tool_call|>")]
+    }
+
     /// `<|channel>thought\n` … `<channel|>` as the model emits it when thinking
     /// is on: the template writes none of it into the generation prompt, so
     /// every token here is generated.
-    private static let thoughtBlock: [(Int32, String)] = [
-        (channelStartID, "<|channel>"),
-        (900, "thought"),
-        (901, "\n"),
-        (902, "Kyoto"),
-        (903, " in July"),
-        (channelEndID, "<channel|>"),
+    private static let thoughtBlock: [Emission] = [
+        .token(channelStartID, "<|channel>"),
+        .token(900, "thought"),
+        .token(901, "\n"),
+        .token(902, "Kyoto"),
+        .token(903, " in July"),
+        .token(channelEndID, "<channel|>"),
     ]
 
     /// Every rule body, without the `space` rule's own definition.
@@ -126,8 +162,10 @@ struct ChatGrammarBuilderTests {
             }
     }
 
-    private static let canonicalCall =
-        #"<|tool_call>call:get_weather{city:<|"|>Kyoto<|"|>,days:3}<tool_call|>"#
+    /// `<|tool_call>call:get_weather{city:<|"|>Kyoto<|"|>,days:3}<tool_call|>`,
+    /// as the ids and bytes the sampler actually walks.
+    private static let canonicalCallBody = #"call:get_weather{city:<|"|>Kyoto<|"|>,days:3}"#
+    private static let canonicalCall = call(canonicalCallBody)
 
     // MARK: - GEN-4: the four tool_choice values
 
@@ -160,7 +198,7 @@ struct ChatGrammarBuilderTests {
         // GEN-13 thought prefix differ.
         let auto = try #require(
             Self.constraint(tools: [Self.weather], toolChoice: .auto))
-        #expect(required.grammar.contains(#""<|tool_call>call:get_weather""#))
+        #expect(required.grammar.contains(#"<[7]> "call:get_weather""#))
         for line in auto.grammar.split(separator: "\n")
         where !line.hasPrefix("root ::=") {
             #expect(required.grammar.contains(line + "\n"), "\(line)")
@@ -175,9 +213,9 @@ struct ChatGrammarBuilderTests {
         #expect(!constraint.isLazy)
         #expect(constraint.trigger == nil)
         #expect(constraint.grammar.contains("tool-call ::= tool-get-time"))
-        #expect(constraint.grammar.contains(#""<|tool_call>call:get_time""#))
+        #expect(constraint.grammar.contains(#"<[7]> "call:get_time""#))
         #expect(!constraint.grammar.contains("get_weather"))
-        #expect(try !Self.accepts(constraint.grammar, Self.canonicalCall))
+        #expect(try !Self.walk(constraint.grammar, Self.canonicalCall))
     }
 
     @Test("GEN-4: a named choice that names an undeclared tool constrains nothing")
@@ -200,8 +238,8 @@ struct ChatGrammarBuilderTests {
             tools: [Self.weather], toolChoice: .required, parallelToolCalls: false))
         #expect(constraint.grammar.contains("tool-call ::= tool-get-weather\n"))
         #expect(constraint.grammar.contains(
-            "tool-get-weather ::= \"<|tool_call>call:get_weather\" "
-            + "tool-get-weather-args \"<tool_call|>\"\n"))
+            "tool-get-weather ::= <[7]> \"call:get_weather\" "
+            + "tool-get-weather-args <[8]>\n"))
     }
 
     @Test("GEN-1: several tools become alternatives of the section rule")
@@ -211,12 +249,12 @@ struct ChatGrammarBuilderTests {
             toolChoice: .required, parallelToolCalls: false))
         #expect(constraint.grammar.contains(
             "tool-call ::= (tool-get-weather | tool-get-time)\n"))
-        #expect(constraint.grammar.contains(#""<|tool_call>call:get_weather""#))
-        #expect(constraint.grammar.contains(#""<|tool_call>call:get_time""#))
-        #expect(try Self.accepts(constraint.grammar, Self.canonicalCall))
-        #expect(try Self.accepts(
+        #expect(constraint.grammar.contains(#"<[7]> "call:get_weather""#))
+        #expect(constraint.grammar.contains(#"<[7]> "call:get_time""#))
+        #expect(try Self.walk(constraint.grammar, Self.canonicalCall))
+        #expect(try Self.walk(
             constraint.grammar,
-            #"<|tool_call>call:get_time{zone:<|"|>Asia/Tokyo<|"|>}<tool_call|>"#))
+            Self.call(#"call:get_time{zone:<|"|>Asia/Tokyo<|"|>}"#)))
     }
 
     @Test("GEN-1: parallel_tool_calls decides whether repeats are allowed")
@@ -226,14 +264,14 @@ struct ChatGrammarBuilderTests {
         let parallel = try #require(Self.constraint(
             tools: [Self.weather], toolChoice: .required, parallelToolCalls: true))
         #expect(parallel.grammar.contains("tool-call ::= tool-get-weather+\n"))
-        #expect(try Self.accepts(parallel.grammar, Self.canonicalCall))
-        #expect(try Self.accepts(parallel.grammar, two))
+        #expect(try Self.walk(parallel.grammar, Self.canonicalCall))
+        #expect(try Self.walk(parallel.grammar, two))
 
         let single = try #require(Self.constraint(
             tools: [Self.weather], toolChoice: .required, parallelToolCalls: false))
         #expect(single.grammar.contains("tool-call ::= tool-get-weather\n"))
-        #expect(try Self.accepts(single.grammar, Self.canonicalCall))
-        #expect(try !Self.accepts(single.grammar, two))
+        #expect(try Self.walk(single.grammar, Self.canonicalCall))
+        #expect(try !Self.walk(single.grammar, two))
     }
 
     @Test("GEN-1: a tool that declares no parameters still writes an object")
@@ -243,17 +281,14 @@ struct ChatGrammarBuilderTests {
         let constraint = try #require(Self.constraint(
             tools: [ping], toolChoice: .required, parallelToolCalls: false))
         #expect(constraint.grammar.contains(
-            "tool-ping ::= \"<|tool_call>call:ping\" tool-ping-args \"<tool_call|>\"\n"))
+            "tool-ping ::= <[7]> \"call:ping\" tool-ping-args <[8]>\n"))
         // The template writes the arguments as `{…}`, never as a bare value, so
         // the fallback is the generic object and not the generic JSON value.
         // (`tool-ping-args` and `object` are `JSONSchemaGrammar`'s rules.)
         #expect(constraint.grammar.contains("tool-ping-args ::= object\n"))
-        #expect(try Self.accepts(constraint.grammar,
-                                 "<|tool_call>call:ping{}<tool_call|>"))
-        #expect(try Self.accepts(constraint.grammar,
-                                 #"<|tool_call>call:ping{loud:true}<tool_call|>"#))
-        #expect(try !Self.accepts(constraint.grammar,
-                                  "<|tool_call>call:ping3<tool_call|>"))
+        #expect(try Self.walk(constraint.grammar, Self.call("call:ping{}")))
+        #expect(try Self.walk(constraint.grammar, Self.call("call:ping{loud:true}")))
+        #expect(try !Self.walk(constraint.grammar, Self.call("call:ping3")))
     }
 
     // MARK: - GEN-8: only the canonical template form (round trip)
@@ -267,10 +302,12 @@ struct ChatGrammarBuilderTests {
         // The rules that spell `<|tool_call>call:get_weather{city:<|"|>Kyoto<|"|>,days:3}<tool_call|>`.
         // The `-args` rules below are `JSONSchemaGrammar`'s half, pinned here
         // because GEN-8 is a statement about the finished text: no whitespace,
-        // bare keys, ascending order.
+        // bare keys, ascending order. The markers are `TOKEN` elements: the
+        // canonical form is the marker *token*, and its spelling as ordinary
+        // text is a different token sequence that the template never writes.
         #expect(grammar.contains(
-            "tool-get-weather ::= \"<|tool_call>call:get_weather\" "
-            + "tool-get-weather-args \"<tool_call|>\"\n"))
+            "tool-get-weather ::= <[7]> \"call:get_weather\" "
+            + "tool-get-weather-args <[8]>\n"))
         #expect(grammar.contains(
             "tool-get-weather-args ::= \"{\" tool-get-weather-args-city-kv "
             + "\",\" tool-get-weather-args-days-kv \"}\"\n"))
@@ -287,25 +324,52 @@ struct ChatGrammarBuilderTests {
         #expect(grammar.contains(#"string ::= "<|\"|>""#))
         #expect(!grammar.contains(#"::= "\"""#))
 
-        #expect(try Self.accepts(grammar, Self.canonicalCall))
+        #expect(try Self.walk(grammar, Self.canonicalCall))
 
         // …and the non-canonical variants are not spelled.
         for variant in [
             // a space after the comma
-            #"<|tool_call>call:get_weather{city:<|"|>Kyoto<|"|>, days:3}<tool_call|>"#,
+            #"call:get_weather{city:<|"|>Kyoto<|"|>, days:3}"#,
             // a JSON-quoted string
-            #"<|tool_call>call:get_weather{city:"Kyoto",days:3}<tool_call|>"#,
+            #"call:get_weather{city:"Kyoto",days:3}"#,
             // quoted keys
-            #"<|tool_call>call:get_weather{<|"|>city<|"|>:<|"|>Kyoto<|"|>,days:3}<tool_call|>"#,
+            #"call:get_weather{<|"|>city<|"|>:<|"|>Kyoto<|"|>,days:3}"#,
             // descending keys (DEV-15: the template's `dictsort` is ascending)
-            #"<|tool_call>call:get_weather{days:3,city:<|"|>Kyoto<|"|>}<tool_call|>"#,
+            #"call:get_weather{days:3,city:<|"|>Kyoto<|"|>}"#,
             // a space before the closing brace
-            #"<|tool_call>call:get_weather{city:<|"|>Kyoto<|"|>,days:3 }<tool_call|>"#,
+            #"call:get_weather{city:<|"|>Kyoto<|"|>,days:3 }"#,
             // an unknown function
-            #"<|tool_call>call:get_forecast{city:<|"|>Kyoto<|"|>,days:3}<tool_call|>"#,
+            #"call:get_forecast{city:<|"|>Kyoto<|"|>,days:3}"#,
         ] {
-            #expect(try !Self.accepts(grammar, variant), "\(variant)")
+            #expect(try !Self.walk(grammar, Self.call(variant)), "\(variant)")
         }
+    }
+
+    /// The bug this rule exists for: with `tool_choice: required` the model
+    /// spelled the opening marker as ordinary text (`<`, `|`, `tool`, …) and
+    /// closed with the real `<tool_call|>` token, and the decoder — which
+    /// recognises a call by token id — saw a section end with no section
+    /// start and failed the request. A literal marker accepts that spelling;
+    /// a `TOKEN` element does not.
+    @Test("GEN-8: only the marker token opens and closes a call, never its spelling")
+    func GEN_8_marker_spelling_is_not_a_marker() throws {
+        let constraint = try #require(Self.constraint(
+            tools: [Self.weather], toolChoice: .required, parallelToolCalls: false))
+        let grammar = constraint.grammar
+
+        #expect(try Self.walk(grammar, Self.canonicalCall))
+        // The identical bytes, written as ordinary tokens: rejected end to end.
+        #expect(try !Self.walk(grammar, Self.callSpelledAsText(Self.canonicalCallBody)))
+        // …and rejected in either half on its own (the observed failure was a
+        // spelled-out opener with a real closing token).
+        #expect(try !Self.walk(grammar, [
+            .text("<|tool_call>" + Self.canonicalCallBody),
+            .token(Self.toolCallEndID, "<tool_call|>"),
+        ]))
+        #expect(try !Self.walk(grammar, [
+            .token(Self.toolCallStartID, "<|tool_call>"),
+            .text(Self.canonicalCallBody + "<tool_call|>"),
+        ]))
     }
 
     // MARK: - GEN-3: response_format
@@ -430,14 +494,14 @@ struct ChatGrammarBuilderTests {
         // An empty thought block is still a thought block.
         #expect(try Self.walk(
             constraint.grammar,
-            thought: [(Self.channelStartID, "<|channel>"),
-                      (Self.channelEndID, "<channel|>")],
+            thought: [.token(Self.channelStartID, "<|channel>"),
+                      .token(Self.channelEndID, "<channel|>")],
             then: Self.canonicalCall))
         // The body still has to be the canonical call afterwards.
         #expect(try !Self.walk(
             constraint.grammar,
             thought: Self.thoughtBlock,
-            then: #"<|tool_call>call:get_weather{city:"Kyoto",days:3}<tool_call|>"#))
+            then: Self.call(#"call:get_weather{city:"Kyoto",days:3}"#)))
     }
 
     @Test("GEN-13: a non-lazy response-format grammar swallows it too")
@@ -448,13 +512,13 @@ struct ChatGrammarBuilderTests {
         #expect(constraint.grammar.contains("root ::= thought? response-format\n"))
         #expect(try Self.walk(constraint.grammar,
                               thought: Self.thoughtBlock,
-                              then: #"{"city": "Kyoto"}"#))
+                              then: [.text(#"{"city": "Kyoto"}"#)]))
         #expect(try Self.walk(constraint.grammar,
                               thought: nil,
-                              then: #"{"city": "Kyoto"}"#))
+                              then: [.text(#"{"city": "Kyoto"}"#)]))
         #expect(try !Self.walk(constraint.grammar,
                                thought: Self.thoughtBlock,
-                               then: "Sure! Here you go."))
+                               then: [.text("Sure! Here you go.")]))
     }
 
     @Test("GEN-13: a lazy grammar keeps the trigger rule as its root")
@@ -478,7 +542,7 @@ struct ChatGrammarBuilderTests {
             markers: Self.markersWithoutChannel))
         #expect(tools.grammar.contains("root ::= tool-call\n"))
         #expect(!tools.grammar.contains("thought"))
-        #expect(try Self.accepts(tools.grammar, Self.canonicalCall))
+        #expect(try Self.walk(tools.grammar, Self.canonicalCall))
 
         let format = try #require(Self.constraint(
             responseFormat: .jsonSchema(schema: Self.citySchema),
@@ -508,14 +572,12 @@ struct ChatGrammarBuilderTests {
         // Still a loadable grammar, and still the canonical call syntax around
         // it: the unresolvable reference fell back to the generic JSON value.
         #expect(constraint.grammar.contains(
-            "tool-lookup ::= \"<|tool_call>call:lookup\" "
-            + "tool-lookup-args \"<tool_call|>\"\n"))
+            "tool-lookup ::= <[7]> \"call:lookup\" tool-lookup-args <[8]>\n"))
         #expect(constraint.grammar.contains("tool-lookup-args-id ::= value\n"))
-        #expect(try Self.accepts(constraint.grammar,
-                                 "<|tool_call>call:lookup{id:3}<tool_call|>"))
-        #expect(try Self.accepts(
+        #expect(try Self.walk(constraint.grammar, Self.call("call:lookup{id:3}")))
+        #expect(try Self.walk(
             constraint.grammar,
-            #"<|tool_call>call:lookup{id:{q:<|"|>x<|"|>}}<tool_call|>"#))
+            Self.call(#"call:lookup{id:{q:<|"|>x<|"|>}}"#)))
 
         // The same on the response-format side.
         let format = try #require(Self.constraint(

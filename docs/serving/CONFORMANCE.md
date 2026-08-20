@@ -88,8 +88,17 @@ C3 だけで、まだ走っていない。
 `ServerSlotsMetricsTests` + `ServerEndpointGateTests`)。5 つの経路はロードゲート・
 API キー・CORS preflight の内側にあることをテストで固定してある。
 
-**C3 は書けた** (2026-08-22、`Scripts/c3_smoke.sh`、14 検査)。**まだ 1 度も
-走っていない** — 実機で走らせるのは人であり、走らせた結果はここに書き足す。
+**C3 を実機で走らせた** (2026-08-21、`Scripts/c3_smoke.sh`、14 検査。
+`--ctx-size 65536 --expert-cache-slots 32 --draft-block-size 4`)。
+**1 回目は 13 緑 / 1 赤**、赤は `GEN-4-required` の **500** — tool call の文法が
+マーカーを**綴りのリテラル**で書いていたため、思考 ON のモデルが開きを
+`<`, `|`, `tool`, … と通常トークンで綴り、閉じに本物の `<tool_call|>` トークンを
+使い、tool call を**トークン ID** で切り出す `StructuredAssistantDecoder` が
+「開きの無い閉じ」を見て落ちた。マーカーを文法要素 `TOKEN` (`<[id]>`) に変えて
+(SPEC GEN-8 / §12 **DEV-22**)、**2 回目は 14 検査すべて緑**。
+回帰は C0 (`ChatGrammarBuilderTests` の「マーカートークンだけが call を開く」) と
+C2 (`ServerGrammarWiringTests` の「required では思考ブロックの後に許されるのが
+マーカートークン 1 個だけ」) の 2 段で固定した。
 
 すでに適合している (壊さないことをテストで固定する): RSP-2 (SSE の並び)、
 R2 (`null` = 未指定)、R1 (未知キー無視)、RSP-1 (usage + cached_tokens)、

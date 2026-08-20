@@ -1,7 +1,8 @@
 # 引き継ぎ — サーバー再実装ループ
 
 最終更新: 2026-08-22。ブランチ `macos15-support`。**P0〜P5 が全部済み。**
-`swift test` は **1229 本で全緑** (約 110 秒)。**意図的な赤は無い。**
+`swift test` は **1231 本で全緑** (`Scripts/test.sh`、約 110 秒。2026-08-21 の
+C3 修正で 2 本増えた)。**意図的な赤は無い。**
 CONFORMANCE §2 の赤リストは**空**であり、§5 完了の定義の 1 つ目を満たしている。
 
 この文書は**次のセッションが同じループを再開するための唯一の入口**である。
@@ -46,15 +47,17 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
 | **P4** 思考 | **済** (2026-08-22)。`--reasoning-budget` / `--reasoning-format` へ改名、`--thinking` 退役、予算切れの終了タグ強制 (RSN-4) |
 | **P5** 残り | **済** (2026-08-22)。`timings` (RSP-3)、`system_fingerprint` (RSP-5)、`/tokenize` `/detokenize` `/apply-template` (EP-5)、`/slots` `/metrics` (EP-6、FLAG-7 でゲート)、`--api-key` (FLAG-5)、CORS (FLAG-6)、`-c/--ctx-size` と `--expert-cache-slots` の丸め (FLAG-1/FLAG-2) |
 
-### 次の一手 — **C3 を実機で走らせる**
+### 次の一手 — **C3 の残り 2 つ (pi と OpenAI SDK)**
 
 **赤いテストはもう無い。**残っているのは「書けたが実機で見ていない」ことで、
 それは CONFORMANCE §5 完了の定義の 2 つ目と 3 つ目である:
 
-1. **`Scripts/c3_smoke.sh` を走らせる** (14 検査)。**まだ 1 度も走っていない。**
-   人が建てたサーバーに当てる — 走らせ方はスクリプト冒頭のコメントにある。
-   AGENTS.md の「Test rules」を先に満たすこと。**結果は CONFORMANCE §2 に
-   書き足す** — 書けたことと通ったことは別である。
+1. ~~**`Scripts/c3_smoke.sh` を走らせる** (14 検査)~~ **済** (2026-08-21)。
+   1 回目は 13 緑 / 1 赤 (`GEN-4-required` の 500)。原因は文法が tool call の
+   マーカーを**綴りのリテラル**で書いていたことで、モデルは開きを通常トークンで
+   綴り、閉じに本物のマーカートークンを使った — 復号器はトークン ID で切り出すので
+   「開きの無い閉じ」になる。マーカーを文法要素 `TOKEN` (`<[id]>`) にして
+   (SPEC GEN-8 / §12 DEV-22)、**2 回目は 14 緑**。CONFORMANCE §2 に記録済み。
 2. **pi の既定セッション** (tools ON + 画像 + Reasoning ON + MTP) を通しで動かす。
 3. **OpenAI 公式 Python SDK の素朴なコード**がそのまま動くことを見る。
 
@@ -106,7 +109,7 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
 | `GFTokenizer.ChatTemplateVariant` | D2 で入った。`.modelBundled` (CLI・アプリ・KernelCheck) と `.serverRedraw` (サーバー) の 2 値。**既定は `.modelBundled`** なので、足した経路を明示的に渡さない限り描画は動かない |
 | `ServerChatTemplate` | リポジトリ所有の jinja (`Sources/TurboFieldfare/Templates/server_chat_template.jinja`)。SPEC §12 DEV-12 |
 | `ServerReadiness` / `ServerProperties` | P3。ロード状態は経路表より手前で見る。`/props` は `ChatRequestSchema` の表を歩いて作る — **既定値の第 2 の写しを作らないこと** |
-| `Scripts/c3_smoke.sh` | C3 の 14 検査。**まだ 1 度も走っていない** (§6) |
+| `Scripts/c3_smoke.sh` | C3 の 14 検査。**2026-08-21 に実機で 14 緑** (§3 の次の一手) |
 
 削除済み: `OpenAIRequestValidator`、`OpenAIChatRequest`、`OpenAIStop`、
 `OpenAIStreamOptions`、`OpenAIReasoning`、`ServerRequestError.payloadTooLarge` /
@@ -165,8 +168,10 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
   棄却サンプリングと遅延文法と思考中の抑止 (GEN-5/6/7) が本物のサンプラで
   動くこと、予算切れの終了タグ強制 (RSN-4) がモデルの上で本文を書かせること、
   リングより深い巻き戻し (DEV-13)、拘束された tool call が次のターンの
-  描き直しと一致すること (INV-1 × GEN-8)。**「書けた」と「通った」は別**なので、
-  走らせた結果は CONFORMANCE §2 に書き足すこと。
+  描き直しと一致すること (INV-1 × GEN-8)。**この段落の 14 検査は 2026-08-21 に
+  走って全部緑になった** (上の §3 の次の一手)。残っているのは pi の実セッションと
+  OpenAI SDK。**「書けた」と「通った」は別**なので、走らせた結果は
+  CONFORMANCE §2 に書き足すこと。
 - サブエージェントを使うときは**共有インデックスに注意**。`git add` だけでは
   他のエージェントが stage したファイルを巻き込むので、**`git commit -- <paths>`**
   で経路を限ること。実際に 2 回巻き込みが起きた。

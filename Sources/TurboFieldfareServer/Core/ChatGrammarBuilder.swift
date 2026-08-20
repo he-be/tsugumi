@@ -8,13 +8,26 @@ import TurboFieldfare
 /// tokenizer.
 public struct ChatGrammarMarkers: Equatable, Sendable {
     /// `<|tool_call>` — the section start the template writes and, in a lazy
-    /// grammar, the trigger (GEN-5).
+    /// grammar, the trigger (GEN-5). The spelling is what the *trigger* is
+    /// reported as; the grammar itself is written with the ids below.
     public let toolCallStart: String
     /// `<tool_call|>` — the section end.
     public let toolCallEnd: String
-    /// The id of the token whose text is `toolCallStart`. Only the lazy
-    /// grammar needs it; a non-lazy grammar spells the marker as text.
+    /// The id of the token whose text is `toolCallStart`.
+    ///
+    /// **The grammar spells both markers as this id and `toolCallEndTokenID`,
+    /// never as their text.** Their spelling is also reachable as a run of
+    /// ordinary tokens (`<`, `|`, `tool`, `_`, `call`, `>`), and a literal
+    /// accepts that run just as happily as the single marker token — but the
+    /// decoder recognises a tool call by token id (`StructuredAssistantDecoder`),
+    /// and the template re-renders an assistant turn with the marker tokens
+    /// (INV-1). A text-spelled marker is therefore both unparseable and
+    /// non-canonical: with `tool_choice: required` the model wrote
+    /// `<`,`|`,`tool`,… for the opener and the real `<tool_call|>` token for
+    /// the closer, and the decoder saw a section end with no section start.
     public let toolCallStartTokenID: Int32
+    /// The id of the token whose text is `toolCallEnd`, for the same reason.
+    public let toolCallEndTokenID: Int32
     /// `<|channel>` / `<channel|>` — the thought block a non-lazy grammar has
     /// to swallow before the constrained body (GEN-13). Written as token ids
     /// rather than text because the body between them is "any token that is
@@ -26,11 +39,13 @@ public struct ChatGrammarMarkers: Equatable, Sendable {
     public init(toolCallStart: String,
                 toolCallEnd: String,
                 toolCallStartTokenID: Int32,
+                toolCallEndTokenID: Int32,
                 channelStartTokenID: Int32? = nil,
                 channelEndTokenID: Int32? = nil) {
         self.toolCallStart = toolCallStart
         self.toolCallEnd = toolCallEnd
         self.toolCallStartTokenID = toolCallStartTokenID
+        self.toolCallEndTokenID = toolCallEndTokenID
         self.channelStartTokenID = channelStartTokenID
         self.channelEndTokenID = channelEndTokenID
     }
@@ -40,6 +55,7 @@ public struct ChatGrammarMarkers: Equatable, Sendable {
         self.init(toolCallStart: ChatGrammarMarkers.gemmaToolCallStart,
                   toolCallEnd: ChatGrammarMarkers.gemmaToolCallEnd,
                   toolCallStartTokenID: tokenizer.toolCallStartID,
+                  toolCallEndTokenID: tokenizer.toolCallEndID,
                   channelStartTokenID: tokenizer.channelStartID,
                   channelEndTokenID: tokenizer.channelEndID)
     }
@@ -48,9 +64,10 @@ public struct ChatGrammarMarkers: Equatable, Sendable {
     public static let gemmaToolCallEnd = "<tool_call|>"
 }
 
-/// What starts a lazy grammar (GEN-5). The id is what the sampler watches for;
-/// the text is what the matcher must be fed once it fires, because the marker
-/// is the first thing the grammar spells.
+/// What starts a lazy grammar (GEN-5). The id is what the sampler watches for
+/// and what the matcher consumes once it fires — the marker is the first thing
+/// the grammar spells, as a `TOKEN` element. The text is the same marker's
+/// spelling, kept for the callers that report or log it.
 public struct ChatGrammarTrigger: Equatable, Sendable {
     public let tokenID: Int32
     public let text: String
@@ -251,13 +268,19 @@ public enum ChatGrammarBuilder {
                 // GEN-8: the canonical template form, with no whitespace
                 // anywhere. The braces come from the schema's own object rule,
                 // so this rule must not add its own.
+                //
+                // The two markers are `TOKEN` elements, not literals: only the
+                // marker token itself may open and close the section, because
+                // that is what the decoder reads and what the template writes
+                // back (see `ChatGrammarMarkers.toolCallStartTokenID`).
                 let arguments = builder.addSchema("tool-\(tool.name)-args",
                                                   argumentsSchema(tool.parameters))
                 alternatives.append(builder.addRule(
                     "tool-\(tool.name)",
-                    literal(markers.toolCallStart + "call:" + tool.name)
+                    tokenElement(markers.toolCallStartTokenID)
+                        + " " + literal("call:" + tool.name)
                         + " " + arguments
-                        + " " + literal(markers.toolCallEnd)))
+                        + " " + tokenElement(markers.toolCallEndTokenID)))
             }
             let body = alternatives.count == 1
                 ? alternatives[0]
@@ -287,6 +310,13 @@ public enum ChatGrammarBuilder {
             return parameters
         }
         return .object(["type": .string("object")])
+    }
+
+    /// A `TOKEN` element — the token with this id and nothing else. Written
+    /// the way `GBNFGrammar` spells one (`<[id]>`), which the matcher matches
+    /// by id rather than by piece text.
+    private static func tokenElement(_ tokenID: Int32) -> String {
+        "<[\(tokenID)]>"
     }
 
     /// The reference's `GRAMMAR_LITERAL_ESCAPE_RE` = `[\r\n"\\]`.

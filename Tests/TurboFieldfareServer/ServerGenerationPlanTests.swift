@@ -17,11 +17,12 @@ struct ServerGenerationPlanTests {
     // MARK: - Fixtures
 
     /// The markers as this model writes them, injected so the suite needs no
-    /// tokenizer. `7` stands in for `<|tool_call>`'s id.
+    /// tokenizer. `7` and `8` stand in for `<|tool_call>` / `<tool_call|>`.
     private static let markers = ChatGrammarMarkers(
         toolCallStart: "<|tool_call>",
         toolCallEnd: "<tool_call|>",
-        toolCallStartTokenID: 7)
+        toolCallStartTokenID: 7,
+        toolCallEndTokenID: 8)
 
     private static let declaredTools = #""tools":[{"type":"function","function":{"#
         + #""name":"lookup","description":"","parameters":{"type":"object","#
@@ -54,7 +55,7 @@ struct ServerGenerationPlanTests {
     func GEN_4_GEN_5_tool_choice_auto_plans_a_lazy_grammar() throws {
         let plan = try Self.plan(Self.declaredTools)
         let grammar = try #require(plan.grammar)
-        #expect(grammar.contains(#""<|tool_call>call:lookup""#))
+        #expect(grammar.contains(#"<[7]> "call:lookup""#))
         #expect(plan.isLazy)
         #expect(plan.trigger == ChatGrammarTrigger(tokenID: 7, text: "<|tool_call>"))
     }
@@ -63,7 +64,7 @@ struct ServerGenerationPlanTests {
     func GEN_4_tool_choice_required_plans_a_non_lazy_grammar() throws {
         let plan = try Self.plan(Self.declaredTools, #""tool_choice":"required""#)
         let grammar = try #require(plan.grammar)
-        #expect(grammar.contains(#""<|tool_call>call:lookup""#))
+        #expect(grammar.contains(#"<[7]> "call:lookup""#))
         #expect(!plan.isLazy)
         #expect(plan.trigger == nil)
     }
@@ -74,7 +75,7 @@ struct ServerGenerationPlanTests {
             Self.declaredTools,
             #""tool_choice":{"type":"function","function":{"name":"clock"}}"#)
         let grammar = try #require(plan.grammar)
-        #expect(grammar.contains(#""<|tool_call>call:clock""#))
+        #expect(grammar.contains(#"<[7]> "call:clock""#))
         #expect(!grammar.contains("lookup"))
         #expect(!plan.isLazy)
     }

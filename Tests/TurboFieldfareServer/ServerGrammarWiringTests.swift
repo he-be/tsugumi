@@ -107,6 +107,58 @@ struct ServerGrammarWiringTests {
         #expect(constraint.mayEndHere)
     }
 
+    /// The GEN-4-required failure this rule exists for: the grammar used to
+    /// spell the section markers as **text**, and their spelling is also
+    /// reachable as a run of ordinary tokens. Asked for a tool call on a turn
+    /// where it wanted to answer in prose, the model took that door — it wrote
+    /// `<`, `|`, `tool`, … for the opener and the real `<tool_call|>` token for
+    /// the closer, and `StructuredAssistantDecoder`, which knows a call by its
+    /// token ids, saw a section end with no section start and failed the
+    /// request with a 500. With the markers as `TOKEN` elements the door is
+    /// gone: after the thought block the marker token is the only move.
+    @Test("GEN-4/GEN-8: required leaves the marker token as the only way to open a call")
+    func GEN_4_required_can_only_open_a_call_with_the_marker_token() throws {
+        let plan = try makePlan(Self.toolsField, #""tool_choice":"required""#)
+        #expect(!plan.isLazy)
+        let constraint = try GrammarTokenConstraint(
+            try #require(plan.grammar), vocabulary: vocab)
+
+        // GEN-13: the thought block the model opens for itself when thinking
+        // is on, then its close — after which the call body is due.
+        try constraint.accept(tokenID: tok.channelStartID)
+        for id in tok.encode("thought\nThe user only said hello.", addBOS: false) {
+            try constraint.accept(tokenID: id)
+        }
+        try constraint.accept(tokenID: tok.channelEndID)
+
+        var allowed = [Bool](repeating: false, count: tok.vocabSize)
+        try allowed.withUnsafeMutableBufferPointer { try constraint.fillAllowedMask($0) }
+        let ids = (0..<tok.vocabSize).filter { allowed[$0] }.map(Int32.init)
+        #expect(ids == [tok.toolCallStartID],
+                "\(ids.map { "\($0)=\(tok.decode([$0], skipSpecialTokens: false))" })")
+        // The single-token probe agrees, and the first token of the marker's
+        // spelling — the one the model actually drew — is not among them.
+        #expect(constraint.allows(tokenID: tok.toolCallStartID))
+        for id in tok.encode("<", addBOS: false) {
+            #expect(!constraint.allows(tokenID: id))
+        }
+        // The closer is the marker token too, never its spelling.
+        try constraint.accept(tokenID: tok.toolCallStartID)
+        let quote = try #require(singleToken(#"<|"|>"#))
+        var body: [Int32] = tok.encode("call:get_weather{city:", addBOS: false)
+        body.append(quote)
+        body += tok.encode("Kyoto", addBOS: false)
+        body.append(quote)
+        body += tok.encode(",days:3}", addBOS: false)
+        for id in body { try constraint.accept(tokenID: id) }
+        for id in tok.encode("<", addBOS: false) {
+            #expect(!constraint.allows(tokenID: id))
+        }
+        #expect(constraint.allows(tokenID: tok.toolCallEndID))
+        try constraint.accept(tokenID: tok.toolCallEndID)
+        #expect(constraint.mayEndHere)
+    }
+
     @Test("GEN-6: a trigger inside the thought block never arms the planned constraint")
     func GEN_6_a_trigger_inside_the_thought_block_never_arms() throws {
         let plan = try makePlan(Self.toolsField)
