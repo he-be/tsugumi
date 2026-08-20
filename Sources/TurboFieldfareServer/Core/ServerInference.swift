@@ -48,6 +48,9 @@ public struct ServerCompletion: Equatable, Sendable {
     /// render, and the schema elements the grammar could not constrain. For
     /// the request-lifecycle log line only; never part of the response.
     public let approximations: [String]
+    /// SPEC §9 RSP-3: what this completion cost. Nil only for a backend that
+    /// measures nothing — the stubs the HTTP contract is checked against.
+    public let timings: ServerTimings?
 
     public init(content: String,
                 toolCalls: [ParsedToolCall],
@@ -55,7 +58,8 @@ public struct ServerCompletion: Equatable, Sendable {
                 usage: OpenAIUsage,
                 speculative: ServerSpeculativeSummary? = nil,
                 reasoningContent: String = "",
-                approximations: [String] = []) {
+                approximations: [String] = [],
+                timings: ServerTimings? = nil) {
         self.content = content
         self.reasoningContent = reasoningContent
         self.toolCalls = toolCalls
@@ -63,6 +67,7 @@ public struct ServerCompletion: Equatable, Sendable {
         self.usage = usage
         self.speculative = speculative
         self.approximations = approximations
+        self.timings = timings
     }
 }
 
@@ -314,6 +319,12 @@ public protocol ServerInferenceBackend: Sendable {
                   onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void) async throws -> ServerCompletion
     func generate(_ prepared: ServerPreparedRequest,
                   onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void) async throws -> ServerCompletion
+    /// SPEC §9 RSP-3 with `timings_per_token: true`. Same generation, with the
+    /// running timings published into `monitor` as each token lands so the
+    /// route can put them on the chunk that token produced.
+    func generate(_ prepared: ServerPreparedRequest,
+                  monitor: ServerTimingsMonitor?,
+                  onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void) async throws -> ServerCompletion
 }
 
 public extension ServerInferenceBackend {
@@ -326,6 +337,16 @@ public extension ServerInferenceBackend {
         onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
     ) async throws -> ServerCompletion {
         try await generate(prepared.request, onEvent: onEvent)
+    }
+
+    /// A backend that takes no measurements has nothing to publish, so the
+    /// monitor stays empty and the generation is the ordinary one.
+    func generate(
+        _ prepared: ServerPreparedRequest,
+        monitor: ServerTimingsMonitor?,
+        onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
+    ) async throws -> ServerCompletion {
+        try await generate(prepared, onEvent: onEvent)
     }
 }
 
