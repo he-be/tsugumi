@@ -1,0 +1,15 @@
+ the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France.
+
+01. **Identify the core question/statement:** The user's input is a repetitive string of text: "The capital of France is the capital of France is..." repeated many times.
+2. **Analyze the repetition:** The repetition is a common way to test an AI's ability to handle redundant or nonsensical input.
+3. **Determine the underlying fact:** The core fact being repeated is "The capital of France is [Paris]".
+4. **Formulate a response:**
+    *   Acknowledge the fact.
+    *   Provide the correct answer (Paris).
+    *   Keep it concise and helpful.
+5. **Final Polish:** "The capital of France is Paris." (Simple and direct).The capital of France is **Paris**.
+[stop=endOfTurn prefill=6tok new=249tok decode=10.45s tok/s=23.821]
+[load=0.681s layerVerify=5.336s/30layers prefill=5.939s ttft=5.939s peak=4.53GB rss=2.95GB]
+[expert prefill hit=0.0% 0/867 io=0.235s | decode hit=69.4% 36147/52066 io=9.004s]
+[decode/tok io=0.00ms cb1=0.00ms cb2=0.00ms head=0.00ms]
+[mtp bs=4 rounds=82 accept=2.049/3 tok/round=3.037 draft=0.685s verify=9.651s accepted=17,9,9,47]

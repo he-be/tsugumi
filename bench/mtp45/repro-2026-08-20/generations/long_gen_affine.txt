@@ -1,0 +1,27 @@
+
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+Summary:
+
+[stop=maxTokens prefill=702tok new=64tok decode=3.80s tok/s=16.863]
+[load=0.780s layerVerify=5.968s/30layers prefill=7.452s ttft=7.452s peak=4.90GB rss=3.07GB]
+[expert prefill hit=0.0% 0/3376 io=0.684s | decode hit=80.8% 12216/15120 io=1.755s]
+[decode/tok io=27.47ms cb1=0.69ms cb2=0.32ms head=3.56ms]

@@ -1,0 +1,7 @@
+ the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the capital of France is the.
+
+thought-provoking own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own-thought own
+[stop=maxTokens prefill=6tok new=256tok decode=11.09s tok/s=23.094]
+[load=0.781s layerVerify=6.033s/30layers prefill=6.618s ttft=6.618s peak=4.87GB rss=2.73GB]
+[expert prefill hit=0.0% 0/867 io=0.245s | decode hit=84.6% 51798/61200 io=4.165s]
+[decode/tok io=16.31ms cb1=0.65ms cb2=0.28ms head=3.56ms]
