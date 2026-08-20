@@ -105,6 +105,38 @@ struct ServerLifecycleTests {
         try await server.shutdown()
     }
 
+    /// LIF-6: the 503 is decided ahead of the routing table, so during the load
+    /// even a path this server has never heard of answers 503 and not 404 —
+    /// the reference implementation refuses from a middleware in front of its
+    /// own routes (`server-http.cpp:255`). A client cannot conclude anything
+    /// about a route from a server that has not finished starting.
+    @Test func LIF_6_unknown_paths_are_503_while_loading_and_404_after() async throws {
+        let server = TurboFieldfareHTTPServer(
+            modelID: "test-model", queueLimit: 1, backend: nil)
+        let channel = try await server.start(port: 0)
+        let port = try #require(channel.localAddress?.port)
+        let unknown = URL(string: "http://127.0.0.1:\(port)/nope")!
+        // `/v1/embeddings` is a known-but-unsupported path (EP-7): its 501 is
+        // decided by the same table, so it is 503 while loading too.
+        let unsupported = URL(string: "http://127.0.0.1:\(port)/v1/embeddings")!
+
+        for url in [unknown, unsupported] {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            #expect((response as? HTTPURLResponse)?.statusCode == 503, "\(url.path)")
+            #expect(try Self.json(data) == Self.json(literal: Self.loadingBody),
+                    "\(url.path)")
+        }
+
+        await server.modelDidLoad(LifecycleStubBackend())
+
+        let after = try await URLSession.shared.data(from: unknown)
+        #expect((after.1 as? HTTPURLResponse)?.statusCode == 404)
+        let unsupportedAfter = try await URLSession.shared.data(from: unsupported)
+        #expect((unsupportedAfter.1 as? HTTPURLResponse)?.statusCode == 501)
+
+        try await server.shutdown()
+    }
+
     /// LIF-3: once the load lands, `/health` is `200 {"status":"ok"}` — and the
     /// endpoints that were 503 a moment ago answer for real.
     @Test func LIF_3_health_is_ok_once_the_model_is_loaded() async throws {
@@ -165,6 +197,78 @@ struct ServerLifecycleTests {
         }
 
         try await server.shutdown()
+    }
+
+    /// LIF-7: a load that fails ends the process — the port is already open by
+    /// then (LIF-1), so the alternative would be a server that answers 503
+    /// `model_loading` forever for a model that is never coming.
+    ///
+    /// Driven as a subprocess because the exit is `main.swift`'s. The model
+    /// path does not exist, so this never loads weights and never touches
+    /// Metal: it fails in the tokenizer folder lookup, before any of that.
+    @Test(.enabled(if: ServerLifecycleTests.freshServerBinary != nil))
+    func LIF_7_a_failed_load_exits_the_process() async throws {
+        let binary = try #require(Self.freshServerBinary)
+        // A port that was free a moment ago, taken the way the tests take one.
+        let probe = TurboFieldfareHTTPServer(
+            modelID: "test-model", queueLimit: 1, backend: nil)
+        let port = try #require(try await probe.start(port: 0).localAddress?.port)
+        try await probe.shutdown()
+
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = [
+            "--model", "/nonexistent/turbofieldfare-tests/no-such-model.gturbo",
+            "--port", "\(port)",
+        ]
+        let output = Pipe()
+        let errors = Pipe()
+        process.standardOutput = output
+        process.standardError = errors
+        try process.run()
+        let stdout = String(
+            decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let stderr = String(
+            decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        process.waitUntilExit()
+
+        // LIF-1 happened first: the port was open while the load was running.
+        #expect(stdout.contains("listening"))
+        // LIF-7: the reason is on stderr and the status is 1.
+        #expect(stderr.hasPrefix("error: "))
+        #expect(process.terminationStatus == 1)
+    }
+
+    /// The built server binary, but only when it is at least as new as the
+    /// sources it would be built from: `swift test` does not build an
+    /// executable product, so an older one would be answering for code that is
+    /// no longer here.
+    private static let freshServerBinary: URL? = {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let sources = [
+            "Sources/TurboFieldfareServer/Command/main.swift",
+            "Sources/TurboFieldfareServer/Core/HTTPServer.swift",
+        ].compactMap {
+            modificationDate(root.appendingPathComponent($0))
+        }
+        guard let newestSource = sources.max() else { return nil }
+        for configuration in ["debug", "release"] {
+            let candidate = root.appendingPathComponent(
+                ".build/\(configuration)/TurboFieldfareServer")
+            guard FileManager.default.isExecutableFile(atPath: candidate.path),
+                  let built = modificationDate(candidate),
+                  built >= newestSource else { continue }
+            return candidate
+        }
+        return nil
+    }()
+
+    private static func modificationDate(_ url: URL) -> Date? {
+        try? FileManager.default
+            .attributesOfItem(atPath: url.path)[.modificationDate] as? Date
     }
 
     /// LIF-5: a signal that arrives during the load has to be able to end the
