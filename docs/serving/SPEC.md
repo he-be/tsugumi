@@ -163,8 +163,9 @@
 | RSN-1 | プロセス既定は `--reasoning-budget N` (**-1 = 無制限 (既定)、0 = 無効**)。独自フラグ `--thinking on\|off` は廃止 (FLAG-4)。 |
 | RSN-2 | 要求ごとの制御は `reasoning_effort` (REQ-reasoning-effort) と `chat_template_kwargs.enable_thinking`。参照実装と同じく両方受け、食い違いを 400 にしない。解決順は参照実装 (`server-common.cpp:1278-1304`) と同じ: `enable_thinking` があればそれ、無ければ `reasoning_effort` の有無 (`none` 以外 = 思考する)、最後に `reasoning_effort: "none"` と予算 0 が上書きして閉じる。 |
 | RSN-3 | 思考は `reasoning_content` に分離して返す (`--reasoning-format auto`、既定)。`--reasoning-format none` で生テキストのまま返す。 |
-| RSN-4 | **思考の予算が尽きたら終了タグを強制挿入して本文へ移らせる** (参照実装 `reasoning_budget_forced`)。予算 = `reasoning_budget_tokens`、および `max_tokens` の残り。`finish_reason: length` で本文 0 字・思考だけの応答を返さない (旧 16 §5 で実測済みの欠陥)。 |
+| RSN-4 | **思考の予算が尽きたら終了タグを強制挿入して本文へ移らせる** (参照実装 `reasoning_budget_forced`)。予算 = `reasoning_budget_tokens`、および `max_tokens` の残り。**`max_tokens` の分け方は DEV-21** (答えの分を先に取り置く)。`max_tokens: -1` (無制限) は締切を作らない — 無制限は無制限であり、コンテキストの上限はクライアントが選んだ予算ではない。`finish_reason: length` で本文 0 字・思考だけの応答を返さない (旧 16 §5 で実測済みの欠陥)。 |
 | RSN-5 | tools 宣言時も思考は有効 (MSG-6)。 |
+| RSN-6 | **予算はチャンネルが開いた時点で動き出す。**このテンプレートは `strip_thinking` がチャンネルブロックを一律に思考として扱うので、ラベルを見ずに `<\|channel>` で武装してよい。`final` などのラベル付きブロックが出てくるようになったら、ここを読み直す。 |
 
 ## 9. 応答 (RSP)
 
@@ -215,7 +216,8 @@
 | DEV-10 | `top_p` のサンプラ写像 | 全語彙で nucleus を取る | `top_p < 1` かつ `top_k` 未指定なら `top_k = 256` を補う。`top_p = 0` は貪欲 (`top_k = 1`) として実行 | サンプラが全語彙 nucleus を実装していない (`GenerationConfig.validate`)。R3 の「範囲外は端に丸める」の延長で、拒否ではない | 全語彙 nucleus を実装したら |
 | DEV-12 | チャットテンプレート | 同梱 `chat_template.jinja` をそのまま描く | **サーバーだけリポジトリ所有の変種**を描く (`Sources/TurboFieldfare/Templates/server_chat_template.jinja`、`GFTokenizer.ChatTemplateVariant.serverRedraw`)。同梱版との差分は 1 ハンク: 完了した model ターンに、生成時に KV へ入っていた thought channel (思考 OFF なら空、思考 ON なら思考ブロック) を描き直す | 同梱版は思考ブロックを「最後の user より後」かつ「`tool_calls` を持つ」ターンにしか描かないので、完了した回答を描き直すと必ず生成時とずれる = INV-1 が破れ、毎ターン LCP が 12〜20+ トークン短くなる。CLI・アプリ・KernelCheck は同梱版のまま (既定 `.modelBundled`) なので、それらのトークン列は 1 ビットも動かない | 同梱テンプレートが完了ターンを生成どおりに描くようになったら |
 | DEV-13 | 部分再利用の深さ | 共通接頭辞ならいくらでも遡って再開できる | **KV カーソルを戻せるのはリングの余裕まで** (`min(maxContext, slidingWindow + prefillChunkTokens) - slidingWindow`、既定 **2048 トークン**)。それより深い分岐は接頭辞を捨てて全 prefill | FP16 リングは SWA 層の物理スロットを `capacity` ごとに再利用するので、`[N, position)` を書いた時点で `[N-capacity, position-capacity)` は潰れている。カーネルが読む `[N-slidingWindow, N)` を守る条件がこの式 (`KVCacheManager.maximumSafeRewind`) | リング容量が変わったら自動で追随する。リングを切れば (`fp16RingEnabled = false`) 制限は消える |
-| DEV-14 | 文法拘束中の投機デコード | 文法と投機デコードは併用できる (`llama_grammar` を clone して巻き戻す) | **文法が有効な要求は投機デコードを使わない** (plain 経路に落ちる) | 検証は「その位置でターゲットが引いたはずのトークン」と一致することで成立している。文法は引き直し (GEN-7) を起こすので、ブロック内の後続位置の前提が崩れる。`repeat_penalty != 1` が既に同じ理由で plain に落ちている前例に合わせた | 文法状態をブロック単位で巻き戻せるようにしたら |
+| DEV-21 | 思考の予算に `max_tokens` が効くときの分け方 | 予算は `reasoning_budget_tokens` だけ。`max_tokens` は分けない | `max_tokens` のうち **`max(1, max_tokens/4)` を答えのために取り置き**、残りを思考の締切にする | RSN-4 は「`max_tokens` の残りも予算のうち」と言うが、分け方までは決めていない。取り置きが無いと、思考が `max_tokens` を丸ごと使い切ってから終了タグを差し込むことになり、本文 0 字という直そうとしている欠陥がそのまま残る。1/4 に強い根拠は無く、**測って動かしてよい数字** | 実測で答えが切れる/思考が短すぎるとわかったら |
+| DEV-14 | 文法拘束中の投機デコード | 文法と投機デコードは併用できる (`llama_grammar` を clone して巻き戻す) | **文法が有効な要求と、思考の終了タグを強制しうる要求は投機デコードを使わない** (plain 経路に落ちる) | 検証は「その位置でターゲットが引いたはずのトークン」と一致することで成立している。文法は引き直し (GEN-7) を、強制挿入 (RSN-4) は引かずに置くトークンを持ち込むので、どちらもブロック内の後続位置の前提を崩す。`repeat_penalty != 1` が既に同じ理由で plain に落ちている前例に合わせた | 文法状態をブロック単位で巻き戻せるようにしたら |
 | DEV-15 | オブジェクトのプロパティ順 | 宣言順 | **キーの昇順**。必須・省略可のどちらも | (1) `JSONValue.object` は順序を持たない Swift の Dictionary である。(2) テンプレートが tool_call の引数を `dictsort` で描くので、生成もキー昇順でなければ tool_call ターンで INV-1 (描き直し == 生成) が破れる | JSONValue が順序を持つようになり、かつテンプレートが宣言順で描くようになったら |
 | DEV-16 | 表現できないスキーマ | 例外を投げる (400) | 近似に落として受理し、落とした箇所を記録する | GEN-2。契約は「拘束する」ではなく「頼まれた形で返す」であり、拘束しきれない部分があることは 400 の理由にならない。入口で断ると、クライアントが載せてくる巨大なスキーマの端の 1 行でタスク全体が通らなくなる | — |
 | DEV-17 | 名前指定の `tool_choice` | 文字列としてデコードするため object 形は型エラーを握りつぶして `auto` に落ちる (実質未実装) | OpenAI どおり、その関数だけを文法で固定する | 参照実装のこれは欠陥であり、規範ではない。ワイヤ形式の上位規範は OpenAI (§0) で、そこでは名前指定は「その関数を必ず呼ぶ」である | 参照実装が object 形を実装したら合わせて読み直す |
