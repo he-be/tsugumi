@@ -823,9 +823,12 @@ public actor ServerModelSession: ServerInferenceBackend {
             reason = "stop"
         }
         if request.cachePrompt {
+            // CACHE-4: the spans of the *whole* prompt, not the rebased ones a
+            // resumed prefill ran on — the entry describes the KV from 0.
             promptCache.publish(domain: promptCacheDomain,
                                 request: request,
-                                result: result)
+                                result: result,
+                                vision: vision)
         }
         completed = true
         return ServerCompletion(

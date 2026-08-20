@@ -31,8 +31,6 @@ struct ServerPromptMediaChunk: Sendable, Equatable {
     let tokenOffset: Int
     let tokenCount: Int
     let digest: String
-
-    var tokenEnd: Int { tokenOffset + tokenCount }
 }
 
 /// What one served completion left behind.
@@ -41,14 +39,9 @@ struct ServerPromptCacheEntry: Sendable, Equatable {
     /// The tokens the KV holds, in order — prompt and generation both. This is
     /// the entire state the reuse rule reads.
     let tokenIDs: [Int32]
-    /// One digest per picture inside `tokenIDs`, in prompt order.
-    ///
-    /// Two photographs widen into the *same* soft-token ids, so the token walk
-    /// cannot tell them apart. Until the walk compares media chunks the way the
-    /// reference does (CACHE-4), this is what stops a request from resuming
-    /// from a prefix that holds a different picture's rows and answering about
-    /// it.
-    let imageDigests: [String]
+    /// The pictures inside `tokenIDs`, in prompt order — what the walk compares
+    /// when it reaches them (CACHE-4).
+    let mediaChunks: [ServerPromptMediaChunk]
 
     var kvPosition: Int { tokenIDs.count }
 }
@@ -81,15 +74,54 @@ func commonPrefixLength(_ lhs: [Int32], _ rhs: [Int32]) -> Int {
 
 /// CACHE-4: the same walk, with the pictures compared as chunks inside it.
 ///
-/// **Not implemented yet (P1-D4).** The media arguments are accepted so the
-/// SPEC line can be stated as a test, but the walk still sees tokens only —
-/// which is why two photographs behind the same words still look identical to
-/// it. Until this compares chunks, `ServerPromptCache` keeps the separate
-/// digest check that CACHE-4 calls the interim arrangement.
+/// Two photographs widen into the *same* soft-token ids, so a walk that reads
+/// ids alone cannot tell them apart — it would hand a request rows that
+/// describe someone else's picture and let the model answer about it. The
+/// reference solves this in the middle of the same loop
+/// (`server-common.cpp:678`): where both sides begin a media chunk it compares
+/// the chunk's id and token count, steps over the whole chunk when they agree,
+/// and returns that index when they do not. A picture on one side and text on
+/// the other is a difference at that index too — upstream sees
+/// `LLAMA_TOKEN_NULL` against a real token there.
+///
+/// The walk stays in lockstep: a chunk is only ever entered at its first
+/// token, because reaching its interior would mean an earlier index compared a
+/// chunk against a non-chunk and stopped.
 func commonPrefixLength(_ lhs: [Int32], _ rhs: [Int32],
                         lhsMedia: [ServerPromptMediaChunk],
                         rhsMedia: [ServerPromptMediaChunk]) -> Int {
-    commonPrefixLength(lhs, rhs)
+    guard !lhsMedia.isEmpty || !rhsMedia.isEmpty else {
+        return commonPrefixLength(lhs, rhs)
+    }
+    func byOffset(_ chunks: [ServerPromptMediaChunk]) -> [Int: ServerPromptMediaChunk] {
+        Dictionary(chunks.map { ($0.tokenOffset, $0) }, uniquingKeysWith: { first, _ in first })
+    }
+    let left = byOffset(lhsMedia)
+    let right = byOffset(rhsMedia)
+
+    let limit = min(lhs.count, rhs.count)
+    var index = 0
+    while index < limit {
+        switch (left[index], right[index]) {
+        case (let a?, let b?):
+            // A zero-token chunk cannot be stepped over, and the reference
+            // asserts it never happens; refusing the prefix there is the
+            // conservative reading of the same impossibility.
+            guard a.digest == b.digest, a.tokenCount == b.tokenCount,
+                  a.tokenCount > 0 else {
+                return index
+            }
+            index += a.tokenCount
+        case (nil, nil):
+            guard lhs[index] == rhs[index] else { return index }
+            index += 1
+        default:
+            return index
+        }
+    }
+    // A chunk may reach past the shorter sequence's end; what agreed still
+    // agrees only as far as that sequence goes.
+    return min(index, limit)
 }
 
 struct ServerPromptCache: Sendable {
@@ -108,6 +140,31 @@ struct ServerPromptCache: Sendable {
         }
     }
 
+    /// The media chunks of a rendered prompt: each span paired with the digest
+    /// of the photograph that widened into it.
+    ///
+    /// nil means the prompt's pictures cannot be described — the spans and the
+    /// request's images disagree about how many there are. Both sides of the
+    /// walk are built here, so returning an incomplete list instead would let
+    /// soft tokens be compared as though they were text, which is precisely
+    /// what CACHE-4 exists to prevent; the caller refuses the prefix instead.
+    static func mediaChunks(
+        request: ValidatedChatRequest,
+        vision: VisionPrefillInput?
+    ) -> [ServerPromptMediaChunk]? {
+        guard let vision, !vision.spans.isEmpty else { return [] }
+        let digests = imageDigests(request)
+        var chunks: [ServerPromptMediaChunk] = []
+        chunks.reserveCapacity(vision.spans.count)
+        for span in vision.spans {
+            guard span.imageIndex >= 0, span.imageIndex < digests.count else { return nil }
+            chunks.append(ServerPromptMediaChunk(tokenOffset: span.tokenOffset,
+                                                 tokenCount: span.tokenCount,
+                                                 digest: digests[span.imageIndex]))
+        }
+        return chunks
+    }
+
     /// Record what the KV now holds.
     ///
     /// There is nothing to be careful about beyond knowing the tokens exactly:
@@ -117,8 +174,8 @@ struct ServerPromptCache: Sendable {
     /// which the old design screened on here — cannot make the answer wrong.
     /// - Parameter vision: the image side of the prompt this KV was built
     ///   from, with offsets into the whole prompt — which is a prefix of
-    ///   `result.kvBackedTokenIDs`, so the offsets describe the KV too.
-    ///   Unused until the walk compares chunks (P1-D4, CACHE-4).
+    ///   `result.kvBackedTokenIDs`, so the same offsets describe the KV
+    ///   (CACHE-4).
     mutating func publish(
         domain: ServerPromptCacheDomain,
         request: ValidatedChatRequest,
@@ -126,14 +183,15 @@ struct ServerPromptCache: Sendable {
         vision: VisionPrefillInput? = nil
     ) {
         guard result.kvPosition == result.kvBackedTokenIDs.count,
-              result.kvPosition > 0 else {
+              result.kvPosition > 0,
+              let chunks = Self.mediaChunks(request: request, vision: vision) else {
             entry = nil
             return
         }
         entry = ServerPromptCacheEntry(
             domain: domain,
             tokenIDs: result.kvBackedTokenIDs,
-            imageDigests: Self.imageDigests(request))
+            mediaChunks: chunks)
     }
 
     /// How much of `renderedPromptIDs` this KV can serve.
@@ -150,18 +208,25 @@ struct ServerPromptCache: Sendable {
         vision: VisionPrefillInput? = nil,
         maximumRewind: Int = 0
     ) -> ServerPromptCacheMatch {
-        guard let entry, entry.domain == domain, entry.kvPosition > 0 else {
+        guard let entry, entry.domain == domain, entry.kvPosition > 0,
+              let chunks = Self.mediaChunks(request: request, vision: vision) else {
             return .miss
         }
 
-        var reusable = commonPrefixLength(entry.tokenIDs, renderedPromptIDs)
+        // CACHE-4: the pictures are compared inside the walk, so a prefix this
+        // returns already holds the same photographs — nothing after it needs
+        // to check them again.
+        var reusable = commonPrefixLength(entry.tokenIDs, renderedPromptIDs,
+                                          lhsMedia: entry.mediaChunks,
+                                          rhsMedia: chunks)
 
         // CACHE-3: with nothing left to prefill there is no token to draw the
         // next logits from, so the last one is decoded again (`n_past--`).
         if reusable == renderedPromptIDs.count { reusable -= 1 }
 
         // A picture cannot be half served: its soft tokens are scattered in one
-        // go. Cutting back to where it starts keeps everything in front of it.
+        // go. The walk never stops inside one, but CACHE-3's step back can land
+        // there; cutting back to where it starts keeps everything in front of it.
         if let straddling = (vision?.spans ?? []).first(where: {
             $0.tokenOffset < reusable && $0.tokenEnd > reusable
         }) {
@@ -173,10 +238,7 @@ struct ServerPromptCache: Sendable {
         // DEV-13). Serving the whole entry never moves it and is always fine.
         guard entry.kvPosition - reusable <= maximumRewind else { return .miss }
 
-        switch servedVision(request: request,
-                            vision: vision,
-                            reusable: reusable,
-                            entry: entry) {
+        switch servedVision(vision: vision, reusable: reusable) {
         case .unusable:
             return .miss
         case .allInTheKV:
@@ -190,8 +252,7 @@ struct ServerPromptCache: Sendable {
     }
 
     private enum ServedVision {
-        /// The prefix cannot be served: it holds a picture this request does
-        /// not have, or the remainder cannot be described.
+        /// The remainder cannot be described.
         case unusable
         /// Every picture is already in the KV — the text-only case too.
         case allInTheKV
@@ -199,29 +260,20 @@ struct ServerPromptCache: Sendable {
         case remaining(VisionPrefillInput)
     }
 
-    /// The image side of a hit: what is already in the KV has to be the same
-    /// pictures, and what is not has to be handed on with its offsets rebased
-    /// onto the slice that will actually be prefilled.
+    /// The image side of a hit: the pictures the served prefix does not hold,
+    /// with their offsets rebased onto the slice that will actually be
+    /// prefilled.
     ///
+    /// Nothing here decides *whether* the prefix may be served. It used to —
+    /// the entry carried a digest per picture and this compared them one to one
+    /// — because a walk over ids alone could not see that two photographs
+    /// differ. CACHE-4 puts that comparison inside the walk, so by the time
+    /// `reusable` exists the pictures behind it are known to be the same ones.
     private func servedVision(
-        request: ValidatedChatRequest,
         vision: VisionPrefillInput?,
-        reusable: Int,
-        entry: ServerPromptCacheEntry
+        reusable: Int
     ) -> ServedVision {
         guard let vision, !vision.spans.isEmpty else { return .allInTheKV }
-        let digests = Self.imageDigests(request)
-
-        // The tokens agree on the served prefix, so both sides hold the same
-        // number of pictures inside it — which makes them the first `n` of each
-        // list, and comparable one to one.
-        let inTheKV = vision.spans.filter { $0.tokenEnd <= reusable }.count
-        guard digests.count >= inTheKV,
-              entry.imageDigests.count >= inTheKV,
-              digests.prefix(inTheKV)
-                .elementsEqual(entry.imageDigests.prefix(inTheKV)) else {
-            return .unusable
-        }
 
         let remaining = zip(vision.spans, vision.images).filter { $0.0.tokenOffset >= reusable }
         guard !remaining.isEmpty else { return .allInTheKV }
