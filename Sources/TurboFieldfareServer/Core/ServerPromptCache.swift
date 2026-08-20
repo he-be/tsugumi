@@ -18,6 +18,23 @@ struct ServerPromptCacheDomain: Sendable, Equatable {
     let templateSHA256: String
 }
 
+/// One picture inside a token sequence: where its soft tokens sit, how many
+/// there are, and which photograph they came from.
+///
+/// CACHE-4: this is exactly the pair the reference compares inside the walk —
+/// `mtmd_input_chunk_get_id` and `mtmd_input_chunk_get_n_tokens`
+/// (`server-common.cpp:678`) — because the ids in the sequence say nothing
+/// about which picture widened into them.
+struct ServerPromptMediaChunk: Sendable, Equatable {
+    /// The first soft token, after the `<|image>` opener — `VisionImageSpan`'s
+    /// offset, in the same coordinates as the token array it describes.
+    let tokenOffset: Int
+    let tokenCount: Int
+    let digest: String
+
+    var tokenEnd: Int { tokenOffset + tokenCount }
+}
+
 /// What one served completion left behind.
 struct ServerPromptCacheEntry: Sendable, Equatable {
     let domain: ServerPromptCacheDomain
@@ -62,6 +79,19 @@ func commonPrefixLength(_ lhs: [Int32], _ rhs: [Int32]) -> Int {
     return index
 }
 
+/// CACHE-4: the same walk, with the pictures compared as chunks inside it.
+///
+/// **Not implemented yet (P1-D4).** The media arguments are accepted so the
+/// SPEC line can be stated as a test, but the walk still sees tokens only —
+/// which is why two photographs behind the same words still look identical to
+/// it. Until this compares chunks, `ServerPromptCache` keeps the separate
+/// digest check that CACHE-4 calls the interim arrangement.
+func commonPrefixLength(_ lhs: [Int32], _ rhs: [Int32],
+                        lhsMedia: [ServerPromptMediaChunk],
+                        rhsMedia: [ServerPromptMediaChunk]) -> Int {
+    commonPrefixLength(lhs, rhs)
+}
+
 struct ServerPromptCache: Sendable {
     private(set) var entry: ServerPromptCacheEntry?
 
@@ -85,10 +115,15 @@ struct ServerPromptCache: Sendable {
     /// not dangerous, it is merely a short common prefix next time. The stop
     /// reason, the stop-string filtering, and the shape of the turn — all of
     /// which the old design screened on here — cannot make the answer wrong.
+    /// - Parameter vision: the image side of the prompt this KV was built
+    ///   from, with offsets into the whole prompt — which is a prefix of
+    ///   `result.kvBackedTokenIDs`, so the offsets describe the KV too.
+    ///   Unused until the walk compares chunks (P1-D4, CACHE-4).
     mutating func publish(
         domain: ServerPromptCacheDomain,
         request: ValidatedChatRequest,
-        result: RawDecodeResult
+        result: RawDecodeResult,
+        vision: VisionPrefillInput? = nil
     ) {
         guard result.kvPosition == result.kvBackedTokenIDs.count,
               result.kvPosition > 0 else {

@@ -130,4 +130,77 @@ struct PromptCacheLCPTests {
         let cache = cache(holding: [1, 2, 3, 4, 5])
         #expect(try await reuse(cache, prompt: [1, 9, 9]) == 1)
     }
+
+    // MARK: - SPEC CACHE-4
+    //
+    // The pictures are stated the same way: token arithmetic, with `9` standing
+    // for the soft token every photograph widens into. That id is the same id
+    // whatever the camera saw, which is the entire reason the walk has to be
+    // told about chunks — the reference compares each chunk's id and token
+    // count in the middle of the same loop (`server-common.cpp:678`).
+
+    private func chunk(_ offset: Int, _ count: Int, _ digest: String)
+        -> ServerPromptMediaChunk {
+        ServerPromptMediaChunk(tokenOffset: offset, tokenCount: count, digest: digest)
+    }
+
+    /// Two photographs, the same words, the same ids — and the walk must still
+    /// stop where the pictures part.
+    @Test("CACHE-4: a different picture ends the walk where its chunk starts")
+    func CACHE_4_a_different_picture_ends_the_walk() {
+        let lhs: [Int32] = [1, 2, 9, 9, 9, 3, 4]
+        let rhs: [Int32] = [1, 2, 9, 9, 9, 3, 4]
+        #expect(commonPrefixLength(lhs, rhs) == 7,
+                "the ids agree all the way — that is what makes CACHE-4 necessary")
+        #expect(commonPrefixLength(lhs, rhs,
+                                   lhsMedia: [chunk(2, 3, "photo-a")],
+                                   rhsMedia: [chunk(2, 3, "photo-b")]) == 2)
+    }
+
+    /// The same photograph is crossed in one step, and the text behind it is
+    /// compared as text — the walk does not end at a picture, it steps over it.
+    @Test("CACHE-4: the same picture is skipped whole and the walk goes on")
+    func CACHE_4_the_same_picture_is_skipped_whole() {
+        let lhs: [Int32] = [1, 2, 9, 9, 9, 3, 4]
+        let rhs: [Int32] = [1, 2, 9, 9, 9, 3, 8]
+        #expect(commonPrefixLength(lhs, rhs,
+                                   lhsMedia: [chunk(2, 3, "photo-a")],
+                                   rhsMedia: [chunk(2, 3, "photo-a")]) == 6)
+    }
+
+    /// Same photograph, different size: its rows are a different length, so the
+    /// prefix ends at the chunk rather than part way into it.
+    @Test("CACHE-4: the same picture at a different token count ends the walk")
+    func CACHE_4_a_different_token_count_ends_the_walk() {
+        let lhs: [Int32] = [1, 2, 9, 9, 9, 3]
+        let rhs: [Int32] = [1, 2, 9, 9, 3, 5]
+        #expect(commonPrefixLength(lhs, rhs) == 4,
+                "the ids agree until the shorter picture runs out")
+        #expect(commonPrefixLength(lhs, rhs,
+                                   lhsMedia: [chunk(2, 3, "photo-a")],
+                                   rhsMedia: [chunk(2, 2, "photo-a")]) == 2)
+    }
+
+    /// A picture on one side and ordinary text on the other. The reference sees
+    /// `LLAMA_TOKEN_NULL` against a real token and returns that index; here the
+    /// ids can even agree, and the answer is the same.
+    @Test("CACHE-4: a picture against text ends the walk where the picture starts")
+    func CACHE_4_a_picture_against_text_ends_the_walk() {
+        let lhs: [Int32] = [1, 2, 9, 9, 9, 3]
+        let rhs: [Int32] = [1, 2, 9, 9, 9, 3]
+        #expect(commonPrefixLength(lhs, rhs,
+                                   lhsMedia: [chunk(2, 3, "photo-a")],
+                                   rhsMedia: []) == 2)
+    }
+
+    /// The walk keeps comparing after a picture matches: a conversation whose
+    /// second photograph differs still keeps everything in front of it.
+    @Test("CACHE-4: a later picture ends the walk at its own chunk")
+    func CACHE_4_a_later_picture_ends_the_walk() {
+        let lhs: [Int32] = [1, 9, 9, 2, 9, 9, 3]
+        let rhs: [Int32] = [1, 9, 9, 2, 9, 9, 3]
+        #expect(commonPrefixLength(lhs, rhs,
+                                   lhsMedia: [chunk(1, 2, "photo-a"), chunk(4, 2, "photo-b")],
+                                   rhsMedia: [chunk(1, 2, "photo-a"), chunk(4, 2, "photo-c")]) == 4)
+    }
 }

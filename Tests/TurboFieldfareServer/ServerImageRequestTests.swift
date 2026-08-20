@@ -345,7 +345,8 @@ struct ServerImageRequestTests {
                 reason: .endOfTurn,
                 kvPosition: kvBacked.count,
                 kvBackedTokenIDs: kvBacked,
-                uncommittedBoundaryTokenIDs: [tokenizer.endOfTurnID]))
+                uncommittedBoundaryTokenIDs: [tokenizer.endOfTurnID]),
+            vision: firstPrompt.vision)
 
         let second = try validated("""
             {"model":"m","messages":[
@@ -385,8 +386,11 @@ struct ServerImageRequestTests {
         #expect(bridge[span.tokenEnd] == ids.endImage)
     }
 
-    /// A different picture behind the same words cannot ride the cached prefix.
-    @Test func aDifferentPictureWithTheSameWordsMisses() async throws {
+    /// SPEC CACHE-4 + CACHE-2: a different picture behind the same words cannot
+    /// ride the cached prefix — but the words in front of it still can. The
+    /// walk stops at the chunk that differs, exactly as the reference does
+    /// (`server-common.cpp:678`), and what precedes the photograph is served.
+    @Test func aDifferentPictureWithTheSameWordsResumesInFrontOfIt() async throws {
         let tokenizer = try await GFTokenizer.load()
         let ids = try VisionMediaTokenIDs(tokenizer: tokenizer)
         let config = try VisionPreprocessorConfig(maxSoftTokens: 70)
@@ -433,7 +437,8 @@ struct ServerImageRequestTests {
                 reason: .endOfTurn,
                 kvPosition: kvBacked.count,
                 kvBackedTokenIDs: kvBacked,
-                uncommittedBoundaryTokenIDs: [tokenizer.endOfTurnID]))
+                uncommittedBoundaryTokenIDs: [tokenizer.endOfTurnID]),
+            vision: prompt.vision)
 
         // Same words, a different photograph in the first turn.
         let other = try validated("""
@@ -444,9 +449,8 @@ struct ServerImageRequestTests {
               {"role":"assistant","content":"a blue square"},
               {"role":"user","content":"and now?"}]}
             """)
-        // Two photographs widen into the *same* soft-token ids, so the token
-        // walk agrees on this whole first turn. The digests are the only thing
-        // that can refuse it.
+        // Two photographs widen into the *same* soft-token ids, so a walk that
+        // looked at ids alone would agree on this whole first turn.
         let otherVision = try #require(other.vision)
         let otherImages = try otherVision.images.map {
             try VisionImagePreprocessor.preprocess(data: $0.data, config: config)
@@ -458,13 +462,25 @@ struct ServerImageRequestTests {
                 addBOS: false),
             images: otherImages,
             ids: ids)
-        #expect(commonPrefixLength(kvBacked, otherPrompt.tokens) > prompt.tokens.count / 2,
-                "the two prompts have to agree on tokens for this test to mean anything")
-        #expect(cache.match(domain: domain,
-                            request: other,
-                            renderedPromptIDs: otherPrompt.tokens,
-                            vision: otherPrompt.vision,
-                            maximumRewind: 2048) == .miss)
+        let picture = try #require(otherPrompt.vision.spans.first)
+        #expect(commonPrefixLength(kvBacked, otherPrompt.tokens) > picture.tokenOffset,
+                "the two prompts have to agree past the opener for this test to mean anything")
+        guard case .hit(_, let cached, let continuationVision) = cache.match(
+            domain: domain,
+            request: other,
+            renderedPromptIDs: otherPrompt.tokens,
+            vision: otherPrompt.vision,
+            maximumRewind: 2048) else {
+            Issue.record("expected the words in front of the picture to be served")
+            return
+        }
+        // Everything up to the first soft token, and not one token more.
+        #expect(cached == picture.tokenOffset)
+        // The new photograph is prefilled, at the head of the remaining slice.
+        let continuation = try #require(continuationVision)
+        #expect(continuation.images.count == 1)
+        #expect(continuation.spans.first?.tokenOffset == 0)
+        #expect(continuation.spans.first?.tokenCount == picture.tokenCount)
     }
 
     // MARK: - Over HTTP
