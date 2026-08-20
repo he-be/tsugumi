@@ -41,7 +41,6 @@ C3 だけがモデルを積む。
 
 | SPEC ID | 現状 (実測 2026-08-19) | 段 |
 | --- | --- | --- |
-| GEN-13 | 非遅延の文法が思考ブロックを飲まない (思考 ON + `response_format` が最初のトークンで詰まる) | P2 |
 | RSN-1 / RSN-4 | `--thinking` 独自フラグ。予算切れで本文 0 字 (`max_tokens: 80` で reasoning 357 字・content 空を実測) | P4 |
 | RSP-3 / RSP-5 | `timings` / `system_fingerprint` 無し | P5 |
 | EP-5 / EP-6 | `/tokenize` 系・`/slots`・`/metrics` 無し | P5 |
@@ -64,7 +63,7 @@ ERR-2 の 401・405・415 と 413 の撤去 (DEV-11)、FLAG-5 (`--api-key`)、FL
 経路表より手前で 503 を返す。ロード失敗はプロセス終了。
 
 **GEN-1 / GEN-2 / GEN-3 / GEN-4 / GEN-5 / GEN-6 / GEN-7 / GEN-8 / GEN-9 /
-GEN-10 / GEN-11 / GEN-12** (2026-08-22、P2 の G1〜G4c-2)。GBNF エンジンと
+GEN-10 / GEN-11 / GEN-12 / GEN-13** (2026-08-22、P2 の G1〜G4c-2)。GBNF エンジンと
 JSON Schema → 文法の変換を移植し、棄却サンプリングで生成に効かせ、
 501 を実挙動へ置き換えた。テストは `GrammarEngineTests` +
 `JSONSchemaGrammar*Tests` + `GrammarTokenConstraintTests` +
@@ -88,7 +87,7 @@ ERR-1 の封筒の形、および P0 で緑にした REQ-* 全行 (C0 の 41 本
 | --- | --- | --- |
 | ~~**P0**~~ | **済** (2026-08-19)。`ChatRequestSchema` の宣言的な表 + `ChatRequestParser`。`OpenAIRequestValidator` と `OpenAIChatRequest` は削除、メッセージ・tools の検査だけ `ChatMessageValidator` に残した | REQ-* 全行 + GEN-3 の 501 化 |
 | ~~**P1**~~ | **D1〜D4 済** (2026-08-20/21)。判定は `commonPrefixLength` 1 本、意味ゲート・ブリッジ合成・ミス 11 分類・`--prompt-cache-mode` は削除。描き直しは SPEC §12 DEV-12 のサーバー変種が生成と一致させる (INV-1)。部分再利用は `runner.rewind(to:)` で通し、深さの上界は §12 **DEV-13**。画像はチャンクとして走査の中で比較する (CACHE-4)。**残り: (D5) 名前を SPEC に合わせる。****未実測: 深い巻き戻しの正しさと、D2 の品質影響 — どちらも C3** | — |
-| **P2** | 生成の拘束。**G1** GBNF エンジン (パーサ + 逐次マッチャ) → **G2** JSON Schema → GBNF 変換 (2 方言) → **G3** エンジン結線 (棄却サンプリング GEN-7、投機は落とす DEV-14) → **G4** サーバー結線 (501 を実挙動へ、スキーマ入口 400 を撤去) → **G5** C3 スモーク | GEN-* |
+| ~~**P2**~~ | **済** (2026-08-22)。**G1** GBNF エンジン → **G2** JSON Schema → GBNF (2 方言、8 段) → **G3** エンジン結線 (棄却サンプリング GEN-7、投機は落とす DEV-14) → **G4a** 語彙水準の拘束 → **G4b** 文法の組み立て → **G4c** 要求と推論の結線 → **G5** C3 スモーク。実装中に出た仕様の穴は GEN-8〜GEN-13 と DEV-14〜DEV-20 として先に SPEC へ入れた | — |
 | **P3** | ライフサイクルとエンドポイント。listen 先行 + ロード中 503、`/v1/health`、`/props`、採らないパスの 501 | LIF-*, EP-1/4/7 |
 | **P4** | 思考。`--reasoning-budget` / `--reasoning-format` へ改名、予算切れの終了タグ強制挿入 | RSN-* |
 | **P5** | 残り: `timings`、`system_fingerprint`、`/tokenize` 系、`/slots`・`/metrics`、`--api-key`、CORS | RSP-3/5, EP-5/6, FLAG-5 |
