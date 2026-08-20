@@ -358,6 +358,15 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 return
             }
             handleCompletion(body: body, context: context)
+        // EP-5: the three tokenizer endpoints. All of them reach the model's
+        // tokenizer, so they are behind the load gate and the API key like
+        // every other non-public route.
+        case (.POST, "/tokenize"):
+            handleTokenize(body: body, context: context)
+        case (.POST, "/detokenize"):
+            handleDetokenize(body: body, context: context)
+        case (.POST, "/apply-template"):
+            handleApplyTemplate(body: body, context: context)
         // EP-7, ahead of the method check so that `POST /props` is answered as
         // the endpoint this server does not adopt rather than as the wrong verb
         // on the one it does.
@@ -368,7 +377,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                            type: .notSupported,
                            code: "endpoint_not_supported"))
         case (_, "/health"), (_, "/v1/health"), (_, "/v1/models"), (_, "/models"),
-             (_, "/props"), (_, "/v1/chat/completions"), (_, "/chat/completions"):
+             (_, "/props"), (_, "/v1/chat/completions"), (_, "/chat/completions"),
+             (_, "/tokenize"), (_, "/detokenize"), (_, "/apply-template"):
             writeError(context, status: .methodNotAllowed,
                        OpenAIErrorEnvelope(message: "method not allowed",
                                            code: "method_not_allowed"))
@@ -510,6 +520,130 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         type: .unavailable,
         param: nil,
         code: "model_loading")
+
+    /// EP-5 `POST /tokenize`.
+    ///
+    /// `content` in, `tokens` out (the reference's shape at the pin,
+    /// `server-context.cpp`). A body with no `content` — or with a null one,
+    /// which R2 makes the same thing — is an empty tokenization and not a
+    /// refusal: the field says how much text there is to count, and none is a
+    /// count.
+    private func handleTokenize(body: ByteBuffer, context: ChannelHandlerContext) {
+        runBackendEndpoint(body: body, context: context) { backend, data in
+            let object = try Self.requestObject(data)
+            guard let content = object["content"], content != .null else {
+                return .object(["tokens": .array([])])
+            }
+            guard case .string(let text) = content else {
+                throw ServerRequestError.invalid(
+                    message: "\"content\" must be a string",
+                    param: "content",
+                    code: "invalid_content")
+            }
+            let tokens = try await backend.tokenize(
+                text, addSpecial: object["add_special"] == .bool(true))
+            return .object(["tokens": .array(tokens.map { .integer(Int64($0)) })])
+        }
+    }
+
+    /// EP-5 `POST /detokenize`: the inverse direction, answering with
+    /// `content` — the field name the reference uses.
+    private func handleDetokenize(body: ByteBuffer, context: ChannelHandlerContext) {
+        runBackendEndpoint(body: body, context: context) { backend, data in
+            let object = try Self.requestObject(data)
+            guard let value = object["tokens"], value != .null else {
+                return .object(["content": .string("")])
+            }
+            guard case .array(let items) = value else {
+                throw Self.invalidTokens
+            }
+            let tokens: [Int32] = try items.map { item in
+                let number: Int64? = switch item {
+                case .integer(let value): value
+                case .unsignedInteger(let value): Int64(exactly: value)
+                default: nil
+                }
+                guard let number, let id = Int32(exactly: number) else {
+                    throw Self.invalidTokens
+                }
+                return id
+            }
+            return .object(["content": .string(try await backend.detokenize(tokens))])
+        }
+    }
+
+    /// EP-5 `POST /apply-template`: what prompt this conversation renders to.
+    ///
+    /// The body goes through `ChatRequestParser` exactly as `/chat/completions`
+    /// does, so the same request accepted here and sent there describes the same
+    /// prompt — down to the thought channel, which `chat_template_kwargs` and
+    /// `reasoning_effort` decide. The rendering itself is the repo-owned
+    /// variant of §12 **DEV-12**, which is the one this server prefills with.
+    private func handleApplyTemplate(body: ByteBuffer, context: ChannelHandlerContext) {
+        let imagePolicy = self.imagePolicy
+        let defaults = self.defaults
+        runBackendEndpoint(body: body, context: context) { backend, data in
+            let request = try ChatRequestParser.parse(data,
+                                                      imagePolicy: imagePolicy,
+                                                      defaults: defaults)
+            return .object(["prompt": .string(try await backend.applyChatTemplate(request))])
+        }
+    }
+
+    private static let invalidTokens = ServerRequestError.invalid(
+        message: "\"tokens\" must be an array of token ids",
+        param: "tokens",
+        code: "invalid_tokens")
+
+    /// The body of an EP-5 request, as an object.
+    private static func requestObject(_ data: Data) throws -> [String: JSONValue] {
+        guard let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+              let object = value.objectValue else {
+            // ERR-3: this is the one place the sentence is true.
+            throw ServerRequestError.invalid(
+                message: "the request body is not a JSON object",
+                param: nil,
+                code: "invalid_json")
+        }
+        return object
+    }
+
+    /// EP-5's three routes share one shape: read the body, ask the backend,
+    /// write one JSON object.
+    ///
+    /// The backend is an actor and this handler is not asynchronous, so the
+    /// work goes on the same task registry the completion route uses — which is
+    /// what makes it cancel with the connection and drain on shutdown.
+    private func runBackendEndpoint(
+        body: ByteBuffer,
+        context: ChannelHandlerContext,
+        _ answer: @escaping @Sendable (any ServerInferenceBackend, Data) async throws -> JSONValue
+    ) {
+        // LIF-2 has already turned every request away while this is nil.
+        guard let backend = readiness.backend else {
+            writeError(context, status: .serviceUnavailable, Self.loadingEnvelope)
+            return
+        }
+        let bytes = body.getBytes(at: body.readerIndex, length: body.readableBytes) ?? []
+        let contextBox = SendableContext(context)
+        activeTask = childChannels.startTask {
+            do {
+                let value = try await answer(backend, Data(bytes))
+                self.writeCodable(contextBox.value, status: .ok, value)
+            } catch let error as ServerRequestError {
+                self.writeError(contextBox.value, status: error.httpStatus, error.envelope)
+            } catch is CancellationError {
+            } catch {
+                self.writeError(
+                    contextBox.value,
+                    status: .internalServerError,
+                    OpenAIErrorEnvelope(
+                        message: "request failed; see TurboFieldfareServer stderr",
+                        type: .server,
+                        code: "internal_error"))
+            }
+        }
+    }
 
     private func handleCompletion(body: ByteBuffer,
                                   context: ChannelHandlerContext) {
