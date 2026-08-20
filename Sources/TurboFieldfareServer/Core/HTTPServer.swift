@@ -290,7 +290,9 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         // EP-1: one handler, both spellings, no API key.
         case (.GET, "/health"), (.GET, "/v1/health"):
             writeJSON(context, status: .ok, object: ["status": "ok"])
-        case (.GET, "/v1/models"):
+        // EP-2 and EP-8: the reference implementation serves this under both
+        // spellings, so a base URL without the `/v1` works the same way.
+        case (.GET, "/v1/models"), (.GET, "/models"):
             let response = OpenAIModelList(
                 object: "list",
                 data: [.init(id: modelID,
@@ -302,7 +304,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         // behind the readiness gate with everything else (LIF-2).
         case (.GET, "/props"):
             writeCodable(context, status: .ok, Self.props(properties))
-        case (.POST, "/v1/chat/completions"):
+        // EP-3 and EP-8.
+        case (.POST, "/v1/chat/completions"), (.POST, "/chat/completions"):
             guard head.headers.first(name: "content-type")?
                 .lowercased().hasPrefix("application/json") == true else {
                 writeError(context, status: .unsupportedMediaType,
@@ -320,8 +323,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                            message: "\(path) is not implemented by this server",
                            type: .notSupported,
                            code: "endpoint_not_supported"))
-        case (_, "/health"), (_, "/v1/health"), (_, "/v1/models"), (_, "/props"),
-             (_, "/v1/chat/completions"):
+        case (_, "/health"), (_, "/v1/health"), (_, "/v1/models"), (_, "/models"),
+             (_, "/props"), (_, "/v1/chat/completions"), (_, "/chat/completions"):
             writeError(context, status: .methodNotAllowed,
                        OpenAIErrorEnvelope(message: "method not allowed",
                                            code: "method_not_allowed"))
