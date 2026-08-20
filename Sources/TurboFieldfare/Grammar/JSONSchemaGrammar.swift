@@ -919,10 +919,12 @@ struct JSONSchemaGrammarConverter {
 // MARK: - 段階的に入る枝
 
 extension JSONSchemaGrammarConverter {
-    /// `pattern` (正規表現) → GBNF。まだ未実装なので、この枝は取らない
-    /// (スキーマは型どおりの原始規則に落ちる)。
+    /// `pattern` (正規表現) → GBNF。`^…$` が無い等で表現できないときは `nil` を
+    /// 返し、スキーマは型どおりの原始規則 (`string`) に落ちる (GEN-2)。
     mutating func visitPatternIfSupported(_ schema: JSONValue, ruleName: String) -> String? {
-        nil
+        guard let pattern = Self.member(schema, "pattern") else { return nil }
+        guard case .string(let text) = pattern else { return nil }
+        return visitPattern(text, name: ruleName)
     }
 
     /// 整数の `minimum` / `maximum` → GBNF。まだ未実装なので、この枝は取らない。
