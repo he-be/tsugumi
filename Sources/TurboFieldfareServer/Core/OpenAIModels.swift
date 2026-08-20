@@ -225,6 +225,12 @@ public struct ValidatedChatRequest: Sendable {
     /// instead, and the prompt cache (which keys on this array) is off.
     public let messages: [GFTokenizer.Message]
     public let tools: [GFTokenizer.FunctionDefinition]
+    /// GEN-2 / DEV-16: what the declared tool schemas lost on the way into the
+    /// prompt, in declaration order. Never an error — the server logs these.
+    /// This is the *declaration* side; what the grammar could not constrain is
+    /// a separate list on the constraint, because the two degrade
+    /// independently.
+    public let toolSchemaSimplifications: [String]
     public let stream: Bool
     public let includeUsage: Bool
     public let generationConfig: GenerationConfig
@@ -284,6 +290,7 @@ public struct ValidatedChatRequest: Sendable {
 
     public init(messages: [GFTokenizer.Message],
                 tools: [GFTokenizer.FunctionDefinition],
+                toolSchemaSimplifications: [String] = [],
                 stream: Bool,
                 includeUsage: Bool,
                 generationConfig: GenerationConfig,
@@ -302,6 +309,7 @@ public struct ValidatedChatRequest: Sendable {
                 timingsPerToken: Bool = false) {
         self.messages = messages
         self.tools = tools
+        self.toolSchemaSimplifications = toolSchemaSimplifications
         self.stream = stream
         self.includeUsage = includeUsage
         self.generationConfig = generationConfig
@@ -352,7 +360,14 @@ private enum OpenAIToolName {
 /// `OpenAIRequestValidator` — is `ChatRequestSchema` now. This type only knows
 /// about message and tool shapes.
 public enum ChatMessageValidator {
-    static func validateTool(_ tool: OpenAITool) throws -> GFTokenizer.FunctionDefinition {
+    /// One declared tool the template can render, and what adapting its schema
+    /// cost (GEN-2 / DEV-16).
+    struct ValidatedTool {
+        let definition: GFTokenizer.FunctionDefinition
+        let simplifications: [String]
+    }
+
+    static func validateTool(_ tool: OpenAITool) throws -> ValidatedTool {
         guard tool.type == "function" else {
             throw invalid("only function tools are supported", "tools", "unsupported_tool")
         }
@@ -366,15 +381,19 @@ public enum ChatMessageValidator {
                           "tools", "invalid_tool_schema")
         }
         try validateSchemaKeys(tool.function.parameters)
-        let parameters = try GemmaToolSchema.adapted(
-            tool.function.parameters, toolName: name)
-        guard (try? parameters.jinjaSendableValue()) != nil else {
+        // GEN-2: the schema's *content* is never a refusal. Everything the
+        // declaration cannot render comes back simplified, with a note.
+        let adapted = GemmaToolSchema.adapted(tool.function.parameters, toolName: name)
+        guard (try? adapted.schema.jinjaSendableValue()) != nil else {
             throw invalid("tool schema contains a number that cannot be represented exactly",
                           "tools", "invalid_tool_schema")
         }
-        return GFTokenizer.FunctionDefinition(name: name,
-                                              description: tool.function.description ?? "",
-                                              parameters: parameters)
+        return ValidatedTool(
+            definition: GFTokenizer.FunctionDefinition(
+                name: name,
+                description: tool.function.description ?? "",
+                parameters: adapted.schema),
+            simplifications: adapted.simplifications)
     }
 
     private static func validateSchemaKeys(_ schema: JSONValue) throws {

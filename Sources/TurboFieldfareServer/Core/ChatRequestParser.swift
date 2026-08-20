@@ -96,7 +96,8 @@ public enum ChatRequestParser {
             : try decode([OpenAITool].self,
                          from: request["tools"] ?? .array([]),
                          param: "tools")
-        let tools = try declaredTools.map(ChatMessageValidator.validateTool)
+        let validatedTools = try declaredTools.map(ChatMessageValidator.validateTool)
+        let tools = validatedTools.map(\.definition)
         try Self.checkConstraintsAreSatisfiable(toolChoice: toolChoice,
                                                 responseFormat: responseFormat,
                                                 tools: tools)
@@ -108,6 +109,7 @@ public enum ChatRequestParser {
         return ValidatedChatRequest(
             messages: validated.messages,
             tools: tools,
+            toolSchemaSimplifications: validatedTools.flatMap(\.simplifications),
             stream: request.bool("stream") ?? false,
             includeUsage: request.object("stream_options")?["include_usage"] == .bool(true),
             generationConfig: try generationConfig(request),

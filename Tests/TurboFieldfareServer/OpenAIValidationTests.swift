@@ -324,12 +324,14 @@ struct OpenAIValidationTests {
           }
         }
         """#.utf8))
-        let adapted = try GemmaToolSchema.adapted(typeArray, toolName: "lookup")
+        let result = GemmaToolSchema.adapted(typeArray, toolName: "lookup")
+        let adapted = result.schema
         let name = adapted.objectValue?["properties"]?.objectValue?["name"]?.objectValue
+        #expect(result.simplifications.isEmpty)
         #expect(name?["type"] == .string("string"))
         #expect(name?["nullable"] == .bool(true))
         #expect(name?["minLength"] == .integer(2))
-        #expect(try GemmaToolSchema.adapted(adapted, toolName: "lookup") == adapted)
+        #expect(GemmaToolSchema.adapted(adapted, toolName: "lookup").schema == adapted)
 
         let anyOf = try JSONDecoder().decode(JSONValue.self, from: Data(#"""
         {
@@ -342,7 +344,7 @@ struct OpenAIValidationTests {
           }
         }
         """#.utf8))
-        let anyOfAdapted = try GemmaToolSchema.adapted(anyOf, toolName: "lookup")
+        let anyOfAdapted = GemmaToolSchema.adapted(anyOf, toolName: "lookup").schema
         let limit = anyOfAdapted.objectValue?["properties"]?.objectValue?["limit"]?.objectValue
         #expect(limit?["type"] == .string("integer"))
         #expect(limit?["nullable"] == .bool(true))
@@ -361,7 +363,7 @@ struct OpenAIValidationTests {
           }
         }
         """#.utf8))
-        let nestedAdapted = try GemmaToolSchema.adapted(nestedOneOf, toolName: "lookup")
+        let nestedAdapted = GemmaToolSchema.adapted(nestedOneOf, toolName: "lookup").schema
         let item = nestedAdapted.objectValue?["properties"]?.objectValue?["names"]?
             .objectValue?["items"]?.objectValue
         #expect(item?["type"] == .string("string"))
@@ -370,44 +372,75 @@ struct OpenAIValidationTests {
         #expect(item?["oneOf"] == nil)
     }
 
-    @Test func unsupportedToolSchemaUnionsFailClosed() throws {
-        let schemas = [
-            #"{"type":"object","properties":{"v":{"anyOf":[{"type":"string"},{"type":"object"}]}}}"#,
-            #"{"type":"object","properties":{"args":{"anyOf":[{"type":"string"},{"type":"object","properties":{},"additionalProperties":true}]}}}"#,
-            #"{"type":"object","properties":{"v":{"oneOf":[{"type":"integer"},{"type":"number"}]}}}"#,
-            #"{"type":"object","properties":{"v":{"allOf":[{"type":"string"}]}}}"#,
-            #"{"type":"object","properties":{"v":{"description":"missing"}}}"#,
-            #"{"type":"object","properties":{"v":{"type":["string","number"]}}}"#,
-            #"{"type":"object","properties":{"v":{"type":["string","null"],"nullable":false}}}"#,
-            #"{"type":"object","properties":{"v":true}}"#,
+    /// GEN-2 / DEV-16: these eight all used to be a 400 `invalid_tool_schema`
+    /// at the door. None of them is any more — the element the declaration
+    /// cannot render is dropped or simplified toward what it can, and the
+    /// simplification is recorded instead of refused. The whole point is that
+    /// one unrenderable line at the edge of a client's schema no longer takes
+    /// the entire request down.
+    @Test func GEN_2_unrepresentable_tool_schemas_are_simplified_not_refused() throws {
+        let cases: [(schema: String, simplification: String?)] = [
+            (#"{"type":"object","properties":{"v":{"anyOf":[{"type":"string"},{"type":"object"}]}}}"#,
+             "unrepresentable-union: tools.unsafe.parameters.properties.v"),
+            (#"{"type":"object","properties":{"args":{"anyOf":[{"type":"string"},{"type":"object","properties":{},"additionalProperties":true}]}}}"#,
+             "unrepresentable-union: tools.unsafe.parameters.properties.args"),
+            (#"{"type":"object","properties":{"v":{"oneOf":[{"type":"integer"},{"type":"number"}]}}}"#,
+             "unrepresentable-union: tools.unsafe.parameters.properties.v"),
+            (#"{"type":"object","properties":{"v":{"allOf":[{"type":"string"}]}}}"#,
+             "unrepresentable-all-of: tools.unsafe.parameters.properties.v"),
+            // An untyped schema is legal JSON Schema meaning "any value", so
+            // nothing was given up and nothing is recorded.
+            (#"{"type":"object","properties":{"v":{"description":"missing"}}}"#, nil),
+            (#"{"type":"object","properties":{"v":{"type":["string","number"]}}}"#,
+             "unrepresentable-type-union: tools.unsafe.parameters.properties.v"),
+            (#"{"type":"object","properties":{"v":{"type":["string","null"],"nullable":false}}}"#,
+             "nullable-conflict: tools.unsafe.parameters.properties.v"),
+            (#"{"type":"object","properties":{"v":true}}"#,
+             "unrepresentable-schema: tools.unsafe.parameters.properties.v"),
+            (#"{"type":"object","properties":{"v":{"type":"widget"}}}"#,
+             "unknown-type: tools.unsafe.parameters.properties.v (widget)"),
+            (#"{"type":"object","properties":{"v":{"type":"array","items":[{"type":"string"}]}}}"#,
+             "unrepresentable-items: tools.unsafe.parameters.properties.v.items"),
         ]
-        for encoded in schemas {
+        for (encoded, simplification) in cases {
             let schema = try JSONDecoder().decode(JSONValue.self, from: Data(encoded.utf8))
-            do {
-                _ = try GemmaToolSchema.adapted(schema, toolName: "unsafe")
-                Issue.record("unsupported schema was accepted: \(encoded)")
-            } catch let error as ServerRequestError {
-                #expect(error.envelope.error.code == "invalid_tool_schema")
-                #expect(error.envelope.error.param == "tools")
+            let result = GemmaToolSchema.adapted(schema, toolName: "unsafe")
+            // Whatever was given up, what comes back is still a declaration
+            // the template can render.
+            #expect(result.schema.objectValue?["type"] == .string("object"), "\(encoded)")
+            #expect((try? result.schema.jinjaSendableValue()) != nil, "\(encoded)")
+            if let simplification {
+                #expect(result.simplifications == [simplification], "\(encoded)")
+            } else {
+                #expect(result.simplifications.isEmpty, "\(encoded)")
             }
         }
     }
 
-    @Test func semanticsChangingNullableSchemasFailClosed() throws {
-        let schemas = [
-            #"{"type":["object","null"],"properties":{}}"#,
-            #"{"type":"object","properties":{"v":{"oneOf":[{"type":["string","null"]},{"type":"null"}]}}}"#,
-            #"{"type":"object","properties":{"v":{"oneOf":[{"type":"string","const":"same"},{"type":"string","const":"same"}]}}}"#,
+    /// GEN-2 again, for the three that are accepted with a *changed meaning*
+    /// rather than a dropped keyword. Those are exactly the ones worth
+    /// recording, because the declaration now says something the request did
+    /// not.
+    @Test func GEN_2_semantics_changing_schemas_are_recorded() throws {
+        let cases = [
+            (#"{"type":["object","null"],"properties":{}}"#,
+             "unrepresentable-parameters: tools.unsafe.parameters"),
+            (#"{"type":"object","properties":{"v":{"oneOf":[{"type":["string","null"]},{"type":"null"}]}}}"#,
+             "overlapping-one-of: tools.unsafe.parameters.properties.v"),
+            (#"{"type":"object","properties":{"v":{"oneOf":[{"type":"string","const":"same"},{"type":"string","const":"same"}]}}}"#,
+             "overlapping-one-of: tools.unsafe.parameters.properties.v"),
         ]
-        for encoded in schemas {
+        for (encoded, simplification) in cases {
             let schema = try JSONDecoder().decode(JSONValue.self, from: Data(encoded.utf8))
-            #expect(throws: ServerRequestError.self) {
-                try GemmaToolSchema.adapted(schema, toolName: "unsafe")
-            }
+            let result = GemmaToolSchema.adapted(schema, toolName: "unsafe")
+            #expect(result.simplifications.contains(simplification), "\(encoded)")
         }
     }
 
-    @Test func ambiguousParameterKeysFailValidation() throws {
+    /// GEN-2: a parameter name the tool-call dialect cannot write is dropped
+    /// from the declaration — so the model is never invited to use a key the
+    /// parser could not read back — and the request goes through.
+    @Test func GEN_2_ambiguous_parameter_keys_are_dropped_not_refused() throws {
         let data = Data(#"""
         {
           "model":"m",
@@ -418,18 +451,41 @@ struct OpenAIValidationTests {
               "name":"lookup",
               "parameters":{
                 "type":"object",
-                "allOf":[{
-                  "type":"object",
-                  "properties":{"bad:key":{"type":"string"}}
-                }]
+                "properties":{"bad:key":{"type":"string"},"good":{"type":"string"}},
+                "required":["bad:key","good"]
               }
             }
           }]
         }
         """#.utf8)
-        #expect(throws: ServerRequestError.self) {
-            try ChatRequestParser.parse(data)
+        let request = try ChatRequestParser.parse(data)
+        let parameters = try #require(request.tools.first?.parameters.objectValue)
+        #expect(parameters["properties"]?.objectValue?.keys.sorted() == ["good"])
+        #expect(parameters["required"] == .array([.string("good")]))
+        #expect(request.toolSchemaSimplifications
+            == ["unrepresentable-key: tools.lookup.parameters.properties.bad:key"])
+    }
+
+    /// DEV-16: the record travels with the request, so the server can log what
+    /// the declaration gave up. It is a separate list from the grammar's
+    /// approximations because the two degrade independently.
+    @Test func DEV_16_tool_schema_simplifications_reach_the_request() throws {
+        let data = Data(#"""
+        {
+          "model":"m",
+          "messages":[{"role":"user","content":"lookup"}],
+          "tools":[
+            {"type":"function","function":{"name":"a","parameters":{
+              "type":"object","properties":{"v":{"allOf":[{"type":"string"}]}}}}},
+            {"type":"function","function":{"name":"b","parameters":{
+              "type":"object","properties":{"w":{"type":"string"}}}}}
+          ]
         }
+        """#.utf8)
+        let request = try ChatRequestParser.parse(data)
+        #expect(request.tools.count == 2)
+        #expect(request.toolSchemaSimplifications
+            == ["unrepresentable-all-of: tools.a.parameters.properties.v"])
     }
 
     private func fixture(_ name: String) throws -> Data {

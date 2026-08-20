@@ -1,5 +1,19 @@
 import TurboFieldfare
 
+/// One tool's `parameters` after it has been adapted to the **tool
+/// declaration** the chat template renders into the prompt, plus what had to
+/// be given up to get there (GEN-2 / DEV-16).
+///
+/// `simplifications` is the same idea as `JSONSchemaGrammarResult`'s
+/// `approximations`, and reads in the same vocabulary — but the two are
+/// separate lists on purpose, because they describe two different things that
+/// now degrade independently: this one is about what the *declaration* in the
+/// prompt can say, the other about what the *grammar* can constrain.
+struct GemmaToolSchemaResult: Equatable, Sendable {
+    let schema: JSONValue
+    let simplifications: [String]
+}
+
 enum GemmaToolSchema {
     private static let types: Set<String> = [
         "array", "boolean", "integer", "null", "number", "object", "string",
@@ -9,7 +23,21 @@ enum GemmaToolSchema {
         "title", "writeOnly",
     ]
 
-    static func adapted(_ schema: JSONValue, toolName: String) throws -> JSONValue {
+    /// GEN-2: never a refusal. What the declaration cannot render is dropped
+    /// or simplified toward what it can, and the fact is recorded.
+    ///
+    /// P2-G4c-1 (赤): 入口だけを先に GEN-2 の形にした。落とし方と記録の語彙は
+    /// 次のコミット — いまは旧実装が断ったものを汎用オブジェクトへ潰し、
+    /// 記録も残さない。
+    static func adapted(_ schema: JSONValue, toolName: String) -> GemmaToolSchemaResult {
+        guard let value = try? adaptedStrictly(schema, toolName: toolName) else {
+            return GemmaToolSchemaResult(schema: .object(["type": .string("object")]),
+                                         simplifications: [])
+        }
+        return GemmaToolSchemaResult(schema: value, simplifications: [])
+    }
+
+    private static func adaptedStrictly(_ schema: JSONValue, toolName: String) throws -> JSONValue {
         let value = try adapt(schema, toolName: toolName, path: "parameters")
         guard value.objectValue?["type"] == .string("object"),
               value.objectValue?["nullable"] != .bool(true) else {
