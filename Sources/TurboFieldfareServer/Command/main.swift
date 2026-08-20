@@ -26,6 +26,8 @@ do {
         queueLimit: arguments.queueLimit,
         backend: nil,
         imagePolicy: arguments.imagePolicy,
+        // RSN-1: the on/off axis of `--reasoning-budget`. Only `0` closes the
+        // channel; the default `-1` is unlimited, not off.
         defaults: ChatRequestDefaults(thinking: arguments.thinkingPolicy),
         // EP-4. All of it is known before the model is, which is what lets
         // `/props` be answered by a server that is still loading one.
@@ -69,13 +71,17 @@ do {
         runtimeConfiguration: runtimeConfiguration,
         integrityPolicy: arguments.verification,
         draftBlockSize: arguments.draftBlockSize,
-        imagePolicy: arguments.imagePolicy)
+        imagePolicy: arguments.imagePolicy,
+        // RSN-4 / RSN-3: the budget a request falls back to, and where the
+        // thought channel comes back in the response.
+        reasoningBudget: arguments.reasoningBudget,
+        reasoningFormat: arguments.reasoningFormat)
     // LIF-3: from here `/health` is 200 and the endpoints answer for real.
     await server.modelDidLoad(backend)
     // `expert_io`: どちらの腕で回っているか。既定は mmap (docs/mtp/52 §5a)。
     // `TF_EXPERT_MMAP=0` で pread に戻る。
     let expertIO = MmapExpertMapping.isEnabled ? "mmap" : "pread"
-    print("TurboFieldfareServer ready at http://127.0.0.1:\(arguments.port) model=\(arguments.modelID) context=\(arguments.maxContext) slots=\(runtimeConfiguration.expertCacheSlots) expert_io=\(expertIO) mtp=\(arguments.draftBlockSize) thinking=\(arguments.thinkingPolicy.rawValue)")
+    print("TurboFieldfareServer ready at http://127.0.0.1:\(arguments.port) model=\(arguments.modelID) context=\(arguments.maxContext) slots=\(runtimeConfiguration.expertCacheSlots) expert_io=\(expertIO) mtp=\(arguments.draftBlockSize) reasoning_budget=\(arguments.reasoningBudget) reasoning_format=\(arguments.reasoningFormat.rawValue)")
     fflush(stdout)
 
     await terminator.value

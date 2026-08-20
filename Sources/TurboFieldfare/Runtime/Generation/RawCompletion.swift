@@ -164,7 +164,14 @@ public func runRawCompletion(producer: any LogitProducer,
         try Task.checkCancellation()
 
         let tokenID: Int32
-        if generated == 0, let seed = prefillSeed {
+        // RSN-4. Forcing is not sampling: the token is emitted without reading
+        // a logit, so this comes before every draw and short-circuits all three
+        // of them — including the fused-greedy shortcuts, which a constraint
+        // cannot use but which a forced token has no quarrel with (it needs no
+        // logits either).
+        if let forced = forcer?.nextForcedToken() {
+            tokenID = forced
+        } else if generated == 0, let seed = prefillSeed {
             switch seed {
             case .greedyToken(let token):
                 guard gate == nil else { throw unconstrainableGreedyToken }
@@ -207,6 +214,17 @@ public func runRawCompletion(producer: any LogitProducer,
         }
 
         let delta = detok.push(tokenID)
+        // RSN-4. Fed after the detokenizer so `completesCharacter` can be the
+        // detokenizer's own verdict: an empty delta means a byte-fallback run
+        // is still open, i.e. this token sits inside a multi-byte character and
+        // a marker forced in right here would cut it in half. The reference
+        // asks `common_utf8_is_complete` about the token's piece for the same
+        // reason. The state this leaves behind is the state the *next*
+        // position is judged by, which is the same ordering the constraint
+        // gets.
+        forcer?.accept(tokenID: tokenID,
+                       generationIndex: generated - 1,
+                       completesCharacter: !delta.isEmpty)
         let visible = stopMatcher.push(delta)
         onProgress(.token(index: generated - 1, id: tokenID, delta: visible))
 

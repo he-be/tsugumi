@@ -437,6 +437,11 @@ public actor ServerModelSession: ServerInferenceBackend {
     private let maxContext: Int
     private let promptCacheDomain: ServerPromptCacheDomain
     private let imagePolicy: ServerImagePolicy
+    /// SPEC §8 RSN-1 / FLAG-1: `--reasoning-budget`, the thought budget a
+    /// request falls back to when it names none (`-1` = unlimited).
+    private let reasoningBudget: Int
+    /// RSN-3 / FLAG-1: `--reasoning-format`.
+    private let reasoningFormat: ReasoningFormat
     /// SPEC §6 GEN-1: the id → piece table every grammar constraint matches
     /// against. Built once beside the tokenizer at load (~0.4 s and ~25 MB for
     /// 262 144 ids) and shared by every request; building it per request would
@@ -452,7 +457,9 @@ public actor ServerModelSession: ServerInferenceBackend {
                             runtimeConfiguration: RuntimeConfiguration,
                             integrityPolicy: ModelIntegrityPolicy = .fullSha256,
                             draftBlockSize: Int = 0,
-                            imagePolicy: ServerImagePolicy = .default) async throws -> ServerModelSession {
+                            imagePolicy: ServerImagePolicy = .default,
+                            reasoningBudget: Int = -1,
+                            reasoningFormat: ReasoningFormat = .auto) async throws -> ServerModelSession {
         let tokenizerFolder = GFTokenizer.tokenizerFolder(forModelDirectory: modelDirectory)
         guard let tokenizerFolder else {
             throw GFTokenizerError.missingToolTemplate
@@ -530,7 +537,9 @@ public actor ServerModelSession: ServerInferenceBackend {
                                   prefillConfig: runtime.prefillConfig,
                                   maxContext: maxContext,
                                   promptCacheDomain: promptCacheDomain,
-                                  imagePolicy: imagePolicy)
+                                  imagePolicy: imagePolicy,
+                                  reasoningBudget: reasoningBudget,
+                                  reasoningFormat: reasoningFormat)
     }
 
     private init(context: MetalContext,
@@ -542,7 +551,9 @@ public actor ServerModelSession: ServerInferenceBackend {
                  prefillConfig: PrefillRuntimeConfig,
                  maxContext: Int,
                  promptCacheDomain: ServerPromptCacheDomain,
-                 imagePolicy: ServerImagePolicy) {
+                 imagePolicy: ServerImagePolicy,
+                 reasoningBudget: Int,
+                 reasoningFormat: ReasoningFormat) {
         self.context = context
         self.model = model
         self.tokenizer = tokenizer
@@ -555,6 +566,8 @@ public actor ServerModelSession: ServerInferenceBackend {
         self.maxContext = maxContext
         self.promptCacheDomain = promptCacheDomain
         self.imagePolicy = imagePolicy
+        self.reasoningBudget = reasoningBudget
+        self.reasoningFormat = reasoningFormat
     }
 
     public func generate(
@@ -680,6 +693,30 @@ public actor ServerModelSession: ServerInferenceBackend {
                 approximations: plan.approximations)
         }
 
+        // SPEC §8: what this request asks of the thought channel. Like
+        // `ServerGenerationPlan` it is a decision and not a mechanism, so all
+        // of RSN-1/3/4 is checkable without weights; built here because its
+        // `max_tokens` half needs the budget the context left.
+        //
+        // RSN-4's forced sequence is the closing tag **this template writes**,
+        // taken from the tokenizer rather than spelled out: the state it leaves
+        // behind is then byte for byte the one a thinking-off prompt creates on
+        // purpose (`<|channel>thought\n<channel|>`), which is the reason to
+        // expect an answer after it.
+        let forcedReasoningEnd = [tokenizer.channelEndID]
+        let reasoning = ServerReasoningPlan(request: request,
+                                            defaultBudget: reasoningBudget,
+                                            defaultFormat: reasoningFormat,
+                                            maxNewTokens: config.maxNewTokens,
+                                            forcedTokenCount: forcedReasoningEnd.count)
+        let forcer = reasoning.forcesClosingTag
+            ? ReasoningBudgetForcer(startTokenID: tokenizer.channelStartID,
+                                    endTokenID: tokenizer.channelEndID,
+                                    forcedTokenIDs: forcedReasoningEnd,
+                                    budget: reasoning.budget,
+                                    deadline: reasoning.deadline)
+            : nil
+
         // GEN-1 / GEN-3 / GEN-5: the constraint itself. Built after the
         // prefill-only exit because parsing the grammar is real work and that
         // request samples nothing.
@@ -751,7 +788,12 @@ public actor ServerModelSession: ServerInferenceBackend {
             do {
                 func handle(_ events: [StructuredAssistantEvent]) {
                     for event in events {
-                        switch event {
+                        // RSN-3: `auto` keeps the thought channel separate;
+                        // `none` puts it back in the answer as raw text. The
+                        // decoder still splits the channel either way — it is
+                        // what knows where the block ends — and this is the one
+                        // place the format decides where the text goes.
+                        switch reasoning.route(event) {
                         case .content(let text):
                             let visible = stopMatcher.push(text)
                             if !visible.isEmpty {
@@ -825,7 +867,14 @@ public actor ServerModelSession: ServerInferenceBackend {
         // as a backstop, not as the mechanism.
         let result: RawDecodeResult
         var speculativeSummary: ServerSpeculativeSummary?
-        if let speculative, config.repetitionPenalty == 1.0, plan.allowsSpeculativeDecoding {
+        // RSN-4 joins that list for the same reason and by the same rule: a
+        // forced token is a token the block was not verified against, so a
+        // request that can force one takes the plain path. `runRawCompletion`
+        // is where the forcer is consulted, and `runSpeculativeCompletion` has
+        // no parameter for it — a request that reaches the loop with one would
+        // silently generate an unbudgeted thought block.
+        if let speculative, config.repetitionPenalty == 1.0, plan.allowsSpeculativeDecoding,
+           reasoning.allowsSpeculativeDecoding {
             let spec = try await runSpeculativeCompletion(
                 producer: runner,
                 tokenizer: tokenizer,
@@ -858,6 +907,10 @@ public actor ServerModelSession: ServerInferenceBackend {
                 // an error, so it becomes a 500 `server_error` rather than a
                 // silently truncated or unconstrained answer.
                 constraint: constraint,
+                // RSN-4. Nil unless this request's thought channel is open and
+                // bounded; the loop's behaviour is unchanged for every other
+                // request, down to the draw.
+                forcer: forcer,
                 context: context,
                 scratch: scratch,
                 prefillConfig: prefillConfig,

@@ -148,16 +148,40 @@ struct ServerReasoningPlan: Equatable, Sendable {
     /// repetition penalty.
     var allowsSpeculativeDecoding: Bool { !forcesClosingTag }
 
+    /// - Parameters:
+    ///   - defaultBudget: `--reasoning-budget` (RSN-1).
+    ///   - defaultFormat: `--reasoning-format` (RSN-3).
+    ///   - maxNewTokens: the completion budget the session resolved — the
+    ///     request's `max_tokens` already clamped to what the context has left.
+    ///   - forcedTokenCount: how many tokens the forced sequence spends.
     init(request: ValidatedChatRequest,
          defaultBudget: Int,
          defaultFormat: ReasoningFormat,
          maxNewTokens: Int,
          forcedTokenCount: Int) {
-        // P4 (赤): 解決はまだしない。
+        // RSN-1 / RSN-2. The channel is already resolved: `ChatRequestParser`
+        // walked the reference's four steps, with the process default (which
+        // is `--reasoning-budget != 0`) as their base.
         self.isThinking = request.enableThinking
-        self.format = .auto
-        self.budget = ReasoningBudgetForcer.unlimited
-        self.deadline = Int.max
+        // RSN-3. `none` from either side turns the split off. The wire default
+        // is `auto` and this layer cannot tell it from an absent field, so an
+        // explicit `reasoning_format: "auto"` does not override a process
+        // default of `none` — the only cell where the two disagree, and the
+        // one that needs `ChatRequestDefaults` to carry the format to be right.
+        self.format = request.reasoningFormat == .none ? .none : defaultFormat
+        // RSN-4, first half. `-1` in the request means "whatever the server was
+        // started with", exactly as the reference resolves it
+        // (`server-common.cpp:1340`).
+        self.budget = request.reasoningBudgetTokens < 0
+            ? defaultBudget
+            : request.reasoningBudgetTokens
+        // RSN-4, second half. A `max_tokens` the client named bounds the block
+        // even when no budget did: the tag has to start early enough to leave
+        // the answer its reserve. `max_tokens: -1` asked for no bound, so it
+        // sets none — the context ceiling is not a budget the client chose.
+        self.deadline = request.maximumCompletionTokens > 0
+            ? maxNewTokens - Self.answerReserve(maxNewTokens: maxNewTokens) - forcedTokenCount
+            : Int.max
     }
 
     /// RSN-3. The one place the format changes what the client sees.

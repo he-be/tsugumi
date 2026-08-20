@@ -69,12 +69,19 @@ public struct ServerArguments: Equatable, Sendable {
     public let verification: ModelIntegrityPolicy
     public let draftBlockSize: Int
     public let imagePolicy: ServerImagePolicy
-    public let thinkingPolicy: ServerThinkingPolicy
-    /// RSN-1 / FLAG-1. `-1` is unlimited and the default; `0` closes the
-    /// thought channel. P4 (赤): まだ入口が無い。
+    /// RSN-1 / FLAG-1. `--reasoning-budget N`: `-1` is unlimited and the
+    /// default, `0` closes the thought channel, `N > 0` caps it.
     public let reasoningBudget: Int
-    /// RSN-3 / FLAG-1. P4 (赤): まだ入口が無い。
+    /// RSN-3 / FLAG-1. `--reasoning-format auto|none`.
     public let reasoningFormat: ReasoningFormat
+
+    /// RSN-1: the on/off axis of `--reasoning-budget`, in the shape the request
+    /// parser takes its process default in (`ChatRequestDefaults`). Only a
+    /// budget of zero closes the channel; every other value, the default `-1`
+    /// included, leaves it open for a request to use or to override.
+    public var thinkingPolicy: ServerThinkingPolicy {
+        reasoningBudget == 0 ? .off : .on
+    }
     /// FLAG-5. Empty means no authentication, which is the default and is what
     /// every existing runbook starts.
     public let apiKeys: [String]
@@ -134,17 +141,24 @@ public struct ServerArguments: Equatable, Sendable {
                                  as image_url content parts holding a data: URI;
                                  http(s) URLs are refused, never fetched. Requires a
                                  model installed with a vision tower and --prefill on.
-      --thinking on|off          Default reasoning channel (default off). off closes
-                                 the thought channel in the generation prompt, asking
-                                 for a direct answer; on leads the system turn with
-                                 <|think|> and lets the model reason first. Reasoning
-                                 is generated text: it spends the request's completion
-                                 budget and comes back as reasoning_content, separate
-                                 from the answer. A request overrides the default with
-                                 chat_template_kwargs.enable_thinking or
-                                 reasoning_effort. A request that declares tools runs
-                                 without reasoning either way — the tool-calling
-                                 template pins enable_thinking to false.
+      --reasoning-budget <n>     Default thinking budget in tokens: -1 for unlimited
+                                 (the default), 0 to close the thought channel, or a
+                                 positive ceiling. Reasoning is generated text: it
+                                 spends the request's completion budget and comes back
+                                 as reasoning_content, separate from the answer. When
+                                 the budget runs out — this ceiling, or what is left
+                                 of the request's max_tokens — the closing tag is
+                                 forced into the stream so the model leaves the
+                                 thought channel and writes an answer, instead of
+                                 returning reasoning with an empty body. A request
+                                 overrides the default with reasoning_budget_tokens,
+                                 chat_template_kwargs.enable_thinking, or
+                                 reasoning_effort. Declaring tools does not close the
+                                 channel.
+      --reasoning-format <s>     auto (default) returns the thought channel separately
+                                 as reasoning_content; none leaves it in the answer as
+                                 raw text. A request overrides it with
+                                 reasoning_format.
       --max-images <n>           Images accepted per request (default 4).
       --max-image-bytes <n>      Decoded bytes accepted per image (default 8388608).
                                  Raises the request-body ceiling to match.
@@ -164,6 +178,15 @@ public struct ServerArguments: Equatable, Sendable {
                                  origin or *. Credentials are never allowed.
       --help                     Show this help.
     """
+
+    /// FLAG-4. Flags this server used to take and no longer does, each with the
+    /// sentence that tells an operator what to write instead.
+    private static let retiredFlags = [
+        "--thinking": "use --reasoning-budget 0 to close the thought channel and "
+            + "--reasoning-budget -1 (the default) to leave it open",
+        "--prompt-cache-mode": "prompt reuse is per request now; send "
+            + "cache_prompt: false to opt a request out",
+    ]
 
     // Mirrors the CLI's runtime flags so both binaries accept the same options
     // with the same validation, instead of the server pinning production
@@ -216,13 +239,23 @@ public struct ServerArguments: Equatable, Sendable {
         var maxImages = ServerImagePolicy.default.maxImagesPerRequest
         var maxImageBytes = ServerImagePolicy.default.maxImageBytes
         var maxImagePixels = ServerImagePolicy.default.maxImagePixels
-        var thinkingPolicy = ServerThinkingPolicy.off
+        var reasoningBudget = -1
+        var reasoningFormat = ReasoningFormat.auto
         var apiKeys: [String] = []
         var corsPolicy = ServerCORSPolicy.disabled
         var index = 0
         while index < input.count {
             let flag = input[index]
             if flag == "--help" || flag == "-h" { throw ServerArgumentError.help }
+            // FLAG-4. A retired flag is a usage error like any other unknown
+            // one — same exit code, same usage dump — but it is refused by name
+            // so the message can say what replaced it. Checked before the
+            // "requires a value" guard so `--thinking` alone is answered with
+            // the retirement rather than with a demand for a value it will
+            // never accept.
+            if let replacement = Self.retiredFlags[flag] {
+                throw ServerArgumentError.invalid("\(flag) was retired; \(replacement)")
+            }
             guard index + 1 < input.count else {
                 throw ServerArgumentError.invalid("\(flag) requires a value")
             }
@@ -337,11 +370,20 @@ public struct ServerArguments: Equatable, Sendable {
                     }
                     corsPolicy = .origins(origins)
                 }
-            case "--thinking":
-                guard let parsed = ServerThinkingPolicy(rawValue: value) else {
-                    throw ServerArgumentError.invalid("--thinking must be on or off")
+            case "--reasoning-budget":
+                // RSN-1. The same range as REQ-reasoning-budget, so the flag
+                // and the request field refuse the same numbers.
+                guard let parsed = Int(value), parsed >= -1 else {
+                    throw ServerArgumentError.invalid(
+                        "--reasoning-budget must be -1 (unlimited), 0 (no thinking), "
+                        + "or a positive token count")
                 }
-                thinkingPolicy = parsed
+                reasoningBudget = parsed
+            case "--reasoning-format":
+                guard let parsed = ReasoningFormat(rawValue: value) else {
+                    throw ServerArgumentError.invalid("--reasoning-format must be auto or none")
+                }
+                reasoningFormat = parsed
             case "--max-images":
                 guard let parsed = Int(value), parsed > 0 else {
                     throw ServerArgumentError.invalid("--max-images must be positive")
@@ -385,9 +427,8 @@ public struct ServerArguments: Equatable, Sendable {
                                    maxImagesPerRequest: maxImages,
                                    maxImageBytes: maxImageBytes,
                                    maxImagePixels: maxImagePixels),
-                               thinkingPolicy: thinkingPolicy,
-                               reasoningBudget: -1,
-                               reasoningFormat: .auto,
+                               reasoningBudget: reasoningBudget,
+                               reasoningFormat: reasoningFormat,
                                apiKeys: apiKeys,
                                corsPolicy: corsPolicy)
     }

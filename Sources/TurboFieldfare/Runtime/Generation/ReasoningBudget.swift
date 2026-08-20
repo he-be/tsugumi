@@ -117,11 +117,65 @@ public final class ReasoningBudgetForcer: ForcedTokenSource, @unchecked Sendable
     }
 
     public func nextForcedToken() -> Int32? {
-        // P4 (赤): まだ強制しない。
-        nil
+        guard state == .forcing, forcePosition < forcedTokenIDs.count else { return nil }
+        return forcedTokenIDs[forcePosition]
     }
 
     public func accept(tokenID: Int32, generationIndex: Int, completesCharacter: Bool) {
-        // P4 (赤): 状態機械は未実装。
+        switch state {
+        case .idle, .done:
+            // `DONE` re-arms exactly like `IDLE`: a model may open a second
+            // thought block, and each gets its own window.
+            guard tokenID == startTokenID else { return }
+            arm(after: generationIndex)
+        case .counting:
+            // A natural close ends it — the budget is a ceiling, not a
+            // schedule.
+            if tokenID == endTokenID {
+                state = .done
+                return
+            }
+            remaining -= 1
+            guard remaining <= 0 else { return }
+            state = completesCharacter ? .forcing : .waitingUTF8
+            forcePosition = 0
+        case .waitingUTF8:
+            if tokenID == endTokenID {
+                state = .done
+                return
+            }
+            guard completesCharacter else { return }
+            state = .forcing
+            forcePosition = 0
+        case .forcing:
+            // The loop emitted `forcedTokenIDs[forcePosition]` and handed it
+            // back; nothing here inspects it, because nothing else could have
+            // been drawn at that position.
+            forcePosition += 1
+            if forcePosition >= forcedTokenIDs.count { state = .done }
+        }
+    }
+
+    /// Open the window for a block whose start tag was the token at
+    /// `generationIndex`.
+    ///
+    /// The block's own tokens run from `generationIndex + 1`, and the forced
+    /// sequence starts one position after the last of them, so a window of `R`
+    /// tokens puts the tag at `generationIndex + R + 1`. `deadline` is the
+    /// largest index that leaves the answer its reserve, which is what bounds
+    /// `R` from the `max_tokens` side.
+    private func arm(after generationIndex: Int) {
+        let byRequest = budget < 0 ? Int.max : budget
+        let byDeadline = deadline == Int.max
+            ? Int.max
+            : deadline - generationIndex - 1
+        remaining = min(byRequest, byDeadline)
+        if remaining <= 0 {
+            // The reference promotes a spent budget straight to forcing.
+            state = .forcing
+            forcePosition = 0
+        } else {
+            state = .counting
+        }
     }
 }
