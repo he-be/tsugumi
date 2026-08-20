@@ -389,7 +389,10 @@ struct HTTPServerTests {
         try await server.shutdown()
     }
 
-    @Test func unsupportedToolSchemaReturnsHTTP400BeforeSSEStarts() async throws {
+    /// GEN-2 (was: this schema used to be a 400 before the stream opened).
+    /// A union the tool declaration cannot spell is no longer a reason to
+    /// refuse the request — it is simplified, recorded, and the stream runs.
+    @Test func GEN_2_anUnrepresentableToolSchemaStillStreams() async throws {
         let server = TurboFieldfareHTTPServer(
             modelID: "test-model",
             queueLimit: 1,
@@ -414,11 +417,11 @@ struct HTTPServerTests {
         }
         """#.utf8)
         let (data, response) = try await URLSession.shared.data(for: request)
-        #expect((response as? HTTPURLResponse)?.statusCode == 400)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
         let text = String(decoding: data, as: UTF8.self)
-        #expect(text.contains(#""code":"invalid_tool_schema""#))
-        #expect(text.contains(#""param":"tools""#))
-        #expect(!text.contains("data:"))
+        #expect(text.contains("data:"))
+        #expect(text.contains("[DONE]"))
+        #expect(!text.contains(#""code":"invalid_tool_schema""#))
 
         try await server.shutdown()
     }

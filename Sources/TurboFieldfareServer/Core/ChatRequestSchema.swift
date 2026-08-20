@@ -110,7 +110,8 @@ public enum ChatRequestSchema {
         .init(id: "REQ-seed", name: "seed",
               kinds: [.integer], rule: .passthrough, defaultValue: .integer(-1)),
         .init(id: "REQ-stop", name: "stop",
-              kinds: [.string, .array], rule: .passthrough),
+              kinds: [.string, .array], rule: .passthrough,
+              defaultValue: .array([])),
         .init(id: "REQ-repeat-penalty", name: "repeat_penalty",
               kinds: [.number, .integer], rule: .passthrough,
               defaultValue: .number(1.0)),
@@ -136,7 +137,8 @@ public enum ChatRequestSchema {
                       param: "top_logprobs", code: "logprobs_not_supported")
               }),
         .init(id: "REQ-tools", name: "tools",
-              kinds: [.array], rule: .passthrough),
+              kinds: [.array], rule: .passthrough,
+              defaultValue: .array([])),
         // GEN-4. All four shapes are the grammar's now, so this row only says
         // which four exist; a fifth is still a 400. What each one does to
         // generation — and the two refusals a grammar cannot express (a named
@@ -177,6 +179,7 @@ public enum ChatRequestSchema {
         // content out of the 400 business entirely.
         .init(id: "REQ-response-format", name: "response_format",
               kinds: [.object], rule: .passthrough,
+              defaultValue: .object(["type": .string("text")]),
               handler: { value in
                   guard case .object(let format) = value else { return nil }
                   switch format["type"] {
@@ -193,7 +196,8 @@ public enum ChatRequestSchema {
         .init(id: "REQ-reasoning-effort", name: "reasoning_effort",
               kinds: [.string], rule: .passthrough),
         .init(id: "REQ-template-kwargs", name: "chat_template_kwargs",
-              kinds: [.object], rule: .passthrough),
+              kinds: [.object], rule: .passthrough,
+              defaultValue: .object([:])),
         .init(id: "REQ-cache-prompt", name: "cache_prompt",
               kinds: [.boolean], rule: .passthrough, defaultValue: .bool(true)),
         .init(id: "REQ-reasoning-budget", name: "reasoning_budget_tokens",
