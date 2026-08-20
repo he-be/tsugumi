@@ -927,10 +927,49 @@ extension JSONSchemaGrammarConverter {
         return visitPattern(text, name: ruleName)
     }
 
-    /// 整数の `minimum` / `maximum` → GBNF。まだ未実装なので、この枝は取らない。
+    /// 整数の `minimum` / `maximum` → GBNF。境界が整数でなければ `nil` を返し、
+    /// スキーマは `integer` の原始規則に落ちる (GEN-2)。
     mutating func visitIntegerBoundsIfSupported(
         _ schema: JSONValue, ruleName: String
     ) -> String? {
-        nil
+        let minimum = Self.member(schema, "minimum")
+        let exclusiveMinimum = Self.member(schema, "exclusiveMinimum")
+        let maximum = Self.member(schema, "maximum")
+        let exclusiveMaximum = Self.member(schema, "exclusiveMaximum")
+        guard minimum != nil || exclusiveMinimum != nil
+                || maximum != nil || exclusiveMaximum != nil else {
+            return nil
+        }
+        var minValue = Int64.min
+        var maxValue = Int64.max
+        if let minimum {
+            guard let value = Self.integerBound(minimum) else {
+                approximate("non-integer-bound: minimum")
+                return nil
+            }
+            minValue = value
+        } else if let exclusiveMinimum {
+            guard let value = Self.integerBound(exclusiveMinimum),
+                  value < Int64.max else {
+                approximate("non-integer-bound: exclusiveMinimum")
+                return nil
+            }
+            minValue = value + 1
+        }
+        if let maximum {
+            guard let value = Self.integerBound(maximum) else {
+                approximate("non-integer-bound: maximum")
+                return nil
+            }
+            maxValue = value
+        } else if let exclusiveMaximum {
+            guard let value = Self.integerBound(exclusiveMaximum),
+                  value > Int64.min else {
+                approximate("non-integer-bound: exclusiveMaximum")
+                return nil
+            }
+            maxValue = value - 1
+        }
+        return addRule(ruleName, "(" + Self.minMaxInt(minValue, maxValue) + ")")
     }
 }
