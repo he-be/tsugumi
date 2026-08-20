@@ -1,45 +1,143 @@
 import Foundation
 import TurboFieldfare
 
-// P2-G4c-2: 未実装の入口。赤テストを置くためにツリーがビルドできる形だけを
-// 先に置く (TODO §2-4)。中身は緑コミットで書く。
-
-/// SPEC §6: one request's *decision* about how generation is constrained,
-/// with nothing of the inference loop in it.
+/// SPEC §6: one request's *decision* about how generation is constrained, with
+/// none of the inference loop in it.
+///
+/// `ServerModelSession` cannot be tested without weights, so the part of
+/// G4c that is a decision lives here instead of inside it: given a
+/// `ValidatedChatRequest` and the tokenizer's markers, this says whether there
+/// is a grammar, what it spells, whether it is lazy and what triggers it
+/// (GEN-5), whether the speculative loop may still run (DEV-14), and what the
+/// client asked for that could only be approximated (GEN-2 / DEV-16). What is
+/// left in `ServerModelSession` is the construction of a
+/// `GrammarTokenConstraint` from this and the handing of it to
+/// `runRawCompletion`.
+///
+/// The grammar itself is `ChatGrammarBuilder`'s; this type only chooses the
+/// arguments and carries the answer.
 struct ServerGenerationPlan: Equatable, Sendable {
     /// GBNF text rooted at `root`, or `nil` when this request asks for no
-    /// constraint at all.
+    /// constraint at all (GEN-4's `none`, a `text` response format with no
+    /// tools, a named choice with nothing to name).
     let grammar: String?
-    /// GEN-5.
+    /// GEN-5: `true` means the grammar is not applied until `trigger` fires.
     let isLazy: Bool
     /// GEN-5. Non-nil exactly when `isLazy`.
     let trigger: ChatGrammarTrigger?
     /// GEN-2 / DEV-16: what the client asked for that could only be
-    /// approximated, declaration side first, grammar side after.
+    /// approximated. The declaration side (`GemmaToolSchemaResult`, tagged
+    /// `tools/`) comes first and the grammar side (`ChatGrammarConstraint`,
+    /// tagged `grammar/`) after, because the two degrade independently. Never
+    /// an error — the server logs them.
     let approximations: [String]
-    /// The request shape an error message may name. Never prompt text.
+    /// The request shape an error message may name, in the vocabulary of the
+    /// request rather than of the conversation. **Never prompt text.**
     let shape: String
 
     var isConstrained: Bool { grammar != nil }
-    /// DEV-14.
+
+    /// DEV-14: a constrained request takes the plain path. Verification in the
+    /// speculative loop assumes the token the target would have drawn at each
+    /// position, and GEN-7's redraw breaks that assumption for every position
+    /// after it — so the loop is not entered, rather than entered and made to
+    /// throw.
     var allowsSpeculativeDecoding: Bool { !isConstrained }
-    /// GEN-7.
+
+    /// GEN-7: masking needs logits, and the fused greedy head answers with a
+    /// GPU argmax without ever writing them.
     var requiresLogitsHead: Bool { isConstrained }
 
     init(request: ValidatedChatRequest, markers: ChatGrammarMarkers) {
-        self.grammar = nil
-        self.isLazy = false
-        self.trigger = nil
-        self.approximations = []
-        self.shape = ""
+        // GEN-12 is settled before this point: `ChatRequestParser` refuses a
+        // constraining `response_format` beside a `required` or named
+        // `tool_choice` with a 400, so the collision never reaches the plan.
+        // What is left here is the case the reference implementation also
+        // takes silently — `auto` / `none`, where the response format wins and
+        // no tool grammar is emitted.
+        let constraint = ChatGrammarBuilder.constraint(
+            tools: request.tools,
+            toolChoice: request.toolChoice,
+            parallelToolCalls: request.parallelToolCalls,
+            responseFormat: Self.responseFormat(request.responseFormat),
+            markers: markers)
+        self.grammar = constraint?.grammar
+        self.isLazy = constraint?.isLazy ?? false
+        self.trigger = constraint?.trigger
+        self.approximations =
+            request.toolSchemaSimplifications.map { "tools/" + $0 }
+            + (constraint?.approximations ?? []).map { "grammar/" + $0 }
+        self.shape = Self.shape(request)
+    }
+
+    /// The parser's `ChatResponseFormat` and the grammar stage's
+    /// `ChatGrammarBuilder.ResponseFormat` are the same three shapes seen from
+    /// the wire and from the grammar; this is the one place they are joined.
+    private static func responseFormat(
+        _ format: ChatResponseFormat
+    ) -> ChatGrammarBuilder.ResponseFormat {
+        switch format {
+        case .text: return .text
+        case .jsonObject(let schema): return .jsonObject(schema: schema)
+        case .jsonSchema(let schema): return .jsonSchema(schema: schema)
+        }
+    }
+
+    private static func shape(_ request: ValidatedChatRequest) -> String {
+        let choice: String
+        switch request.toolChoice {
+        case .auto: choice = "auto"
+        case .none: choice = "none"
+        case .required: choice = "required"
+        // The name is the client's own identifier for a function it declared,
+        // not conversation text.
+        case .function(let name): choice = "function:\(name)"
+        }
+        let format: String
+        switch request.responseFormat {
+        case .text: format = "text"
+        case .jsonObject: format = "json_object"
+        case .jsonSchema: format = "json_schema"
+        }
+        return "tool_choice=\(choice) response_format=\(format) "
+            + "tools=\(request.tools.count) "
+            + "parallel_tool_calls=\(request.parallelToolCalls)"
     }
 }
 
-/// GEN-6: whether the grammar is suppressed right now, because the model is
+/// GEN-6: whether the grammar is suppressed right now because the model is
 /// inside its thought block.
+///
+/// The constraint deliberately does not infer this
+/// (`GrammarTokenConstraint.setSuppressed`), and this type does not decide
+/// thought-from-visible either — **`StructuredAssistantDecoder` owns the
+/// channel state**, and says which side of it a token's text fell on by
+/// emitting `.reasoning` or `.content`. This carries that verdict forward, and
+/// names the two boundary tokens directly for the one thing an event cannot
+/// express: the state the boundary token *leaves behind*.
+///
+/// `<channel|>` is why that matters. The detokenizer holds text back at a
+/// structural marker, so the token that closes the block arrives carrying the
+/// last of the thought text — a `.reasoning` event on the very token after
+/// which the grammar must be live again. The server template writes
+/// `<|tool_call>` immediately after that close, so reading the event alone
+/// would keep the grammar asleep through the exact call it exists to
+/// constrain.
+///
+/// `<|channel>` is the mirror: the channel is open but unlabelled, so nothing
+/// is visible text yet. Suppressing is the safe side — the decoder releases it
+/// on the first text it routes to content, which is what a `final` / `answer`
+/// label produces.
+///
+/// A class, not a value: it is driven from the decode loop's progress closure,
+/// which cannot mutate a captured struct through a `#expect`-style borrow, and
+/// its one reader is the constraint object beside it.
 final class ServerThoughtSuppression: @unchecked Sendable {
     let channelStartID: Int32
     let channelEndID: Int32
+    /// Generation starts outside the thought block: with thinking off the
+    /// prompt itself closed the channel, and with thinking on the model has
+    /// not opened it yet.
     private(set) var isSuppressed = false
 
     init(channelStartID: Int32, channelEndID: Int32) {
@@ -52,15 +150,38 @@ final class ServerThoughtSuppression: @unchecked Sendable {
                   channelEndID: tokenizer.channelEndID)
     }
 
+    /// Advance by one generated token and its decoded events, and answer with
+    /// the state that token leaves behind.
     @discardableResult
     func observe(tokenID: Int32, events: [StructuredAssistantEvent]) -> Bool {
-        isSuppressed
+        // The boundary tokens first: their events describe the text held back
+        // from *before* them, which is the channel they are leaving.
+        if tokenID == channelEndID {
+            isSuppressed = false
+        } else if tokenID == channelStartID {
+            isSuppressed = true
+        } else {
+            for event in events {
+                switch event {
+                case .reasoning: isSuppressed = true
+                case .content, .toolCall: isSuppressed = false
+                }
+            }
+        }
+        return isSuppressed
     }
 }
 
-/// GEN-2: a grammar that will not build is a bug on our side, never a client
-/// error, so it has to reach the wire as a 500 that says which request shape
-/// produced it.
+/// GEN-2: a grammar that will not *build* is a bug on our side.
+///
+/// Schema content can never be a client error (GEN-2 / DEV-16 — anything
+/// unrepresentable is approximated instead), so reaching this means the
+/// grammar this server wrote is not one this server can parse. It escapes
+/// `ServerModelSession` untyped, which the HTTP layer turns into a 500
+/// `server_error`; the point of the type is that the stderr line names the
+/// request shape that produced it, and that the failure is never swallowed
+/// into an unconstrained generation (which would be R4's answer-in-the-wrong-
+/// shape with a 200).
 struct ServerGrammarBuildFailure: Error, CustomDebugStringConvertible, Sendable {
     let shape: String
     let underlying: String
@@ -76,9 +197,30 @@ struct ServerGrammarBuildFailure: Error, CustomDebugStringConvertible, Sendable 
 }
 
 /// GEN-2 / DEV-16: the approximations as one field of the request-lifecycle
-/// stderr line.
+/// stderr line (docs/OPENAI_SERVER.md).
+///
+/// The strings come from `tools` and `response_format` — the schemas the
+/// client declared — and never from `messages`, so the line keeps its promise
+/// of carrying counts and shapes but no prompt text. They are still client
+/// input, so they are flattened to one line and bounded before they are
+/// written.
 enum ServerApproximationLog {
+    static let limit = 512
+
     static func field(_ items: [String]) -> String? {
-        nil
+        guard !items.isEmpty else { return nil }
+        var joined = items.map(flatten).joined(separator: "; ")
+        if joined.count > limit {
+            joined = String(joined.prefix(limit - 1)) + "…"
+        }
+        return joined
+    }
+
+    /// One line, printable: a schema fragment may carry newlines or control
+    /// bytes, and a log line that a client can break is a log line that lies.
+    private static func flatten(_ text: String) -> String {
+        String(String.UnicodeScalarView(text.unicodeScalars.map {
+            ($0.value < 0x20 || $0.value == 0x7F) ? " " : $0
+        }))
     }
 }

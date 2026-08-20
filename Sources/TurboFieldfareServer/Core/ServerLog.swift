@@ -40,6 +40,13 @@ enum ServerLog {
                 + " rounds=\(speculative.rounds)"
                 + " accept=\(String(format: "%.3f", speculative.meanAcceptedLength))"
         }
+        // SPEC §6 GEN-2 / §12 DEV-16: what the client asked for that could only
+        // be approximated. It rides the line that already exists rather than a
+        // channel of its own, and it comes from the declared schemas
+        // (`tools`, `response_format`), never from `messages`.
+        if let approximations = ServerApproximationLog.field(completion.approximations) {
+            line += " approx=\"\(approximations)\""
+        }
         write(line)
     }
 

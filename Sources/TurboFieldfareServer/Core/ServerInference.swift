@@ -43,19 +43,26 @@ public struct ServerCompletion: Equatable, Sendable {
     public let usage: OpenAIUsage
     /// Non-nil only when this request actually ran the speculative loop.
     public let speculative: ServerSpeculativeSummary?
+    /// SPEC §6 GEN-2 / §12 DEV-16: what this request asked for that could only
+    /// be approximated — the declared tool schemas the template could not
+    /// render, and the schema elements the grammar could not constrain. For
+    /// the request-lifecycle log line only; never part of the response.
+    public let approximations: [String]
 
     public init(content: String,
                 toolCalls: [ParsedToolCall],
                 finishReason: String,
                 usage: OpenAIUsage,
                 speculative: ServerSpeculativeSummary? = nil,
-                reasoningContent: String = "") {
+                reasoningContent: String = "",
+                approximations: [String] = []) {
         self.content = content
         self.reasoningContent = reasoningContent
         self.toolCalls = toolCalls
         self.finishReason = finishReason
         self.usage = usage
         self.speculative = speculative
+        self.approximations = approximations
     }
 }
 
@@ -430,6 +437,14 @@ public actor ServerModelSession: ServerInferenceBackend {
     private let maxContext: Int
     private let promptCacheDomain: ServerPromptCacheDomain
     private let imagePolicy: ServerImagePolicy
+    /// SPEC §6 GEN-1: the id → piece table every grammar constraint matches
+    /// against. Built once beside the tokenizer at load (~0.4 s and ~25 MB for
+    /// 262 144 ids) and shared by every request; building it per request would
+    /// cost more than the generation it constrains.
+    private let grammarVocabulary: GrammarVocabulary
+    /// The marker text and ids the tool-call grammar is written around, read
+    /// off the tokenizer once for the same reason.
+    private let grammarMarkers: ChatGrammarMarkers
     private var promptCache = ServerPromptCache()
 
     public static func load(modelDirectory: URL,
@@ -531,6 +546,8 @@ public actor ServerModelSession: ServerInferenceBackend {
         self.context = context
         self.model = model
         self.tokenizer = tokenizer
+        self.grammarVocabulary = GrammarVocabulary.shared(for: tokenizer)
+        self.grammarMarkers = ChatGrammarMarkers(tokenizer: tokenizer)
         self.runner = runner
         self.scratch = scratch
         self.speculative = speculative
@@ -574,6 +591,11 @@ public actor ServerModelSession: ServerInferenceBackend {
             }
         }
         let needsToolTemplate = usesToolTemplate(request)
+        // SPEC §6: what this request asks generation to be constrained to.
+        // The decision is a pure function of the validated request and the
+        // markers (`ServerGenerationPlan`); this file only builds what it
+        // describes and hands it down.
+        let plan = ServerGenerationPlan(request: request, markers: grammarMarkers)
         // Since S3 both templates render the thought channel, so what the
         // request asked for is what the prompt does (11-S2 §1).
         let thinking = request.enableThinking
@@ -654,8 +676,57 @@ public actor ServerModelSession: ServerInferenceBackend {
                 usage: OpenAIUsage(promptTokens: promptIDs.count,
                                    completionTokens: 0,
                                    totalTokens: promptIDs.count,
-                                   cachedTokens: 0))
+                                   cachedTokens: 0),
+                approximations: plan.approximations)
         }
+
+        // GEN-1 / GEN-3 / GEN-5: the constraint itself. Built after the
+        // prefill-only exit because parsing the grammar is real work and that
+        // request samples nothing.
+        //
+        // GEN-2 forbids a client error for schema *content* — anything
+        // unrepresentable was already approximated by the builder — so a
+        // grammar that will not parse is our bug, and it becomes a 500 that
+        // names the request shape rather than a silent fall back to
+        // unconstrained text (R4).
+        let constraint: GrammarTokenConstraint?
+        if let grammarText = plan.grammar {
+            // GEN-7 applies the constraint by masking logits, and the fused
+            // greedy head answers with a GPU argmax without ever writing them.
+            // The server always builds its runner with `forceLogitsHead: true`
+            // (`ServerArguments.resolvedRuntimeConfiguration`), which is why
+            // this holds; the guard turns that cross-file assumption into a
+            // checked dependency instead of an implicit one, and refusing is
+            // the only honest answer — the alternative is free-form text under
+            // a constrained request.
+            guard !runner.usesFusedGreedyHead else {
+                throw ServerGrammarBuildFailure(
+                    shape: plan.shape,
+                    underlying: GenerationConstraintError.logitsUnavailable(
+                        "this server built its runner with the fused greedy head, so a "
+                        + "constrained request cannot be masked; start it with the "
+                        + "logits head (forceLogitsHead: true)"))
+            }
+            do {
+                constraint = try GrammarTokenConstraint(
+                    grammarText,
+                    vocabulary: grammarVocabulary,
+                    // GEN-5: a lazy grammar needs nothing at this call site
+                    // beyond its trigger — `RawCompletion` already feeds every
+                    // generated token to `accept`, which is where the trigger
+                    // is watched for.
+                    trigger: plan.trigger.map { .token($0.tokenID) })
+            } catch {
+                throw ServerGrammarBuildFailure(shape: plan.shape, underlying: error)
+            }
+        } else {
+            constraint = nil
+        }
+        // GEN-6: the constraint never infers the thought channel, so the
+        // decoder's verdict for each token drives it from `onProgress` below.
+        let suppression = constraint?.isLazy == true
+            ? ServerThoughtSuppression(tokenizer: tokenizer)
+            : nil
 
         // With thinking on, the generation prompt leaves the thought channel
         // for the model to open, so its markers arrive in the stream and the
@@ -710,6 +781,17 @@ public actor ServerModelSession: ServerInferenceBackend {
                     } else {
                         delta.isEmpty ? [] : [StructuredAssistantEvent.content(delta)]
                     }
+                    // GEN-6: the thought channel decides whether the lazy
+                    // grammar is supplied at all, and the decoder is what knows
+                    // the channel. `RawCompletion` accepts the token into the
+                    // constraint before it calls back here, so the state set
+                    // now is the state the *next* token is judged by — which is
+                    // exactly the rule: `<channel|>` itself is still inside the
+                    // block, and everything after it is not.
+                    if let constraint, let suppression {
+                        constraint.setSuppressed(
+                            suppression.observe(tokenID: tokenID, events: events))
+                    }
                     handle(events)
                 case .tail(let text):
                     // The flush tail is not tied to a token ID, so it must
@@ -735,10 +817,15 @@ public actor ServerModelSession: ServerInferenceBackend {
         // rewound K/V — only the wall clock differs (docs/mtp/25-M5.6-RESULTS.md).
         // A repetition penalty makes the draw depend on history the round has
         // not committed, which cannot be verified, so such a request takes the
-        // plain path instead of being refused.
+        // plain path instead of being refused. SPEC §12 DEV-14 puts a grammar
+        // in the same class and for the same reason — GEN-7's redraw changes
+        // the token at a position, so every later position in the block was
+        // drafted against a prefix that never happened. The condition is where
+        // that is decided; `runSpeculativeCompletion` throws on a constraint
+        // as a backstop, not as the mechanism.
         let result: RawDecodeResult
         var speculativeSummary: ServerSpeculativeSummary?
-        if let speculative, config.repetitionPenalty == 1.0 {
+        if let speculative, config.repetitionPenalty == 1.0, plan.allowsSpeculativeDecoding {
             let spec = try await runSpeculativeCompletion(
                 producer: runner,
                 tokenizer: tokenizer,
@@ -766,6 +853,11 @@ public actor ServerModelSession: ServerInferenceBackend {
                 tokenizer: tokenizer,
                 promptIds: effectivePromptIDs,
                 config: config,
+                // GEN-7. A `GenerationConstraintError` or a `GBNFError` out of
+                // here is left to escape: GEN-7 calls a no-allowed-token state
+                // an error, so it becomes a 500 `server_error` rather than a
+                // silently truncated or unconstrained answer.
+                constraint: constraint,
                 context: context,
                 scratch: scratch,
                 prefillConfig: prefillConfig,
@@ -840,7 +932,8 @@ public actor ServerModelSession: ServerInferenceBackend {
                                totalTokens: result.prefillTokens + result.newTokens,
                                cachedTokens: result.cachedPromptTokens),
             speculative: speculativeSummary,
-            reasoningContent: reasoningContent)
+            reasoningContent: reasoningContent,
+            approximations: plan.approximations)
     }
 
     private func renderPrompt(

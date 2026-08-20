@@ -101,7 +101,7 @@ struct ServerGenerationPlanTests {
             + #""required":["answer"]}}}"#)
         let grammar = try #require(plan.grammar)
         #expect(grammar.contains("root ::="))
-        #expect(grammar.contains(#""answer""#))
+        #expect(grammar.contains("answer-kv ::="))
         #expect(!plan.isLazy)
         #expect(plan.trigger == nil)
     }
@@ -120,7 +120,7 @@ struct ServerGenerationPlanTests {
             #""response_format":{"type":"json_object","schema":{"type":"object","#
             + #""properties":{"city":{"type":"string"}},"required":["city"]}}"#)
         let grammar = try #require(plan.grammar)
-        #expect(grammar.contains(#""city""#))
+        #expect(grammar.contains("city-kv ::="))
     }
 
     // MARK: - GEN-12: the collision never reaches the plan
@@ -198,15 +198,18 @@ struct ServerGenerationPlanTests {
         #expect(field.contains("unrepresentable-all-of"))
     }
 
-    /// A `pattern` the converter cannot read is approximated by the grammar
-    /// stage, not refused (GEN-2).
+    /// A `pattern` the converter cannot express is approximated by the
+    /// grammar stage, not refused (GEN-2). The reference implementation throws
+    /// on this input (DEV-16).
     @Test("GEN-2: grammar-stage approximations reach the plan's approximations")
     func GEN_2_grammar_stage_approximations_reach_the_plan() throws {
         let plan = try Self.plan(
             #""response_format":{"type":"json_schema","json_schema":{"name":"r","#
-            + #""schema":{"type":"string","pattern":"^a("}}}"#)
-        #expect(plan.grammar != nil, "GEN-2: an unreadable pattern is approximated, not refused")
-        #expect(plan.approximations.contains { $0.contains("unbalanced-parentheses") })
+            + #""schema":{"type":"object","properties":{"id":{"type":"string","#
+            + #""pattern":"a+"}},"required":["id"]}}}"#)
+        #expect(plan.grammar != nil, "GEN-2: an unanchored pattern is approximated, not refused")
+        #expect(plan.approximations.contains { $0.hasPrefix("grammar/") })
+        #expect(plan.approximations.contains { $0.contains("unanchored-pattern") })
     }
 
     @Test("GEN-2: a plan that gave nothing up logs nothing")
