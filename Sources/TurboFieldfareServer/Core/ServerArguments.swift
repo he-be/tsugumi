@@ -12,6 +12,22 @@ public enum ServerThinkingPolicy: String, Equatable, Sendable {
     public var isEnabled: Bool { self == .on }
 }
 
+/// FLAG-6. What `--cors-origins` was set to.
+public enum ServerCORSPolicy: Equatable, Sendable {
+    /// No flag. No CORS header goes out on any response and `OPTIONS` is not a
+    /// preflight — the 127.0.0.1 bind is the whole defence, as it is today.
+    /// The reference defaults to `*` with credentials, which would open a
+    /// loopback server to any page the browser has open (DEV-20).
+    case disabled
+    /// `*`. Answered as `*`, which does not depend on the request's `Origin`
+    /// and so needs no `Vary`.
+    case any
+    /// A list. The request's `Origin` is matched against it and only the one
+    /// that matched comes back — returning the list verbatim, as the reference
+    /// does, is a value no browser accepts (DEV-20).
+    case origins([String])
+}
+
 public struct ServerArguments: Equatable, Sendable {
     public let model: String
     public let port: Int
@@ -30,6 +46,8 @@ public struct ServerArguments: Equatable, Sendable {
     /// FLAG-5. Empty means no authentication, which is the default and is what
     /// every existing runbook starts.
     public let apiKeys: [String]
+    /// FLAG-6. Disabled means no CORS headers at all, which is the default.
+    public let corsPolicy: ServerCORSPolicy
 
     public static let usage = """
     usage: TurboFieldfareServer --model <completed .gturbo directory> [options]
@@ -106,6 +124,12 @@ public struct ServerArguments: Equatable, Sendable {
                                  keys with commas to accept more than one.
                                  /health, /v1/health, /models and /v1/models stay
                                  open. The server binds 127.0.0.1 either way.
+      --cors-origins <o[,o...]>  Origins allowed to read this server's answers from
+                                 a browser, or * for any (default: none, and no
+                                 CORS header is sent). A listed origin is echoed
+                                 back on its own; the list itself is never sent,
+                                 because Access-Control-Allow-Origin takes one
+                                 origin or *. Credentials are never allowed.
       --help                     Show this help.
     """
 
@@ -162,6 +186,7 @@ public struct ServerArguments: Equatable, Sendable {
         var maxImagePixels = ServerImagePolicy.default.maxImagePixels
         var thinkingPolicy = ServerThinkingPolicy.off
         var apiKeys: [String] = []
+        var corsPolicy = ServerCORSPolicy.disabled
         var index = 0
         while index < input.count {
             let flag = input[index]
@@ -265,6 +290,18 @@ public struct ServerArguments: Equatable, Sendable {
                     throw ServerArgumentError.invalid("--api-key must not be empty")
                 }
                 apiKeys.append(contentsOf: keys)
+            case "--cors-origins":
+                // Not implemented yet — the flag is checked so a bad value
+                // still fails at startup, but nothing is carried through.
+                if value.trimmingCharacters(in: .whitespaces) != "*" {
+                    let origins = value.split(separator: ",")
+                        .map { $0.trimmingCharacters(in: .whitespaces) }
+                        .filter { !$0.isEmpty }
+                    guard !origins.isEmpty else {
+                        throw ServerArgumentError.invalid(
+                            "--cors-origins must be * or a comma-separated list of origins")
+                    }
+                }
             case "--thinking":
                 guard let parsed = ServerThinkingPolicy(rawValue: value) else {
                     throw ServerArgumentError.invalid("--thinking must be on or off")
@@ -314,7 +351,8 @@ public struct ServerArguments: Equatable, Sendable {
                                    maxImageBytes: maxImageBytes,
                                    maxImagePixels: maxImagePixels),
                                thinkingPolicy: thinkingPolicy,
-                               apiKeys: apiKeys)
+                               apiKeys: apiKeys,
+                               corsPolicy: corsPolicy)
     }
 }
 

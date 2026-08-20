@@ -62,6 +62,7 @@ public actor TurboFieldfareHTTPServer {
     private let defaults: ChatRequestDefaults
     private let properties: ServerProperties
     private let apiKeys: [String]
+    private let corsPolicy: ServerCORSPolicy
     private let childChannels = ChildChannelRegistry()
     private var channel: Channel?
     private var shutdownTask: Task<Void, any Error>?
@@ -74,6 +75,7 @@ public actor TurboFieldfareHTTPServer {
                 defaults: ChatRequestDefaults = ChatRequestDefaults(),
                 properties: ServerProperties = ServerProperties(),
                 apiKeys: [String] = [],
+                corsPolicy: ServerCORSPolicy = .disabled,
                 group: MultiThreadedEventLoopGroup = .init(numberOfThreads: 1)) {
         self.group = group
         self.modelID = modelID
@@ -84,6 +86,7 @@ public actor TurboFieldfareHTTPServer {
         self.defaults = defaults
         self.properties = properties
         self.apiKeys = apiKeys
+        self.corsPolicy = corsPolicy
     }
 
     /// LIF-2 → LIF-3. The load finished and the endpoints may answer from the
@@ -106,6 +109,7 @@ public actor TurboFieldfareHTTPServer {
         let defaults = self.defaults
         let properties = self.properties
         let apiKeys = self.apiKeys
+        let corsPolicy = self.corsPolicy
         let childChannels = self.childChannels
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 16)
@@ -125,6 +129,7 @@ public actor TurboFieldfareHTTPServer {
                         defaults: defaults,
                         properties: properties,
                         apiKeys: apiKeys,
+                        corsPolicy: corsPolicy,
                         childChannels: childChannels))
                 }
             }
@@ -216,6 +221,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private let defaults: ChatRequestDefaults
     private let properties: ServerProperties
     private let apiKeys: [String]
+    private let corsPolicy: ServerCORSPolicy
     private let maximumBodyBytes: Int
     private let childChannels: ChildChannelRegistry
     private var head: HTTPRequestHead?
@@ -231,6 +237,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
          defaults: ChatRequestDefaults,
          properties: ServerProperties,
          apiKeys: [String],
+         corsPolicy: ServerCORSPolicy,
          childChannels: ChildChannelRegistry) {
         self.modelID = modelID
         self.readiness = readiness
@@ -240,6 +247,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         self.defaults = defaults
         self.properties = properties
         self.apiKeys = apiKeys
+        self.corsPolicy = corsPolicy
         self.maximumBodyBytes = imagePolicy.maximumBodyBytes
         self.childChannels = childChannels
     }
