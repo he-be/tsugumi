@@ -113,10 +113,13 @@
 
 | ID | 規範 |
 | --- | --- |
-| GEN-1 | `tools` 宣言時、tool call は最終的に**文法で拘束して生成**する (JSON schema → 文法、参照実装 `server-schema.cpp:251` / `server-common.cpp:1246` の機構)。事後パース (`GemmaToolCallParser`) は拘束が入るまでの暫定実装であり、応答の形は同じ。 |
-| GEN-2 | **スキーマの入口検査で 400 にしない。**表現できないスキーマ要素は拘束できる近似 (generic JSON) に落とす。`validateSchemaKeys` / `GemmaToolSchema.adapted` の入口拒否は廃止。 |
-| GEN-3 | `response_format: json_object` / `json_schema` は GEN-1 と同じ文法機構で拘束する。**拘束が実装されるまでは 501** `not_supported_error` — JSON を頼まれて Markdown を 200 で返すことは R4 違反であり、どの段階でも許されない。 |
-| GEN-4 | `tool_choice: required` / 名前指定も文法で実現する (参照実装と同じ)。拘束が入るまでは 501。`auto` / `none` は今すぐ動く。 |
+| GEN-1 | `tools` 宣言時、tool call は**文法で拘束して生成**する (JSON schema → 文法、参照実装 `server-schema.cpp:251` / `server-common.cpp:1246` の機構)。文法が描くのは**テンプレートが描くのと同じ構文**であり、このモデルではそれは `<\|tool_call>call:NAME{…}<tool_call\|>` の方言 (裸のキー、文字列は `"…"` または `<\|"\|>…<\|"\|>`) である。事後パース (`GemmaToolCallParser`) は拘束の後も応答の組み立てに使ってよい — 形は同じ。 |
+| GEN-2 | **スキーマの入口検査で 400 にしない。**表現できないスキーマ要素は拘束できる近似 (generic JSON) に落とす。参照実装が例外を投げる入力 (壊れた `pattern`、未知の `type`、解決できない `$ref` など) もこちらは近似に落として受理し、落としたことを記録する (DEV-16)。`validateSchemaKeys` / `GemmaToolSchema.adapted` の入口拒否は廃止。 |
+| GEN-3 | `response_format` は GEN-1 と同じ文法機構で拘束する。`json_schema` は `response_format.json_schema.schema` を読む。**`json_object` は schema が無ければ「任意の JSON 値」に拘束する** (DEV-18)。JSON を頼まれて Markdown を 200 で返すことは R4 違反であり、どの段階でも許されない。 |
+| GEN-4 | `tool_choice` は 4 形すべてを文法で実現する: `none` は文法なし、`auto` は**遅延文法** (GEN-5)、`required` と名前指定は**最初から拘束する** (非遅延)。名前指定は文法が関数名そのものを固定する (DEV-17)。 |
+| GEN-5 | **遅延文法 (lazy)。**`tool_choice: auto` では、トリガに達するまで文法を一切適用しない (参照実装 `llama_grammar_apply_impl` の `awaiting_trigger`)。トリガはツール呼び出しの開始トークン `<\|tool_call>` である。トリガが出るまでは自由に本文を書けて、出た瞬間から呼び出し構文が拘束される。 |
+| GEN-6 | **思考中は遅延文法を適用も供給もしない** (参照実装 `sampling.cpp:452` の `grammar_should_apply`)。思考ブロックの中に出たトリガでは文法は起動しない。思考が閉じた時点から通常どおり供給する。 |
+| GEN-7 | **拘束の入れ方は棄却サンプリング** (参照実装 `common_sampler_sample`)。通常どおり 1 トークン引き、それが文法に適合すればそのまま採る。適合しなければ、全語彙を文法でマスクして引き直す。どのトークンも許されない状態は `server_error` (500) — 生成を無言で打ち切らない。 |
 
 ## 7. プロンプトキャッシュ (CACHE)
 
@@ -125,7 +128,7 @@
 | CACHE-1 | 再利用判定は**トークン列の最長共通接頭辞 (LCP) のみ** (参照実装 `server-context.cpp:3125` の `get_common_prefix` 1 行)。会話の形 (role の並び・tools・思考・画像の有無) を判定に使わない。意味ゲートとブリッジ合成 (`ServerPromptCache` の現行設計) は廃止。 |
 | CACHE-2 | **部分一致はそのまま使う。**不一致点から後ろだけを prefill する。all-or-nothing にしない。 |
 | CACHE-3 | 全トークン一致時は末尾 1 トークンを捨てて再デコードする (参照実装 `n_past--`)。 |
-| CACHE-4 | 画像は LCP 走査の中でチャンク (ダイジェスト + トークン数) の一致でまとめて飛ばす (参照実装 `server-common.cpp:678`)。**それまでの暫定**: 走査はトークンだけを見て、写真が同じであることは entry の**ダイジェスト列**が別に検定する — 2 枚の写真は同じ soft token に展開されるので、走査だけでは区別できない。 |
+| CACHE-4 | 画像は LCP 走査の中でチャンク (ダイジェスト + トークン数) の一致でまとめて飛ばす (参照実装 `server-common.cpp:678` の `get_common_prefix`)。**両側が同じ写真なら走査はチャンクごと飛び越え、違えばその写真の先頭で止まる** — 2 枚の写真は同じ soft token に展開されるので、トークンだけを見る走査では区別できない。写真が違っても全体が miss になるのではなく、**その写真の手前までは再利用する** (CACHE-2)。 |
 | CACHE-5 | 要求ごとの `cache_prompt: false` で不参加 (既定 true)。プロセスフラグ `--prompt-cache-mode` は廃止 (FLAG-4)。 |
 | CACHE-6 | **ミス理由の分類はしない。**観測値は `usage.prompt_tokens_details.cached_tokens` と `timings.cache_n` の数字 1 種類のみ。11 種の `ServerPromptCacheMiss` は削除。 |
 | CACHE-7 | `--cache-reuse` (KV の位置ずらし流用) は当面採らない。LCP が安定してから backlog で検討 (参照実装でも画像経路では無効)。 |
@@ -202,6 +205,11 @@
 | DEV-10 | `top_p` のサンプラ写像 | 全語彙で nucleus を取る | `top_p < 1` かつ `top_k` 未指定なら `top_k = 256` を補う。`top_p = 0` は貪欲 (`top_k = 1`) として実行 | サンプラが全語彙 nucleus を実装していない (`GenerationConfig.validate`)。R3 の「範囲外は端に丸める」の延長で、拒否ではない | 全語彙 nucleus を実装したら |
 | DEV-12 | チャットテンプレート | 同梱 `chat_template.jinja` をそのまま描く | **サーバーだけリポジトリ所有の変種**を描く (`Sources/TurboFieldfare/Templates/server_chat_template.jinja`、`GFTokenizer.ChatTemplateVariant.serverRedraw`)。同梱版との差分は 1 ハンク: 完了した model ターンに、生成時に KV へ入っていた thought channel (思考 OFF なら空、思考 ON なら思考ブロック) を描き直す | 同梱版は思考ブロックを「最後の user より後」かつ「`tool_calls` を持つ」ターンにしか描かないので、完了した回答を描き直すと必ず生成時とずれる = INV-1 が破れ、毎ターン LCP が 12〜20+ トークン短くなる。CLI・アプリ・KernelCheck は同梱版のまま (既定 `.modelBundled`) なので、それらのトークン列は 1 ビットも動かない | 同梱テンプレートが完了ターンを生成どおりに描くようになったら |
 | DEV-13 | 部分再利用の深さ | 共通接頭辞ならいくらでも遡って再開できる | **KV カーソルを戻せるのはリングの余裕まで** (`min(maxContext, slidingWindow + prefillChunkTokens) - slidingWindow`、既定 **2048 トークン**)。それより深い分岐は接頭辞を捨てて全 prefill | FP16 リングは SWA 層の物理スロットを `capacity` ごとに再利用するので、`[N, position)` を書いた時点で `[N-capacity, position-capacity)` は潰れている。カーネルが読む `[N-slidingWindow, N)` を守る条件がこの式 (`KVCacheManager.maximumSafeRewind`) | リング容量が変わったら自動で追随する。リングを切れば (`fp16RingEnabled = false`) 制限は消える |
+| DEV-14 | 文法拘束中の投機デコード | 文法と投機デコードは併用できる (`llama_grammar` を clone して巻き戻す) | **文法が有効な要求は投機デコードを使わない** (plain 経路に落ちる) | 検証は「その位置でターゲットが引いたはずのトークン」と一致することで成立している。文法は引き直し (GEN-7) を起こすので、ブロック内の後続位置の前提が崩れる。`repeat_penalty != 1` が既に同じ理由で plain に落ちている前例に合わせた | 文法状態をブロック単位で巻き戻せるようにしたら |
+| DEV-15 | オブジェクトのプロパティ順 | 宣言順 | **キーの昇順**。必須・省略可のどちらも | (1) `JSONValue.object` は順序を持たない Swift の Dictionary である。(2) テンプレートが tool_call の引数を `dictsort` で描くので、生成もキー昇順でなければ tool_call ターンで INV-1 (描き直し == 生成) が破れる | JSONValue が順序を持つようになり、かつテンプレートが宣言順で描くようになったら |
+| DEV-16 | 表現できないスキーマ | 例外を投げる (400) | 近似に落として受理し、落とした箇所を記録する | GEN-2。契約は「拘束する」ではなく「頼まれた形で返す」であり、拘束しきれない部分があることは 400 の理由にならない。入口で断ると、クライアントが載せてくる巨大なスキーマの端の 1 行でタスク全体が通らなくなる | — |
+| DEV-17 | 名前指定の `tool_choice` | 文字列としてデコードするため object 形は型エラーを握りつぶして `auto` に落ちる (実質未実装) | OpenAI どおり、その関数だけを文法で固定する | 参照実装のこれは欠陥であり、規範ではない。ワイヤ形式の上位規範は OpenAI (§0) で、そこでは名前指定は「その関数を必ず呼ぶ」である | 参照実装が object 形を実装したら合わせて読み直す |
+| DEV-18 | schema の無い `json_object` | jinja 経路では**何も拘束しない** (自由文が通る) | 「任意の JSON 値」に拘束する | OpenAI の `json_object` は「妥当な JSON を返す」という契約であり、R4 がその 200 を守らせる。参照実装の非 jinja 経路も同じく空スキーマを文法に落としている | — |
 | DEV-11 | 413 Payload Too Large | 無し (本文上限は 500) | 使わない。本文超過・画像サイズ超過・画像枚数超過はすべて 400 `invalid_request_error` | ERR-2 の型 ↔ HTTP 表に 413 の型が無く、型を増やすより 400 に寄せるほうが面積が小さい | 実クライアントが 413 を区別する必要が出たら |
 
 ## 13. この文書の変え方
