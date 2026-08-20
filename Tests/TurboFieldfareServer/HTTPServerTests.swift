@@ -817,6 +817,70 @@ struct HTTPServerTests {
         try await server.shutdown()
     }
 
+    /// ERR-2 / DEV-11: a body over the ceiling is 400 `invalid_request_error`.
+    /// There is no type in ERR-2's table that maps to 413, and inventing one
+    /// costs more than folding the case into the 400 that every client already
+    /// handles.
+    @Test func ERR_2_oversized_body_is_400_invalid_request_and_never_413() async throws {
+        let server = TurboFieldfareHTTPServer(
+            modelID: "test-model",
+            queueLimit: 1,
+            backend: ScriptedServerBackend(),
+            imagePolicy: ServerImagePolicy(maxImagesPerRequest: 0))
+        let channel = try await server.start(port: 0)
+        let port = try #require(channel.localAddress?.port)
+        var request = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        let filler = String(repeating: "x", count: ServerImagePolicy.textBodyBytes + 4_096)
+        request.httpBody = Data(#"""
+        {"model":"test-model","messages":[{"role":"user","content":"\#(filler)"}]}
+        """#.utf8)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        #expect((response as? HTTPURLResponse)?.statusCode == 400)
+        let text = String(decoding: data, as: UTF8.self)
+        #expect(text.contains(#""type":"invalid_request_error""#))
+        #expect(text.contains(#""code":"request_too_large""#))
+
+        try await server.shutdown()
+    }
+
+    /// ERR-2: 405 and 415 have no type of their own — in OpenAI's taxonomy or
+    /// in ours — so they are `invalid_request_error` and the `code` is what
+    /// tells them apart.
+    @Test func ERR_2_method_not_allowed_and_unsupported_media_type_are_invalid_request() async throws {
+        let server = TurboFieldfareHTTPServer(
+            modelID: "test-model", queueLimit: 1, backend: ScriptedServerBackend())
+        let channel = try await server.start(port: 0)
+        let port = try #require(channel.localAddress?.port)
+
+        var wrongMethod = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/health")!)
+        wrongMethod.httpMethod = "POST"
+        wrongMethod.setValue("application/json", forHTTPHeaderField: "content-type")
+        wrongMethod.httpBody = Data("{}".utf8)
+        let (methodBody, methodResponse) = try await URLSession.shared.data(for: wrongMethod)
+        #expect((methodResponse as? HTTPURLResponse)?.statusCode == 405)
+        let methodText = String(decoding: methodBody, as: UTF8.self)
+        #expect(methodText.contains(#""type":"invalid_request_error""#))
+        #expect(methodText.contains(#""code":"method_not_allowed""#))
+
+        var wrongMedia = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
+        wrongMedia.httpMethod = "POST"
+        wrongMedia.setValue("text/plain", forHTTPHeaderField: "content-type")
+        wrongMedia.httpBody = Data("hello".utf8)
+        let (mediaBody, mediaResponse) = try await URLSession.shared.data(for: wrongMedia)
+        #expect((mediaResponse as? HTTPURLResponse)?.statusCode == 415)
+        let mediaText = String(decoding: mediaBody, as: UTF8.self)
+        #expect(mediaText.contains(#""type":"invalid_request_error""#))
+        #expect(mediaText.contains(#""code":"unsupported_media_type""#))
+
+        try await server.shutdown()
+    }
+
     @Test func shutdownAfterListenerClosesIsIdempotent() async throws {
         let server = TurboFieldfareHTTPServer(
             modelID: "test-model",
