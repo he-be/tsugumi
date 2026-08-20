@@ -47,6 +47,30 @@ public struct GFTokenizer: @unchecked Sendable {
     public static let chatTemplateIdentity = "gemma4-it-text-no-tools-v1"
     public static let toolChatTemplateIdentity = "gemma4-it-tools-jinja-v1"
 
+    /// Which rendering of the chat format a caller wants.
+    ///
+    /// `.modelBundled` is the pinned checkpoint's own template, on both paths:
+    /// the Swift rendering of it here and `chat_template.jinja` itself on the
+    /// tool path. `.serverRedraw` is the repo-owned variant that draws a
+    /// finished model turn the way it was generated (SPEC INV-1,
+    /// `ServerChatTemplate`) so the prompt cache's common prefix reaches the
+    /// end of the last turn. The server asks for it; the CLI and the app do
+    /// not, and their token streams are unchanged.
+    public enum ChatTemplateVariant: String, Sendable {
+        case modelBundled
+        case serverRedraw
+
+        /// What the domain of a prompt cache entry has to agree on: two
+        /// requests rendered by different variants are different token
+        /// streams and must not share a cache.
+        public var identity: String {
+            switch self {
+            case .modelBundled: return GFTokenizer.chatTemplateIdentity
+            case .serverRedraw: return "gemma4-server-redraw-v1"
+            }
+        }
+    }
+
     public let bosID: Int32
     public let eosID: Int32
     public let padID: Int32
@@ -284,6 +308,10 @@ public struct GFTokenizer: @unchecked Sendable {
         public let toolCalls: [HistoricalToolCall]
         public let toolCallID: String?
         public let name: String?
+        /// The thinking an assistant turn was produced with, handed back by the
+        /// client (SPEC MSG-5). It is what the `.serverRedraw` variant needs to
+        /// draw that turn as the model wrote it.
+        public let reasoningContent: String?
 
         public init(role: Role, content: String) {
             self.role = role
@@ -291,18 +319,21 @@ public struct GFTokenizer: @unchecked Sendable {
             self.toolCalls = []
             self.toolCallID = nil
             self.name = nil
+            self.reasoningContent = nil
         }
 
         public init(role: Role,
                     content: String?,
                     toolCalls: [HistoricalToolCall] = [],
                     toolCallID: String? = nil,
-                    name: String? = nil) {
+                    name: String? = nil,
+                    reasoningContent: String? = nil) {
             self.role = role
             self.content = content
             self.toolCalls = toolCalls
             self.toolCallID = toolCallID
             self.name = name
+            self.reasoningContent = reasoningContent
         }
     }
 
@@ -321,10 +352,12 @@ public struct GFTokenizer: @unchecked Sendable {
     public struct MultimodalMessage: Sendable, Equatable {
         public let role: Role
         public let parts: [ContentPart]
+        public let reasoningContent: String?
 
-        public init(role: Role, parts: [ContentPart]) {
+        public init(role: Role, parts: [ContentPart], reasoningContent: String? = nil) {
             self.role = role
             self.parts = parts
+            self.reasoningContent = reasoningContent
         }
 
         public var imageCount: Int {
@@ -339,6 +372,12 @@ public struct GFTokenizer: @unchecked Sendable {
     private static let turnClose   = "<turn|>"
     private static let bosMark     = "<bos>"
     private static let thinkMark   = "<|think|>"
+    private static let thoughtOpen  = "<|channel>thought\n"
+    private static let thoughtClose = "<channel|>"
+    /// The channel a non-reasoning generation prompt opens and closes at once,
+    /// telling the model to answer without thinking. It is in the KV of every
+    /// turn produced that way, so `.serverRedraw` draws it again (SPEC INV-1).
+    private static let emptyThoughtChannel = thoughtOpen + thoughtClose
 
     /// - Parameter enableThinking: mirrors the template's `enable_thinking`.
     ///   When false the generation prompt opens the thought channel and closes
@@ -348,14 +387,19 @@ public struct GFTokenizer: @unchecked Sendable {
     ///   reasoning is real output: it costs generated tokens, and callers that
     ///   want it hidden route it through `StructuredAssistantDecoder`.
     public func applyChatTemplate(_ messages: [Message],
-                                  enableThinking: Bool = false) throws -> String {
+                                  enableThinking: Bool = false,
+                                  variant: ChatTemplateVariant = .modelBundled) throws -> String {
         let multimodal = try messages.map { message -> MultimodalMessage in
             guard let content = message.content else {
                 throw GFTokenizerError.invalidChatTemplate("text-only messages require content")
             }
-            return MultimodalMessage(role: message.role, parts: [.text(content)])
+            return MultimodalMessage(role: message.role,
+                                     parts: [.text(content)],
+                                     reasoningContent: message.reasoningContent)
         }
-        return try applyChatTemplate(multimodal: multimodal, enableThinking: enableThinking)
+        return try applyChatTemplate(multimodal: multimodal,
+                                     enableThinking: enableThinking,
+                                     variant: variant)
     }
 
     /// The same rendering with image placeholders allowed in the bodies.
@@ -366,7 +410,8 @@ public struct GFTokenizer: @unchecked Sendable {
     /// `'<|image|>'` for an image item). A message of one text part therefore
     /// renders byte for byte as the text-only path above.
     public func applyChatTemplate(multimodal messages: [MultimodalMessage],
-                                  enableThinking: Bool = false) throws -> String {
+                                  enableThinking: Bool = false,
+                                  variant: ChatTemplateVariant = .modelBundled) throws -> String {
         func render(_ parts: [ContentPart]) throws -> String {
             var body = ""
             for part in parts {
@@ -400,11 +445,31 @@ public struct GFTokenizer: @unchecked Sendable {
             }
             let content = try render(message.parts)
             let role = message.role == .assistant ? "model" : message.role.rawValue
-            s += Self.turnOpen + role + "\n" + content + Self.turnClose + "\n"
+            s += Self.turnOpen + role + "\n"
+            if variant == .serverRedraw && message.role == .assistant {
+                s += Self.finishedTurnChannel(reasoning: message.reasoningContent,
+                                              enableThinking: enableThinking)
+            }
+            s += content + Self.turnClose + "\n"
         }
         s += Self.turnOpen + "model\n"
-        if !enableThinking { s += "<|channel>thought\n<channel|>" }
+        if !enableThinking { s += Self.emptyThoughtChannel }
         return s
+    }
+
+    /// The thought channel a finished model turn opened while it was produced.
+    ///
+    /// Reasoning off: the empty channel the generation prompt wrote. Reasoning
+    /// on: the block the model itself wrote, which only exists here if the
+    /// client handed it back (SPEC MSG-5) — when it did not, nothing is drawn,
+    /// because inventing a block would put tokens in the prompt that were never
+    /// in the KV, which is the same divergence the other way round.
+    private static func finishedTurnChannel(reasoning: String?,
+                                            enableThinking: Bool) -> String {
+        if let reasoning, !reasoning.isEmpty {
+            return thoughtOpen + reasoning + "\n" + thoughtClose
+        }
+        return enableThinking ? "" : emptyThoughtChannel
     }
 
     /// A turn on the tool-calling path: `Message`'s metadata with a body that
@@ -420,17 +485,20 @@ public struct GFTokenizer: @unchecked Sendable {
         public let toolCalls: [HistoricalToolCall]
         public let toolCallID: String?
         public let name: String?
+        public let reasoningContent: String?
 
         public init(role: Role,
                     parts: [ContentPart],
                     toolCalls: [HistoricalToolCall] = [],
                     toolCallID: String? = nil,
-                    name: String? = nil) {
+                    name: String? = nil,
+                    reasoningContent: String? = nil) {
             self.role = role
             self.parts = parts
             self.toolCalls = toolCalls
             self.toolCallID = toolCallID
             self.name = name
+            self.reasoningContent = reasoningContent
         }
 
         public init(_ message: Message) {
@@ -438,7 +506,8 @@ public struct GFTokenizer: @unchecked Sendable {
                       parts: message.content.map { [.text($0)] } ?? [],
                       toolCalls: message.toolCalls,
                       toolCallID: message.toolCallID,
-                      name: message.name)
+                      name: message.name,
+                      reasoningContent: message.reasoningContent)
         }
 
         public var imageCount: Int {
@@ -448,10 +517,12 @@ public struct GFTokenizer: @unchecked Sendable {
 
     public func encodeToolChat(messages: [Message],
                                tools: [FunctionDefinition],
-                               enableThinking: Bool = false) throws -> [Int32] {
+                               enableThinking: Bool = false,
+                               variant: ChatTemplateVariant = .modelBundled) throws -> [Int32] {
         try encodeToolChat(messages: messages.map(ToolChatMessage.init),
                            tools: tools,
-                           enableThinking: enableThinking)
+                           enableThinking: enableThinking,
+                           variant: variant)
     }
 
     /// The same rendering with image placeholders allowed in the bodies.
@@ -462,7 +533,8 @@ public struct GFTokenizer: @unchecked Sendable {
     /// holds an image is sent as a parts array.
     public func encodeToolChat(messages: [ToolChatMessage],
                                tools: [FunctionDefinition],
-                               enableThinking: Bool = false) throws -> [Int32] {
+                               enableThinking: Bool = false,
+                               variant: ChatTemplateVariant = .modelBundled) throws -> [Int32] {
         guard tokenizer.hasChatTemplate else {
             throw GFTokenizerError.missingToolTemplate
         }
@@ -485,6 +557,9 @@ public struct GFTokenizer: @unchecked Sendable {
             }
             if let toolCallID = message.toolCallID { value["tool_call_id"] = toolCallID }
             if let name = message.name { value["name"] = name }
+            if let reasoning = message.reasoningContent, !reasoning.isEmpty {
+                value["reasoning_content"] = reasoning
+            }
             return value
         }
         let upstreamTools: [ToolSpec] = try tools.map { tool in
@@ -497,9 +572,13 @@ public struct GFTokenizer: @unchecked Sendable {
                 ] as [String: any Sendable],
             ]
         }
+        let chatTemplate: ChatTemplateArgument? = switch variant {
+        case .modelBundled: nil
+        case .serverRedraw: .literal(try ServerChatTemplate.jinja())
+        }
         return try tokenizer.applyChatTemplate(
             messages: upstreamMessages,
-            chatTemplate: nil,
+            chatTemplate: chatTemplate,
             addGenerationPrompt: true,
             truncation: false,
             maxLength: nil,
@@ -563,7 +642,7 @@ public struct GFTokenizer: @unchecked Sendable {
         return [endOfTurnID] + encode(
             "\n\(Self.turnOpen)user\n\(body)\(Self.turnClose)\n"
                 + "\(Self.turnOpen)model\n"
-                + (enableThinking ? "" : "<|channel>thought\n<channel|>"),
+                + (enableThinking ? "" : Self.emptyThoughtChannel),
             addBOS: false)
     }
 

@@ -104,6 +104,26 @@ struct OpenAIValidationTests {
         #expect(validated.messages.map(\.role) == [.system, .developer, .user])
     }
 
+    /// MSG-5: the thinking a client hands back with a finished assistant turn
+    /// is an input, not just an output. INV-1 cannot hold without it — the
+    /// thought block was in the KV when that turn was generated, so a redraw
+    /// that drops it diverges from the tokens the model produced.
+    @Test func MSG_5_reasoning_content_reaches_the_assistant_turn() throws {
+        let data = Data(#"""
+        {"model":"m","messages":[
+          {"role":"user","content":"What is the capital of France?"},
+          {"role":"assistant","content":"Paris.",
+           "reasoning_content":"The user is asking about France."},
+          {"role":"user","content":"And of Italy?"}
+        ]}
+        """#.utf8)
+        let validated = try ChatRequestParser.parse(data)
+        #expect(validated.messages.map(\.reasoningContent)
+            == [nil, "The user is asking about France.", nil])
+        #expect(validated.toolChatMessages.map(\.reasoningContent)
+            == [nil, "The user is asking about France.", nil])
+    }
+
     @Test func rejectsLateDeveloperGuidance() throws {
         let data = Data(#"""
         {"model":"m","messages":[
