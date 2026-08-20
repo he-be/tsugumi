@@ -25,6 +25,8 @@ import Testing
 ///    JSON の `char` 規則は使わず、この方言専用の `text-char` を使う。
 /// 5. **GEN-10**: 汎用の値の選択肢から `null` を外す。スキーマが null を明示
 ///    的に要求したときだけ許し、近似 `null-not-redrawable` を記録する。
+/// 6. **GEN-11**: 数の桁を、描き直しの `Decimal` → `Double` 往復が通る幅に
+///    絞る (指数形は無し)。JSON Schema 側の制約ではなく描き直しの制約である。
 ///
 /// 理由は §7 INV-1: 完了した tool call ターンは parse 済みの値から描き直される
 /// ので、生成が正準形でなければ描き直しと必ずずれ、毎ターン LCP が切れる。
@@ -307,7 +309,7 @@ enum JSONSchemaGrammarGemmaCases {
             a-kv ::= "a" ":" integer
             b-kv ::= "b" ":" string
             integer ::= ("-"? integral-part)
-            integral-part ::= [0] | [1-9] [0-9]{0,15}
+            integral-part ::= [0] | [1-9] [0-9]{0,14}
             root ::= "{" a-kv "," b-kv "}"
             string ::= "<|\"|>" text-char* "<|\"|>"
             text-char ::= [^"\\]
@@ -351,7 +353,7 @@ enum JSONSchemaGrammarGemmaCases {
             """##,
             grammar: ##"""
             integer ::= ("-"? integral-part)
-            integral-part ::= [0] | [1-9] [0-9]{0,15}
+            integral-part ::= [0] | [1-9] [0-9]{0,14}
             item ::= "{" item-n-kv "}"
             item-n-kv ::= "n" ":" integer
             root ::= "[" (item ("," item)*)? "]"
@@ -385,7 +387,7 @@ enum JSONSchemaGrammarGemmaCases {
             additional-k ::= ( [a] key-char+ | [0-9A-Zb-z_\-.$] key-char* )
             additional-kv ::= additional-k ":" string
             integer ::= ("-"? integral-part)
-            integral-part ::= [0] | [1-9] [0-9]{0,15}
+            integral-part ::= [0] | [1-9] [0-9]{0,14}
             key-char ::= [0-9A-Za-z_\-.$]
             root ::= "{" a-kv ( "," ( additional-kv ( "," additional-kv )* ) )? "}"
             string ::= "<|\"|>" text-char* "<|\"|>"
@@ -405,11 +407,11 @@ enum JSONSchemaGrammarGemmaCases {
             grammar: ##"""
             array ::= "[" ( value ("," value)* )? "]"
             boolean ::= ("true" | "false")
-            decimal-part ::= [0-9]{1,16}
-            integral-part ::= [0] | [1-9] [0-9]{0,15}
+            decimal-part ::= [0-9]{1,7}
+            integral-part ::= [0] | [1-9] [0-9]{0,14}
             key ::= key-char+
             key-char ::= [0-9A-Za-z_\-.$]
-            number ::= ("-"? integral-part) ("." decimal-part)? ([eE] [-+]? integral-part)?
+            number ::= ("-"? integral-part) | ("-"? ([0] | [1-9] [0-9]{0,6}) "." decimal-part)
             object ::= "{" ( key ":" value ("," key ":" value)* )? "}"
             payload ::= object
             payload-kv ::= "payload" ":" payload
