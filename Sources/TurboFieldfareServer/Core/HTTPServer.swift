@@ -64,6 +64,10 @@ public actor TurboFieldfareHTTPServer {
     private let properties: ServerProperties
     private let apiKeys: [String]
     private let corsPolicy: ServerCORSPolicy
+    /// EP-6's two startup gates. Not read yet — the routes are the red test's
+    /// subject; this is the entry point that keeps the tree building.
+    private let slotsEndpointEnabled: Bool
+    private let metricsEndpointEnabled: Bool
     private let childChannels = ChildChannelRegistry()
     private var channel: Channel?
     private var shutdownTask: Task<Void, any Error>?
@@ -77,6 +81,10 @@ public actor TurboFieldfareHTTPServer {
                 properties: ServerProperties = ServerProperties(),
                 apiKeys: [String] = [],
                 corsPolicy: ServerCORSPolicy = .disabled,
+                // EP-6: the reference's defaults — `/slots` on unless it is
+                // turned off, `/metrics` off unless it is turned on.
+                slotsEndpointEnabled: Bool = true,
+                metricsEndpointEnabled: Bool = false,
                 group: MultiThreadedEventLoopGroup = .init(numberOfThreads: 1)) {
         self.group = group
         self.modelID = modelID
@@ -88,6 +96,8 @@ public actor TurboFieldfareHTTPServer {
         self.properties = properties
         self.apiKeys = apiKeys
         self.corsPolicy = corsPolicy
+        self.slotsEndpointEnabled = slotsEndpointEnabled
+        self.metricsEndpointEnabled = metricsEndpointEnabled
     }
 
     /// LIF-2 → LIF-3. The load finished and the endpoints may answer from the

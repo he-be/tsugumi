@@ -82,6 +82,12 @@ public struct ServerArguments: Equatable, Sendable {
     public var thinkingPolicy: ServerThinkingPolicy {
         reasoningBudget == 0 ? .off : .on
     }
+    /// SPEC §3 **EP-6**: `--slots` / `--no-slots`. Not parsed yet — the flag is
+    /// the red test's subject, and this is the entry point that keeps the tree
+    /// building until it is.
+    public var slotsEndpointEnabled: Bool { true }
+    /// EP-6: `--metrics`. Not parsed yet, as above.
+    public var metricsEndpointEnabled: Bool { false }
     /// FLAG-5. Empty means no authentication, which is the default and is what
     /// every existing runbook starts.
     public let apiKeys: [String]
