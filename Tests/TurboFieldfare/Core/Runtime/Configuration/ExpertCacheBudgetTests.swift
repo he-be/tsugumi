@@ -65,6 +65,31 @@ import Testing
         #expect(RuntimeConfiguration().expertCacheSlots == 32)
     }
 
+    /// The load-time refusal is read by two front ends that no longer spell the
+    /// context flag the same way: the CLI takes `--max-context` and the server
+    /// retired it for `-c/--ctx-size` (SPEC §11 FLAG-1). A message naming
+    /// either one is wrong for the other half of its readers, so it names the
+    /// levers in words and no flag at all.
+    @Test func theWorkingSetErrorNamesLeversAndNoFlag() {
+        let pread = ExpertCacheBudgetError
+            .exceedsRecommendedWorkingSet(Self.budget(expertCache: 3_570_000_000,
+                                                      residencyRequest: 0))
+            .description
+        let mapped = ExpertCacheBudgetError
+            .exceedsRecommendedWorkingSet(Self.budget(expertCache: 0,
+                                                      residencyRequest: 9_000_000_000))
+            .description
+        for message in [pread, mapped] {
+            #expect(!message.contains("--"), "起動フラグの綴りを名指ししている: \(message)")
+            #expect(message.contains("context size"))
+        }
+        // The private-slot arm has one more lever than the mapped arm: slots are
+        // charged there, so lowering them moves this total. (The slot *count*
+        // appears in both summaries; only this arm offers it as a lever.)
+        #expect(pread.contains("expert-cache slots"))
+        #expect(!mapped.contains("expert-cache slots"))
+    }
+
     /// A device that reports no recommendation (zero) is not a device that
     /// rejects everything.
     @Test func anUnknownWorkingSetAcceptsAnyConfiguration() {
