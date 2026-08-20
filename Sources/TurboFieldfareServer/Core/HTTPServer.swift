@@ -252,7 +252,10 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             guard let head else { return }
             self.head = nil
             if oversized {
-                writeError(context, status: .payloadTooLarge,
+                // ERR-2 / DEV-11: 413 has no type in the taxonomy, so an
+                // oversized body is the same 400 as any other request this
+                // server will not read.
+                writeError(context, status: .badRequest,
                            OpenAIErrorEnvelope(message: "request body is too large",
                                                code: "request_too_large"))
                 return
