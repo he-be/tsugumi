@@ -44,7 +44,7 @@
 | LIF-1 | プロセスは**モデルのロード前にポートを開く**。 |
 | LIF-2 | ロード完了まで、全エンドポイントは **503** + `unavailable_error` (§10) を返す。`/health` の本文は `{"error":{"message":"Loading model","type":"unavailable_error","param":null,"code":"model_loading"}}`。クライアントは「接続拒否」と「ロード中」を区別できる。 |
 | LIF-3 | ロード完了後、`/health` は `200 {"status":"ok"}`。 |
-| LIF-6 | **ロード中の 503 は経路表より手前で判定する。**未知パスもロード中は 404 ではなく 503 を返す (参照実装 `server-http.cpp:255` のミドルウェアと同じ位置)。 |
+| LIF-6 | **ロード中の 503 は経路表より手前で判定する。**未知パスもロード中は 404 ではなく 503 を返す (参照実装 `server-http.cpp:255` のミドルウェアと同じ位置)。**例外は CORS の preflight (`OPTIONS`) だけ** — ロードゲートより手前で答える。ブラウザは preflight を通せなければ 503 の本文すら読めないので、ここで止めるとロード中であることを表示することもできない (FLAG-6)。 |
 | LIF-7 | **ロードに失敗したらプロセスは終了する** (stderr に理由、`exit 1`)。ポートは既に開いているので、クライアントから見ると 503 `model_loading` のあと接続断になる。503 を返し続けて生き残らない — 単一モデルのサーバーにできることが無いため。 |
 | LIF-4 | 生成スロットが埋まり待ち行列 (`--queue-limit`) も満杯のときは 503 + `unavailable_error`。 |
 | LIF-5 | SIGINT / SIGTERM で終了する。進行中の SSE は切断してよい。二度目のシグナルで即死。 |
@@ -53,14 +53,14 @@
 
 | ID | エンドポイント | 規範 | 段 |
 | --- | --- | --- | --- |
-| EP-1 | `GET /health`, `GET /v1/health` (別名) | §2 のとおり。API キー不要 | 実装済 |
-| EP-2 | `GET /v1/models` | OpenAI 形。1 モデルを返す | 実装済 |
+| EP-1 | `GET /health`, `GET /v1/health` (別名) | §2 のとおり。**API キー不要** | 実装済 |
+| EP-2 | `GET /v1/models` | OpenAI 形。1 モデルを返す。**API キー不要** (参照実装 `get_public_endpoints` と同じ) — クライアントは設定が済む前に health とモデル一覧を引くため | 実装済 |
 | EP-8 | `/v1` を外した別名: `GET /models`、`POST /chat/completions` | 参照実装が同じものを両方の綴りで出しているため合わせる。中身は EP-2 / EP-3 と同一 | P3 |
 | EP-3 | `POST /v1/chat/completions` | §4〜§9 | 実装済 (乖離多数 — [CONFORMANCE §2](CONFORMANCE.md)) |
 | EP-4 | `GET /props` | `default_generation_settings` (§4 の既定値の実効値)、`total_slots`、`model_path`、`chat_template`、`modalities` (`{"vision": true}`)、`build_info`、実効 `n_ctx`。クライアントの能力判定はここを見る。`build_info` はビルドを一意に指す文字列で、RSP-5 の `system_fingerprint` と**同じ値**を使う | P3 (`build_info` の中身は P5) |
 | EP-5 | `POST /tokenize`, `/detokenize`, `/apply-template` | 参照実装と同形。トークン数の事前計算用 | P5 |
 | EP-6 | `GET /slots`, `GET /metrics` | 参照実装と同形・同じく起動フラグでゲート。runbook の「詰まってないか」を stderr で見るのをやめる | P5 |
-| EP-7 | **採らない既知パス** (§12 DEV-7) は **501** + `not_supported_error` を返す。未知パスだけが 404 | P3 |
+| EP-7 | **採らない既知パス** (§12 DEV-7) は **501** + `not_supported_error` を返す。未知パスだけが 404。**`OPTIONS` は preflight として先に答える**ので、501 のパスにも 404 のパスにも同じ preflight 応答が返る (FLAG-6) — 経路の存在は preflight からは読み取れない | P3 |
 
 採らない既知パス: `/v1/embeddings` `/embedding` `/reranking` `/rerank` `/infill`
 `/v1/responses` `/v1/messages` `/v1/chat/completions/control` `POST /props`
@@ -180,7 +180,7 @@
 | ID | 規範 |
 | --- | --- |
 | ERR-1 | 封筒は `{"error":{"message","type","param","code"}}`。`code` は**文字列または null** (OpenAI 形)。参照実装は `code` に HTTP 番号を入れるが、`/v1/*` のワイヤ形式は OpenAI が上位規範なので合わせない (§12 DEV-1)。 |
-| ERR-2 | `type` ↔ HTTP: `invalid_request_error` 400 / `not_found_error` 404 / `not_supported_error` **501** / `unavailable_error` **503** / `exceed_context_size_error` 400 / `server_error` 500 (参照実装 `server-common.cpp:25-54` と同じ対応)。**405 と 415 も `invalid_request_error`** とし、`code` を `method_not_allowed` / `unsupported_media_type` で区別する (OpenAI もこの 2 つに専用の type を持たない)。**413 は使わない** (DEV-11) — 本文超過は 400。 |
+| ERR-2 | `type` ↔ HTTP: `invalid_request_error` 400 / `not_found_error` 404 / `not_supported_error` **501** / `unavailable_error` **503** / `exceed_context_size_error` 400 / `server_error` 500 (参照実装 `server-common.cpp:25-54` と同じ対応)。**401 / 405 / 415 も `invalid_request_error`** とし、`code` を `invalid_api_key` / `method_not_allowed` / `unsupported_media_type` で区別する (OpenAI もこれらに専用の type を持たない。参照実装の `authentication_error` は `code` に HTTP 番号を入れる形なので DEV-1 により採らない)。**413 は使わない** (DEV-11) — 本文超過は 400。 |
 | ERR-3 | JSON デコード失敗の 400 は、**どのフィールドが**問題かを `message` と `param` に含める。型不一致に「malformed JSON request」を使わない (旧 16 §1-a の `seed: -1` の欠陥)。 |
 | ERR-4 | プロンプトがコンテキストに入らないときは `exceed_context_size_error`。`message` にプロンプトのトークン数と実効 `n_ctx` を入れる。 |
 
@@ -192,7 +192,8 @@
 | FLAG-2 | `--ctx-size` は自由な整数を受け、この機体で確保できる対応値へ**下に丸める** (§12 DEV-2)。実効値は `/props` の `n_ctx` で分かる。列挙外を 400 で拒否しない。`--expert-cache-slots` も同様に丸める。 |
 | FLAG-3 | 機体・エンジン固有で参照実装に対応物が無いフラグはそのまま: `--expert-cache-slots` `--expert-cache-policy` `--draft-block-size` `--prefill` `--prefill-chunk-tokens` `--image-tokens` `--max-image-*` `--verification` `--rdadvise` `--model-id` `--queue-limit`。 |
 | FLAG-4 | 廃止: `--thinking` (→ `--reasoning-budget`)、`--prompt-cache-mode` (→ 要求ごとの `cache_prompt`)。 |
-| FLAG-5 | `--api-key`、`--cors-origins` は P5。それまでの既定は 127.0.0.1 バインドのみで守る (現行どおり)。 |
+| FLAG-5 | `--api-key` はキー 1 つ、またはカンマ区切りの並び。フラグを繰り返すと追加される (入れ替え作業が 1 行に収まる)。受ける綴りは `Authorization: Bearer <key>` / 同ヘッダの裸の値 / `X-Api-Key` の 3 つ (参照実装と同じ)。**検査の位置はロードゲート (LIF-2/LIF-6) の後、経路表の前** (参照実装 `server-http.cpp:302` と同じ順) — ロード中のキー無し要求は 401 ではなく 503 であり、認証されていない相手は 501 と 404 の差から経路の地図を作れない。**キー不要は EP-1 と EP-2 だけ。**`/props` は要る (能力の答えであって起動時の足場ではない)。失敗は **401** + `invalid_request_error` + `code: invalid_api_key` (ERR-2)。フラグが無ければ検査しない — 守りは 127.0.0.1 バインドのみ (現行どおり)。 |
+| FLAG-6 | `--cors-origins` はカンマ区切りのオリジン並び、または `*`。**フラグが無ければ CORS ヘッダを一切出さない** (DEV-20)。並びのときは要求の `Origin` を照合し、**一致した 1 つだけ**を `Access-Control-Allow-Origin` に返し、`Vary: Origin` を添える (並びをそのまま返す参照実装の書き方はブラウザが受けない — DEV-20)。`*` のときは `*` を返し `Vary` は要らない。**`Access-Control-Allow-Credentials` は決して出さない** — こちらの認証は明示ヘッダであって cookie ではないので、資格情報を伴う要求を許す理由が無い。preflight (`OPTIONS`) はロードゲートより先・API キーより先に答え (LIF-6、ブラウザは preflight に `Authorization` を付けない)、どのパスにも同じ応答を返す。広告する内容は `Access-Control-Allow-Methods: GET, POST, OPTIONS` (DELETE は持たない) と `Access-Control-Allow-Headers: authorization, content-type, x-api-key`。`Access-Control-Max-Age` は出さない。`--cors-methods` / `--cors-headers` / `--cors-credentials` / `--api-key-file` は採らない。 |
 
 ## 12. 逸脱登録簿 (DEV)
 
@@ -219,6 +220,7 @@
 | DEV-17 | 名前指定の `tool_choice` | 文字列としてデコードするため object 形は型エラーを握りつぶして `auto` に落ちる (実質未実装) | OpenAI どおり、その関数だけを文法で固定する | 参照実装のこれは欠陥であり、規範ではない。ワイヤ形式の上位規範は OpenAI (§0) で、そこでは名前指定は「その関数を必ず呼ぶ」である | 参照実装が object 形を実装したら合わせて読み直す |
 | DEV-18 | schema の無い `json_object` | jinja 経路では**何も拘束しない** (自由文が通る) | 「任意の JSON **オブジェクト**」に拘束する | OpenAI の `json_object` は「妥当な JSON を返す」という契約であり、R4 がその 200 を守らせる。参照実装の非 jinja 経路も同じく空スキーマを文法に落としている | — |
 | DEV-19 | 文字クラスの中の `-` の逃がし方 | `\-` と書く (`GRAMMAR_RANGE_LITERAL_ESCAPE_RE`) — **自分のパーサが読めない**綴り | `\x2D` と書く | 参照実装のこれは欠陥である。`parse_char` の受けるエスケープは `\x \u \U \t \r \n \\ \" \[ \]` だけで `\-` は無い。参照実装のテストにプロパティ名へ `-` を含むものが無いので露見していないだけ。位置に依存する「末尾に `-` を置く」書き方も、クラスを差集合で組み直した瞬間に壊れる | 参照実装が直したら |
+| DEV-20 | CORS の既定と並びの返し方 | 既定が `--cors-origins *` かつ credentials 有効。並びは**カンマ区切りのまま** `Access-Control-Allow-Origin` に入れる | フラグが無ければヘッダを出さない。並びは `Origin` と照合して一致した 1 つだけを返し `Vary: Origin` を添える。credentials は出さない | 既定の `*` + credentials はローカル専用サーバーの守り (127.0.0.1 バインド) を、ブラウザで開いた任意のページに開けてしまう。並びをそのまま返すほうは参照実装の欠陥で、その値をブラウザが受け付けない (ACAO は 1 つのオリジンか `*` のみ) | 参照実装が直したら照合の側だけ読み直す |
 | DEV-11 | 413 Payload Too Large | 無し (本文上限は 500) | 使わない。本文超過・画像サイズ超過・画像枚数超過はすべて 400 `invalid_request_error` | ERR-2 の型 ↔ HTTP 表に 413 の型が無く、型を増やすより 400 に寄せるほうが面積が小さい | 実クライアントが 413 を区別する必要が出たら |
 
 ## 13. この文書の変え方
