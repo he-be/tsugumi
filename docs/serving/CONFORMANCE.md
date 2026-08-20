@@ -42,7 +42,6 @@ C3 だけがモデルを積む。
 | SPEC ID | 現状 (実測 2026-08-19) | 段 |
 | --- | --- | --- |
 | RSP-3 / RSP-5 | `timings` / `system_fingerprint` 無し | P5 |
-| FLAG-1 の `-c/--ctx-size` | `--max-context` のまま (P4 は `--reasoning-*` の半分だけ closed) | P5 |
 | EP-5 / EP-6 | `/tokenize` 系・`/slots`・`/metrics` 無し | P5 |
 
 緑になった行: **INV-1** (2026-08-20、P1-D2、SPEC §12 DEV-12 のサーバー変種 +
@@ -80,6 +79,11 @@ C3 だけで、まだ走っていない。
 `RSN-4-budget` がそれを見る。`--reasoning-format none` は「受理して無視」
 だったのを実挙動にした (R4)。**既定が変わった**: `--thinking` は off、
 `--reasoning-budget` は -1 (無制限)。
+
+**FLAG-1 の `-c/--ctx-size`、FLAG-2 の丸め (両方のフラグ)** (2026-08-22。
+`ServerContextSizeFlagTests` + `ServerExpertCacheSlotFlagTests` +
+`ExpertCacheBudgetTests`)。`--max-context` は退役し、名指しで新しい綴りを
+案内する。`-c/--ctx-size` と `--expert-cache-slots` は列挙で断らず下に丸める。
 
 **C3 は書けた** (2026-08-22、`Scripts/c3_smoke.sh`、14 検査)。**まだ 1 度も
 走っていない** — 実機で走らせるのは人であり、走らせた結果はここに書き足す。
