@@ -7,21 +7,11 @@ import Foundation
 // `llama_grammar_accept_impl`、`src/llama-vocab.cpp` の
 // `cache_token_to_piece`、`common/sampling.cpp` の `grammar_should_apply`。
 //
-// ここは「橋」だけ。文法の照合そのものは `GrammarMatcher`、拘束の当て方
-// (棄却サンプリング GEN-7) は `Sampler` / `ConstraintGate` が持つ。
-
-// MARK: - 未実装 (赤コミット用)
-
-/// 実装前の入口が投げる誤り。緑コミットで消える。
-public enum GrammarTokenConstraintError: Error, CustomStringConvertible {
-    case notImplemented(String)
-
-    public var description: String {
-        switch self {
-        case .notImplemented(let what): return "未実装: \(what)"
-        }
-    }
-}
+// ここは「橋」だけ。文法の照合そのものは `GrammarMatcher` が持ち、拘束の
+// 当て方 (棄却サンプリング GEN-7) は `Sampler` / `ConstraintGate` が持つ。
+// この型は語彙 (ID → バイト列) と照合器を束ねて `GenerationConstraint` に
+// する役だけを担い、停止トークンを特別扱いしない — 終端の規則は
+// `mayEndHere` を通じて `ConstraintGate` の側にある。
 
 // MARK: - 語彙の piece 表
 
@@ -30,15 +20,20 @@ public enum GrammarTokenConstraintError: Error, CustomStringConvertible {
 /// 参照実装の `llama_vocab` が読み込み時に作る `cache_token_to_piece`
 /// (`token_to_piece_for_cache(id, /* special = */ true)`) に対応する。
 /// **special = true** が要点で、`<|tool_call>` や `<|"|>` といった制御
-/// マーカーも「そのマーカーの文字列そのもの」として表に入る — GEN-8 の
+/// マーカーも「そのマーカーの綴りそのもの」として表に入る — GEN-8 の
 /// tool call 文法はそれらのリテラルで書かれているので、ここで落とすと
-/// 文法が一致しようがない。
+/// 文法は一致しようがない。
 ///
-/// piece は `String` ではなく**バイト列**である。BPE のバイトフォールバック
-/// `<0xXX>` は 1 バイトだけを足すので、単体では UTF-8 として不正なことが
-/// あり、`<0x00>` は NUL 始まりになる。参照実装が
+/// piece は `String` ではなく**バイト列**である。BPE のバイトフォール
+/// バック `<0xXX>` は 1 バイトしか足さないので、単体では UTF-8 として
+/// 不正なことがあり、`<0x00>` は NUL 始まりになる。参照実装が
 /// `llama_grammar_apply_impl` で「空 piece」と「先頭が NUL の piece」を
 /// 文法にかける前に落とすのはそのためで、こちらも同じ扱いをする。
+///
+/// **費用と共有**: 262 144 個ぶんの `convertIdToToken` + 変換で、実測
+/// 0.5〜1 秒 (M3 Pro, debug)。要求ごとに払う額ではないので
+/// `shared(for:)` でプロセス内に 1 本だけ作って使い回す。値型だが中身は
+/// 配列の CoW なので、複製も受け渡しも参照 1 個ぶんしかかからない。
 public struct GrammarVocabulary: Sendable {
     /// 表の要素数 (= 語彙数)。
     public var count: Int { pieces.count }
@@ -48,29 +43,64 @@ public struct GrammarVocabulary: Sendable {
 
     /// 文法にかけてよい候補だけを並べた不変の候補列。`index` はトークン ID。
     /// 空 piece と NUL 始まりの piece はここに入らない (= 常に拒否)。
+    ///
+    /// 語彙全体のマスク 1 回ごとにこの配列を組み直すと 26 万本の配列確保に
+    /// なるので、表と一緒に 1 度だけ作って共有する。`piece` は `pieces` と
+    /// 同じバッファを指すだけ (CoW) なので、二重に持っても中身は 1 部。
     let candidates: [GrammarCandidate]
 
     /// 表を 1 本作る。**要求ごとに作らないこと** — `shared(for:)` を使うか、
     /// tokenizer の隣に 1 個持って毎要求に渡す。
     public init(_ tokenizer: GFTokenizer) {
-        _ = tokenizer
-        self.pieces = []
-        self.candidates = []
+        let size = tokenizer.vocabSize
+        var pieces = [[UInt8]](repeating: [], count: size)
+        var candidates: [GrammarCandidate] = []
+        candidates.reserveCapacity(size)
+
+        for id in 0..<size {
+            guard let token = tokenizer.tokenizer.convertIdToToken(id) else { continue }
+            // `<0xXX>` はそのバイト 1 個。それ以外は metaspace `▁` を空白に
+            // 直した綴り (`GemmaDecoding` の `Replace` 段)。特殊マーカーは
+            // 綴りがそのまま piece になる — 変換で消してはならない。
+            let piece: [UInt8]
+            if let byte = GemmaDecoding.byteValue(token) {
+                piece = [byte]
+            } else {
+                piece = Array(GemmaDecoding.fragment(token).utf8)
+            }
+            pieces[id] = piece
+            // 参照実装 `llama_grammar_apply_impl` と同じ足切り。
+            guard !piece.isEmpty, piece[0] != 0 else { continue }
+            candidates.append(GrammarCandidate(index: id, tokenID: Int32(id), piece: piece))
+        }
+
+        self.pieces = pieces
+        self.candidates = candidates
     }
 
-    /// トークン 1 個の piece。範囲外の ID は空バイト列。
+    /// トークン 1 個の piece。範囲外の ID は空バイト列 (= 文法が常に拒む)。
     public func piece(for tokenID: Int32) -> [UInt8] {
-        _ = tokenID
-        return []
+        guard tokenID >= 0, Int(tokenID) < pieces.count else { return [] }
+        return pieces[Int(tokenID)]
     }
 
     /// プロセス内で 1 度だけ作って共有する。`identity` は tokenizer の出所
-    /// (既定はピンされたモデル ID)。
+    /// (既定はピンされたモデル ID)。別の tokenizer を読むテストのために鍵に
+    /// してあるだけで、通常の経路は既定値でよい。
     public static func shared(for tokenizer: GFTokenizer,
                               identity: String = GFTokenizer.modelID) -> GrammarVocabulary {
-        _ = identity
-        return GrammarVocabulary(tokenizer)
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let existing = cache[identity], existing.count == tokenizer.vocabSize {
+            return existing
+        }
+        let built = GrammarVocabulary(tokenizer)
+        cache[identity] = built
+        return built
     }
+
+    private static let cacheLock = NSLock()
+    nonisolated(unsafe) private static var cache: [String: GrammarVocabulary] = [:]
 }
 
 // MARK: - 遅延文法のトリガ
@@ -83,7 +113,8 @@ public struct GrammarVocabulary: Sendable {
 /// `trigger_buffer_positions` の再生)。GEN-5 が名指しするトリガは
 /// `<|tool_call>` というトークンそのものなので、テキストトリガは**作って
 /// いない**。足すときはこの型に `patterns` を足し、
-/// `GrammarTokenConstraint.accept(tokenID:)` の待機分岐に再生を書く。
+/// `GrammarTokenConstraint.accept(tokenID:)` の待機分岐に再生を書く —
+/// 待機分岐は 1 か所しかなく、`isArmed` から先の経路は変わらない。
 public struct GrammarTrigger: Sendable, Equatable {
     /// これらのトークンのどれかが受理された瞬間に文法が起動する。
     public var tokenIDs: Set<Int32>
@@ -100,12 +131,50 @@ public struct GrammarTrigger: Sendable, Equatable {
 // MARK: - 拘束本体
 
 /// `GrammarMatcher` と語彙表を束ねて `GenerationConstraint` にする。
+///
+/// **呼び出し側 (サーバー) の手順**
+///
+/// 1. **構築**: `GrammarVocabulary.shared(for:)` を 1 度取り、要求ごとに
+///    `GrammarTokenConstraint(grammar:vocabulary:trigger:)` を作る。
+///    `tool_choice: auto` は `trigger: .token(tokenizer.toolCallStartID)`
+///    (GEN-5)、`required` / 名前指定 / `response_format` は `trigger: nil`
+///    で最初から拘束する (GEN-4)。
+/// 2. **供給**: 生成ループが受理した全トークンを順に `accept(tokenID:)`
+///    へ渡す (`ConstraintGate.accept` 経由。`RawCompletion` は既にそうする)。
+/// 3. **抑止 (GEN-6)**: 思考チャンネルの状態を知っているのは
+///    `StructuredAssistantDecoder` の側なので、そちらが
+///    `setSuppressed(true)` を `<|channel>thought` に入った時点で、
+///    `setSuppressed(false)` を `<channel|>` で閉じた時点で呼ぶ。
+///    抑止中は文法を**当てず供給もしない** — 思考の中に出たトリガでは
+///    起動しない。非遅延の文法は抑止されない (参照実装
+///    `grammar_should_apply` が `grammar_lazy` のときだけ思考状態を見る)。
+///
+/// **停止トークンは扱わない。**参照実装は `llama_grammar_apply_impl` の中で
+/// EOG を文法にかけずに `allow_eog` だけで通す。こちらではその規則は
+/// `mayEndHere` として外に出ていて、適用するのは `ConstraintGate` である。
+/// 注意: 現在の `ConstraintGate.allows` は `mayEndHere` が真のとき停止
+/// トークンを素通しせずこの型の `allows` に落とすので、完了した文法でも
+/// `<turn|>` の piece が文法にかかって拒まれる。参照実装と同じにするには
+/// ゲート側が「停止 ID なら `mayEndHere` を返して終わり」にする必要がある
+/// (GEN-7 の担当。ここでは特別扱いしない)。
+///
+/// スレッド安全性: 生成ループ 1 本から順に呼ばれる前提で、内部に錠は無い
+/// (`StubConstraint` など既存の実装と同じ約束)。
 public final class GrammarTokenConstraint: GenerationConstraint, @unchecked Sendable {
+    private let vocabulary: GrammarVocabulary
+    private let trigger: GrammarTrigger?
+    private var matcher: GrammarMatcher
+    /// 参照実装の `awaiting_trigger`。非遅延では最初から false。
+    private var awaitingTrigger: Bool
+    private var suppressed = false
+
     public init(grammar: GBNFGrammar,
                 vocabulary: GrammarVocabulary,
                 trigger: GrammarTrigger? = nil) throws {
-        _ = (grammar, vocabulary, trigger)
-        throw GrammarTokenConstraintError.notImplemented("GrammarTokenConstraint")
+        self.vocabulary = vocabulary
+        self.trigger = trigger
+        self.awaitingTrigger = trigger != nil
+        self.matcher = try GrammarMatcher(grammar)
     }
 
     public convenience init(_ source: String,
@@ -118,33 +187,72 @@ public final class GrammarTokenConstraint: GenerationConstraint, @unchecked Send
     }
 
     /// 遅延文法か (GEN-5)。
-    public var isLazy: Bool { false }
+    public var isLazy: Bool { trigger != nil }
     /// 起動済みか。非遅延は最初から `true`。
-    public var isArmed: Bool { false }
-    /// 思考中で抑止されているか (GEN-6)。
-    public var isSuppressed: Bool { false }
+    public var isArmed: Bool { !awaitingTrigger }
+    /// 思考中で抑止されているか (GEN-6)。非遅延は決して抑止されない。
+    public var isSuppressed: Bool { suppressed && isLazy }
     /// いま文法が効いているか (= 起動済み かつ 抑止されていない)。
-    public var isApplied: Bool { false }
+    public var isApplied: Bool { isArmed && !isSuppressed }
 
-    /// GEN-6。呼び出し側が駆動する。
+    /// GEN-6。呼び出し側 (`StructuredAssistantDecoder` を持つ層) が駆動する。
+    /// この型は思考チャンネルの状態を推測しない。
     public func setSuppressed(_ suppressed: Bool) {
-        _ = suppressed
+        self.suppressed = suppressed
     }
 
-    public var mayEndHere: Bool { false }
+    // MARK: - GenerationConstraint
+
+    /// 未起動・抑止中は常に真 (参照実装は `apply` 自体を呼ばないので EOG も
+    /// 通る)。起動していれば「文法がここで終われるか」= `isComplete`。
+    public var mayEndHere: Bool {
+        isApplied ? matcher.isComplete : true
+    }
 
     public func allows(tokenID: Int32) -> Bool {
-        _ = tokenID
-        return false
+        guard isApplied else { return true }
+        let piece = vocabulary.piece(for: tokenID)
+        // 参照実装 `llama_grammar_apply_impl` の足切りと同じ。
+        guard !piece.isEmpty, piece[0] != 0 else { return false }
+        return matcher.allows(piece: piece, tokenID: tokenID)
     }
 
+    /// 全語彙のマスク。交差計算は `rejectedIndices` の中で 1 回しか走らない。
     public func fillAllowedMask(_ allowed: UnsafeMutableBufferPointer<Bool>) throws {
-        _ = allowed
-        throw GrammarTokenConstraintError.notImplemented("fillAllowedMask")
+        guard isApplied else {
+            allowed.update(repeating: true)
+            return
+        }
+        // 既定は拒否。ここに残るのは表に無い ID と、空 / NUL 始まりの piece。
+        allowed.update(repeating: false)
+        let limit = allowed.count
+        for candidate in vocabulary.candidates where candidate.index < limit {
+            allowed[candidate.index] = true
+        }
+        for index in matcher.rejectedIndices(vocabulary.candidates) where index < limit {
+            allowed[index] = false
+        }
     }
 
+    /// 参照実装 `llama_grammar_accept_impl` の状態機械。
+    ///
+    /// - 抑止中は何もしない (供給しない = トリガも見ない)。
+    /// - 待機中はトリガだけを見る。トリガに当たったらその場で起動し、
+    ///   **そのトークン自身を**文法に食わせる (参照実装は貯めた
+    ///   バッファを捨てて `llama_grammar_accept_token` を呼ぶ)。
+    /// - 起動済みなら 1 トークン進める。スタックが全滅したら
+    ///   `GBNFError.noSurvivingStacks` が上がる — 呼び出し側 (`Sampler`) が
+    ///   失敗として扱う。飲み込んではならない。
     public func accept(tokenID: Int32) throws {
-        _ = tokenID
-        throw GrammarTokenConstraintError.notImplemented("accept")
+        guard !isSuppressed else { return }
+
+        if awaitingTrigger {
+            guard trigger?.tokenIDs.contains(tokenID) == true else { return }
+            awaitingTrigger = false
+            try matcher.accept(piece: vocabulary.piece(for: tokenID), tokenID: tokenID)
+            return
+        }
+
+        try matcher.accept(piece: vocabulary.piece(for: tokenID), tokenID: tokenID)
     }
 }
