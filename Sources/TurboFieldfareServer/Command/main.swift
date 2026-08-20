@@ -40,7 +40,12 @@ do {
         apiKeys: arguments.apiKeys,
         // FLAG-6. Disabled unless the operator named origins, so nothing about
         // a browser's reach changes for anyone who passes neither flag.
-        corsPolicy: arguments.corsPolicy)
+        corsPolicy: arguments.corsPolicy,
+        // EP-6. `--slots` / `--no-slots` and `--metrics`, with the reference's
+        // defaults: the slot state is readable, the Prometheus exposition is
+        // not until it is asked for.
+        slotsEndpointEnabled: arguments.slotsEndpointEnabled,
+        metricsEndpointEnabled: arguments.metricsEndpointEnabled)
     // LIF-1: the port opens before the model does, and everything answers 503
     // `unavailable_error` until the load lands (LIF-2). The load takes tens of
     // seconds; a client that connects during it is told the server is coming

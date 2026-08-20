@@ -82,12 +82,14 @@ public struct ServerArguments: Equatable, Sendable {
     public var thinkingPolicy: ServerThinkingPolicy {
         reasoningBudget == 0 ? .off : .on
     }
-    /// SPEC §3 **EP-6**: `--slots` / `--no-slots`. Not parsed yet — the flag is
-    /// the red test's subject, and this is the entry point that keeps the tree
-    /// building until it is.
-    public var slotsEndpointEnabled: Bool { true }
-    /// EP-6: `--metrics`. Not parsed yet, as above.
-    public var metricsEndpointEnabled: Bool { false }
+    /// SPEC §3 **EP-6**: `--slots` / `--no-slots`, the reference's spelling and
+    /// the reference's default — the monitoring answer is on unless an operator
+    /// turns it off.
+    public let slotsEndpointEnabled: Bool
+    /// EP-6: `--metrics`, off unless it is asked for, which is again what the
+    /// reference does. A Prometheus endpoint nobody scrapes is surface with no
+    /// reader.
+    public let metricsEndpointEnabled: Bool
     /// FLAG-5. Empty means no authentication, which is the default and is what
     /// every existing runbook starts.
     public let apiKeys: [String]
@@ -182,6 +184,13 @@ public struct ServerArguments: Equatable, Sendable {
                                  keys with commas to accept more than one.
                                  /health, /v1/health, /models and /v1/models stay
                                  open. The server binds 127.0.0.1 either way.
+      --slots, --no-slots        Expose GET /slots, the one generation slot's state
+                                 (default: exposed). Turned off, the endpoint
+                                 answers 501 like any path this server does not
+                                 serve.
+      --metrics                  Expose GET /metrics, a Prometheus text exposition
+                                 of the prompt and generation counters and the
+                                 request gauges (default: not exposed).
       --cors-origins <o[,o...]>  Origins allowed to read this server's answers from
                                  a browser, or * for any (default: none, and no
                                  CORS header is sent). A listed origin is echoed
@@ -288,6 +297,9 @@ public struct ServerArguments: Equatable, Sendable {
         var reasoningFormat = ReasoningFormat.auto
         var apiKeys: [String] = []
         var corsPolicy = ServerCORSPolicy.disabled
+        // EP-6, the reference's defaults at the pin.
+        var slotsEndpointEnabled = true
+        var metricsEndpointEnabled = false
         var index = 0
         while index < input.count {
             let flag = input[index]
@@ -300,6 +312,26 @@ public struct ServerArguments: Equatable, Sendable {
             // never accept.
             if let replacement = Self.retiredFlags[flag] {
                 throw ServerArgumentError.invalid("\(flag) was retired; \(replacement)")
+            }
+            // EP-6. The three switches take no value, so they are read before
+            // the "requires a value" guard — otherwise a trailing `--metrics`
+            // would be refused, and `--no-slots --model …` would swallow the
+            // next flag as its argument.
+            switch flag {
+            case "--slots":
+                slotsEndpointEnabled = true
+                index += 1
+                continue
+            case "--no-slots":
+                slotsEndpointEnabled = false
+                index += 1
+                continue
+            case "--metrics":
+                metricsEndpointEnabled = true
+                index += 1
+                continue
+            default:
+                break
             }
             guard index + 1 < input.count else {
                 throw ServerArgumentError.invalid("\(flag) requires a value")
@@ -477,6 +509,8 @@ public struct ServerArguments: Equatable, Sendable {
                                    maxImagePixels: maxImagePixels),
                                reasoningBudget: reasoningBudget,
                                reasoningFormat: reasoningFormat,
+                               slotsEndpointEnabled: slotsEndpointEnabled,
+                               metricsEndpointEnabled: metricsEndpointEnabled,
                                apiKeys: apiKeys,
                                corsPolicy: corsPolicy)
     }

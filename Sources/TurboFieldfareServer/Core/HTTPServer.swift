@@ -64,8 +64,7 @@ public actor TurboFieldfareHTTPServer {
     private let properties: ServerProperties
     private let apiKeys: [String]
     private let corsPolicy: ServerCORSPolicy
-    /// EP-6's two startup gates. Not read yet — the routes are the red test's
-    /// subject; this is the entry point that keeps the tree building.
+    /// EP-6's two startup gates: `--slots` / `--no-slots` and `--metrics`.
     private let slotsEndpointEnabled: Bool
     private let metricsEndpointEnabled: Bool
     private let childChannels = ChildChannelRegistry()
@@ -121,6 +120,8 @@ public actor TurboFieldfareHTTPServer {
         let properties = self.properties
         let apiKeys = self.apiKeys
         let corsPolicy = self.corsPolicy
+        let slotsEndpointEnabled = self.slotsEndpointEnabled
+        let metricsEndpointEnabled = self.metricsEndpointEnabled
         let childChannels = self.childChannels
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 16)
@@ -141,6 +142,8 @@ public actor TurboFieldfareHTTPServer {
                         properties: properties,
                         apiKeys: apiKeys,
                         corsPolicy: corsPolicy,
+                        slotsEndpointEnabled: slotsEndpointEnabled,
+                        metricsEndpointEnabled: metricsEndpointEnabled,
                         childChannels: childChannels))
                 }
             }
@@ -233,6 +236,9 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private let properties: ServerProperties
     private let apiKeys: [String]
     private let corsPolicy: ServerCORSPolicy
+    /// EP-6's startup gates.
+    private let slotsEndpointEnabled: Bool
+    private let metricsEndpointEnabled: Bool
     private let maximumBodyBytes: Int
     private let childChannels: ChildChannelRegistry
     private var head: HTTPRequestHead?
@@ -251,6 +257,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
          properties: ServerProperties,
          apiKeys: [String],
          corsPolicy: ServerCORSPolicy,
+         slotsEndpointEnabled: Bool,
+         metricsEndpointEnabled: Bool,
          childChannels: ChildChannelRegistry) {
         self.modelID = modelID
         self.readiness = readiness
@@ -261,6 +269,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         self.properties = properties
         self.apiKeys = apiKeys
         self.corsPolicy = corsPolicy
+        self.slotsEndpointEnabled = slotsEndpointEnabled
+        self.metricsEndpointEnabled = metricsEndpointEnabled
         self.maximumBodyBytes = imagePolicy.maximumBodyBytes
         self.childChannels = childChannels
     }
@@ -377,6 +387,22 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             handleDetokenize(body: body, context: context)
         case (.POST, "/apply-template"):
             handleApplyTemplate(body: body, context: context)
+        // EP-6: both are gated by a startup flag, as they are in the reference
+        // implementation. An endpoint that was not started answers EP-7's shape
+        // — 501 `not_supported_error` — and names the flag, because an operator
+        // reading it is one restart away from the answer they wanted.
+        case (.GET, "/slots"):
+            guard slotsEndpointEnabled else {
+                writeError(context, status: .notImplemented, Self.slotsDisabledEnvelope)
+                return
+            }
+            handleSlots(context: context)
+        case (.GET, "/metrics"):
+            guard metricsEndpointEnabled else {
+                writeError(context, status: .notImplemented, Self.metricsDisabledEnvelope)
+                return
+            }
+            handleMetrics(context: context)
         // EP-7, ahead of the method check so that `POST /props` is answered as
         // the endpoint this server does not adopt rather than as the wrong verb
         // on the one it does.
@@ -388,7 +414,8 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                            code: "endpoint_not_supported"))
         case (_, "/health"), (_, "/v1/health"), (_, "/v1/models"), (_, "/models"),
              (_, "/props"), (_, "/v1/chat/completions"), (_, "/chat/completions"),
-             (_, "/tokenize"), (_, "/detokenize"), (_, "/apply-template"):
+             (_, "/tokenize"), (_, "/detokenize"), (_, "/apply-template"),
+             (_, "/slots"), (_, "/metrics"):
             writeError(context, status: .methodNotAllowed,
                        OpenAIErrorEnvelope(message: "method not allowed",
                                            code: "method_not_allowed"))
@@ -599,6 +626,116 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             return .object(["prompt": .string(try await backend.applyChatTemplate(request))])
         }
     }
+
+    /// EP-6 `GET /slots`.
+    ///
+    /// One element, id 0 (§12 **DEV-3**): this machine holds the model and one
+    /// KV, so there is one generation slot and there is no `--parallel`. The two
+    /// fields are what SPEC's EP-6 line asks for; the reference's per-slot
+    /// sampler block, `id_task`, `next_token` and the rest are not in it.
+    private func handleSlots(context: ChannelHandlerContext) {
+        let coordinator = self.coordinator
+        let contextBox = SendableContext(context)
+        activeTask = childChannels.startTask {
+            let slots = await coordinator.queueState.slots
+            self.writeJSON(contextBox.value, status: .ok,
+                           object: slots.map { slot -> [String: Any] in
+                               ["id": slot.id, "is_processing": slot.isProcessing]
+                           })
+        }
+    }
+
+    /// EP-6 `GET /metrics`: the Prometheus text exposition.
+    ///
+    /// The counters are the backend's running totals — sums of what RSP-3
+    /// measured per request, so `/metrics` and a response's `timings` cannot
+    /// tell different stories — and the two gauges are the queue in front of the
+    /// slot. The `llamacpp:` prefix is the reference's, kept because a scraper's
+    /// rules are written against the names and not against who serves them.
+    private func handleMetrics(context: ChannelHandlerContext) {
+        // LIF-2 has already turned every request away while this is nil.
+        guard let backend = readiness.backend else {
+            writeError(context, status: .serviceUnavailable, Self.loadingEnvelope)
+            return
+        }
+        let coordinator = self.coordinator
+        let contextBox = SendableContext(context)
+        activeTask = childChannels.startTask {
+            let snapshot = await backend.metrics()
+            let queue = await coordinator.queueState
+            self.writeData(contextBox.value,
+                           status: .ok,
+                           data: Data(Self.prometheus(snapshot, queue).utf8),
+                           contentType: "text/plain; version=0.0.4")
+        }
+    }
+
+    private struct MetricItem {
+        let name: String
+        let help: String
+        let value: Double
+    }
+
+    /// EP-6's body, in the reference's layout: `# HELP`, `# TYPE`, value, one
+    /// metric after another, counters before gauges.
+    private static func prometheus(_ metrics: ServerMetricsSnapshot,
+                                   _ queue: ServerQueueState) -> String {
+        let counters = [
+            MetricItem(name: "prompt_tokens_total",
+                       help: "Number of prompt tokens processed, excluding cached tokens",
+                       value: Double(metrics.promptTokensTotal)),
+            MetricItem(name: "prompt_seconds_total",
+                       help: "Total time spent processing prompts",
+                       value: metrics.promptSecondsTotal),
+            MetricItem(name: "tokens_predicted_total",
+                       help: "Number of generation tokens processed",
+                       value: Double(metrics.predictedTokensTotal)),
+            MetricItem(name: "tokens_predicted_seconds_total",
+                       help: "Total time spent generating tokens",
+                       value: metrics.predictedSecondsTotal),
+        ]
+        let gauges = [
+            MetricItem(name: "prompt_tokens_seconds",
+                       help: "Average prompt throughput in tokens/s",
+                       value: metrics.promptTokensPerSecond),
+            MetricItem(name: "predicted_tokens_seconds",
+                       help: "Average generation throughput in tokens/s",
+                       value: metrics.predictedTokensPerSecond),
+            MetricItem(name: "requests_processing",
+                       help: "Number of requests processing",
+                       value: Double(queue.processingCount)),
+            MetricItem(name: "requests_deferred",
+                       help: "Number of requests deferred",
+                       value: Double(queue.deferredCount)),
+        ]
+        var text = ""
+        for (type, items) in [("counter", counters), ("gauge", gauges)] {
+            for item in items {
+                text += "# HELP llamacpp:\(item.name) \(item.help)\n"
+                text += "# TYPE llamacpp:\(item.name) \(type)\n"
+                text += "llamacpp:\(item.name) \(metricValue(item.value))\n"
+            }
+        }
+        return text
+    }
+
+    /// `%g` — what the reference's `ostream <<` writes for a double: an
+    /// integral value with no decimal point, six significant digits otherwise.
+    private static func metricValue(_ value: Double) -> String {
+        String(format: "%g", value)
+    }
+
+    /// EP-6: the answer when the endpoint was not started. EP-7's 501 with the
+    /// flag named.
+    private static let slotsDisabledEnvelope = OpenAIErrorEnvelope(
+        message: "this server does not expose the slots endpoint; start it with --slots",
+        type: .notSupported,
+        code: "endpoint_not_supported")
+
+    private static let metricsDisabledEnvelope = OpenAIErrorEnvelope(
+        message: "this server does not expose the metrics endpoint; start it with --metrics",
+        type: .notSupported,
+        code: "endpoint_not_supported")
 
     private static let invalidTokens = ServerRequestError.invalid(
         message: "\"tokens\" must be an array of token ids",
@@ -1062,11 +1199,12 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
 
     private func writeData(_ context: ChannelHandlerContext,
                            status: HTTPResponseStatus,
-                           data: Data) {
+                           data: Data,
+                           contentType: String = "application/json") {
         let contextBox = SendableContext(context)
         context.eventLoop.execute {
             var headers = HTTPHeaders()
-            headers.add(name: "content-type", value: "application/json")
+            headers.add(name: "content-type", value: contentType)
             headers.add(name: "content-length", value: "\(data.count)")
             self.addCORSHeaders(to: &headers)
             contextBox.value.write(self.wrapOutboundOut(.head(
