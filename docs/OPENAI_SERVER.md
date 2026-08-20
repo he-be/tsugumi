@@ -389,13 +389,24 @@ default", and a sampling value outside its range is clamped rather than
 rejected. `model` is not checked — the name you send is the name that comes
 back. A parameter the server cannot honor is answered with 501
 `not_supported_error`, never with a 200 in the wrong shape: today that is
-`logprobs`, `response_format` other than `text`, and `tool_choice` beyond
-`auto` and `none`.
+`logprobs` alone.
+
+**Structured output and forced tool calls are grammar-constrained**, not
+best-effort. `response_format` `json_object` and `json_schema`, and
+`tool_choice` `required` and `{"type":"function","function":{"name":…}}`, all
+constrain generation token by token, so the body comes back in the shape you
+asked for. A schema element that cannot be expressed is **approximated, never
+refused** — a generated schema with one unrepresentable line at its edge still
+runs, and what was given up is reported on the request's `completed` line as
+`approx=`. What cannot be combined is refused rather than half-honored: a
+non-`text` `response_format` together with `tool_choice` `required` or a named
+function is a 400, as is a named `tool_choice` for a tool the request did not
+declare, and `required` with no tools.
 
 The server supports one model and one choice. Images are supported as described
 above; audio and video are not. It does not support the Responses API, legacy
-Completions, embeddings, structured output, batching, log probabilities, or
-remote model switching.
+Completions, embeddings, batching, log probabilities, or remote model
+switching.
 
 Context length can be 4K, 8K, 16K, 32K, 64K, or 128K. The default is 16K. Only
 the full-attention layers grow with the context — the sliding-window layers are
