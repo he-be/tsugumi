@@ -400,25 +400,35 @@ struct JSONSchemaGrammarConverter {
         return out + "\""
     }
 
-    /// 文字クラスの中に生の 1 バイトを置くときの逃がし。参照実装の
-    /// `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` から `"` を除いたもの — 参照実装は
-    /// `[^"…]` の `"` を素で書くので、`"` を逃がすと期待値が動いてしまう。
-    /// `]` `-` `\` を逃がす分は参照実装のテストベクタでは差が出ず、
-    /// 変な名前のときに壊れた文法が出るのを止めるだけである。
+    /// 文字クラスの中に生の 1 バイトを置くときの逃がし。
+    ///
+    /// **出す逃がしは GBNF パーサが受けるものだけに限る。**`parse_char`
+    /// (ピン 34af94cd9、こちらは `GBNFGrammar.swift`) が知っているのは
+    /// `\x \u \U \t \r \n \\ \" \[ \]` の 10 種だけで、**`\-` は無い**。
+    /// 参照実装の `GRAMMAR_RANGE_LITERAL_ESCAPE_RE` は `-` を `\-` と綴るが、
+    /// それは自分のパーサが読めない字面である (参照実装のテストベクタに
+    /// `-` を含むプロパティ名が無いので露見しない)。`-` は `\x2D` と綴る:
+    /// 範囲の検出は逃がしを解いた後の**生のバイト**が `-` かどうかで行われる
+    /// ので、`\x2D` はクラスのどこに置いても字そのものとして読まれる
+    /// (クラスの末尾に置く手もあるが、位置に依存するので採らない)。
+    ///
+    /// `"` は参照実装と同じく素で書く (`[^"…]`)。クラスの中では特別な字では
+    /// なく、逃がすと参照実装の期待値が動いてしまう。
+    /// 制御文字と DEL は目に見えないまま文法に埋まらないよう `\xNN` にする。
     static func escapeInRange(_ byte: UInt8) -> String {
         switch byte {
         case 0x0D: return #"\r"#
         case 0x0A: return #"\n"#
         case 0x5D: return #"\]"#
-        case 0x2D: return #"\-"#
+        case 0x5B: return #"\["#
+        case 0x2D: return #"\x2D"#
         case 0x5C: return #"\\"#
-        default: return String(UnicodeScalar(byte))
+        default:
+            if byte < 0x20 || byte == 0x7F {
+                return String(format: #"\x%02X"#, byte)
+            }
+            return String(UnicodeScalar(byte))
         }
-    }
-
-    static func escapeInRange(_ character: Character) -> String {
-        guard let ascii = character.asciiValue else { return String(character) }
-        return escapeInRange(ascii)
     }
 
     /// 参照実装の `json(x).dump()`。オブジェクトのキーは決定 (a) により昇順。

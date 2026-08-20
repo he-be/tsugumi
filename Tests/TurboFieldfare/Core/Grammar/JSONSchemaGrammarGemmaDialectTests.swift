@@ -384,11 +384,11 @@ enum JSONSchemaGrammarGemmaCases {
             """##,
             grammar: ##"""
             a-kv ::= "a" ":" integer
-            additional-k ::= ( [a] key-char+ | [0-9A-Zb-z_\-.$] key-char* )
+            additional-k ::= ( [a] key-char+ | [0-9A-Zb-z_\x2D.$] key-char* )
             additional-kv ::= additional-k ":" string
             integer ::= ("-"? integral-part)
             integral-part ::= [0] | [1-9] [0-9]{0,14}
-            key-char ::= [0-9A-Za-z_\-.$]
+            key-char ::= [0-9A-Za-z_\x2D.$]
             root ::= "{" a-kv ( "," ( additional-kv ( "," additional-kv )* ) )? "}"
             string ::= "<|\"|>" text-char* "<|\"|>"
             text-char ::= [^"\\]
@@ -410,7 +410,7 @@ enum JSONSchemaGrammarGemmaCases {
             decimal-part ::= [0-9]{1,7}
             integral-part ::= [0] | [1-9] [0-9]{0,14}
             key ::= key-char+
-            key-char ::= [0-9A-Za-z_\-.$]
+            key-char ::= [0-9A-Za-z_\x2D.$]
             number ::= ("-"? integral-part) | ("-"? ([0] | [1-9] [0-9]{0,6}) "." decimal-part)
             object ::= "{" ( key ":" value ("," key ":" value)* )? "}"
             payload ::= object
