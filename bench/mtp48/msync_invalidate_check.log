@@ -1,0 +1,4 @@
+pass1 incore after touch: 26240
+pass2 incore on fresh map: 0
+pass2 cold serial touch : 0.587 s -> 0.73 GB/s, incore now 26240
+pass2 warm serial touch : 0.000 s -> 1719.66 GB/s

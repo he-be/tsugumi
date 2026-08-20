@@ -1,0 +1,75 @@
+=== P-1: does Metal wire a `bytesNoCopy` buffer, or the mapping it came from? ===
+47 §6/§7. Kernels, shape and group size are 43/44's; the bytes are the
+shipped checkpoint's. Inference path untouched.
+
+  model               scratch/gemma4-qat-sym.gturbo
+  layer file          layer_00.bin 429916160 B = 26240 pages
+  hw.pagesize         16384
+  expertStride        3358720 B = 205 pages, remainder 0
+  experts / layer     128
+  step footprint      8 experts = 26.87 MB
+  PASS threshold      wired delta at commit ~= 27 MB, FAIL ~= 430 MB
+  experts used        ranks 0,16,32,48,64,80,96,112
+
+  system wired noise over 1 s of idle: 96 pages (1.6 MB)
+
+--- MAP_PRIVATE/r -----------------------------------------------
+  per-expert (128 buffers)
+    buffers           created 128, named by the command buffer 8
+    in-flight wired   peak over base, 3 trials: +0 / +0 / +0 pg   (max      0.0 MB)
+    in-flight region  resident +0 / +0 / +0 pg   user_wired 0 / 0 / 0   samples 363/431/438
+    materialised      anonymous 1640 / 1640 / 1640 pg   dirty 1640 / 1640 / 1640 pg   of 26240
+                      = 26.9 MB / 26.9 MB / 26.9 MB turned anonymous (private, not droppable)
+    first-pass incore  +410 / +0 / +0 pg   (only the first pass is cold; later ones read the buffer cache)
+    regions/share     1/1/1, share_mode [1]
+    per-pass wall     0.259 ms / 0.251 ms / 0.250 ms   (107.6 GB/s over 8 experts)
+  per-layer (1 buffer)
+    buffers           created 1, named by the command buffer 1
+    in-flight wired   peak over base, 3 trials: +47033 / +0 / +0 pg   (max    770.6 MB)
+    in-flight region  resident +0 / +0 / +0 pg   user_wired 0 / 0 / 0   samples 1034/1056/1032
+    materialised      anonymous 26240 / 26240 / 26240 pg   dirty 26240 / 26240 / 26240 pg   of 26240
+                      = 429.9 MB / 429.9 MB / 429.9 MB turned anonymous (private, not droppable)
+    first-pass incore  +6842 / +428 / +0 pg   (only the first pass is cold; later ones read the buffer cache)
+    regions/share     1/1/1, share_mode [5]
+    per-pass wall     0.250 ms / 0.251 ms / 0.250 ms   (107.5 GB/s over 8 experts)
+
+--- MAP_PRIVATE/rw ----------------------------------------------
+  per-expert (128 buffers)
+    buffers           created 128, named by the command buffer 8
+    in-flight wired   peak over base, 3 trials: +0 / +0 / +0 pg   (max      0.0 MB)
+    in-flight region  resident +0 / +0 / +0 pg   user_wired 0 / 0 / 0   samples 451/408/462
+    materialised      anonymous 1640 / 1640 / 1640 pg   dirty 1640 / 1640 / 1640 pg   of 26240
+                      = 26.9 MB / 26.9 MB / 26.9 MB turned anonymous (private, not droppable)
+    first-pass incore  +0 / +0 / +0 pg   (only the first pass is cold; later ones read the buffer cache)
+    regions/share     1/1/1, share_mode [1]
+    per-pass wall     0.250 ms / 0.254 ms / 0.249 ms   (108.0 GB/s over 8 experts)
+  per-layer (1 buffer)
+    buffers           created 1, named by the command buffer 1
+    in-flight wired   peak over base, 3 trials: +24905 / +0 / +9280 pg   (max    408.0 MB)
+    in-flight region  resident +0 / +0 / +0 pg   user_wired 0 / 0 / 0   samples 1006/1011/1003
+    materialised      anonymous 26240 / 26240 / 26240 pg   dirty 26240 / 26240 / 26240 pg   of 26240
+                      = 429.9 MB / 429.9 MB / 429.9 MB turned anonymous (private, not droppable)
+    first-pass incore  +0 / +0 / +0 pg   (only the first pass is cold; later ones read the buffer cache)
+    regions/share     1/1/1, share_mode [5]
+    per-pass wall     0.248 ms / 0.253 ms / 0.246 ms   (109.1 GB/s over 8 experts)
+
+--- MAP_SHARED/r ------------------------------------------------
+  per-expert (128 buffers)
+    buffers           created 128, named by the command buffer 8
+    in-flight wired   peak over base, 3 trials: +0 / +0 / +0 pg   (max      0.0 MB)
+    in-flight region  resident +0 / +0 / +0 pg   user_wired 0 / 0 / 0   samples 953/950/940
+    materialised      anonymous 0 / 0 / 0 pg   dirty 0 / 0 / 0 pg   of 26240
+                      = 0.0 MB / 0.0 MB / 0.0 MB turned anonymous (private, not droppable)
+    first-pass incore  +0 / +0 / +0 pg   (only the first pass is cold; later ones read the buffer cache)
+    regions/share     1/1/1, share_mode [5]
+    per-pass wall     0.252 ms / 0.251 ms / 0.256 ms   (107.0 GB/s over 8 experts)
+  per-layer (1 buffer)
+    buffers           created 1, named by the command buffer 1
+    in-flight wired   peak over base, 3 trials: +0 / +0 / +0 pg   (max      0.0 MB)
+    in-flight region  resident +0 / +0 / +0 pg   user_wired 0 / 0 / 0   samples 936/922/931
+    materialised      anonymous 0 / 0 / 0 pg   dirty 0 / 0 / 0 pg   of 26240
+                      = 0.0 MB / 0.0 MB / 0.0 MB turned anonymous (private, not droppable)
+    first-pass incore  +0 / +0 / +0 pg   (only the first pass is cold; later ones read the buffer cache)
+    regions/share     1/1/1, share_mode [5]
+    per-pass wall     0.247 ms / 0.246 ms / 0.248 ms   (109.3 GB/s over 8 experts)
+

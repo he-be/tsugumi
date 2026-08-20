@@ -1413,6 +1413,34 @@ if arguments.contains("--moe-rows-shape-sweep") {
 // right, dropping the redundant BF16 bias (44 §1) and shrinking the BF16 scale
 // to an 8-bit code against a per-row anchor (44 §2) must show up as time, in
 // proportion to the bytes, with the arithmetic held fixed.
+// `--mmap-residency-probe`: the same two kernels again, but this time nothing
+// about the arithmetic moves -- only where the expert bytes come from.
+// `docs/mtp/47-D-MMAP-RESIDENCY-PROPOSAL.md` §5 rests the whole D branch on
+// Metal wiring a `bytesNoCopy` buffer at the buffer's granularity rather than
+// the mapping's; P-1 measures the wired-page delta of a command buffer that
+// names eight experts, against the same command buffer fed from one buffer
+// spanning the 420 MB layer file.
+if arguments.contains("--mmap-residency-probe") {
+    var probeModel = "scratch/gemma4-qat-sym.gturbo"
+    if let index = arguments.firstIndex(of: "--mmap-probe-model"), index + 1 < arguments.count {
+        probeModel = arguments[index + 1]
+    }
+    var probeRepeats = 1200
+    if let index = arguments.firstIndex(of: "--mmap-probe-repeats"),
+       index + 1 < arguments.count, let value = Int(arguments[index + 1]) {
+        probeRepeats = value
+    }
+    var probeTrials = 3
+    if let index = arguments.firstIndex(of: "--mmap-probe-trials"),
+       index + 1 < arguments.count, let value = Int(arguments[index + 1]) {
+        probeTrials = value
+    }
+    try runMmapResidencyProbe(groupSize: groupSizes[0], modelPath: probeModel,
+                              repeats: probeRepeats, trials: probeTrials,
+                              gateOnly: arguments.contains("--mmap-probe-gate-only"))
+    exit(0)
+}
+
 if arguments.contains("--bpw-probe") {
     var probeIterations = 50
     if let index = arguments.firstIndex(of: "--moe-rows-bench-iterations"),

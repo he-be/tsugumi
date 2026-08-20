@@ -338,7 +338,7 @@ kernel void bpw_rows_down(
 // MARK: - Host side
 
 /// The three weight formats, in the order the report prints them.
-private enum BpwFormat: UInt32, CaseIterable {
+enum BpwFormat: UInt32, CaseIterable {
     case affine = 0   // BF16 scale + BF16 bias  -- production
     case sym = 1      // BF16 scale, w = s*(q-8)
     case sym8 = 2     // 8-bit scale code (2 exp + 6 mantissa) + per-row anchor
@@ -375,7 +375,7 @@ private enum BpwFormat: UInt32, CaseIterable {
 /// (weights, scales, anchors-or-biases). `affine` puts BF16 biases where the
 /// other two put nothing (`sym`) or a byte of exponent per row (`sym8`), which
 /// is why the third offset is named for its role and not its content.
-private struct BpwLayout {
+struct BpwLayout {
     var gateW = 0, gateS = 0, gateA = 0
     var upW = 0, upS = 0, upA = 0
     var downW = 0, downS = 0, downA = 0
@@ -418,17 +418,17 @@ private struct BpwLayout {
 }
 
 /// `BpwParams` in the probe's MSL.
-private struct BpwParamsHost {
+struct BpwParamsHost {
     var d: UInt32 = 0, f: UInt32 = 0, topK: UInt32 = 0, hiddenStride: UInt32 = 0
     var gateW: UInt32 = 0, gateS: UInt32 = 0, gateA: UInt32 = 0
     var upW: UInt32 = 0, upS: UInt32 = 0, upA: UInt32 = 0
     var downW: UInt32 = 0, downS: UInt32 = 0, downA: UInt32 = 0
 }
 
-private struct BpwPairHost { var token: UInt32; var expert: UInt32; var rank: UInt32; var reserved: UInt32 }
-private struct BpwBlockHost { var localSlot: UInt32; var pairStart: UInt32; var rowCount: UInt32; var localRow: UInt32 }
+struct BpwPairHost { var token: UInt32; var expert: UInt32; var rank: UInt32; var reserved: UInt32 }
+struct BpwBlockHost { var localSlot: UInt32; var pairStart: UInt32; var rowCount: UInt32; var localRow: UInt32 }
 
-private enum BpwStage: String, CaseIterable {
+enum BpwStage: String, CaseIterable {
     case gateUp = "gate/up"
     case down = "down"
     var function: String { self == .gateUp ? "bpw_rows_gate_up" : "bpw_rows_down" }
@@ -500,9 +500,9 @@ private func bpwBF16(_ value: Float) -> UInt16 {
 
 // MARK: - Fixture
 
-private let bpwTileExperts = 16
-private let bpwMaxRows = 8
-private let bpwTopK = 8
+let bpwTileExperts = 16
+let bpwMaxRows = 8
+let bpwTopK = 8
 
 /// One expert's weights, generated once and written into every format.
 ///
@@ -511,7 +511,7 @@ private let bpwTopK = 8
 /// 44 §1 verified holds bit-for-bit on the shipped checkpoint. So `affine` and
 /// `sym` must agree to floating-point noise, and whatever `sym8` differs by is
 /// the 6-bit mantissa and nothing else.
-private struct BpwWeights {
+struct BpwWeights {
     let d: Int
     let f: Int
     let groupSize: Int
@@ -658,7 +658,7 @@ private struct BpwWeights {
     }
 }
 
-private struct BpwFixture {
+struct BpwFixture {
     let format: BpwFormat
     let layout: BpwLayout
     let blobs: [MTLBuffer]
@@ -666,7 +666,7 @@ private struct BpwFixture {
     let params: BpwParamsHost
 }
 
-private final class BpwProbe {
+final class BpwProbe {
     let device: MTLDevice
     let queue: MTLCommandQueue
     let library: MTLLibrary
@@ -760,6 +760,53 @@ private final class BpwProbe {
         else { fatalError("argument buffer allocation failed") }
         encoder.setArgumentBuffer(argumentBuffer, offset: 0)
         for (index, blob) in blobs.enumerated() { encoder.setBuffer(blob, offset: 0, index: index) }
+
+        var params = BpwParamsHost()
+        params.d = UInt32(d); params.f = UInt32(f)
+        params.topK = UInt32(bpwTopK); params.hiddenStride = UInt32(d)
+        params.gateW = UInt32(layout.gateW); params.gateS = UInt32(layout.gateS)
+        params.gateA = UInt32(layout.gateA)
+        params.upW = UInt32(layout.upW); params.upS = UInt32(layout.upS)
+        params.upA = UInt32(layout.upA)
+        params.downW = UInt32(layout.downW); params.downS = UInt32(layout.downS)
+        params.downA = UInt32(layout.downA)
+
+        return BpwFixture(format: format, layout: layout, blobs: blobs,
+                          argumentBuffer: argumentBuffer, params: params)
+    }
+
+    /// The same fixture, but with the expert blobs supplied from outside
+    /// instead of allocated and filled here. `slots` names, per tile slot, the
+    /// buffer to bind and the byte offset inside it -- so one `mmap`-backed
+    /// buffer per expert (offset 0) and a single buffer spanning a whole layer
+    /// file (offset = rank * stride) both fit, which is exactly the pair
+    /// `docs/mtp/47-D-MMAP-RESIDENCY-PROPOSAL.md` §6 P-1 contrasts.
+    ///
+    /// `blobs` is the *distinct* resource list: `encode` only calls
+    /// `useResource` on what is passed here, so the wired-page delta counts the
+    /// experts a command buffer actually names and nothing else.
+    func makeFixture(format: BpwFormat, slots: [(buffer: MTLBuffer, offset: Int)],
+                     blobs: [MTLBuffer]) -> BpwFixture {
+        precondition(slots.count == bpwTileExperts, "need \(bpwTileExperts) tile slots")
+        let layout = BpwLayout(d: d, f: f, groupSize: groupSize, format: format)
+
+        guard let function = try? library.makeFunction(name: "bpw_rows_gate_up",
+                                                       constantValues: {
+            let values = MTLFunctionConstantValues()
+            var capValue = UInt32(1)
+            var fmtValue = format.rawValue
+            values.setConstantValue(&capValue, type: .uint, index: 16)
+            values.setConstantValue(&fmtValue, type: .uint, index: 17)
+            return values
+        }()) else { fatalError("bpw_rows_gate_up missing") }
+        let encoder = function.makeArgumentEncoder(bufferIndex: 9)
+        guard let argumentBuffer = device.makeBuffer(length: encoder.encodedLength,
+                                                     options: .storageModeShared)
+        else { fatalError("argument buffer allocation failed") }
+        encoder.setArgumentBuffer(argumentBuffer, offset: 0)
+        for (index, slot) in slots.enumerated() {
+            encoder.setBuffer(slot.buffer, offset: slot.offset, index: index)
+        }
 
         var params = BpwParamsHost()
         params.d = UInt32(d); params.f = UInt32(f)
