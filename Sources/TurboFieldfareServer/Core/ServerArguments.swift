@@ -254,16 +254,17 @@ public struct ServerArguments: Equatable, Sendable {
                 }
                 imageTokens = parsed
             case "--api-key":
-                // Not implemented yet — the flag is parsed so the spec line has
-                // somewhere to be tested from, and rejected values still fail
-                // at startup rather than silently.
+                // FLAG-5. One key or a comma-separated list, the way the
+                // reference spells it; repeating the flag adds to the set
+                // rather than replacing it, so a rotation can name the old and
+                // the new key on one command line.
                 let keys = value.split(separator: ",")
                     .map { $0.trimmingCharacters(in: .whitespaces) }
                     .filter { !$0.isEmpty }
                 guard !keys.isEmpty else {
                     throw ServerArgumentError.invalid("--api-key must not be empty")
                 }
-                _ = keys
+                apiKeys.append(contentsOf: keys)
             case "--thinking":
                 guard let parsed = ServerThinkingPolicy(rawValue: value) else {
                     throw ServerArgumentError.invalid("--thinking must be on or off")

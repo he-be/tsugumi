@@ -294,6 +294,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             writeError(context, status: .serviceUnavailable, Self.loadingEnvelope)
             return
         }
+        // FLAG-5: after the load gate and before the routing table, which is
+        // the order the reference puts its two middlewares in
+        // (`server-http.cpp:302`). Ahead of routing so a caller with no key
+        // cannot map which paths exist by reading EP-7's 501s off the 404s.
+        guard isAuthorized(head: head, path: path) else {
+            writeError(context, status: .unauthorized, Self.invalidAPIKeyEnvelope)
+            return
+        }
         switch (head.method, path) {
         // EP-1: one handler, both spellings, no API key.
         case (.GET, "/health"), (.GET, "/v1/health"):
@@ -344,6 +352,49 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                                            type: .notFound,
                                            code: "not_found"))
         }
+    }
+
+    /// FLAG-5's answer to a missing or wrong key.
+    ///
+    /// OpenAI's own shape for this case: 401 carrying `invalid_request_error`
+    /// and `code: "invalid_api_key"`, which outranks the reference for `/v1/*`
+    /// wire format (SPEC §0). The reference says `authentication_error` with
+    /// the number in `code`, and DEV-1 has already ruled the number out.
+    /// ERR-2 gives three statuses to this type already (400, 405, 415) and
+    /// tells them apart by `code`; this is the fourth.
+    private static let invalidAPIKeyEnvelope = OpenAIErrorEnvelope(
+        message: "Invalid API Key",
+        type: .invalidRequest,
+        param: nil,
+        code: "invalid_api_key")
+
+    /// FLAG-5: the endpoints a client needs before it can authenticate
+    /// anything. EP-1 names the two health spellings; the reference's public
+    /// set at the pin adds both spellings of the model list
+    /// (`server-http.cpp:196`), which is how a client learns which model it is
+    /// talking to. Everything that reaches the model is behind the key.
+    private static let unauthenticatedPaths: Set<String> = [
+        "/health", "/v1/health", "/models", "/v1/models",
+    ]
+
+    private func isAuthorized(head: HTTPRequestHead, path: String) -> Bool {
+        // No key configured is no authentication at all: FLAG-5 keeps the
+        // 127.0.0.1 bind as the whole defence until an operator asks for more.
+        if apiKeys.isEmpty { return true }
+        if Self.unauthenticatedPaths.contains(path) { return true }
+        guard let presented = Self.presentedKey(head.headers) else { return false }
+        return apiKeys.contains(presented)
+    }
+
+    /// The three spellings the reference accepts: `Authorization` with or
+    /// without the `Bearer ` prefix, and Anthropic's `X-Api-Key` as a fallback.
+    private static func presentedKey(_ headers: HTTPHeaders) -> String? {
+        let raw = headers.first(name: "authorization")
+            ?? headers.first(name: "x-api-key")
+        guard let raw else { return nil }
+        let prefix = "Bearer "
+        let key = raw.hasPrefix(prefix) ? String(raw.dropFirst(prefix.count)) : raw
+        return key.isEmpty ? nil : key
     }
 
     /// SPEC §3's list of known paths this server does not adopt (DEV-7).
