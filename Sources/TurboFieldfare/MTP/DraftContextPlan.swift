@@ -26,9 +26,7 @@ enum DraftContextPlan: Equatable, Sendable {
     static func resolve(draft: DraftConfig,
                         targetGroupSize: Int,
                         targetScheme: Quantization.AffineScheme) -> DraftContextPlan {
-        // 未実装: the scheme is not part of the decision yet, so an `affine`
-        // drafter at the target's group size is handed the target's library.
-        if draft.quantGroupSize == targetGroupSize {
+        if draft.quantGroupSize == targetGroupSize, draft.quantScheme == targetScheme {
             return .shareTarget
         }
         return .ownContext(groupSize: draft.quantGroupSize, scheme: draft.quantScheme)
@@ -39,10 +37,13 @@ enum DraftContextPlan: Equatable, Sendable {
         switch self {
         case .shareTarget:
             return target
-        case let .ownContext(groupSize, _):
+        case let .ownContext(groupSize, scheme):
             let context = try MetalContext(sharingDeviceWith: target)
             try context.setAffineGroupSize(groupSize)
-            // 未実装: the scheme is left at the fresh context's default.
+            // Set rather than assumed: a fresh context defaults to `affine`,
+            // which is what the pinned drafter happens to need. Relying on that
+            // would make the `sym` direction wrong and silent.
+            try context.setAffineScheme(scheme)
             return context
         }
     }

@@ -907,16 +907,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         }
         let weights = try model.draftWeights()
         try weights.config.crossCheck(against: cfg)
-        // The drafter is packed at a different affine group size than the
-        // target (64 vs 32 for the pinned pair), and that size is baked into
-        // the shader library, so it needs a context of its own.
-        let draftContext: MetalContext
-        if weights.config.quantGroupSize == ctx.affineGroupSize {
-            draftContext = ctx
-        } else {
-            draftContext = try MetalContext(sharingDeviceWith: ctx)
-            try draftContext.setAffineGroupSize(weights.config.quantGroupSize)
-        }
+        // The drafter is packed on its own terms — a different affine group
+        // size than the target (64 vs 32 for the pinned pair) and, since the
+        // target went `sym`, a different scheme as well. Both are baked into
+        // the shader library, so a disagreement on either means a context of
+        // its own (`DraftContextPlan`).
+        let draftContext = try DraftContextPlan
+            .resolve(draft: weights.config,
+                     targetGroupSize: ctx.affineGroupSize,
+                     targetScheme: ctx.affineScheme)
+            .context(target: ctx)
         let drafter = try SpeculativeDrafter(context: ctx,
                                              draftContext: draftContext,
                                              weights: weights,
@@ -1148,16 +1148,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         }
         let weights = try model.draftWeights()
         try weights.config.crossCheck(against: cfg)
-        // The drafter is packed at a different affine group size than the
-        // target (64 vs 32 for the pinned pair), and that size is baked into
-        // the shader library, so it needs a context of its own.
-        let draftContext: MetalContext
-        if weights.config.quantGroupSize == ctx.affineGroupSize {
-            draftContext = ctx
-        } else {
-            draftContext = try MetalContext(sharingDeviceWith: ctx)
-            try draftContext.setAffineGroupSize(weights.config.quantGroupSize)
-        }
+        // The drafter is packed on its own terms — a different affine group
+        // size than the target (64 vs 32 for the pinned pair) and, since the
+        // target went `sym`, a different scheme as well. Both are baked into
+        // the shader library, so a disagreement on either means a context of
+        // its own (`DraftContextPlan`).
+        let draftContext = try DraftContextPlan
+            .resolve(draft: weights.config,
+                     targetGroupSize: ctx.affineGroupSize,
+                     targetScheme: ctx.affineScheme)
+            .context(target: ctx)
         let probe = try DraftAcceptanceProbe(context: ctx,
                                              draftContext: draftContext,
                                              weights: weights,

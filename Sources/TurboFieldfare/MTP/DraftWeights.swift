@@ -376,8 +376,7 @@ extension DraftConfig {
                   sharedFullKVLayer: manifest.sharedFullKVLayer,
                   quantBits: manifest.quant.weightBits,
                   quantGroupSize: manifest.quant.groupSize,
-                  // 未実装: `manifest.quant.scheme` is not read yet.
-                  quantScheme: .affine)
+                  quantScheme: manifest.quant.storesBias ? .affine : .sym)
     }
 
     /// The codec checked the manifest against *some* arch; this checks it
