@@ -68,7 +68,7 @@ FILLER_LINES="${TF_C3_FILLER_LINES:-260}"
 PGREP_PATTERN='TurboFieldfareServer|TurboFieldfareMac|TurboFieldfareDecodeService|TurboFieldfareCLI|TurboFieldfarePackageTests|swiftpm-testing-helper|mlx_lm|mlx-lm'
 
 # 検査の並び。DEV-13 はキャッシュ状態を捨てさせるので必ず最後。
-ALL_CHECKS="GEN-1 GEN-3-object GEN-3-schema GEN-4-required GEN-4-named GEN-4-reject GEN-12 RSN-4-max-tokens RSN-4-budget CACHE-1 CACHE-1-thinking MSG-6 DEV-13"
+ALL_CHECKS="GEN-1 GEN-3-object GEN-3-schema GEN-4-required GEN-4-named GEN-4-reject GEN-12 GEN-8 RSN-4-max-tokens RSN-4-budget CACHE-1 CACHE-1-thinking MSG-6 DEV-13"
 
 usage() {
     cat <<USAGE
@@ -96,6 +96,7 @@ GEN-4-required    tool_choice: required → ツールが呼ばれ、散文で答
 GEN-4-named       tool_choice 名前指定 → その 1 本だけが呼ばれる (DEV-17)
 GEN-4-reject      文法で作れない拒否は要求側の 400 (未宣言の名前 / required なのに tools が空)
 GEN-12            response_format (非 text) × tool_choice required は 400
+GEN-8             tool call ターンを返しても LCP が切れない (正準形。INV-1 の実機側)
 RSN-4-max-tokens  max_tokens 80 の思考 ON で本文が空にならない (CONFORMANCE §2 の実測欠陥)
 RSN-4-budget      reasoning_budget_tokens を使い切っても本文が空にならない
 CACHE-1           2 ターン目の cached_tokens > 0 (思考 OFF)
@@ -716,6 +717,67 @@ check_cache1_thinking() {
     finish
 }
 
+# GEN-8 / DEV-15 — 生成した tool call が正準形かどうかを、外から見える唯一の
+# ところで見る。GEN-8 の理由は INV-1 (描き直し == 生成) であり、生成が正準形で
+# なければ**次のターンの LCP がその tool call の手前で切れる**。応答の
+# `arguments` は組み立て直された JSON なので、生の方言は読めない — だから
+# 「切れなかった」を数字で見る:
+#   cached_tokens >= (1 ターン目の prompt_tokens + completion_tokens) − 余裕
+# 余裕は CACHE-3 の末尾 1 トークン捨てとターン境界のぶん。cached がこれより
+# 小さければ、描き直しは tool call ターンを越えられていない。
+check_gen8() {
+    begin GEN-8 "tool call ターンを返しても LCP が切れない (生成が正準形である証拠)"
+    local p1 c1 threshold name args callid
+    jq -n --arg model "$MODEL" --argjson tools "$(tools_json)" '{
+        model: $model,
+        messages: [{role:"user", content:"What is the weather in Kyoto?"}],
+        tools: $tools,
+        tool_choice: "required",
+        chat_template_kwargs: {enable_thinking: false},
+        temperature: 0, max_tokens: 128
+    }' > "$RUN_DIR/gen8a.req.json"
+    post "$RUN_DIR/gen8a.req.json" gen8a || { finish; return; }
+    pending_if_not_supported && { finish; return; }
+    expect_status 200 || { finish; return; }
+    name="$(capture '.choices[0].message.tool_calls[0].function.name')"
+    args="$(capture '.choices[0].message.tool_calls[0].function.arguments')"
+    callid="$(capture '.choices[0].message.tool_calls[0].id')"
+    if [ -z "$name" ] || [ -z "$args" ]; then
+        skip "1 ターン目で tool call が返らなかった。GEN-4-required の結果を先に見る"
+        finish; return
+    fi
+    p1="$(capture '.usage.prompt_tokens')"
+    c1="$(capture '.usage.completion_tokens')"
+    if [ -z "$p1" ] || [ -z "$c1" ]; then
+        skip "usage が読めない (prompt_tokens / completion_tokens)。RSP-1 を先に見る"
+        finish; return
+    fi
+    threshold=$(( p1 + c1 - 8 ))
+    note "1 ターン目: prompt=$p1 completion=$c1 呼び出し=$name$args"
+
+    # MSG-5: assistant の tool_calls と tool role + tool_call_id を返す。
+    jq -n --arg model "$MODEL" --argjson tools "$(tools_json)" \
+          --arg name "$name" --arg args "$args" --arg id "$callid" '{
+        model: $model,
+        messages: [
+            {role:"user", content:"What is the weather in Kyoto?"},
+            {role:"assistant", content:null,
+             tool_calls:[{id:$id, type:"function",
+                          function:{name:$name, arguments:$args}}]},
+            {role:"tool", tool_call_id:$id, content:"22C, clear."}],
+        tools: $tools,
+        chat_template_kwargs: {enable_thinking: false},
+        temperature: 0, max_tokens: 128
+    }' > "$RUN_DIR/gen8b.req.json"
+    post "$RUN_DIR/gen8b.req.json" gen8b || { finish; return; }
+    expect_status 200 || { finish; return; }
+    note "2 ターン目: cached=$(capture '.usage.prompt_tokens_details.cached_tokens') prompt=$(capture '.usage.prompt_tokens') 下限=$threshold"
+    assert '.usage.prompt_tokens_details.cached_tokens > 0' 'cached_tokens > 0'
+    assert ".usage.prompt_tokens_details.cached_tokens >= $threshold" \
+           "再利用が tool call ターンを越えている (>= $threshold = prompt+completion-8。GEN-8 / DEV-15 / INV-1)"
+    finish
+}
+
 # MSG-6: tools × 画像 × 思考は同時に成立する。組合せを入口で 400 にしない。
 check_msg6() {
     begin MSG-6 "tools × 画像 × 思考を 1 要求で同時に"
@@ -887,6 +949,7 @@ run_check() {
         RSN-4-budget)     check_rsn4_budget ;;
         CACHE-1)          check_cache1 ;;
         CACHE-1-thinking) check_cache1_thinking ;;
+        GEN-8)            check_gen8 ;;
         MSG-6)            check_msg6 ;;
         DEV-13)           check_dev13 ;;
         *) die "知らない検査: $1 (--list で一覧)" ;;
