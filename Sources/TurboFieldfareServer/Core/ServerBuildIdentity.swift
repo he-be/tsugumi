@@ -27,12 +27,24 @@ public enum ServerBuildIdentity {
     static let unknownDigest = "unknown"
 
     /// EP-4's `build_info` and RSP-5's `system_fingerprint`.
-    public static let fingerprint = "\(name)-\(unknownDigest)"
+    ///
+    /// Computed once, on the first read. The file is mapped rather than copied,
+    /// so hashing it costs one pass over the image and no resident memory.
+    public static let fingerprint = fingerprint(forExecutableAt: Bundle.main.executableURL
+        ?? CommandLine.arguments.first.map { URL(fileURLWithPath: $0) })
 
     /// The fingerprint of a named executable, which is what makes the value
     /// above checkable without reasoning about whatever binary the tests
     /// themselves happen to be running as.
     static func fingerprint(forExecutableAt url: URL?) -> String {
-        "\(name)-\(unknownDigest)"
+        "\(name)-\(url.flatMap(digest(ofFileAt:)) ?? unknownDigest)"
+    }
+
+    private static func digest(ofFileAt url: URL) -> String? {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
+            return nil
+        }
+        let hash = SHA256.hash(data: data)
+        return hash.map { String(format: "%02x", $0) }.joined().prefix(digestWidth).lowercased()
     }
 }
