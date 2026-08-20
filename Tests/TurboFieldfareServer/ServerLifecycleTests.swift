@@ -239,6 +239,25 @@ struct ServerLifecycleTests {
         #expect(process.terminationStatus == 1)
     }
 
+    /// LIF-5: a second signal kills the process outright. The dispatch sources
+    /// need SIG_IGN to see the first signal at all, so the default disposition
+    /// has to go back as soon as that first one has been taken — otherwise a
+    /// second Ctrl-C during a slow shutdown would be swallowed too.
+    @Test func LIF_5_restoring_the_disposition_lets_a_second_signal_kill() async {
+        let signals = ServerTerminationSignals([SIGUSR1])
+
+        signals.restoreDefaultDisposition()
+
+        // `signal` answers with the disposition it replaced, and leaves SIGUSR1
+        // ignored — which is also the state this process wants to be left in,
+        // since the default action for SIGUSR1 is to kill the test run.
+        let previous = Darwin.signal(SIGUSR1, SIG_IGN)
+        #expect(unsafeBitCast(previous, to: UInt.self)
+                == unsafeBitCast(SIG_DFL, to: UInt.self))
+
+        await signals.cancel()
+    }
+
     /// The built server binary, but only when it is at least as new as the
     /// sources it would be built from: `swift test` does not build an
     /// executable product, so an older one would be answering for code that is

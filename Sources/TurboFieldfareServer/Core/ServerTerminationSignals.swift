@@ -31,6 +31,13 @@ public actor ServerTerminationSignals {
         preconditionFailure("termination signal stream ended without a signal")
     }
 
+    /// LIF-5: put the default disposition back so a second signal kills.
+    ///
+    /// Not implemented yet — the entry point exists so the spec line has
+    /// somewhere to be tested from.
+    public nonisolated func restoreDefaultDisposition() {
+    }
+
     public func cancel() {
         for source in sources {
             source.cancel()
