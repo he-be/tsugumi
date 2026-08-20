@@ -2,11 +2,12 @@ import CryptoKit
 import Foundation
 import TurboFieldfare
 
-public enum ServerPromptCacheMode: String, Sendable, Equatable {
-    case off
-    case singlePrefix = "single-prefix"
-}
-
+/// The lineage a cached KV belongs to.
+///
+/// Not a fact about the conversation — CACHE-1 forbids the cache from
+/// consulting those — but about what the token ids *mean*: a different model,
+/// runtime, or template makes the same numbers a different prefix, and the KV
+/// rows behind them describe something else.
 struct ServerPromptCacheDomain: Sendable, Equatable {
     let modelID: String
     let sourceSnapshotHash: String?
@@ -17,79 +18,30 @@ struct ServerPromptCacheDomain: Sendable, Equatable {
     let templateSHA256: String
 }
 
-struct CachedAssistantTurn: Sendable, Equatable {
-    let message: GFTokenizer.Message
-    let rawStopReason: StopReason
-}
-
+/// What one served completion left behind.
 struct ServerPromptCacheEntry: Sendable, Equatable {
     let domain: ServerPromptCacheDomain
-    let inputMessages: [GFTokenizer.Message]
-    let tools: [GFTokenizer.FunctionDefinition]
-    /// The thought-channel mode this KV was built with. A later request that
-    /// disagrees is a miss: the cached system turn carries (or lacks) the
-    /// `<|think|>` marker, and the bridge that continues it opens (or closes)
-    /// the channel to match, so the two modes cannot share a prefix.
-    let enableThinking: Bool
-    /// One digest per image already in this KV, in prompt order.
+    /// The tokens the KV holds, in order — prompt and generation both. This is
+    /// the entire state the reuse rule reads.
+    let tokenIDs: [Int32]
+    /// One digest per picture inside `tokenIDs`, in prompt order.
     ///
-    /// The rest of this entry is keyed on the *text* of the conversation, which
-    /// cannot tell two pictures apart: without this, a second request with the
-    /// same words and a different photograph would resume from a prefix that
-    /// holds the first photograph's soft tokens and answer about it.
+    /// Two photographs widen into the *same* soft-token ids, so the token walk
+    /// cannot tell them apart. Until the walk compares media chunks the way the
+    /// reference does (CACHE-4), this is what stops a request from resuming
+    /// from a prefix that holds a different picture's rows and answering about
+    /// it.
     let imageDigests: [String]
-    let assistantTurn: CachedAssistantTurn
-    let kvBackedTokenIDs: [Int32]
-    let uncommittedBoundaryTokenIDs: [Int32]
-    let kvPosition: Int
-}
 
-/// Why a lookup did not resume from the cached prefix.
-///
-/// A miss is normal — the first request of a session has nothing to resume —
-/// but a session that keeps missing is a bug or a client shape this cache has
-/// no bridge for, and the two are indistinguishable from `cached=0` alone.
-/// This is what the completed log line reports so they can be told apart.
-enum ServerPromptCacheMiss: Sendable, Equatable {
-    case noEntry
-    case domain
-    case tools
-    case thinking
-    case images
-    /// The conversation this request continues is not the cached one.
-    case history
-    /// The cached assistant turn is not the one the client sent back.
-    case assistantTurn
-    /// The turns after the cached assistant turn are a shape no bridge covers.
-    /// The payload is their roles, in order, which is what says what to build.
-    case continuationShape(String)
-    /// The bridge was built but did not begin at the KV boundary.
-    case boundary
-    /// The bridge could not be rendered at all.
-    case bridge
-
-    var label: String {
-        switch self {
-        case .noEntry: "no_entry"
-        case .domain: "domain"
-        case .tools: "tools"
-        case .thinking: "thinking"
-        case .images: "images"
-        case .history: "history"
-        case .assistantTurn: "assistant_turn"
-        case .continuationShape(let roles): "continuation_shape[\(roles)]"
-        case .boundary: "boundary"
-        case .bridge: "bridge"
-        }
-    }
+    var kvPosition: Int { tokenIDs.count }
 }
 
 enum ServerPromptCacheMatch: Sendable, Equatable {
-    case miss(ServerPromptCacheMiss)
+    case miss
     /// `vision` is the image side of the tokens still to be prefilled — the
-    /// pictures this turn adds, with offsets into the continuation rather than
-    /// into the whole prompt. nil when the continuation adds no picture, which
-    /// includes every text-only session.
+    /// pictures the served prefix does not already hold, with offsets into the
+    /// remaining slice rather than into the whole prompt. nil when every
+    /// picture is already in the KV, which includes every text-only session.
     case hit(effectivePromptIDs: [Int32],
              cachedPromptTokens: Int,
              vision: VisionPrefillInput? = nil)
@@ -126,264 +78,127 @@ struct ServerPromptCache: Sendable {
         }
     }
 
+    /// Record what the KV now holds.
+    ///
+    /// There is nothing to be careful about beyond knowing the tokens exactly:
+    /// under CACHE-1 a KV that holds text the client will never send back is
+    /// not dangerous, it is merely a short common prefix next time. The stop
+    /// reason, the stop-string filtering, and the shape of the turn — all of
+    /// which the old design screened on here — cannot make the answer wrong.
     mutating func publish(
         domain: ServerPromptCacheDomain,
         request: ValidatedChatRequest,
-        content: String,
-        calls: [ParsedToolCall],
-        result: RawDecodeResult,
-        stopStringFiltered: Bool = false
+        result: RawDecodeResult
     ) {
         guard result.kvPosition == result.kvBackedTokenIDs.count,
-              !result.kvBackedTokenIDs.isEmpty,
-              result.uncommittedBoundaryTokenIDs.count == 1,
-              !stopStringFiltered,
-              result.reason == .endOfTurn
-                || result.reason == .toolCalls
-                || result.reason == .maxTokens else {
+              result.kvPosition > 0 else {
             entry = nil
             return
         }
-        let historicalCalls = calls.map {
-            GFTokenizer.HistoricalToolCall(
-                id: $0.id,
-                name: $0.name,
-                arguments: $0.arguments)
-        }
-        let assistant = GFTokenizer.Message(
-            role: .assistant,
-            content: calls.isEmpty ? content : nil,
-            toolCalls: historicalCalls)
         entry = ServerPromptCacheEntry(
             domain: domain,
-            inputMessages: request.messages,
-            tools: request.tools,
-            enableThinking: request.enableThinking,
-            imageDigests: Self.imageDigests(request),
-            assistantTurn: CachedAssistantTurn(
-                message: assistant,
-                rawStopReason: result.reason),
-            kvBackedTokenIDs: result.kvBackedTokenIDs,
-            uncommittedBoundaryTokenIDs: result.uncommittedBoundaryTokenIDs,
-            kvPosition: result.kvPosition)
+            tokenIDs: result.kvBackedTokenIDs,
+            imageDigests: Self.imageDigests(request))
     }
 
+    /// How much of `renderedPromptIDs` this KV can serve.
+    ///
+    /// - Parameter maximumRewind: how far the KV cursor may be moved back and
+    ///   still describe rows that are all still present (CACHE-2). Under FP16
+    ///   ring storage that is finite; the runner computes it.
     /// - Parameter vision: the image side of the freshly rendered prompt, whose
-    ///   `images` are the preprocessed pictures of the *whole* conversation in
-    ///   order. A continuation takes the trailing ones — the pictures the new
-    ///   turn adds — and rebases them onto the bridge.
+    ///   spans are offsets into the whole prompt.
     func match(
         domain: ServerPromptCacheDomain,
         request: ValidatedChatRequest,
         renderedPromptIDs: [Int32],
-        tokenizer: GFTokenizer,
-        vision: VisionPrefillInput? = nil
+        vision: VisionPrefillInput? = nil,
+        maximumRewind: Int = 0
     ) -> ServerPromptCacheMatch {
+        guard let entry, entry.domain == domain, entry.kvPosition > 0 else {
+            return .miss
+        }
+
+        var reusable = commonPrefixLength(entry.tokenIDs, renderedPromptIDs)
+
+        // CACHE-3: with nothing left to prefill there is no token to draw the
+        // next logits from, so the last one is decoded again (`n_past--`).
+        if reusable == renderedPromptIDs.count { reusable -= 1 }
+
+        // A picture cannot be half served: its soft tokens are scattered in one
+        // go. Cutting back to where it starts keeps everything in front of it.
+        if let straddling = (vision?.spans ?? []).first(where: {
+            $0.tokenOffset < reusable && $0.tokenEnd > reusable
+        }) {
+            reusable = straddling.tokenOffset
+        }
+
+        guard reusable > 0 else { return .miss }
+        // CACHE-2 is bounded by how far back the cursor may go (SPEC §12
+        // DEV-13). Serving the whole entry never moves it and is always fine.
+        guard entry.kvPosition - reusable <= maximumRewind else { return .miss }
+
+        switch servedVision(request: request,
+                            vision: vision,
+                            reusable: reusable,
+                            entry: entry) {
+        case .unusable:
+            return .miss
+        case .allInTheKV:
+            return .hit(effectivePromptIDs: renderedPromptIDs,
+                        cachedPromptTokens: reusable)
+        case .remaining(let input):
+            return .hit(effectivePromptIDs: renderedPromptIDs,
+                        cachedPromptTokens: reusable,
+                        vision: input)
+        }
+    }
+
+    private enum ServedVision {
+        /// The prefix cannot be served: it holds a picture this request does
+        /// not have, or the remainder cannot be described.
+        case unusable
+        /// Every picture is already in the KV — the text-only case too.
+        case allInTheKV
+        /// The pictures the remaining slice adds, offsets already rebased.
+        case remaining(VisionPrefillInput)
+    }
+
+    /// The image side of a hit: what is already in the KV has to be the same
+    /// pictures, and what is not has to be handed on with its offsets rebased
+    /// onto the slice that will actually be prefilled.
+    ///
+    private func servedVision(
+        request: ValidatedChatRequest,
+        vision: VisionPrefillInput?,
+        reusable: Int,
+        entry: ServerPromptCacheEntry
+    ) -> ServedVision {
+        guard let vision, !vision.spans.isEmpty else { return .allInTheKV }
         let digests = Self.imageDigests(request)
-        guard let entry,
-              entry.kvPosition == entry.kvBackedTokenIDs.count,
-              entry.kvPosition > 0,
-              entry.uncommittedBoundaryTokenIDs.count == 1 else {
-            return .miss(.noEntry)
-        }
-        guard entry.domain == domain else { return .miss(.domain) }
-        guard entry.tools == request.tools else { return .miss(.tools) }
-        guard entry.enableThinking == request.enableThinking else { return .miss(.thinking) }
-        // The pictures this KV holds have to be the first pictures of the
-        // conversation being continued, in the same order.
-        guard digests.count >= entry.imageDigests.count,
-              digests.starts(with: entry.imageDigests) else {
-            return .miss(.images)
+
+        // The tokens agree on the served prefix, so both sides hold the same
+        // number of pictures inside it — which makes them the first `n` of each
+        // list, and comparable one to one.
+        let inTheKV = vision.spans.filter { $0.tokenEnd <= reusable }.count
+        guard digests.count >= inTheKV,
+              entry.imageDigests.count >= inTheKV,
+              digests.prefix(inTheKV)
+                .elementsEqual(entry.imageDigests.prefix(inTheKV)) else {
+            return .unusable
         }
 
-        if renderedPromptIDs.count > entry.kvPosition,
-           renderedPromptIDs.prefix(entry.kvPosition)
-            .elementsEqual(entry.kvBackedTokenIDs) {
-            // The rendered prompt already has its placeholders widened, so the
-            // spans are offsets into the whole prompt: only a request whose
-            // pictures all sit inside the served prefix can take this branch.
-            guard (vision?.spans ?? []).allSatisfy({ $0.tokenEnd <= entry.kvPosition }) else {
-                return .miss(.images)
-            }
-            return .hit(
-                effectivePromptIDs: renderedPromptIDs,
-                cachedPromptTokens: entry.kvPosition)
+        let remaining = zip(vision.spans, vision.images).filter { $0.0.tokenOffset >= reusable }
+        guard !remaining.isEmpty else { return .allInTheKV }
+        let rebased = remaining.map { span, _ in
+            VisionImageSpan(imageIndex: span.imageIndex,
+                            tokenOffset: span.tokenOffset - reusable,
+                            tokenCount: span.tokenCount)
         }
-
-        let inputCount = entry.inputMessages.count
-        guard request.messages.count > inputCount + 1,
-              request.messages.prefix(inputCount)
-                .elementsEqual(entry.inputMessages) else {
-            return .miss(.history)
+        guard let input = try? VisionPrefillInput(spans: rebased,
+                                                  images: remaining.map(\.1)) else {
+            return .unusable
         }
-        guard assistantMatches(request.messages[inputCount],
-                               entry.assistantTurn.message) else {
-            return .miss(.assistantTurn)
-        }
-        let continuation = Array(request.messages.dropFirst(inputCount + 1))
-        let shape = continuation.map(\.role.rawValue).joined(separator: ",")
-
-        if entry.assistantTurn.message.toolCalls.isEmpty {
-            return matchTextContinuation(
-                entry: entry,
-                request: request,
-                continuation: continuation,
-                tokenizer: tokenizer,
-                vision: vision,
-                addedImages: digests.count - entry.imageDigests.count,
-                shape: shape)
-        }
-        return matchToolContinuation(
-            entry: entry,
-            request: request,
-            continuation: continuation,
-            tokenizer: tokenizer,
-            vision: vision,
-            addedImages: digests.count - entry.imageDigests.count,
-            shape: shape)
-    }
-
-    private func assistantMatches(
-        _ incoming: GFTokenizer.Message,
-        _ cached: GFTokenizer.Message
-    ) -> Bool {
-        guard incoming.role == .assistant,
-              cached.role == .assistant,
-              incoming.toolCalls == cached.toolCalls,
-              incoming.toolCallID == cached.toolCallID,
-              incoming.name == cached.name else {
-            return false
-        }
-        if !cached.toolCalls.isEmpty {
-            return (incoming.content ?? "").isEmpty
-                && (cached.content ?? "").isEmpty
-        }
-        return incoming.content == cached.content
-    }
-
-    private func matchTextContinuation(
-        entry: ServerPromptCacheEntry,
-        request: ValidatedChatRequest,
-        continuation: [GFTokenizer.Message],
-        tokenizer: GFTokenizer,
-        vision: VisionPrefillInput?,
-        addedImages: Int,
-        shape: String
-    ) -> ServerPromptCacheMatch {
-        guard continuation.count == 1,
-              continuation[0].role == .user,
-              continuation[0].content != nil,
-              continuation[0].toolCalls.isEmpty,
-              continuation[0].toolCallID == nil,
-              entry.assistantTurn.rawStopReason == .endOfTurn
-                || entry.assistantTurn.rawStopReason == .maxTokens else {
-            return .miss(.continuationShape(shape))
-        }
-        // The bodies with their image parts, when the request carried any. The
-        // text projection is what everything else here compares, but the bridge
-        // has to render what the turn actually holds.
-        let turns = request.toolChatMessages
-        guard let last = turns.last, last.role == .user else {
-            return .miss(.continuationShape(shape))
-        }
-        let parts = last.parts
-        guard parts.filter({ $0 == .image }).count == addedImages else {
-            return .miss(.images)
-        }
-        // A rejected continuation (today: literal media markers in the text) is
-        // a cache miss, not an error here. The request still has to go through
-        // the normal encode path, which raises the typed error with the context
-        // the caller needs; failing inside the cache probe would report it as a
-        // caching problem instead.
-        guard var bridge = try? tokenizer.encodeContinuation(
-            parts: parts, enableThinking: entry.enableThinking) else {
-            return .miss(.bridge)
-        }
-        if entry.assistantTurn.rawStopReason == .maxTokens {
-            bridge = entry.uncommittedBoundaryTokenIDs + bridge
-        } else if bridge.first != entry.uncommittedBoundaryTokenIDs.first {
-            return .miss(.boundary)
-        }
-        guard addedImages > 0 else {
-            return .hit(
-                effectivePromptIDs: entry.kvBackedTokenIDs + bridge,
-                cachedPromptTokens: entry.kvPosition)
-        }
-        // Widen this turn's placeholders inside the bridge, so the spans that
-        // come back are offsets into the slice the resumed prefill will run.
-        guard let images = vision?.images, images.count >= addedImages,
-              let ids = try? VisionMediaTokenIDs(tokenizer: tokenizer),
-              let expanded = try? VisionPromptAssembler.makePrefillPrompt(
-                  tokens: bridge,
-                  images: Array(images.suffix(addedImages)),
-                  ids: ids) else {
-            return .miss(.bridge)
-        }
-        return .hit(
-            effectivePromptIDs: entry.kvBackedTokenIDs + expanded.tokens,
-            cachedPromptTokens: entry.kvPosition,
-            vision: expanded.vision)
-    }
-
-    private func matchToolContinuation(
-        entry: ServerPromptCacheEntry,
-        request: ValidatedChatRequest,
-        continuation: [GFTokenizer.Message],
-        tokenizer: GFTokenizer,
-        vision: VisionPrefillInput?,
-        addedImages: Int,
-        shape: String
-    ) -> ServerPromptCacheMatch {
-        let calls = entry.assistantTurn.message.toolCalls
-        // The tool results have to be the ones this call asked for, in order.
-        // What follows them is not this check's business: an agent commonly
-        // appends the next user turn in the same request, and the bridge below
-        // renders whatever is there.
-        guard entry.assistantTurn.rawStopReason == .toolCalls,
-              continuation.count >= calls.count,
-              zip(continuation.prefix(calls.count), calls).allSatisfy({ message, call in
-                  message.role == .tool
-                    && message.toolCallID == call.id
-                    && (message.name == nil || message.name == call.name)
-                    && message.content != nil
-                    && message.toolCalls.isEmpty
-              }),
-              // Anything after them is a fresh turn, never another tool result
-              // for a call this KV does not hold.
-              continuation.dropFirst(calls.count).allSatisfy({ $0.role != .tool }) else {
-            return .miss(.continuationShape(shape))
-        }
-        guard let bridge = try? tokenizer.encodeToolResultContinuation(
-            cachedMessages: entry.inputMessages,
-            assistant: entry.assistantTurn.message,
-            incoming: request.toolChatMessages,
-            tools: request.tools,
-            enableThinking: entry.enableThinking,
-            variant: ServerPromptRenderer.variant) else {
-            return .miss(.bridge)
-        }
-        guard bridge.first == entry.uncommittedBoundaryTokenIDs.first else {
-            return .miss(.boundary)
-        }
-        guard addedImages > 0 else {
-            return .hit(
-                effectivePromptIDs: entry.kvBackedTokenIDs + bridge,
-                cachedPromptTokens: entry.kvPosition)
-        }
-        // The pictures this continuation added sit in the bridge, so widening
-        // them there is what puts their spans on the slice a resumed prefill
-        // runs (13-S3.6 §1).
-        guard let images = vision?.images, images.count >= addedImages,
-              let ids = try? VisionMediaTokenIDs(tokenizer: tokenizer),
-              let expanded = try? VisionPromptAssembler.makePrefillPrompt(
-                  tokens: bridge,
-                  images: Array(images.suffix(addedImages)),
-                  ids: ids) else {
-            return .miss(.bridge)
-        }
-        return .hit(
-            effectivePromptIDs: entry.kvBackedTokenIDs + expanded.tokens,
-            cachedPromptTokens: entry.kvPosition,
-            vision: expanded.vision)
+        return .remaining(input)
     }
 }

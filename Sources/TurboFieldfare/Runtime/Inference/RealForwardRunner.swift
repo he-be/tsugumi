@@ -851,6 +851,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                               handle: try model.startRoutedExpertFetch(plan: plan))
     }
 
+    /// How far `rewind(to:)` may go back from the cursor and still leave the
+    /// rows the kernels read intact (`KVCacheManager.maximumSafeRewind`). 0
+    /// when there is no KV, which is also the only honest answer then.
+    public var maximumSafeRewind: Int { kv?.maximumSafeRewind ?? 0 }
+
     /// Drop every KV row at or after `position` (`docs/mtp/03-DESIGN.md` D4).
     public func rewind(to position: Int) throws {
         try prefillChunkState.requireClean(operation: "rewind")

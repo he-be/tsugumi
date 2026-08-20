@@ -18,7 +18,6 @@ public struct ServerArguments: Equatable, Sendable {
     public let modelID: String
     public let maxContext: Int
     public let queueLimit: Int
-    public let promptCacheMode: ServerPromptCacheMode
     public let expertCacheSlots: Int
     public let expertCachePolicy: RuntimeExpertCachePolicy
     public let prefillPolicy: RuntimePrefillPolicy
@@ -45,8 +44,6 @@ public struct ServerArguments: Equatable, Sendable {
                                  A combination the device cannot keep resident is
                                  rejected at load with the arithmetic.
       --queue-limit <count>      Maximum queued requests (default 4).
-      --prompt-cache-mode <off|single-prefix>
-                                 Prompt KV reuse mode (default single-prefix).
       --expert-cache-slots <n>   Expert-cache slots: 8, 16, 24, or 32 (default 32).
                                  32 is the operating point and the ceiling: on the
                                  default expert path (mmap) a slot is not a private
@@ -143,7 +140,6 @@ public struct ServerArguments: Equatable, Sendable {
         var modelID = "gemma-4-26b-a4b-it"
         var maxContext = 16_384
         var queueLimit = 4
-        var promptCacheMode: ServerPromptCacheMode = .singlePrefix
         var expertCacheSlots = RuntimeConfiguration.production.expertCacheSlots
         var expertCachePolicy = RuntimeExpertCachePolicy.lfu
         var prefillPolicy = RuntimePrefillPolicy.chunked
@@ -189,12 +185,6 @@ public struct ServerArguments: Equatable, Sendable {
                     throw ServerArgumentError.invalid("--queue-limit must be positive")
                 }
                 queueLimit = parsed
-            case "--prompt-cache-mode":
-                guard let parsed = ServerPromptCacheMode(rawValue: value) else {
-                    throw ServerArgumentError.invalid(
-                        "--prompt-cache-mode must be off or single-prefix")
-                }
-                promptCacheMode = parsed
             case "--expert-cache-slots":
                 guard let parsed = Int(value),
                       RuntimeConfiguration.allowedExpertCacheSlots.contains(parsed) else {
@@ -289,7 +279,6 @@ public struct ServerArguments: Equatable, Sendable {
                                modelID: modelID,
                                maxContext: maxContext,
                                queueLimit: queueLimit,
-                               promptCacheMode: promptCacheMode,
                                expertCacheSlots: expertCacheSlots,
                                expertCachePolicy: expertCachePolicy,
                                prefillPolicy: prefillPolicy,

@@ -273,14 +273,6 @@ struct ServerImageRequestTests {
         }
     }
 
-    /// Image requests take part in the prompt cache since S3.6; only the mode
-    /// decides. What keeps two pictures apart is the entry's digests, which
-    /// `ServerPromptCacheTests` covers.
-    @Test func promptCacheParticipationFollowsTheModeAlone() throws {
-        #expect(ServerModelSession.promptCacheParticipates(mode: .singlePrefix))
-        #expect(!ServerModelSession.promptCacheParticipates(mode: .off))
-    }
-
     /// The words of two requests can be identical while the pictures differ,
     /// so the digests are what a resumed prefix is keyed on.
     @Test func imageDigestsDistinguishOtherwiseIdenticalRequests() throws {
@@ -324,7 +316,8 @@ struct ServerImageRequestTests {
             let images = try vision.images.map {
                 try VisionImagePreprocessor.preprocess(data: $0.data, config: config)
             }
-            let text = try tokenizer.applyChatTemplate(multimodal: vision.messages)
+            let text = try tokenizer.applyChatTemplate(multimodal: vision.messages,
+                                                       variant: ServerPromptRenderer.variant)
             return try VisionPromptAssembler.makePrefillPrompt(
                 tokens: tokenizer.encode(text, addBOS: false), images: images, ids: ids)
         }
@@ -341,8 +334,6 @@ struct ServerImageRequestTests {
         cache.publish(
             domain: domain,
             request: first,
-            content: "a blue square",
-            calls: [],
             result: RawDecodeResult(
                 prefillTokens: firstPrompt.tokens.count,
                 cachedPromptTokens: 0,
@@ -371,21 +362,22 @@ struct ServerImageRequestTests {
             domain: domain,
             request: second,
             renderedPromptIDs: secondPrompt.tokens,
-            tokenizer: tokenizer,
-            vision: secondPrompt.vision) else {
+            vision: secondPrompt.vision,
+            maximumRewind: 2048) else {
             Issue.record("expected the second image turn to resume from the first")
             return
         }
         #expect(cached == kvBacked.count)
         #expect(Array(effective.prefix(cached)) == kvBacked)
 
-        // Exactly the picture this turn added, positioned inside the bridge.
+        // Exactly the picture this turn added, positioned inside the slice
+        // that is still to be prefilled.
         let vision = try #require(continuationVision)
         #expect(vision.images.count == 1)
-        let bridgeLength = effective.count - cached
+        let remainingLength = effective.count - cached
         let span = try #require(vision.spans.first)
         #expect(span.tokenOffset >= 0)
-        #expect(span.tokenEnd <= bridgeLength)
+        #expect(span.tokenEnd <= remainingLength)
         #expect(span.tokenCount == vision.images[0].geometry.softTokenCount)
         // The soft tokens sit between the markers the assembler wrote.
         let bridge = Array(effective.dropFirst(cached))
@@ -420,7 +412,8 @@ struct ServerImageRequestTests {
         }
         let prompt = try VisionPromptAssembler.makePrefillPrompt(
             tokens: tokenizer.encode(
-                try tokenizer.applyChatTemplate(multimodal: visionFirst.messages),
+                try tokenizer.applyChatTemplate(multimodal: visionFirst.messages,
+                                                variant: ServerPromptRenderer.variant),
                 addBOS: false),
             images: images,
             ids: ids)
@@ -429,8 +422,6 @@ struct ServerImageRequestTests {
         cache.publish(
             domain: domain,
             request: first,
-            content: "a blue square",
-            calls: [],
             result: RawDecodeResult(
                 prefillTokens: prompt.tokens.count,
                 cachedPromptTokens: 0,
@@ -453,11 +444,27 @@ struct ServerImageRequestTests {
               {"role":"assistant","content":"a blue square"},
               {"role":"user","content":"and now?"}]}
             """)
+        // Two photographs widen into the *same* soft-token ids, so the token
+        // walk agrees on this whole first turn. The digests are the only thing
+        // that can refuse it.
+        let otherVision = try #require(other.vision)
+        let otherImages = try otherVision.images.map {
+            try VisionImagePreprocessor.preprocess(data: $0.data, config: config)
+        }
+        let otherPrompt = try VisionPromptAssembler.makePrefillPrompt(
+            tokens: tokenizer.encode(
+                try tokenizer.applyChatTemplate(multimodal: otherVision.messages,
+                                                variant: ServerPromptRenderer.variant),
+                addBOS: false),
+            images: otherImages,
+            ids: ids)
+        #expect(commonPrefixLength(kvBacked, otherPrompt.tokens) > prompt.tokens.count / 2,
+                "the two prompts have to agree on tokens for this test to mean anything")
         #expect(cache.match(domain: domain,
                             request: other,
-                            renderedPromptIDs: [],
-                            tokenizer: tokenizer,
-                            vision: nil) == .miss(.images))
+                            renderedPromptIDs: otherPrompt.tokens,
+                            vision: otherPrompt.vision,
+                            maximumRewind: 2048) == .miss)
     }
 
     // MARK: - Over HTTP

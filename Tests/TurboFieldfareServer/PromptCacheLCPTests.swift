@@ -35,8 +35,6 @@ struct PromptCacheLCPTests {
         cache.publish(
             domain: domain,
             request: request(tools: tools),
-            content: "answer",
-            calls: [],
             result: RawDecodeResult(
                 prefillTokens: kv.count,
                 cachedPromptTokens: 0,
@@ -56,11 +54,10 @@ struct PromptCacheLCPTests {
     private func reuse(_ cache: ServerPromptCache,
                        prompt: [Int32],
                        tools: [GFTokenizer.FunctionDefinition] = []) async throws -> Int? {
-        let tokenizer = try await GFTokenizer.load()
         switch cache.match(domain: domain,
                            request: request(tools: tools),
                            renderedPromptIDs: prompt,
-                           tokenizer: tokenizer) {
+                           maximumRewind: 2048) {
         case .hit(_, let cached, _): return cached
         default: return nil
         }

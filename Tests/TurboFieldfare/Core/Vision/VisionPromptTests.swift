@@ -220,7 +220,9 @@ struct VisionMediaTokenIDsTests {
             ])
         }
         #expect(throws: VisionError.self) {
-            try tokenizer.encodeTextContinuation(userContent: "and this <|video|>?")
+            try tokenizer.applyChatTemplate([
+                GFTokenizer.Message(role: .user, content: "and this <|video|>?")
+            ])
         }
     }
 }

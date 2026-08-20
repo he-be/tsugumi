@@ -57,6 +57,7 @@ public final class KVCacheManager {
     private let strides:  [Int]         // bytes per token, per layer
     private let kinds:    [LayerKind]
     private let capacityTokens: [Int]
+    private let slidingWindow: Int
 
     public private(set) var position: Int = 0
 
@@ -82,6 +83,7 @@ public final class KVCacheManager {
         let swaStride  = config.numKVHeads     * config.headDim     * Self.fp16Size
         let fullStride = config.numFullKVHeads * config.fullHeadDim  * Self.fp16Size
         let window = slidingWindow ?? config.slidingWindow
+        self.slidingWindow = window
         let swaCapacity = min(maxContext,
                               max(1, fp16RingCapacityOverride
                                   ?? (window + maxPrefillChunkTokens)))
@@ -240,6 +242,25 @@ public final class KVCacheManager {
     ///
     /// The caller owns the invariant that the discarded rows were speculative:
     /// this cannot tell a rejected draft from a committed token.
+    /// How far the cursor may be moved back and still describe rows that are
+    /// all still there.
+    ///
+    /// Linear storage keeps every row it ever wrote, so the answer is the whole
+    /// cursor. A ring does not: an SWA layer reuses a physical slot every
+    /// `capacity` positions, so writing `[N, position)` overwrote whatever held
+    /// `[N - capacity, position - capacity)`. A rewind to `N` is safe exactly
+    /// while the span the kernels still read — `[N - slidingWindow, N)`, the
+    /// mask in `prefill.metal:1607` — stays clear of that:
+    /// `position - N <= capacity - slidingWindow`.
+    public var maximumSafeRewind: Int {
+        guard fp16RingEnabled else { return position }
+        var slack = position
+        for layer in capacityTokens.indices where kinds[layer] == .swa {
+            slack = min(slack, max(0, capacityTokens[layer] - slidingWindow))
+        }
+        return slack
+    }
+
     public func rewind(to position: Int) {
         precondition(position >= 0, "rewind target must be non-negative")
         precondition(position <= self.position,

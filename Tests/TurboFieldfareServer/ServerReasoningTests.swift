@@ -207,15 +207,6 @@ struct ServerReasoningRequestTests {
         #expect(asMessages == asParts)
     }
 
-    /// Reasoning requests reuse their prefix like any other request; only the
-    /// image exclusion and the mode remain (S3.5). Whether two *different*
-    /// modes may share a prefix is the cache entry's question, not this one
-    /// (`ServerPromptCacheTests`).
-    @Test func promptCacheParticipationDoesNotDependOnReasoning() throws {
-        #expect(ServerModelSession.promptCacheParticipates(mode: .singlePrefix))
-        #expect(!ServerModelSession.promptCacheParticipates(mode: .off))
-    }
-
     @Test func decoderSurfacesTheThoughtChannelAsReasoning() async throws {
         let tokenizer = try await GFTokenizer.load()
         let decoder = StructuredAssistantDecoder(tokenizer: tokenizer,

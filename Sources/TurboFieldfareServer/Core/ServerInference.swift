@@ -43,26 +43,19 @@ public struct ServerCompletion: Equatable, Sendable {
     public let usage: OpenAIUsage
     /// Non-nil only when this request actually ran the speculative loop.
     public let speculative: ServerSpeculativeSummary?
-    /// Why this request prefilled from scratch, when it did. `cached=0` alone
-    /// cannot distinguish "first request of a session" from "this client's
-    /// shape has no bridge", and a session that silently re-prefills every turn
-    /// is the difference between usable and not.
-    public let promptCacheMiss: String?
 
     public init(content: String,
                 toolCalls: [ParsedToolCall],
                 finishReason: String,
                 usage: OpenAIUsage,
                 speculative: ServerSpeculativeSummary? = nil,
-                reasoningContent: String = "",
-                promptCacheMiss: String? = nil) {
+                reasoningContent: String = "") {
         self.content = content
         self.reasoningContent = reasoningContent
         self.toolCalls = toolCalls
         self.finishReason = finishReason
         self.usage = usage
         self.speculative = speculative
-        self.promptCacheMiss = promptCacheMiss
     }
 }
 
@@ -435,14 +428,12 @@ public actor ServerModelSession: ServerInferenceBackend {
     private let speculative: SpeculativeScratch?
     private let prefillConfig: PrefillRuntimeConfig
     private let maxContext: Int
-    private let promptCacheMode: ServerPromptCacheMode
     private let promptCacheDomain: ServerPromptCacheDomain
     private let imagePolicy: ServerImagePolicy
     private var promptCache = ServerPromptCache()
 
     public static func load(modelDirectory: URL,
                             maxContext: Int,
-                            promptCacheMode: ServerPromptCacheMode = .singlePrefix,
                             runtimeConfiguration: RuntimeConfiguration,
                             integrityPolicy: ModelIntegrityPolicy = .fullSha256,
                             draftBlockSize: Int = 0,
@@ -523,7 +514,6 @@ public actor ServerModelSession: ServerInferenceBackend {
                                   speculative: speculative,
                                   prefillConfig: runtime.prefillConfig,
                                   maxContext: maxContext,
-                                  promptCacheMode: promptCacheMode,
                                   promptCacheDomain: promptCacheDomain,
                                   imagePolicy: imagePolicy)
     }
@@ -536,7 +526,6 @@ public actor ServerModelSession: ServerInferenceBackend {
                  speculative: SpeculativeScratch?,
                  prefillConfig: PrefillRuntimeConfig,
                  maxContext: Int,
-                 promptCacheMode: ServerPromptCacheMode,
                  promptCacheDomain: ServerPromptCacheDomain,
                  imagePolicy: ServerImagePolicy) {
         self.context = context
@@ -547,7 +536,6 @@ public actor ServerModelSession: ServerInferenceBackend {
         self.speculative = speculative
         self.prefillConfig = prefillConfig
         self.maxContext = maxContext
-        self.promptCacheMode = promptCacheMode
         self.promptCacheDomain = promptCacheDomain
         self.imagePolicy = imagePolicy
     }
@@ -560,29 +548,11 @@ public actor ServerModelSession: ServerInferenceBackend {
         return try await generate(prepared, onEvent: onEvent)
     }
 
-    /// Whether the prompt cache may read from or write to this generation.
-    ///
-    /// A reasoning request participates like any other. It was excluded when
-    /// reasoning shipped (S1), on the argument that the replayed KV holds the
-    /// thought tokens a fresh render would not — but that is what this cache
-    /// has always done: even with reasoning off, the cached history carries the
-    /// generation prompt's empty thought channel that a fresh render omits.
-    /// The KV *is* the session's history here, and holding reasoning to a
-    /// stricter standard only bought a full re-prefill per turn (S3.5).
-    /// What the modes may not do is share a prefix, which the entry's
-    /// `enableThinking` prevents.
-    ///
-    /// An image request participates too, since S3.6. It was excluded because
-    /// the cache is keyed on the *text* of the messages, which cannot tell two
-    /// pictures apart, and because a served prefix shifts every image span
-    /// (PLAN_VISION §4-6). Both are answered rather than avoided now: the entry
-    /// carries a digest per image, and the spans a continuation reports are
-    /// offsets into the continuation itself, which is the slice the resumed
-    /// prefill runs. Without this, one picture in a conversation cost that
-    /// conversation its prefix reuse for every turn that followed.
-    static func promptCacheParticipates(mode: ServerPromptCacheMode) -> Bool {
-        mode == .singlePrefix
-    }
+    /// SPEC CACHE-2: how far the KV cursor may be moved back to serve a
+    /// prefix shorter than this KV. Under FP16 ring storage that is finite,
+    /// and the arithmetic belongs to the KV, not to this file.
+    private var maximumRewind: Int { runner.maximumSafeRewind }
+
 
     public func prepare(_ request: ValidatedChatRequest) async throws -> ServerPreparedRequest {
         let rendered = try renderPrompt(request)
@@ -624,29 +594,38 @@ public actor ServerModelSession: ServerInferenceBackend {
         // the whole prompt's; on a hit the cache rebases it onto the tokens the
         // continuation adds, and nil means the pictures are already in the KV.
         var prefillVision = vision
-        var cacheMiss: String?
-        if Self.promptCacheParticipates(mode: promptCacheMode), request.cachePrompt {
-            switch promptCache.match(
-                domain: promptCacheDomain,
-                request: request,
-                renderedPromptIDs: promptIDs,
-                tokenizer: tokenizer,
-                vision: vision) {
-            case .miss(let reason):
-                cacheMiss = reason.label
-                promptCache.invalidate()
-                effectivePromptIDs = promptIDs
-                completionStart = .reset
-            case .hit(let effective, let cached, let continuationVision):
-                effectivePromptIDs = effective
-                completionStart = .resume(cachedPromptTokens: cached)
-                prefillVision = continuationVision
-            }
-        } else {
-            cacheMiss = "disabled"
+        // CACHE-5: a request that opted out neither reads nor writes.
+        let match = request.cachePrompt
+            ? promptCache.match(domain: promptCacheDomain,
+                                request: request,
+                                renderedPromptIDs: promptIDs,
+                                vision: vision,
+                                maximumRewind: maximumRewind)
+            : .miss
+        switch match {
+        case .miss:
             promptCache.invalidate()
             effectivePromptIDs = promptIDs
             completionStart = .reset
+        case .hit(let effective, let cached, let continuationVision):
+            // CACHE-2/CACHE-3: the served prefix can be shorter than what the
+            // KV holds. The rows past it belong to a continuation this request
+            // did not send, and attention reads `[0, cursor]` — so the cursor
+            // is what has to move, before the runner is asked to continue.
+            if cached < runner.continuationPosition {
+                do {
+                    try runner.rewind(to: cached)
+                } catch {
+                    promptCache.invalidate()
+                    runner.reset()
+                    effectivePromptIDs = promptIDs
+                    completionStart = .reset
+                    break
+                }
+            }
+            effectivePromptIDs = effective
+            completionStart = .resume(cachedPromptTokens: cached)
+            prefillVision = continuationVision
         }
         guard effectivePromptIDs.count < maxContext else {
             throw ServerRequestError.invalid(
@@ -843,14 +822,10 @@ public actor ServerModelSession: ServerInferenceBackend {
         } else {
             reason = "stop"
         }
-        if Self.promptCacheParticipates(mode: promptCacheMode), request.cachePrompt {
-            promptCache.publish(
-                domain: promptCacheDomain,
-                request: request,
-                content: content,
-                calls: calls,
-                result: result,
-                stopStringFiltered: stopMatcher.isStopped)
+        if request.cachePrompt {
+            promptCache.publish(domain: promptCacheDomain,
+                                request: request,
+                                result: result)
         }
         completed = true
         return ServerCompletion(
@@ -862,8 +837,7 @@ public actor ServerModelSession: ServerInferenceBackend {
                                totalTokens: result.prefillTokens + result.newTokens,
                                cachedTokens: result.cachedPromptTokens),
             speculative: speculativeSummary,
-            reasoningContent: reasoningContent,
-            promptCacheMiss: cacheMiss)
+            reasoningContent: reasoningContent)
     }
 
     private func renderPrompt(

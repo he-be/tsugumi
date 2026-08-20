@@ -571,7 +571,6 @@ struct ServerArgumentTests {
         #expect(arguments.port == 8080)
         #expect(arguments.maxContext == 16_384)
         #expect(arguments.queueLimit == 4)
-        #expect(arguments.promptCacheMode == .singlePrefix)
         #expect(arguments.expertCacheSlots == 32)
         #expect(arguments.expertCachePolicy == .lfu)
         #expect(arguments.prefillPolicy == .chunked)
@@ -640,21 +639,13 @@ struct ServerArgumentTests {
         #expect(plain.draftBlockSize == 0)
     }
 
-    @Test func parsesSinglePrefixModeAndRejectsUnknownMode() throws {
-        let arguments = try ServerArguments.parse([
-            "--model", "model.gturbo",
-            "--prompt-cache-mode", "single-prefix",
-        ])
-        #expect(arguments.promptCacheMode == .singlePrefix)
-        let rollback = try ServerArguments.parse([
-            "--model", "model.gturbo",
-            "--prompt-cache-mode", "off",
-        ])
-        #expect(rollback.promptCacheMode == .off)
+    /// FLAG-4: the process flag is gone. Reuse is decided per request
+    /// (`cache_prompt`, CACHE-5), so an unknown flag is an unknown flag.
+    @Test func FLAG_4_prompt_cache_mode_is_no_longer_a_flag() throws {
         #expect(throws: ServerArgumentError.self) {
             try ServerArguments.parse([
                 "--model", "model.gturbo",
-                "--prompt-cache-mode", "many",
+                "--prompt-cache-mode", "single-prefix",
             ])
         }
     }

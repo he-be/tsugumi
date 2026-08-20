@@ -32,9 +32,6 @@ enum ServerLog {
             + "cached=\(usage.promptTokensDetails.cachedTokens) "
             + "completion=\(usage.completionTokens) "
             + "finish=\(completion.finishReason)"
-        if let miss = completion.promptCacheMiss {
-            line += " cache_miss=\(miss)"
-        }
         if !completion.reasoningContent.isEmpty {
             line += " reasoning=\(completion.reasoningContent.utf8.count)B"
         }
