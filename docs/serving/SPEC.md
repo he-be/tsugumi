@@ -44,6 +44,8 @@
 | LIF-1 | プロセスは**モデルのロード前にポートを開く**。 |
 | LIF-2 | ロード完了まで、全エンドポイントは **503** + `unavailable_error` (§10) を返す。`/health` の本文は `{"error":{"message":"Loading model","type":"unavailable_error","param":null,"code":"model_loading"}}`。クライアントは「接続拒否」と「ロード中」を区別できる。 |
 | LIF-3 | ロード完了後、`/health` は `200 {"status":"ok"}`。 |
+| LIF-6 | **ロード中の 503 は経路表より手前で判定する。**未知パスもロード中は 404 ではなく 503 を返す (参照実装 `server-http.cpp:255` のミドルウェアと同じ位置)。 |
+| LIF-7 | **ロードに失敗したらプロセスは終了する** (stderr に理由、`exit 1`)。ポートは既に開いているので、クライアントから見ると 503 `model_loading` のあと接続断になる。503 を返し続けて生き残らない — 単一モデルのサーバーにできることが無いため。 |
 | LIF-4 | 生成スロットが埋まり待ち行列 (`--queue-limit`) も満杯のときは 503 + `unavailable_error`。 |
 | LIF-5 | SIGINT / SIGTERM で終了する。進行中の SSE は切断してよい。二度目のシグナルで即死。 |
 
@@ -51,10 +53,11 @@
 
 | ID | エンドポイント | 規範 | 段 |
 | --- | --- | --- | --- |
-| EP-1 | `GET /health`, `GET /v1/health` (別名) | §2 のとおり。API キー不要 | 実装済 (別名と 503 は未) |
+| EP-1 | `GET /health`, `GET /v1/health` (別名) | §2 のとおり。API キー不要 | 実装済 |
 | EP-2 | `GET /v1/models` | OpenAI 形。1 モデルを返す | 実装済 |
+| EP-8 | `/v1` を外した別名: `GET /models`、`POST /chat/completions` | 参照実装が同じものを両方の綴りで出しているため合わせる。中身は EP-2 / EP-3 と同一 | P3 |
 | EP-3 | `POST /v1/chat/completions` | §4〜§9 | 実装済 (乖離多数 — [CONFORMANCE §2](CONFORMANCE.md)) |
-| EP-4 | `GET /props` | `default_generation_settings` (§4 の既定値の実効値)、`total_slots`、`model_path`、`chat_template`、`modalities` (`{"vision": true}`)、`build_info`、実効 `n_ctx`。クライアントの能力判定はここを見る | P3 |
+| EP-4 | `GET /props` | `default_generation_settings` (§4 の既定値の実効値)、`total_slots`、`model_path`、`chat_template`、`modalities` (`{"vision": true}`)、`build_info`、実効 `n_ctx`。クライアントの能力判定はここを見る。`build_info` はビルドを一意に指す文字列で、RSP-5 の `system_fingerprint` と**同じ値**を使う | P3 (`build_info` の中身は P5) |
 | EP-5 | `POST /tokenize`, `/detokenize`, `/apply-template` | 参照実装と同形。トークン数の事前計算用 | P5 |
 | EP-6 | `GET /slots`, `GET /metrics` | 参照実装と同形・同じく起動フラグでゲート。runbook の「詰まってないか」を stderr で見るのをやめる | P5 |
 | EP-7 | **採らない既知パス** (§12 DEV-7) は **501** + `not_supported_error` を返す。未知パスだけが 404 | P3 |
@@ -173,7 +176,7 @@
 | ID | 規範 |
 | --- | --- |
 | ERR-1 | 封筒は `{"error":{"message","type","param","code"}}`。`code` は**文字列または null** (OpenAI 形)。参照実装は `code` に HTTP 番号を入れるが、`/v1/*` のワイヤ形式は OpenAI が上位規範なので合わせない (§12 DEV-1)。 |
-| ERR-2 | `type` ↔ HTTP: `invalid_request_error` 400 / `not_found_error` 404 / `not_supported_error` **501** / `unavailable_error` **503** / `exceed_context_size_error` 400 / `server_error` 500 (参照実装 `server-common.cpp:25-54` と同じ対応)。 |
+| ERR-2 | `type` ↔ HTTP: `invalid_request_error` 400 / `not_found_error` 404 / `not_supported_error` **501** / `unavailable_error` **503** / `exceed_context_size_error` 400 / `server_error` 500 (参照実装 `server-common.cpp:25-54` と同じ対応)。**405 と 415 も `invalid_request_error`** とし、`code` を `method_not_allowed` / `unsupported_media_type` で区別する (OpenAI もこの 2 つに専用の type を持たない)。**413 は使わない** (DEV-11) — 本文超過は 400。 |
 | ERR-3 | JSON デコード失敗の 400 は、**どのフィールドが**問題かを `message` と `param` に含める。型不一致に「malformed JSON request」を使わない (旧 16 §1-a の `seed: -1` の欠陥)。 |
 | ERR-4 | プロンプトがコンテキストに入らないときは `exceed_context_size_error`。`message` にプロンプトのトークン数と実効 `n_ctx` を入れる。 |
 
