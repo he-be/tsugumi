@@ -376,55 +376,19 @@ public enum ChatMessageValidator {
             throw invalid(OpenAIToolName.validationMessage(for: name),
                           "tools", "invalid_tool_name")
         }
-        guard tool.function.parameters.objectValue != nil else {
-            throw invalid("tool parameters must be an object schema",
-                          "tools", "invalid_tool_schema")
-        }
-        try validateSchemaKeys(tool.function.parameters)
-        // GEN-2: the schema's *content* is never a refusal. Everything the
-        // declaration cannot render comes back simplified, with a note.
+        // GEN-2: the schema's *content* is never a refusal — not its keywords,
+        // not its parameter names, not its numbers. Everything the declaration
+        // cannot render comes back simplified, with a note (DEV-16). The two
+        // entry checks that used to stand here (`validateSchemaKeys` and the
+        // `jinjaSendableValue` guard) are what that line abolishes; the drops
+        // that replace them are inside `GemmaToolSchema`.
         let adapted = GemmaToolSchema.adapted(tool.function.parameters, toolName: name)
-        guard (try? adapted.schema.jinjaSendableValue()) != nil else {
-            throw invalid("tool schema contains a number that cannot be represented exactly",
-                          "tools", "invalid_tool_schema")
-        }
         return ValidatedTool(
             definition: GFTokenizer.FunctionDefinition(
                 name: name,
                 description: tool.function.description ?? "",
                 parameters: adapted.schema),
             simplifications: adapted.simplifications)
-    }
-
-    private static func validateSchemaKeys(_ schema: JSONValue) throws {
-        switch schema {
-        case .object(let object):
-            for (schemaKey, value) in object {
-                if schemaKey == "properties" {
-                    guard case .object(let definitions) = value else {
-                        throw invalid("tool schema properties must be an object",
-                                      "tools", "invalid_tool_schema")
-                    }
-                    for (key, definition) in definitions {
-                        guard GemmaToolCallParser.isRepresentableObjectKey(key) else {
-                            throw invalid(
-                                "tool parameter names may contain only letters, numbers, _, -, ., and $",
-                                "tools",
-                                "invalid_tool_schema")
-                        }
-                        try validateSchemaKeys(definition)
-                    }
-                } else {
-                    try validateSchemaKeys(value)
-                }
-            }
-        case .array(let values):
-            for value in values {
-                try validateSchemaKeys(value)
-            }
-        default:
-            break
-        }
     }
 
     struct ValidatedMessages {
