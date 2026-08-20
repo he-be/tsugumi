@@ -1,0 +1,76 @@
+=== warmup slots=16 ===
+=== sweep slots=16 ===
+round 1  pread  io   20.70 ms/tok  tok/s  22.061  prefill  1.378s  peak  2.92GB  miss 17946/61200  out 40f67036aa88
+round 1  mmap   io    9.10 ms/tok  tok/s  28.635  prefill  2.411s  peak  1.30GB  miss 17946/61200  out 40f67036aa88
+round 1  mmap   io    8.53 ms/tok  tok/s  29.333  prefill  1.840s  peak  1.30GB  miss 17946/61200  out 40f67036aa88
+round 1  pread  io   18.30 ms/tok  tok/s  23.455  prefill  1.123s  peak  2.89GB  miss 17946/61200  out 40f67036aa88
+round 2  pread  io   19.11 ms/tok  tok/s  22.923  prefill  1.143s  peak  2.88GB  miss 17946/61200  out 40f67036aa88
+round 2  mmap   io    9.19 ms/tok  tok/s  28.348  prefill  1.990s  peak  1.29GB  miss 17946/61200  out 40f67036aa88
+round 2  mmap   io    8.42 ms/tok  tok/s  29.057  prefill  1.856s  peak  1.31GB  miss 17946/61200  out 40f67036aa88
+round 2  pread  io   18.04 ms/tok  tok/s  23.795  prefill  1.125s  peak  2.88GB  miss 17946/61200  out 40f67036aa88
+
+== バイトの検定 (temp 0 なら両腕で同一のはず、46 §5a)
+   pread ミス [17946]
+   mmap  ミス [17946]
+   ミス数は固定 ⇒ 動いたのは費用だけ
+   生成文の sha256 (先頭 12): ['40f67036aa88']
+   両腕で同一 ⇒ 48 §9 の受け入れ (バイト一致) を満たす
+
+腕         n   io ms/tok    GB/s    tok/s  prefill s   ttft s  peak GB
+pread     4       18.70   12.64   23.189      1.134    1.134     2.88
+mmap      4        8.81   26.84   28.846      1.923    1.923     1.30
+
+== 1 歩の壁時計 (P-6 が問うているもの)
+   io_ms          18.705 ms/tok ->    8.815 ms/tok  (-9.890, x0.471)  mmap の勝ち
+   tok_s          23.189 tok/s ->   28.846 tok/s  (+5.657, x1.244)  mmap の勝ち
+
+== 占有 (50 §7 で D に残っている根拠)
+   peak_gb         2.885 GB ->    1.300 GB  (-1.585, x0.451)  mmap の勝ち
+   rss_gb          1.855 GB ->    0.370 GB  (-1.485, x0.199)  mmap の勝ち
+
+== プロンプト prefill (冷たい側。ここは mmap が払う側になりうる)
+   prefill_s       1.134 s ->    1.923 s  (+0.789, x1.696)  mmap の負け
+   ttft_s          1.134 s ->    1.923 s  (+0.789, x1.696)  mmap の負け
+
+== residency set の更新 (49 §3 の prep が production でいくらか)
+   14.30 ms/tok (sync 6808 回。prefill を含む)
+
+   一次ログ: bench/mtp52/mmap_ab_256_math_slots16.log
+=== warmup slots=64 ===
+=== sweep slots=64 ===
+round 1  pread  io    9.94 ms/tok  tok/s  25.772  prefill  1.353s  peak  7.68GB  miss 2403/61200  out 40f67036aa88
+round 1  mmap   io    5.90 ms/tok  tok/s  31.239  prefill  2.436s  peak  1.29GB  miss 2403/61200  out 40f67036aa88
+round 1  mmap   io    4.45 ms/tok  tok/s  33.277  prefill  1.479s  peak  1.30GB  miss 2403/61200  out 40f67036aa88
+round 1  pread  io   10.54 ms/tok  tok/s  25.090  prefill  1.394s  peak  7.72GB  miss 2403/61200  out 40f67036aa88
+round 2  pread  io    9.29 ms/tok  tok/s  26.601  prefill  1.384s  peak  7.73GB  miss 2403/61200  out 40f67036aa88
+round 2  mmap   io    6.39 ms/tok  tok/s  31.132  prefill  2.477s  peak  1.30GB  miss 2403/61200  out 40f67036aa88
+round 2  mmap   io    4.44 ms/tok  tok/s  33.490  prefill  1.563s  peak  1.30GB  miss 2403/61200  out 40f67036aa88
+round 2  pread  io   11.16 ms/tok  tok/s  24.165  prefill  1.497s  peak  7.72GB  miss 2403/61200  out 40f67036aa88
+
+== バイトの検定 (temp 0 なら両腕で同一のはず、46 §5a)
+   pread ミス [2403]
+   mmap  ミス [2403]
+   ミス数は固定 ⇒ 動いたのは費用だけ
+   生成文の sha256 (先頭 12): ['40f67036aa88']
+   両腕で同一 ⇒ 48 §9 の受け入れ (バイト一致) を満たす
+
+腕         n   io ms/tok    GB/s    tok/s  prefill s   ttft s  peak GB
+pread     4       10.24    3.09   25.431      1.389    1.389     7.72
+mmap      4        5.18    6.24   32.258      1.999    1.999     1.30
+
+== 1 歩の壁時計 (P-6 が問うているもの)
+   io_ms          10.240 ms/tok ->    5.175 ms/tok  (-5.065, x0.505)  mmap の勝ち
+   tok_s          25.431 tok/s ->   32.258 tok/s  (+6.827, x1.268)  mmap の勝ち
+
+== 占有 (50 §7 で D に残っている根拠)
+   peak_gb         7.720 GB ->    1.300 GB  (-6.420, x0.168)  mmap の勝ち
+   rss_gb          6.060 GB ->    0.375 GB  (-5.685, x0.062)  mmap の勝ち
+
+== プロンプト prefill (冷たい側。ここは mmap が払う側になりうる)
+   prefill_s       1.389 s ->    1.999 s  (+0.611, x1.440)  mmap の負け
+   ttft_s          1.389 s ->    1.999 s  (+0.611, x1.440)  mmap の負け
+
+== residency set の更新 (49 §3 の prep が production でいくらか)
+   10.81 ms/tok (sync 2054 回。prefill を含む)
+
+   一次ログ: bench/mtp52/mmap_ab_256_math_slots64.log

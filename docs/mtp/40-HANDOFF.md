@@ -1,6 +1,6 @@
 # 40. 引き継ぎ — MTP スレッドの再開入口
 
-最終更新: 2026-08-20。ブランチ `macos15-support`、最新は **51** (D の P-6 = 実装して実測)。
+最終更新: 2026-08-20。ブランチ `macos15-support`、最新は **52** (D の prefill の負けを潰した)。
 
 **この文書は MTP スレッドを再開するための唯一の入口である。**
 ただし**索引から導けるものは持たない** — 各文書の要約は [README.md](README.md)、
@@ -25,44 +25,48 @@ MTP の続きを進めて。
 
 | | |
 | --- | --- |
-| 最新 | **51** (D の P-6。**実装して測ったら運用点で tok/s +18.0% / 占有 −3.21 GB、代わりに ttft ×1.52**。**50 §4 の「約 2%」は外れていた**) |
-| 製品に入った変更 | **45 の `sym`** と、**51 の D の試作 (既定 off。`TF_EXPERT_MMAP=1` でだけ入る)**。**出力はバイト一致なので過去の測定値は生きるが、速度の数字は 45 以降 8.8% 速い側で取られる** |
+| 最新 | **52** (**51 の ttft の負けは消えた**。prompt prefill は両腕とも `F_RDADVISE` を出しておらず、pread だけが 7.58 並列で深度を代替していた。advise を足すと運用点で **tok/s ×1.331 / ttft ×0.77 / peak −3.20 GB** と 3 軸とも勝つ) |
+| 製品に入った変更 | **45 の `sym`**、**51 の D の試作 (既定 off。`TF_EXPERT_MMAP=1`)**、**52 の advise (既定 off。`TF_EXPERT_MMAP_ADVISE=1`。両腕に出る)**。**出力はバイト一致なので過去の測定値は生きるが、速度の数字は 45 以降 8.8% 速い側で取られる** |
 | 開いている W の枝 | 44 §7 の「`head` と dense 射影の `sym9`」1 枚 (46 §6) |
 | 開いている GPU の枝 | 41 §5 の dense 射影 (`attn` 11.0 ms/ブロックの 76% が qkv/oproj/post)。**見積もり未了** |
 | N4/N5/N6 | 37 §3 のまま |
 
-### 次の 1 手 — **D の試作は動いて速い。残っているのは ttft と、既定にするかの判断**
+### 次の 1 手 — **3 軸とも勝った。残っているのは既定にするかの判断**
 
-**P-6 は実装して測った (51)。**ユーザーの決定 (50 §7 の「占有の札として進める」)
-に従って `Sources/` に入れた試作で、**既定は今の `pread` のまま**である
-(`TF_EXPERT_MMAP=1` でだけ入る)。運用点 (math / 256 tok / 32 スロット / temp 0)、
-ABBA 片側 n=6、生成文はバイト一致:
+**52 で ttft の負けは消えた。**51 §5 が「帰属していない」と置いた prompt prefill の
+×1.52 は、(a) ABBA の汚染 (約 0.14) と (b) **キュー深度**だった。prompt prefill は
+**両腕とも `F_RDADVISE` を出しておらず** (advise の呼びは decode 経路の
+`RealForwardRunner.swift:3127` だけ)、pread はミスを `concurrentPerform` で
+**7.58 本同時**に投げることで深度を代替していた。mmap ではそれが
+`requestResidency()` 1 本に潰れる。**明示的に先読みを頼むと消えた** (52 §3/§4)。
 
-| | pread | mmap | |
-| --- | ---: | ---: | --- |
-| **tok/s** | 25.63 | **30.26** | **+18.0%** (12 run の生値に重なり無し) |
-| `io` | 14.28 ms/tok | **7.26** | ×0.51 |
-| peak / rss | 4.53 / 3.30 GB | **1.31 / 0.37** | **−3.21 GB** (48 §8 の予告どおり) |
-| **prefill = ttft** | 1.19 s | **1.81 s** | **×1.52 — ここが負け** |
+運用点 (math / 256 tok / 32 スロット / temp 0)、ブロック ABBA、定常 n=10、
+**生成文は 4 腕ともバイト一致**:
 
-**50 §4 の「D が消せるのは壁時計の約 2%」は外れていた** (実測 7.02 ms/tok)。
-外れているのは `f` (キャッシュ由来の割合) のほうで、**運用点はあの推定より
-ずっと暖かい** (51 §4)。
+| | prefill io | ttft | tok/s | peak |
+| --- | ---: | ---: | ---: | ---: |
+| pread (今の製品) | 0.876 s | 1.236 s | 26.03 | 4.50 GB |
+| pread + advise | 0.901 | 1.253 | 25.63 | 4.50 |
+| mmap (51) | 1.158 | 1.617 | 31.65 | **1.30** |
+| **mmap + advise** | **0.537** | **0.960** | **34.13** | **1.30** |
 
-**残っている 3 つ、優先順**:
+**advise は `pread` には効かない** (×1.03、ノイズ内) ので取り分は D 固有である
+(52 §5)。**揃えた上で `pread+adv` → `mmap+advise` は ×1.331 / ×0.77 / −3.20 GB。**
 
-1. **ttft の負けを潰す** (51 §5) — prefill は 1963 エキスパートをヒット 0% で
-   一気に読む区間で、そこだけ 8 並列 `pread` に負ける。**帰属していない**
-   (「set 更新の直列化」は 51 §5 で落ちた — ロックの有無で prefill は
-   1.798 対 1.805 s と動かない)。手前の手は 3 つ: 層ごとに 1 回にまとめる /
-   `requestResidency()` を待たずに投げる (`useResource` が残っているので
-   正しさは崩れない) / **prefill だけ `pread` に戻す。**
-2. **取り分の内訳を分ける** (51 §4a) — 「コピーが消えた」と「ページキャッシュが
-   3.2 GB 広くなった」を分離していない。**mmap の腕に 3.2 GB の anonymous
-   バラストを持たせる腕**で決まる。
-3. **既定にするかの判断** — その前に **`iogpu.wired_limit_mb` を既定 8192 に
-   戻した run**、**48/16 スロットの振り直し** (D では `--expert-cache-slots` の
-   意味が「同時に residency を張る本数」に変わる)、**サーバー経路**が要る。
+**51 §2 の +18.0% は控えめな数字だった** — ABBA の汚染と先読みの欠如を両方
+含んでいる。**残っている 3 つ、優先順**:
+
+1. **既定にするかの判断** — その前に **`iogpu.wired_limit_mb` を既定 8192 に
+   戻した run**、**サーバー経路 (`Scripts/demo/serve.py`)**、**`story` と MTP で
+   advise を振る**ことが要る。**`--expert-cache-slots` の振り直しは済んだ**
+   (52 §1: prefill はスロットに依存しない。要求 1963 / ヒット 0% が 16/32/64 で不動)。
+2. **decode も速くなった理由を分ける** (52 §6) — 19.56 → 27.41 GB/s。decode 経路は
+   既に advise を出しているはずなので、**`shouldSkipRDAdvice` が落としている**か
+   **タイミングが悪い**かのどちらか。`rdadvisePolicyMode` を振っていない。
+   **これは D と独立に製品が取りこぼしている可能性がある。**
+3. **51 §4a の内訳** — 「コピーが消えた」と「ページキャッシュが 3.2 GB 広くなった」を
+   分けていない。**mmap の腕に 3.2 GB の anonymous バラストを持たせる腕**で決まる。
+   52 §4 で prefill も暖かいと分かったので**この腕の重みは上がった**。
 
 **`F_NOCACHE` の枝は開いたまま** — 短い生成で **tok/s +27.1%** (50 §2) だが
 運用点では **−7.7%** で**符号を決める軸を特定していない** (50 §6)。
@@ -193,6 +197,22 @@ rows 2 本で −23%)。**実装の前に分子を 1 つ潰す** — rows 2 本�
     挙げていたが、符号を「`C` が小さければ賞金はさらに小さくなる」と逆に読んだ。**
     18 と同じ形 (振っていない軸を単価にした) の 2 度目である。
 
+21. **「両腕で同一だから比較の外にある」は、片腕がそれを別の手段で
+    代替していないか確かめてから言う。**51 §0 は「`F_RDADVISE` は既存経路が
+    そのまま出す。両腕で同一なので比較の外にある」と置いた。**prompt prefill では
+    両腕とも 0 本**で「同一」は正しいのに、**pread だけが `concurrentPerform`
+    7.58 並列で深度を代替していた** (52 §3)。**同一なのは入力であって効果ではない。**
+22. **腕を交互に並べると、片腕が相手のページキャッシュを踏む。**ABBA
+    (`pread mmap mmap pread`) では mmap の 1 本目が必ず pread の直後に来る。
+    pread は私有スロットに 3.2 GB (64 スロットなら 7.7 GB) を取って相手の
+    ファイルバックを追い出す。**64 スロットでは mmap の prefill が 2 倍**に見えた
+    (52 §2)。**15 と同じ形の 3 度目**で、今度は製品経路である。
+    **腕ごとにブロックにして、各ブロックの 1 本目を捨てる。**
+23. **`pread` の腕は連続実行で劣化する。**prefill io が 10 run で **+14.7%**
+    (0.746 → 0.856 s、40 §4-2 の 5% 規則を超える)。run ごとに 3.3 GB の rss を
+    積むためで、**mmap の腕は +1.3% で平ら** (52 §2a)。
+    **pread の絶対値は上振れしうる。**
+
 ## 5. 揃っていない実測どうしの食い違い (**未確認**、揃えるために数字を動かしていない)
 
 1. **計器と本番の `c` が 2.2〜2.7 倍離れている** (costProbe 0.343 対 本番 0.128〜0.155)。
@@ -223,10 +243,11 @@ rows 2 本で −23%)。**実装の前に分子を 1 つ潰す** — rows 2 本�
 | GPU の段別 | `TF_PREFILL_GPU_PROFILE=1` (`=2` で層前半を 9 分割、**帰属専用**) |
 | **採点 v2** | `bench/mtp_goal_ab.py` (引数なしで 18 ペア / 約 40 分)。台帳 `bench/mtp_goal_v2_images.tsv` |
 | **rows カーネル** | `--moe-rows-bench` (production 形状)、**`--moe-rows-shape-sweep`** (還元次元を振る。`--group-size 32 --moe-rows-r <1..8>`) |
+| **D の先読み** | **`TF_EXPERT_MMAP_ADVISE=1`** (`MmapExpertMapping.adviseMisses`。既定 off。**両腕に出る** — 片腕だけに出すと advise の取り分を D に数える)。ドライバは `bench/mtp52_{advise,pread_advise,single_arm,slot_sweep}.sh` |
 | **D の試作 (製品経路)** | **`TF_EXPERT_MMAP=1`** (`MmapExpertMapping.swift`。既定 off)。ドライバは **`bench/mtp51_mmap_ab.py`** (ABBA、ミス数と生成文 sha256 を毎 run 検定。`--draft-block-size` で MTP 条件) |
 | **mmap residency** | **`--mmap-residency-probe`** (`--mmap-probe-trials` / `--mmap-probe-repeats` / **`--mmap-probe-gate-only`** / `--mmap-probe-model`)。P-1〜P-4 を 1 本で回す |
 | **重みの形式** | **`--bpw-probe`** (形状を固定して affine / sym / sym8 / sym9 を振る。`--group-size 32`)。`bench/check_bias_identity.py <model.gturbo>` が格子側を検定する |
 | **スキームの入れ替え** | `TF_FORCE_AFFINE_SCHEME=sym\|affine` (**計器であって設定ではない**)。データを固定して導出だけ差し替える。45 §3a の切り分けはこれで付いた |
 | 集計 | `bench/mtp38_analyze.py` (register)、`bench/mtp39_analyze.py` (48 スロット)、`bench/mtp40{,b,c}_analyze.py` (N2)、`bench/mtp42_analyze.py` (N3) |
 | N2 のドライバ | `bench/mtp40_n2{,b,c,d}_driver.sh` (bs=0 / bs=2,3 / 細分 / bs=4) |
-| 一次資料 | `bench/mtp51/` (**D の P-6**)、`bench/mtp49/` (D の賞金)、`bench/mtp36/` (M9-A)、`bench/mtp38/` (register 検定)、`bench/mtp39/` (N1)、`bench/mtp40{,b,c,d}/` (N2)、`bench/mtp42/` (N3)、`bench/mtp43/` (P2)、`bench/mtp44/` (W1)、`bench/mtp45/` (W2)、**`bench/mtp48/` (D のプローブ)** |
+| 一次資料 | **`bench/mtp52/` (D の prefill)**、`bench/mtp51/` (D の P-6)、`bench/mtp49/` (D の賞金)、`bench/mtp36/` (M9-A)、`bench/mtp38/` (register 検定)、`bench/mtp39/` (N1)、`bench/mtp40{,b,c,d}/` (N2)、`bench/mtp42/` (N3)、`bench/mtp43/` (P2)、`bench/mtp44/` (W1)、`bench/mtp45/` (W2)、**`bench/mtp48/` (D のプローブ)** |

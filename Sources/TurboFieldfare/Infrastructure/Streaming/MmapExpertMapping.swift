@@ -32,6 +32,18 @@ public final class MmapExpertMapping: @unchecked Sendable {
     /// 試作の入口。**計器であって設定ではない** — 既定は今の `pread` のまま。
     public static let isEnabled = ProcessInfo.processInfo.environment["TF_EXPERT_MMAP"] == "1"
 
+    /// 52 の実験: mmap の腕にも `F_RDADVISE` を出す。**計器であって設定ではない。**
+    ///
+    /// prompt prefill は**どちらの腕も advise を出していない** (`RealForwardRunner`
+    /// の prefill/block 経路 1380-2686 に advise の呼びが 1 つも無い。出しているのは
+    /// `:3127`/`:3129` の decode 経路だけ)。それでも pread が prefill で 7.9 GB/s
+    /// 出るのは、タイルのミスを `concurrentPerform` で 7.58 本同時に投げていて
+    /// **並列度がそのままキュー深度になる**からである。mmap の腕はそれが
+    /// `requestResidency()` 1 本に潰れるので深度 1 で、52 の実測で 5.56 GB/s しか出ない。
+    /// ここで先読みを明示的に頼めば、深度が原因かどうかが分かれる。
+    public static let adviseMisses =
+        ProcessInfo.processInfo.environment["TF_EXPERT_MMAP_ADVISE"] == "1"
+
     /// エキスパート 1 個 = 1 本。索引はエキスパート番号 (スロット番号ではない)。
     let expertBuffers: [MTLBuffer]
     /// この層の set。コマンドバッファ側は `useResidencySet(_:)` 1 行で受ける。

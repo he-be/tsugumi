@@ -373,6 +373,18 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         precondition(plan.assignedSlots.count == plan.experts.count,
                      "expert cache plan slot count mismatch")
 
+        // 52 の実験 (既定 off)。prompt prefill はどちらの腕も `F_RDADVISE` を
+        // 出しておらず (advise の呼びは decode 経路の RealForwardRunner:3127
+        // だけ)、pread はミスを下の `concurrentPerform` で 7.58 本同時に投げる
+        // ことで深度を代替していた。mmap ではそれが `requestResidency()` 1 本に
+        // 潰れるので深度 1 になる (52 §3)。
+        // **両腕に出す** — mmap だけに出して比べると advise の取り分を D の
+        // 取り分に数えてしまう (40 §4-20 と同じ形)。実測では pread は
+        // 速くならない (52 §5)。
+        if MmapExpertMapping.adviseMisses, !plan.misses.isEmpty {
+            _ = adviseExpertCachePlanMisses(plan)
+        }
+
         // D の試作: 読むものが無い。ミスがすることは「residency set に足す」
         // だけで、それは帳簿を更新したあとに 1 回だけ出す (49 §9)。
         if let mmap {
