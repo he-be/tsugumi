@@ -5,6 +5,8 @@ public actor ServerTerminationSignals {
     private let stream: AsyncStream<Int32>
     private let continuation: AsyncStream<Int32>.Continuation
     private let sources: [any DispatchSourceSignal]
+    /// The signals this object took over, so it can hand them back (LIF-5).
+    private nonisolated let managedSignals: [Int32]
 
     public init(_ signals: [Int32] = [SIGINT, SIGTERM]) {
         var capturedContinuation: AsyncStream<Int32>.Continuation?
@@ -15,6 +17,7 @@ public actor ServerTerminationSignals {
 
         self.stream = stream
         self.continuation = continuation
+        self.managedSignals = signals
         self.sources = signals.map {
             Darwin.signal($0, SIG_IGN)
             return Self.makeSource(signal: $0, continuation: continuation)
@@ -31,11 +34,19 @@ public actor ServerTerminationSignals {
         preconditionFailure("termination signal stream ended without a signal")
     }
 
-    /// LIF-5: put the default disposition back so a second signal kills.
+    /// LIF-5: put the default disposition back, so a second signal kills.
     ///
-    /// Not implemented yet — the entry point exists so the spec line has
-    /// somewhere to be tested from.
+    /// `init` had to set SIG_IGN for the dispatch sources to see anything at
+    /// all, which also means a second Ctrl-C would be swallowed. The caller
+    /// hands the signals back as soon as it has taken the first one, so the
+    /// shutdown it then runs can always be cut short.
+    ///
+    /// `nonisolated` because it is called from the moment the signal arrives,
+    /// which must not have to wait for this actor's turn.
     public nonisolated func restoreDefaultDisposition() {
+        for signal in managedSignals {
+            Darwin.signal(signal, SIG_DFL)
+        }
     }
 
     public func cancel() {

@@ -49,12 +49,9 @@ do {
     // first. The load is not cancellable, so termination does not wait for it.
     let terminator: Task<Void, Never> = Task {
         _ = await signals.wait()
-        // A second signal kills outright. `ServerTerminationSignals` had to
-        // set SIG_IGN for its dispatch source to see the first one, so the
-        // default disposition goes back before a shutdown that a client (or a
-        // model still loading) can make the operator wait on.
-        Darwin.signal(SIGINT, SIG_DFL)
-        Darwin.signal(SIGTERM, SIG_DFL)
+        // A second signal kills outright, before the shutdown that a client
+        // (or a model still loading) can make the operator wait on.
+        signals.restoreDefaultDisposition()
         try? await server.shutdown()
         await signals.cancel()
         exit(0)
