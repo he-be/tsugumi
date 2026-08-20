@@ -308,16 +308,50 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 return
             }
             handleCompletion(body: body, context: context)
+        // EP-7, ahead of the method check so that `POST /props` is answered as
+        // the endpoint this server does not adopt rather than as the wrong verb
+        // on the one it does.
+        case _ where Self.isUnsupportedEndpoint(method: head.method, path: path):
+            writeError(context, status: .notImplemented,
+                       OpenAIErrorEnvelope(
+                           message: "\(path) is not implemented by this server",
+                           type: .notSupported,
+                           code: "endpoint_not_supported"))
         case (_, "/health"), (_, "/v1/health"), (_, "/v1/models"), (_, "/props"),
              (_, "/v1/chat/completions"):
             writeError(context, status: .methodNotAllowed,
                        OpenAIErrorEnvelope(message: "method not allowed",
                                            code: "method_not_allowed"))
         default:
+            // EP-7: only a path this server has never heard of is a 404, and
+            // ERR-2 fixes the type that goes with the number.
             writeError(context, status: .notFound,
                        OpenAIErrorEnvelope(message: "route not found",
+                                           type: .notFound,
                                            code: "not_found"))
         }
+    }
+
+    /// SPEC §3's list of known paths this server does not adopt (DEV-7).
+    ///
+    /// The list is written by path, not by verb: a client that finds one of
+    /// these has the right idea of what a llama.cpp-shaped server offers and
+    /// the wrong idea of what this one does, whichever method it used.
+    private static let unsupportedPaths: Set<String> = [
+        "/v1/embeddings", "/embedding", "/reranking", "/rerank", "/infill",
+        "/v1/responses", "/v1/messages", "/v1/chat/completions/control",
+        "/lora-adapters", "/v1/completions", "/completion",
+    ]
+
+    private static func isUnsupportedEndpoint(method: HTTPMethod, path: String) -> Bool {
+        if unsupportedPaths.contains(path) { return true }
+        // `POST /props` is the reference implementation's write side; the read
+        // side is EP-4 and is answered above.
+        if path == "/props", method != .GET { return true }
+        // `/slots/{id}?action=…`. `GET /slots` itself is EP-6 and simply does
+        // not exist yet, so it stays a 404 until it does.
+        if path.hasPrefix("/slots/") { return true }
+        return false
     }
 
     /// EP-4's body.
