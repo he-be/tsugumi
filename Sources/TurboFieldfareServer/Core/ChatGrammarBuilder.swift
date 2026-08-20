@@ -105,15 +105,18 @@ public enum ChatGrammarBuilder {
 
     /// The whole stage. Returns `nil` when the request asks for no constraint.
     ///
-    /// **A response format and tools in one request**: the response format
-    /// wins and no tool grammar is emitted. That is what the reference does at
-    /// the pin (`chat-auto-parser-generator.cpp`: the response-format branch is
-    /// taken before the tools branch, and `grammar_lazy =
-    /// !has_response_format && …`). Under `tool_choice` `auto`/`none` nothing
-    /// is broken by it — a tool call was optional. Under `required` or a named
-    /// function the two asks genuinely collide, so the collision is reported in
-    /// `approximations` for the caller to log or refuse; this function never
-    /// errors (GEN-2).
+    /// **A response format and tools in one request** (GEN-12): with
+    /// `tool_choice` `auto` or `none` the response format wins and no tool
+    /// grammar is emitted — a tool call was optional there, so nothing is
+    /// taken away. That is also what the reference does at the pin
+    /// (`chat-auto-parser-generator.cpp`: the response-format branch is taken
+    /// before the tools branch, and `grammar_lazy = !has_response_format && …`).
+    ///
+    /// With `required` or a named function the two asks collide, and GEN-12
+    /// makes that combination a **400 in the request layer** — so it never
+    /// reaches here from the server. The branch below stays as a defensive
+    /// fallback for direct callers, and says so in `approximations` rather
+    /// than erroring (GEN-2).
     public static func constraint(
         tools: [GFTokenizer.FunctionDefinition],
         toolChoice: ChatToolChoice,
@@ -141,6 +144,9 @@ public enum ChatGrammarBuilder {
     ) -> ChatGrammarConstraint {
         var approximations: [String] = []
         switch toolChoice {
+        // Unreachable from the server: GEN-12 turns this combination into a
+        // 400 before the request ever gets here. Kept so that a direct caller
+        // of this pure function still gets a sane answer and a note.
         case .required, .function:
             if !tools.isEmpty {
                 approximations.append(

@@ -134,8 +134,10 @@ struct ChatGrammarBuilderTests {
 
     @Test("GEN-4: a named choice that names an undeclared tool constrains nothing")
     func DEV_17_named_choice_without_that_tool() {
-        // Refusing this request is the request layer's job; the grammar has no
-        // alternative to spell.
+        // GEN-4: both of these are a 400 in the request layer, because a
+        // grammar cannot express a refusal — it has no alternative to spell,
+        // and an empty grammar would silently become free generation (R4).
+        // Neither reaches here from the server.
         #expect(Self.constraint(tools: [Self.weather],
                                 toolChoice: .function(name: "get_time")) == nil)
         #expect(Self.constraint(tools: [], toolChoice: .required) == nil)
@@ -314,10 +316,10 @@ struct ChatGrammarBuilderTests {
         "additionalProperties": .bool(false),
     ])
 
-    // MARK: - GEN-3 × GEN-1: both in one request
+    // MARK: - GEN-12: a response format and tools in one request
 
-    @Test("GEN-3 wins over GEN-1 when a request carries both")
-    func GEN_3_response_format_wins_over_tools() throws {
+    @Test("GEN-12: with auto/none the response format wins over the tools")
+    func GEN_12_response_format_wins_over_tools() throws {
         // The reference does the same at the pin: the response-format branch is
         // taken before the tools branch and the grammar is not lazy.
         let auto = try #require(Self.constraint(
@@ -330,23 +332,29 @@ struct ChatGrammarBuilderTests {
         // Nothing is broken by it: with `auto` a tool call was optional.
         #expect(auto.approximations.isEmpty)
 
-        // With `required` the two asks collide, so the collision is reported
-        // for the server to log or refuse. It is never an error here (GEN-2).
-        let required = try #require(Self.constraint(
-            tools: [Self.weather],
-            toolChoice: .required,
-            responseFormat: .jsonSchema(schema: Self.citySchema)))
-        #expect(!required.isLazy)
-        #expect(required.approximations.contains {
-            $0.hasPrefix("response-format-overrides-tool-choice")
-        })
-
         // `none` + a response format is just a response format.
         let none = try #require(Self.constraint(
             tools: [Self.weather],
             toolChoice: .none,
             responseFormat: .jsonObject(schema: nil)))
         #expect(none.approximations.isEmpty)
+    }
+
+    @Test("GEN-12: required + a response format is a 400 upstream, never a request that gets here")
+    func GEN_12_required_plus_response_format_is_refused_upstream() throws {
+        // No request reaches this: GEN-12 makes the combination a 400 in the
+        // request layer. The branch is a defensive fallback for a direct
+        // caller of the pure function — it reports the collision rather than
+        // silently dropping `tool_choice`, and never errors (GEN-2). Do not go
+        // hunting for a request that produces this string.
+        let collision = try #require(Self.constraint(
+            tools: [Self.weather],
+            toolChoice: .required,
+            responseFormat: .jsonSchema(schema: Self.citySchema)))
+        #expect(!collision.isLazy)
+        #expect(collision.approximations.contains {
+            $0.hasPrefix("response-format-overrides-tool-choice")
+        })
     }
 
     // MARK: - GEN-2: schema content never produces an error
