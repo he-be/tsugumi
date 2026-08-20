@@ -62,8 +62,14 @@ public enum JSONSchemaGrammar {
         for schema: JSONValue,
         dialect: JSONSchemaGrammarDialect = .json
     ) throws -> String {
-        let result = grammar(for: schema, dialect: dialect)
-        return result.grammar
+        var builder = JSONSchemaGrammarBuilder(
+            converter: JSONSchemaGrammarConverter(dialect: dialect))
+        _ = builder.addSchema("", schema)
+        if builder.converter.hasFatalApproximation {
+            throw JSONSchemaGrammarStrictError(
+                approximations: builder.converter.approximations)
+        }
+        return builder.converter.formatGrammar()
     }
 
     /// 参照実装の `build_grammar` に対応する組み立て口。tool call の文法のように
@@ -477,10 +483,10 @@ struct JSONSchemaGrammarConverter {
         case .object(var members):
             if case .string(let ref)? = members["$ref"] {
                 if refs[ref] == nil {
-                    guard ref.hasPrefix("#/") else {
-                        approximate("unsupported-ref: \(ref)")
-                        return
-                    }
+                    // 未対応の形 (リモート `https://` を含む) はここでは黙って
+                    // 見送り、実際に使われたときに `resolveRef` が 1 度だけ
+                    // 記録する。使われない `$ref` は近似ではない。
+                    guard ref.hasPrefix("#/") else { return }
                     let pointer = String(ref.dropFirst())
                     var target = root
                     for token in pointer.split(separator: "/", omittingEmptySubsequences: true) {
@@ -491,7 +497,6 @@ struct JSONSchemaGrammarConverter {
                                   let index = Int(selector), index < array.count {
                             target = array[index]
                         } else {
-                            approximate("unresolvable-ref: \(ref)")
                             return
                         }
                     }
@@ -516,7 +521,9 @@ struct JSONSchemaGrammarConverter {
         if rules[refName] == nil && !refsBeingResolved.contains(ref) {
             guard let resolved = refs[ref] else {
                 // GEN-2: 解決できない参照は「何でもよい JSON 値」に落とす。
-                approximate("unresolvable-ref: \(ref)")
+                approximate(ref.hasPrefix("#/")
+                    ? "unresolvable-ref: \(ref)"
+                    : "unsupported-ref: \(ref)")
                 return addPrimitive("value")
             }
             refsBeingResolved.insert(ref)
@@ -933,8 +940,20 @@ extension JSONSchemaGrammarConverter {
     /// 返し、スキーマは型どおりの原始規則 (`string`) に落ちる (GEN-2)。
     mutating func visitPatternIfSupported(_ schema: JSONValue, ruleName: String) -> String? {
         guard let pattern = Self.member(schema, "pattern") else { return nil }
-        guard case .string(let text) = pattern else { return nil }
-        return visitPattern(text, name: ruleName)
+        guard case .string(let text) = pattern else {
+            approximate("non-string-pattern")
+            return addRule(ruleName, addPrimitive("string"))
+        }
+        // 破れたときに途中まで足した規則 (`dot` や副規則) を残さないよう、
+        // 規則置き場を巻き戻してから素の `string` に落とす (GEN-2)。
+        let snapshot = rules
+        let diagnosticsBefore = diagnostics.count
+        if let rule = visitPattern(text, name: ruleName),
+           !diagnostics[diagnosticsBefore...].contains(where: { $0.fatal }) {
+            return rule
+        }
+        rules = snapshot
+        return addRule(ruleName, addPrimitive("string"))
     }
 
     /// 整数の `minimum` / `maximum` → GBNF。境界が整数でなければ `nil` を返し、
