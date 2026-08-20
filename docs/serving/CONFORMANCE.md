@@ -42,7 +42,6 @@ C3 だけがモデルを積む。
 | SPEC ID | 現状 (実測 2026-08-19) | 段 |
 | --- | --- | --- |
 | GEN-3 | 501 化は済み。文法拘束の実挙動はこれから | P2 |
-| INV-1 | 空 thought channel の分だけ描き直しが生成とずれる (推定 — D1 で検定して確定させる) | P1 |
 | CACHE-1〜6 | 意味ゲート 8 個 + ブリッジ合成 + ミス 11 分類 (設計ごと置換) | P1 |
 | GEN-1 / GEN-2 | 事後パース + スキーマ入口 400 | P2 |
 | LIF-1 / LIF-2 | ロード完了までポートを開かない (接続拒否、約 8〜40 秒) | P3 |
@@ -51,6 +50,9 @@ C3 だけがモデルを積む。
 | RSN-1 / RSN-4 | `--thinking` 独自フラグ。予算切れで本文 0 字 (`max_tokens: 80` で reasoning 357 字・content 空を実測) | P4 |
 | RSP-3 / RSP-5 | `timings` / `system_fingerprint` 無し | P5 |
 | EP-5 / EP-6 / FLAG-5 | `/tokenize` 系・`/slots`・`/metrics`・`--api-key`・CORS 無し | P5 |
+
+緑になった行 (2026-08-20): **INV-1** — 4 組合せとも成立 (P1-D2、SPEC §12 DEV-12
+のサーバー変種 + MSG-5 の `reasoning_content` 入力)。**MSG-5** の入力側も同時に緑。
 
 すでに適合している (壊さないことをテストで固定する): RSP-2 (SSE の並び)、
 R2 (`null` = 未指定)、R1 (未知キー無視)、RSP-1 (usage + cached_tokens)、
@@ -63,7 +65,7 @@ ERR-1 の封筒の形、および P0 で緑にした REQ-* 全行 (C0 の 41 本
 | 段 | 中身 | 主な赤 |
 | --- | --- | --- |
 | ~~**P0**~~ | **済** (2026-08-19)。`ChatRequestSchema` の宣言的な表 + `ChatRequestParser`。`OpenAIRequestValidator` と `OpenAIChatRequest` は削除、メッセージ・tools の検査だけ `ChatMessageValidator` に残した | REQ-* 全行 + GEN-3 の 501 化 |
-| **P1** | プロンプトキャッシュを LCP へ。順序厳守: **(D1) INV-1 の検定を書く (赤のはず) → (D2) テンプレート/エンコーダ側で緑にする → (D3) `match` を LCP 1 行に置換、ゲートとブリッジと 11 分類を削除 → (D4) 画像チャンク比較 → (D5) 名前を SPEC に合わせる**。D2 より先に D3 をやると、ブリッジが 100% 使えていた KV を LCP が取りこぼして遅くなる。**D1 済** (2026-08-19、`PromptTokenInvariantTests`)。**D2 の方針は決定済**: モデル同梱テンプレートに従うのをやめ、サーバーが自分のテンプレート変種を持つ — 完了した assistant ターンを生成時と同じ形 (思考 OFF なら空の thought channel、思考 ON なら思考ブロック) で描き直す。`reasoning_content` の入力 (MSG-5) も同時に通す。実装したら §12 に DEV として登録し、品質影響は C3 で確認する | INV-1, CACHE-* |
+| **P1** | プロンプトキャッシュを LCP へ。順序厳守: **(D1) INV-1 の検定を書く (赤のはず) → (D2) テンプレート/エンコーダ側で緑にする → (D3) `match` を LCP 1 行に置換、ゲートとブリッジと 11 分類を削除 → (D4) 画像チャンク比較 → (D5) 名前を SPEC に合わせる**。D2 より先に D3 をやると、ブリッジが 100% 使えていた KV を LCP が取りこぼして遅くなる。**D1 済** (2026-08-19、`PromptTokenInvariantTests`)。**D2 済** (2026-08-20): モデル同梱テンプレートに従うのをやめ、サーバーが自分の変種 (`GFTokenizer.ChatTemplateVariant.serverRedraw`、SPEC §12 **DEV-12**) を描く。CLI・アプリ・KernelCheck は既定 `.modelBundled` のままなのでトークン列は動かない。`reasoning_content` の入力 (MSG-5) も通した。**品質影響 (モデルが履歴をどう読むか) は C3 で未確認。残りは D3〜D5** | CACHE-* |
 | **P2** | 生成の拘束。JSON schema → 文法で tool call と `response_format` を同じ機構に載せ、GEN-3/GEN-4 の 501 を実挙動に置換。スキーマ入口 400 を撤去 | GEN-* |
 | **P3** | ライフサイクルとエンドポイント。listen 先行 + ロード中 503、`/v1/health`、`/props`、採らないパスの 501 | LIF-*, EP-1/4/7 |
 | **P4** | 思考。`--reasoning-budget` / `--reasoning-format` へ改名、予算切れの終了タグ強制挿入 | RSN-* |

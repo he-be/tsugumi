@@ -358,7 +358,8 @@ struct ServerPromptCache: Sendable {
             assistant: entry.assistantTurn.message,
             incoming: request.toolChatMessages,
             tools: request.tools,
-            enableThinking: entry.enableThinking) else {
+            enableThinking: entry.enableThinking,
+            variant: ServerPromptRenderer.variant) else {
             return .miss(.bridge)
         }
         guard bridge.first == entry.uncommittedBoundaryTokenIDs.first else {

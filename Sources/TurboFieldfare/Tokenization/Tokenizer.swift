@@ -535,7 +535,7 @@ public struct GFTokenizer: @unchecked Sendable {
                                tools: [FunctionDefinition],
                                enableThinking: Bool = false,
                                variant: ChatTemplateVariant = .modelBundled) throws -> [Int32] {
-        guard tokenizer.hasChatTemplate else {
+        guard variant != .modelBundled || tokenizer.hasChatTemplate else {
             throw GFTokenizerError.missingToolTemplate
         }
         let upstreamMessages: [Tokenizers.Message] = try messages.map { message in
@@ -651,14 +651,16 @@ public struct GFTokenizer: @unchecked Sendable {
         assistant: Message,
         incomingMessages: [Message],
         tools: [FunctionDefinition],
-        enableThinking: Bool = false
+        enableThinking: Bool = false,
+        variant: ChatTemplateVariant = .modelBundled
     ) throws -> [Int32] {
         try encodeToolResultContinuation(
             cachedMessages: cachedMessages,
             assistant: assistant,
             incoming: incomingMessages.map(ToolChatMessage.init),
             tools: tools,
-            enableThinking: enableThinking)
+            enableThinking: enableThinking,
+            variant: variant)
     }
 
     /// The same continuation with the incoming turns able to carry images.
@@ -672,15 +674,18 @@ public struct GFTokenizer: @unchecked Sendable {
         assistant: Message,
         incoming: [ToolChatMessage],
         tools: [FunctionDefinition],
-        enableThinking: Bool = false
+        enableThinking: Bool = false,
+        variant: ChatTemplateVariant = .modelBundled
     ) throws -> [Int32] {
         let prefix = try encodeToolChat(
             messages: cachedMessages + [assistant],
             tools: tools,
-            enableThinking: enableThinking)
+            enableThinking: enableThinking,
+            variant: variant)
         let full = try encodeToolChat(messages: incoming,
                                       tools: tools,
-                                      enableThinking: enableThinking)
+                                      enableThinking: enableThinking,
+                                      variant: variant)
         let callCount = assistant.toolCalls.count
         let starts = prefix.indices.filter { prefix[$0] == toolCallStartID }
         guard callCount > 0, starts.count >= callCount,

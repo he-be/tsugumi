@@ -124,11 +124,17 @@ public struct OpenAIChatMessage: Codable, Equatable, Sendable {
     public let toolCalls: [OpenAIToolCall]?
     public let toolCallID: String?
     public let name: String?
+    /// MSG-5: the thinking that produced a finished assistant turn, handed
+    /// back by the client. Until it was read here it was dropped as an unknown
+    /// key (R1), which is why a redraw of a reasoning turn lost the whole
+    /// thought block and the common prefix stopped at the turn's first token.
+    public let reasoningContent: String?
 
     enum CodingKeys: String, CodingKey {
         case role, content, name
         case toolCalls = "tool_calls"
         case toolCallID = "tool_call_id"
+        case reasoningContent = "reasoning_content"
     }
 }
 
@@ -246,7 +252,8 @@ public struct ValidatedChatRequest: Sendable {
                                         parts: parts.parts,
                                         toolCalls: message.toolCalls,
                                         toolCallID: message.toolCallID,
-                                        name: message.name)
+                                        name: message.name,
+                                        reasoningContent: message.reasoningContent)
         }
     }
 
@@ -435,7 +442,8 @@ public enum ChatMessageValidator {
                 throw invalid("images may only appear in user turns",
                               "messages", "unsupported_content")
             }
-            multimodal.append(GFTokenizer.MultimodalMessage(role: role, parts: parts ?? []))
+            multimodal.append(GFTokenizer.MultimodalMessage(
+                role: role, parts: parts ?? [], reasoningContent: message.reasoningContent))
             let content = parts.map { parts in
                 parts.compactMap { part -> String? in
                     if case .text(let text) = part { return text }
@@ -488,7 +496,8 @@ public enum ChatMessageValidator {
                                               content: content,
                                               toolCalls: calls,
                                               toolCallID: message.toolCallID,
-                                              name: message.name))
+                                              name: message.name,
+                                              reasoningContent: message.reasoningContent))
         }
         guard !images.isEmpty else {
             return ValidatedMessages(messages: result, vision: nil)

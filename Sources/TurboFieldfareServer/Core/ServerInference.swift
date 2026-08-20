@@ -487,7 +487,13 @@ public actor ServerModelSession: ServerInferenceBackend {
                 blockTokens: draftBlockSize,
                 fusedGreedy: runner.usesFusedGreedyHead)
         }
-        let templateDigest = SHA256.hash(data: try Data(contentsOf: templateURL))
+        // SPEC INV-1: the domain names the rendering this KV was built with,
+        // which is the server's own variant (`ServerChatTemplate`) rather than
+        // the file the checkpoint ships. Hashing the checkpoint's copy would
+        // let an entry outlive a change to the template that produced it.
+        var templateSource = Data(ServerPromptRenderer.variant.identity.utf8)
+        templateSource.append(Data(try ServerChatTemplate.jinja().utf8))
+        let templateDigest = SHA256.hash(data: templateSource)
             .map { String(format: "%02x", $0) }
             .joined()
         let runtimeIdentity = [
@@ -922,11 +928,13 @@ public actor ServerModelSession: ServerInferenceBackend {
                 tokens = try tokenizer.encodeToolChat(
                     messages: request.toolChatMessages,
                     tools: request.tools,
-                    enableThinking: request.enableThinking)
+                    enableThinking: request.enableThinking,
+                    variant: ServerPromptRenderer.variant)
             } else {
                 let rendered = try tokenizer.applyChatTemplate(
                     multimodal: requested.messages,
-                    enableThinking: request.enableThinking)
+                    enableThinking: request.enableThinking,
+                    variant: ServerPromptRenderer.variant)
                 tokens = tokenizer.encode(rendered, addBOS: false)
             }
             let ids = try VisionMediaTokenIDs(tokenizer: tokenizer)

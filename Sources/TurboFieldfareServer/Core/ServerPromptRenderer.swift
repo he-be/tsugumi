@@ -9,6 +9,12 @@ import TurboFieldfare
 /// tests that hold it are the reason this is its own type (CONFORMANCE §1).
 /// The image path stays in the session, which owns the vision tower.
 public struct ServerPromptRenderer: Sendable {
+    /// SPEC INV-1: the server draws a finished assistant turn the way the
+    /// model generated it, which the checkpoint's own template does not do.
+    /// Everything the server prefills goes through this one variant, so the
+    /// two paths below cannot drift apart.
+    public static let variant = GFTokenizer.ChatTemplateVariant.serverRedraw
+
     public let tokenizer: GFTokenizer
 
     public init(tokenizer: GFTokenizer) {
@@ -28,10 +34,13 @@ public struct ServerPromptRenderer: Sendable {
             return try tokenizer.encodeToolChat(
                 messages: request.messages,
                 tools: request.tools,
-                enableThinking: request.enableThinking)
+                enableThinking: request.enableThinking,
+                variant: Self.variant)
         }
         let rendered = try tokenizer.applyChatTemplate(
-            request.messages, enableThinking: request.enableThinking)
+            request.messages,
+            enableThinking: request.enableThinking,
+            variant: Self.variant)
         return tokenizer.encode(rendered, addBOS: false)
     }
 }

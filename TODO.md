@@ -1,6 +1,6 @@
 # 引き継ぎ — サーバー再実装ループ
 
-最終更新: 2026-08-19。ブランチ `macos15-support`、最新 `ca5831d`。
+最終更新: 2026-08-20。ブランチ `macos15-support`。**P1-D2 まで済み**。
 
 この文書は**次のセッションが同じループを再開するための唯一の入口**である。
 仕様は書かない ([SPEC.md](docs/serving/SPEC.md) が唯一の規範)。作業の並べ方も
@@ -38,53 +38,46 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
 | 段 | 状態 |
 | --- | --- |
 | **P0** 要求スキーマ | **済** (`a668197` 赤 → `691de9c` 緑)。C0 41 本緑 |
-| **P1** プロンプトキャッシュ → LCP | **D1 済** (`db52a46`、赤のまま)。**D2 は方針決定済・未着手**。D3〜D5 未着手 |
+| **P1** プロンプトキャッシュ → LCP | **D1 済** (`db52a46`)、**D2 済** (2026-08-20、赤 → 緑の 2 コミット)。**D3〜D5 未着手** |
 | **P2** 生成の拘束 | 未着手 (GEN-3/GEN-4 は暫定 501 で入っている) |
 | **P3** ライフサイクル / EP | 未着手 |
 | **P4** 思考 | 未着手 |
 | **P5** 残り | 未着手 |
 
-`swift test` は 150 本緑 + C2 の 2 本 (8 ケース) が**意図的に赤**。
-赤いのは `PromptTokenInvariantTests` だけで、これが P1 の作業キューそのもの。
+`swift test --filter TurboFieldfareServerTests` は **154 本すべて緑**
+(C2 の 8 ケースを含む)。**意図的な赤はもう無い** — 次の赤は D3 の入口で書く。
 
-### 次の一手 = P1-D2
+### 次の一手 = P1-D3
 
-方針は決定済み (CONFORMANCE §3 の P1 行に記録):
+**D2 が終わったので順序の縛りは解けた** (CONFORMANCE §3 の警告「D2 より先に
+D3 をやるな」は満たされた)。D3 は `ServerPromptCache` の判定を捨てて
+**トークン列の LCP 1 本**にすること (SPEC CACHE-1〜3、CONFORMANCE §4 の
+「巻き直す」表)。
 
-> モデル同梱テンプレートに従うのをやめ、**サーバーが自分のテンプレート変種を
-> 持つ**。完了した assistant ターンを生成時と同じ形で描き直す — 思考 OFF なら
-> 空の thought channel (`<|channel>thought\n<channel|>`)、思考 ON なら思考
-> ブロックそのもの。`reasoning_content` の入力 (MSG-5) も同時に通す。
+- 捨てるもの: 意味ゲート 8 個、**ブリッジ合成** (`encodeContinuation` /
+  `encodeToolResultContinuation` とその呼び出し 2 か所 —
+  `ServerPromptCache.swift:298`/`:356`)、`ServerPromptCacheMiss` の 11 分類
+  (SPEC CACHE-6: 観測値は `cached_tokens` の数字 1 種類だけ)。
+- 置く先: `commonPrefixLength` (P0 で入っている)。CACHE-2 の部分一致と
+  CACHE-3 の「全一致なら末尾 1 トークン捨てて再デコード」も同時に入る。
+- **赤テストの書き方**: C2 は「この 2 要求の LCP は N トークン」としか主張しない
+  (CONFORMANCE §1)。「この形は hit する」を書かない。
+- `ServerPromptCache.publish` (`:153`) が合成する assistant ターンは、
+  LCP になれば要らなくなる。**D2 で `reasoningContent` を足したので、
+  合成を残したままにすると等値比較がずれる** — D3 で消すのが正しい順序。
 
-手を入れる場所:
+**D2 が測った結果** (D1 の破れ幅がそのまま埋まった。`PromptTokenInvariantTests`):
 
-- `Sources/TurboFieldfare/Tokenization/Tokenizer.swift` の
-  `applyChatTemplate` (tools 無し経路) と `encodeToolChat` (tools 経路)。
-  後者は `tokenizer.applyChatTemplate(messages:chatTemplate:…)` の
-  `chatTemplate` 引数に**リポジトリ所有のテンプレート文字列**を渡す形になる
-  (今は `nil` を渡してモデル同梱の `chat_template.jinja` を使っている)。
-  同梱テンプレートの該当箇所は `add_generation_prompt` のブロック (末尾) と、
-  assistant ターンの `reasoning_content` 描画条件
-  (`thinking_text and loop.index0 > last_user_idx and message.get('tool_calls')`
-   — content だけのターンでは描かれないのが破れの片方)。
-- `GFTokenizer.Message` に `reasoningContent` を足し、
-  `ChatMessageValidator` が `messages[].reasoning_content` を読むようにする。
-- 実装したら **SPEC §12 に DEV 行を登録**し、`ServerPromptCacheDomain` の
-  `templateSHA256` が変種を指すようにする。
-- 品質影響 (モデルが履歴をどう読むか) は重み無しでは確認できない。
-  C3 の実機スモークで見る。
-
-D1 が測った破れ幅 (これが D2 の合格ラインでもある):
-
-| 形 | KV | 今の LCP | 取りこぼし |
+| 形 | KV | D1 の LCP | D2 の LCP |
 | --- | --- | --- | --- |
-| 思考 OFF / tools 無 | 28 | 16 | 12 |
-| 思考 OFF / tools 有 | 65 | 53 | 12 |
-| 思考 ON / tools 無 | 43 | 23 | 20 |
-| 思考 ON / tools 有 | 75 | 55 | 20 |
+| 思考 OFF / tools 無 | 28 | 16 | **28** |
+| 思考 OFF / tools 有 | 65 | 53 | **65** |
+| 思考 ON / tools 無 | 43 | 23 | **43** |
+| 思考 ON / tools 有 | 75 | 55 | **75** |
 
-**D2 より先に D3 をやらないこと。**今のブリッジ合成が 100% 使えていた KV を
-LCP が取りこぼして遅くなる (CONFORMANCE §3 の警告)。
+**未確認**: 品質影響 (履歴の思考ブロックを毎回描き直すことをモデルがどう読むか)。
+同梱テンプレートは「最後の user より後」の思考しか描かない設計で、こちらは
+**その guard を意図的に外している**。重み無しでは確認できないので **C3 で見る**。
 
 ## 4. P0 で入った土台 (次の段が乗る場所)
 
@@ -94,8 +87,10 @@ LCP が取りこぼして遅くなる (CONFORMANCE §3 の警告)。
 | `ChatRequestParser` | 正規化済みの値 → `ValidatedChatRequest`。エンジン写像 (DEV-9/10) もここ |
 | `ChatMessageValidator` | SPEC §5 と §6 の tools 側だけ。旧 `OpenAIRequestValidator` の残骸 |
 | `ServerError.swift` | ERR-1/ERR-2。`type` を決めれば HTTP 番号は自動で決まる |
-| `ServerPromptRenderer` | テキスト/tools 経路の描画。**D2 で直すのはここと Tokenizer** |
+| `ServerPromptRenderer` | テキスト/tools 経路の描画。**サーバーが描く変種はここの `static let variant` 1 か所が決める** |
 | `commonPrefixLength` | CACHE-1 の本体。D3 でキャッシュ判定がこれ 1 行に置き換わる |
+| `GFTokenizer.ChatTemplateVariant` | D2 で入った。`.modelBundled` (CLI・アプリ・KernelCheck) と `.serverRedraw` (サーバー) の 2 値。**既定は `.modelBundled`** なので、足した経路を明示的に渡さない限り描画は動かない |
+| `ServerChatTemplate` | リポジトリ所有の jinja (`Sources/TurboFieldfare/Templates/server_chat_template.jinja`)。SPEC §12 DEV-12 |
 
 削除済み: `OpenAIRequestValidator`、`OpenAIChatRequest`、`OpenAIStop`、
 `OpenAIStreamOptions`、`OpenAIReasoning`、`ServerRequestError.payloadTooLarge` /
