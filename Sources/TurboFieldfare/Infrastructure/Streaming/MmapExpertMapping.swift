@@ -2,14 +2,15 @@ import Darwin
 import Foundation
 import Metal
 
-/// D の試作 — 層ファイルを `MAP_SHARED` で張りっぱなしにし、エキスパート 1 個を
+/// D の経路 — 層ファイルを `MAP_SHARED` で張りっぱなしにし、エキスパート 1 個を
 /// `bytesNoCopy` の `MTLBuffer` 1 本にして GPU に直接読ませる経路
 /// (`docs/mtp/48-D-P1-P4-MMAP-RESIDENCY.md` §9 + `49-D-P5-RESIDENCY-SET.md` §9)。
 ///
-/// **既定では作られない。**`TF_EXPERT_MMAP=1` のときだけ `PreadExpertStreamer` が
-/// これを持ち、私有スロットへの `pread` の代わりにここのバッファを返す。
-/// 測っているのは 49 §10 の P-6 (30 層・張りっぱなし・層ごとの residency set) で、
-/// **速度の札としては「負けない」を確認するだけ**である (50 §7: 賞金は壁時計の約 2%)。
+/// **CLI とサーバーの既定はこちらである** (`docs/mtp/52-D-P7-PREFILL-QUEUE-DEPTH.md`
+/// §5a: advise を両腕に揃えた上で tok/s ×1.331 / ttft ×0.77 / peak −3.20 GB)。
+/// `PreadExpertStreamer` はこれを持ち、私有スロットへの `pread` の代わりに
+/// ここのバッファを返す。`TF_EXPERT_MMAP=0` で 51 までの私有スロット +
+/// `pread` に戻せる — A/B のドライバ (`bench/mtp5*`) はその形で回す。
 ///
 /// 形は 48/49 のプローブがそのまま決めている:
 ///
@@ -26,23 +27,39 @@ import Metal
 ///   `useResource` を残しても差が無い)。`MoE.swift` は 1 行も触らない。
 /// - **CPU 事前タッチは入れない** (49 §5: 何もしないより遅い)。
 ///
-/// `F_RDADVISE` は `PreadExpertStreamer` 側の既存経路がそのまま出す (48 §9 で必須)。
-/// 読む fd は同じファイルなので、advise の効き方はどちらの腕でも同じである。
+/// `F_RDADVISE` は decode 経路が既存のまま出す (48 §9 で必須) が、prompt prefill は
+/// **どちらの腕も出していなかった** (52 §3)。pread はミスを `concurrentPerform` で
+/// 7.58 本同時に投げて深度を代替しており、mmap ではそれが `requestResidency()`
+/// 1 本に潰れる。そこを `adviseMisses` が埋める (52 §4)。
 public final class MmapExpertMapping: @unchecked Sendable {
-    /// 試作の入口。**計器であって設定ではない** — 既定は今の `pread` のまま。
-    public static let isEnabled = ProcessInfo.processInfo.environment["TF_EXPERT_MMAP"] == "1"
-
-    /// 52 の実験: mmap の腕にも `F_RDADVISE` を出す。**計器であって設定ではない。**
+    /// この経路を使うか。**既定 on** — 外すのは `TF_EXPERT_MMAP=0` のときだけである。
     ///
-    /// prompt prefill は**どちらの腕も advise を出していない** (`RealForwardRunner`
+    /// 値を読むのは `Model` がストリーマーを開くところ 1 か所で、そこから先は
+    /// ストリーマーごとの `mmap` が非 nil かどうかだけを見る。テストが直接
+    /// 作るストリーマーは既定 (`useMmap: false`) のまま `pread` である。
+    public static let isEnabled = ProcessInfo.processInfo.environment["TF_EXPERT_MMAP"] != "0"
+
+    /// `executeExpertCachePlan` のミスに `F_RDADVISE` を出すか、の**明示指定**。
+    /// `nil` = 指定なしで、そのときは**腕に従う** (mmap の腕だけ出す)。
+    ///
+    /// prompt prefill は**どちらの腕も advise を出していなかった** (`RealForwardRunner`
     /// の prefill/block 経路 1380-2686 に advise の呼びが 1 つも無い。出しているのは
     /// `:3127`/`:3129` の decode 経路だけ)。それでも pread が prefill で 7.9 GB/s
     /// 出るのは、タイルのミスを `concurrentPerform` で 7.58 本同時に投げていて
     /// **並列度がそのままキュー深度になる**からである。mmap の腕はそれが
-    /// `requestResidency()` 1 本に潰れるので深度 1 で、52 の実測で 5.56 GB/s しか出ない。
-    /// ここで先読みを明示的に頼めば、深度が原因かどうかが分かれる。
-    public static let adviseMisses =
-        ProcessInfo.processInfo.environment["TF_EXPERT_MMAP_ADVISE"] == "1"
+    /// `requestResidency()` 1 本に潰れて深度 1 になり、52 §4 の実測で prefill は
+    /// 5.56 GB/s しか出なかった。明示的に頼むと **11.99 GB/s / ttft ×0.59** になる。
+    ///
+    /// `pread` の腕には既定で出さない — 52 §5 の対照で prefill io ×1.03 /
+    /// tok/s ×0.985 と**速くならない**からである。`TF_EXPERT_MMAP_ADVISE=1` で
+    /// 明示すればどちらの腕でも出る (52 §5 のドライバがそう回す)。
+    public static let adviseOverride: Bool? = {
+        switch ProcessInfo.processInfo.environment["TF_EXPERT_MMAP_ADVISE"] {
+        case "1": return true
+        case "0": return false
+        default: return nil
+        }
+    }()
 
     /// エキスパート 1 個 = 1 本。索引はエキスパート番号 (スロット番号ではない)。
     let expertBuffers: [MTLBuffer]
@@ -116,7 +133,7 @@ public final class MmapExpertMapping: @unchecked Sendable {
     // マッピングは**プロセスの寿命ぶん張りっぱなし**である (48 §7 が測れていない
     // 「マッピングの寿命」を production の形にするのが P-6 の主眼)。`deinit` で
     // `munmap` しないのは、ここで剥がすとまだ他所が持っている `MTLBuffer` が
-    // 消えたページを指しうるからで、試作としては解放しないほうが安全である。
+    // 消えたページを指しうるからで、プロセスが終わるまで持ったままにする。
 
     /// set の中身を `desired` に合わせる。呼ぶのは fetch の側 (I/O キュー) で、
     /// 前の層の GPU 仕事の陰に入る位置である (49 §3 の prep 0.59 ms)。

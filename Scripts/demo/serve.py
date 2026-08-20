@@ -19,6 +19,15 @@ Both are already on the server's stderr (`request … prepared prompt=N`,
 `/api/events`. The browser correlates by response id, which streaming hands it
 in the first SSE chunk, before prefill.
 
+Routed experts come off the mmap path (`docs/mtp/52-D-P7-PREFILL-QUEUE-DEPTH.md`),
+which is the server's default: the layer files stay mapped, a Metal residency set
+replaces the private slot copies, and the prefill misses are handed to
+`F_RDADVISE` up front. Measured on the CLI at this operating point (M3 Pro, 32
+slots, 256 tokens) that is ttft x0.77 and tok/s x1.33 against the private-slot
+path at 3.2 GB less peak; nobody has measured it through the server yet. `--expert-io pread` starts the server
+on the old path instead, which is how the two are compared by feel: run the same
+picture twice, once each way, and watch the first-token time.
+
 Only the standard library is used, and no process is ever terminated that this
 command did not start (AGENTS.md). If another TurboFieldfare process is already
 running, the demo attaches to it read-only and leaves it running at exit.
@@ -48,7 +57,18 @@ from urllib.parse import unquote, urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEMO_DIR = Path(__file__).resolve().parent
-IMAGES_DIR = REPO_ROOT / "sample_imgs"
+# 画像の実体はリポジトリの外にある (`docs/mtp/40-HANDOFF.md` §3、`.gitignore:53-54`)。
+# bench のドライバと同じ規約に揃える: `TF_SAMPLE_IMGS`、既定 `~/Pictures/sample_imgs`。
+# どちらも無いときだけリポジトリ内の `sample_imgs/` に落ちる。
+def _images_dir() -> Path:
+    override = os.environ.get("TF_SAMPLE_IMGS")
+    if override:
+        return Path(override).expanduser()
+    home = Path.home() / "Pictures" / "sample_imgs"
+    return home if home.is_dir() else REPO_ROOT / "sample_imgs"
+
+
+IMAGES_DIR = _images_dir()
 SERVER_BIN = REPO_ROOT / ".build" / "release" / "TurboFieldfareServer"
 DEFAULT_MODEL = "scratch/gemma4-qat.gturbo"
 
@@ -146,11 +166,17 @@ class ModelServer:
     """Owns (or attaches to) the TurboFieldfareServer process."""
 
     def __init__(self, bus: EventBus, model: str, port: int,
-                 expert_cache_slots: int = EXPERT_CACHE_SLOTS) -> None:
+                 expert_cache_slots: int = EXPERT_CACHE_SLOTS,
+                 expert_io: str | None = None) -> None:
         self.bus = bus
         self.model = model
         self.port = port
         self.expert_cache_slots = expert_cache_slots
+        # None: whatever the binary defaults to (mmap). "mmap"/"pread" pin it.
+        # Reported back from the server's own ready line, not from this value,
+        # so an attached server is described by what it actually runs.
+        self.expert_io_requested = expert_io
+        self.expert_io: str | None = None
         self.process: subprocess.Popen | None = None
         self.owned = False
         self.model_id: str | None = None
@@ -208,6 +234,9 @@ class ModelServer:
                 "--expert-cache-slots", str(self.expert_cache_slots),
                 "--verification", "trusted-install",
                 "--draft-block-size", str(DRAFT_BLOCK_SIZE)]
+        env = os.environ.copy()
+        if self.expert_io_requested is not None:
+            env["TF_EXPERT_MMAP"] = "1" if self.expert_io_requested == "mmap" else "0"
         self.set_phase("launching", command=" ".join(argv))
         started = time.monotonic()
         # start_new_session: the child does not receive the terminal's Control-C,
@@ -215,7 +244,7 @@ class ModelServer:
         self.process = subprocess.Popen(
             argv, cwd=str(REPO_ROOT), stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, text=True, bufsize=1,
-            start_new_session=True)
+            start_new_session=True, env=env)
         self.owned = True
         threading.Thread(target=self._pump_output, daemon=True).start()
 
@@ -235,6 +264,9 @@ class ModelServer:
         for line in self.process.stdout:
             line = line.rstrip("\n")
             if line:
+                # The ready line names the routed-expert path the server chose.
+                if "expert_io=" in line:
+                    self.expert_io = line.split("expert_io=", 1)[1].split()[0]
                 self.bus.publish({"kind": "log", "line": line})
         code = self.process.wait()
         self.bus.publish({"kind": "log", "line": f"[demo] server exited with code {code}"})
@@ -512,6 +544,7 @@ class DemoApp:
         self.verbose = verbose
 
     def images(self) -> list[dict]:
+        """Pictures from `IMAGES_DIR` -- see `_images_dir()` for where that is."""
         if not IMAGES_DIR.is_dir():
             return []
         entries = []
@@ -533,6 +566,8 @@ class DemoApp:
                 "max_context": MAX_CONTEXT,
                 "expert_cache_slots": self.server.expert_cache_slots,
                 "draft_block_size": DRAFT_BLOCK_SIZE,
+                "expert_io": self.server.expert_io,
+                "images_dir": str(IMAGES_DIR),
                 "max_images": 4,
                 "image_tokens": 280,
             },
@@ -554,12 +589,16 @@ def main() -> int:
                         choices=ALLOWED_EXPERT_CACHE_SLOTS,
                         help=f"expert-cache slots (default: {EXPERT_CACHE_SLOTS}; "
                              "48 is faster and needs about 1.8 GB more)")
+    parser.add_argument("--expert-io", choices=("mmap", "pread"), default=None,
+                        help="routed-expert path (default: the server's own, mmap; "
+                             "pread is the private-slot path from before docs/mtp/52)")
     parser.add_argument("--verbose", action="store_true", help="log every HTTP request")
     args = parser.parse_args()
 
     bus = EventBus()
     model_server = ModelServer(bus, model=args.model, port=args.model_port,
-                               expert_cache_slots=args.expert_cache_slots)
+                               expert_cache_slots=args.expert_cache_slots,
+                               expert_io=args.expert_io)
     app = DemoApp(model_server, bus, verbose=args.verbose)
     DemoHandler.app = app
 

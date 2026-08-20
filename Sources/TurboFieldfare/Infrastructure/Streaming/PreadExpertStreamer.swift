@@ -65,11 +65,13 @@ public final class PreadExpertStreamer: @unchecked Sendable {
     private let fd: Int32
     private let slotPointers: [UnsafeMutableRawPointer]
     private let slotBuffers: [MTLBuffer]
-    /// D の試作 (`TF_EXPERT_MMAP=1`)。非 nil のときスロットは 1 本も無く、
-    /// エキスパートはファイルのマッピングから直接 GPU に渡る
-    /// (`MmapExpertMapping`、docs/mtp/49 §9)。プランと LFU の帳簿はそのままで、
-    /// 変わるのは**ミスが何をするか**だけ — `pread` でコピーする代わりに
-    /// residency set を更新する。
+    /// D の経路。非 nil のときスロットは 1 本も無く、エキスパートはファイルの
+    /// マッピングから直接 GPU に渡る (`MmapExpertMapping`、docs/mtp/49 §9)。
+    /// プランと LFU の帳簿はそのままで、変わるのは**ミスが何をするか**だけ —
+    /// `pread` でコピーする代わりに residency set を更新する。
+    ///
+    /// **製品 (`Model`) の既定は非 nil である** (52 §5a)。ここを直に作るテストの
+    /// 既定は `pread` のまま — `useMmap` を渡したときだけ張る。
     let mmap: MmapExpertMapping?
 
     private var nextSlot = 0
@@ -105,7 +107,7 @@ public final class PreadExpertStreamer: @unchecked Sendable {
                  slotCount: Int,
                  cachePolicy: ExpertCachePolicy = .lfu,
                  fileDescriptor: Int32?,
-                 useMmap: Bool = MmapExpertMapping.isEnabled) throws {
+                 useMmap: Bool = false) throws {
         precondition(slotCount > 0, "slotCount must be positive")
         self.layout = layout
         self.slotCount = slotCount
@@ -159,7 +161,7 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         pointers.reserveCapacity(slotCount)
         buffers.reserveCapacity(slotCount)
 
-        // D の試作: スロットを 1 個も持たない。私有 anonymous の 3.22 GB
+        // D の経路: スロットを 1 個も持たない。私有 anonymous の 3.22 GB
         // (32 スロット x 30 層) が消えるのが D の残る根拠である (50 §4)。
         self.mmap = useMmap
             ? try MmapExpertMapping(layout: layout, device: device,
@@ -228,7 +230,7 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         guard regionOffset + layout.expertStride <= layout.streamSize else {
             throw StreamerError.offsetOutOfRange(regionOffset)
         }
-        // D の試作ではバイトは既に GPU から見えるアドレスに居る。コピーは無い。
+        // D の経路ではバイトは既に GPU から見えるアドレスに居る。コピーは無い。
         if let mmap {
             return (mmap.expertBuffers[expert], 0, layout.expertStride)
         }
@@ -373,19 +375,18 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         precondition(plan.assignedSlots.count == plan.experts.count,
                      "expert cache plan slot count mismatch")
 
-        // 52 の実験 (既定 off)。prompt prefill はどちらの腕も `F_RDADVISE` を
-        // 出しておらず (advise の呼びは decode 経路の RealForwardRunner:3127
-        // だけ)、pread はミスを下の `concurrentPerform` で 7.58 本同時に投げる
-        // ことで深度を代替していた。mmap ではそれが `requestResidency()` 1 本に
-        // 潰れるので深度 1 になる (52 §3)。
-        // **両腕に出す** — mmap だけに出して比べると advise の取り分を D の
-        // 取り分に数えてしまう (40 §4-20 と同じ形)。実測では pread は
-        // 速くならない (52 §5)。
-        if MmapExpertMapping.adviseMisses, !plan.misses.isEmpty {
+        // 先読みを明示的に頼む (52 §4)。prompt prefill はどちらの腕も
+        // `F_RDADVISE` を出しておらず (advise の呼びは decode 経路の
+        // RealForwardRunner:3127 だけ)、pread はミスを下の `concurrentPerform`
+        // で 7.58 本同時に投げることで深度を代替していた。mmap ではそれが
+        // `requestResidency()` 1 本に潰れて深度 1 になる (52 §3)。
+        // 既定で出るのは mmap の腕だけである — 52 §5 の対照で pread は
+        // 速くならない (`TF_EXPERT_MMAP_ADVISE=1` で両腕に出せる)。
+        if MmapExpertMapping.adviseOverride ?? (mmap != nil), !plan.misses.isEmpty {
             _ = adviseExpertCachePlanMisses(plan)
         }
 
-        // D の試作: 読むものが無い。ミスがすることは「residency set に足す」
+        // D の経路: 読むものが無い。ミスがすることは「residency set に足す」
         // だけで、それは帳簿を更新したあとに 1 回だけ出す (49 §9)。
         if let mmap {
             mmap.syncResidency {

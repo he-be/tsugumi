@@ -12,7 +12,9 @@ for SLOTS in 16 64; do
     --verification trusted-install >/dev/null 2>&1
   sleep 15
   echo "=== sweep slots=$SLOTS ==="
-  ./bench/mtp51_mmap_ab.py --rounds 2 --slots "$SLOTS" --max-new 256 \
+  # --advise off: このログは advise が製品に入る前 (どちらの腕も出さない) の
+  # 条件で取られている。既定は 2026-08-20 に mmap の腕だけ on になった (52 §8)。
+  ./bench/mtp51_mmap_ab.py --rounds 2 --slots "$SLOTS" --max-new 256 --advise off \
     --out "bench/mtp52/mmap_ab_256_math_slots${SLOTS}.log"
   sleep 20
 done

@@ -13,7 +13,9 @@ OUT=bench/mtp52/single_arm_256_math_slots32.log
 run() {  # $1=0/1  $2=block  $3=pos
   local on="$1" blk="$2" pos="$3" label
   label=$([ "$on" = 1 ] && echo mmap || echo pread)
-  TF_EXPERT_MMAP="$on" ./.build/release/TurboFieldfareCLI \
+  # ADVISE=0: このログは advise が製品に入る前の条件で取られている
+  # (既定は 2026-08-20 に mmap の腕だけ on になった。52 §8)。
+  TF_EXPERT_MMAP="$on" TF_EXPERT_MMAP_ADVISE=0 ./.build/release/TurboFieldfareCLI \
     --model scratch/gemma4-qat-sym.gturbo --messages-file bench/math.json \
     --temperature 0 --max-new 256 --expert-cache-slots 32 \
     --verification trusted-install > /tmp/tf_sa.txt 2>&1

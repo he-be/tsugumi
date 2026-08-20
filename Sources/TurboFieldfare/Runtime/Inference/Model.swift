@@ -427,12 +427,15 @@ public struct Model {
         case .pread(let configuredSlotCount):
             slotCount = configuredSlotCount
         }
+        // 経路を決めるのはここ 1 か所である。既定は D (mmap + residency set、
+        // docs/mtp/52 §5a)。`TF_EXPERT_MMAP=0` で 51 までの私有スロットに戻る。
         streamersBox.streamers[L] = try PreadExpertStreamer(
             layout: layout,
             device: device,
             slotCount: slotCount,
             cachePolicy: expertCachePolicy,
-            fileDescriptor: layerFD)
+            fileDescriptor: layerFD,
+            useMmap: MmapExpertMapping.isEnabled)
         streamersBox.layerVerified[L] = true
     }
 

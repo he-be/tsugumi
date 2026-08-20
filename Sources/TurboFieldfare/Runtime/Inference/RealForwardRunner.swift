@@ -826,7 +826,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// エキスパートは追い出さない」ので、32 スロットが埋まりきっていれば
     /// `nil` が返る。層はそこに着いたときに普通に読むだけなので、諦めても
     /// 失われるのは前倒しの利益だけである。
-    /// D の試作: エキスパートを読むコマンドバッファにこの層の residency set を
+    /// D の経路: エキスパートを読むコマンドバッファにこの層の residency set を
     /// 掛ける (49 §9)。既定 (`pread`) では set が無いので 1 行も効かない。
     /// **`useResource` は外していない** — set は上乗せである (49 §2 の腕 B*)。
     private func attachExpertResidency(_ commandBuffer: MTLCommandBuffer, layer: Int) {

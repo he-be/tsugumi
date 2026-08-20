@@ -6,6 +6,12 @@
 `PreadExpertStreamer` と並べる」。50 §7 のとおり **D の根拠は速度ではなく占有**
 なので、速度に求めるのは「負けない」ことだけである。
 
+**2026-08-20 に既定が mmap + advise になった** (52 §8)。このドライバは
+`TF_EXPERT_MMAP` を毎 run 明示的に渡すので腕は動かないが、`F_RDADVISE` は
+既定で「mmap の腕だけ出す」ようになった — **51 と 52 §1 のログは advise が
+どちらの腕にも無かったときのもの**なので、あれを再現するときは `--advise off`
+を渡すこと。既定 (`--advise auto`) は**今の製品の形**を測る。
+
 腕は 2 つ、違いは `TF_EXPERT_MMAP` だけ:
   pread  今の production (私有スロット 32 個に `pread` でコピー)
   mmap   層ファイルを `MAP_SHARED` で張り、エキスパート単位の `bytesNoCopy`
@@ -50,6 +56,11 @@ RE_MMAP = re.compile(
 def run_once(mmap_on, args):
     env = dict(os.environ)
     env["TF_EXPERT_MMAP"] = "1" if mmap_on else "0"
+    # auto = 製品の既定 (mmap の腕だけ advise)。on/off は両腕に固定する。
+    if args.advise != "auto":
+        env["TF_EXPERT_MMAP_ADVISE"] = "1" if args.advise == "on" else "0"
+    else:
+        env.pop("TF_EXPERT_MMAP_ADVISE", None)
     cmd = [CLI, "--model", args.model, "--messages-file", args.messages,
            "--temperature", "0", "--max-new", str(args.max_new),
            "--expert-cache-slots", str(args.slots),
@@ -111,6 +122,9 @@ def main():
     ap.add_argument("--messages", default=MESSAGES)
     # MTP を入れた条件。**別条件なので他の表と数字を並べないこと** (40 §4-11)。
     ap.add_argument("--draft-block-size", type=int, default=0)
+    ap.add_argument("--advise", choices=("auto", "on", "off"), default="auto",
+                    help="F_RDADVISE: auto = 製品の既定 (mmap の腕だけ)、"
+                         "on/off は両腕に固定。51 と 52 §1 のログは off で取られている")
     ap.add_argument("--out", default="bench/mtp51/mmap_ab.log")
     args = ap.parse_args()
 

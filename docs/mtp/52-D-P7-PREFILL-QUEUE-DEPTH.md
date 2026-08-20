@@ -159,14 +159,14 @@ mmap 固有の穴 (深度 1) であって、経路共通の取りこぼしでは
   `:3127` で既に advise を出しているはずなので、**既存の advise が
   `shouldSkipRDAdvice` に落とされている**か、**タイミングが悪い**かのどちらかである。
   **`rdadvisePolicyMode` を振っていない。**
-- **advise を既定にするかの判断。**製品では今も `TF_EXPERT_MMAP_ADVISE=1` を
-  立てたときだけ入る。pread に害が無い (§5) ので mmap 経路で常時 on が自然だが、
-  **決めていない。**
+- ~~**advise を既定にするかの判断。**~~ **決まった (§8)。**mmap の腕では常時 on、
+  pread の腕では off (§5 で効かないため)。
 - **51 §4a の内訳は依然として分けていない** (「コピーが消えた」と
   「ページキャッシュが 3.2 GB 広くなった」)。§4 で prefill も暖かいと分かったので、
   **anonymous バラストの腕の重みは上がった。**
 - **`iogpu.wired_limit_mb` を既定 (8192) に戻して回していない** (51 §7 から持ち越し)。
-- **サーバー経路 (`Scripts/demo/serve.py`) では回していない。**CLI だけである。
+- **サーバー経路 (`Scripts/demo/serve.py`) では測っていない。**既定としては通した
+  (§8) が、**数字は CLI のものだけ**である。
 - **MTP (bs=4) で advise を振っていない。**
 - **`story` で advise を振っていない。**§4 は `math` だけである。
 - **temp 0 である** (40 §4-4)。
@@ -175,7 +175,26 @@ mmap 固有の穴 (深度 1) であって、経路共通の取りこぼしでは
 
 | | |
 | --- | --- |
-| 計器 | **`TF_EXPERT_MMAP_ADVISE=1`** (`MmapExpertMapping.swift` の `adviseMisses`。既定 off。**両腕に出る**) |
+| 計器 | **`TF_EXPERT_MMAP_ADVISE=1`** (`MmapExpertMapping.swift`。§4/§5 を測った時点では `adviseMisses`・既定 off・両腕に出る。**§8 で `adviseOverride` になり、指定が無ければ腕に従う**) |
 | 実装 | `PreadExpertStreamer.swift` の `executeExpertCachePlan` 先頭 4 行 + `MmapExpertMapping.swift` 16 行 |
 | ドライバ | `bench/mtp52_slot_sweep.sh` (§1)、`bench/mtp52_single_arm.sh` (§2a)、`bench/mtp52_advise.sh` (§4)、`bench/mtp52_pread_advise.sh` (§5) |
 | 一次資料 | `bench/mtp52/` — `mmap_ab_256_math_slots{16,64}.log`、`single_arm_256_math_slots32.log`、`advise_256_math_slots32.log`、`pread_advise_256_math_slots32.log` と各 `*_summary.log` |
+
+## 8. **採用 — CLI とサーバーの既定にした** (2026-08-20、ユーザー判断)
+
+§5a の 3 軸 (tok/s ×1.331 / ttft ×0.77 / peak −3.20 GB) を受けて、**D と advise を
+既定にした。**§6 が「決めていない」と置いた 1 行はこれで閉じる。
+
+| | |
+| --- | --- |
+| 既定 | **mmap + 層ごとの residency set**。`F_RDADVISE` は **mmap の腕のときだけ**出す |
+| なぜ腕に紐づけるか | §5 の対照 — advise は `pread` を速くしない (prefill io ×1.03 / tok/s ×0.985)。**効かない腕で syscall を出す理由が無い** |
+| 決めるのは 1 か所 | `Model.swift` の `PreadExpertStreamer(… useMmap: MmapExpertMapping.isEnabled)`。CLI・サーバー・Mac アプリ・KernelCheck が同じ既定を共有する |
+| 外し方 | **`TF_EXPERT_MMAP=0`** で 51 までの私有スロット + `pread`。`TF_EXPERT_MMAP_ADVISE=1/0` は advise だけを腕と無関係に固定する |
+| bench への影響 | 腕は動かない (`bench/mtp5*` は `TF_EXPERT_MMAP` を 0/1 で明示的に渡す) が、**advise は既定が変わった**ので、advise 以前のログ (51、§1、§2a) を再現するドライバには `--advise off` / `TF_EXPERT_MMAP_ADVISE=0` を書き足した (`mtp51_mmap_ab.py` の `--advise auto\|on\|off`、`mtp52_slot_sweep.sh`、`mtp52_single_arm.sh`)。**`--advise auto` は今の製品の形を測る** |
+| テストへの影響 | 無い。`PreadExpertStreamer` の `useMmap:` は**既定 `false`** で、直に作るテストは `pread` のまま (17 テスト green) |
+| 目印 | CLI footer の `[expert mmap layers=30 …]`、サーバー ready 行の `expert_io=mmap`、デモの見出しのピル |
+
+**デモ (`Scripts/demo/serve.py`)**: 既定でこの経路に乗る。`--expert-io pread` で
+51 までの腕に切り替えられる (同じ画像を 2 度出して ttft を体感するための口)。
+**ここで数字は取っていない** — §6 の「サーバー経路では測っていない」は開いたままである。

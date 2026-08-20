@@ -26,12 +26,32 @@ MTP の続きを進めて。
 | | |
 | --- | --- |
 | 最新 | **52** (**51 の ttft の負けは消えた**。prompt prefill は両腕とも `F_RDADVISE` を出しておらず、pread だけが 7.58 並列で深度を代替していた。advise を足すと運用点で **tok/s ×1.331 / ttft ×0.77 / peak −3.20 GB** と 3 軸とも勝つ) |
-| 製品に入った変更 | **45 の `sym`**、**51 の D の試作 (既定 off。`TF_EXPERT_MMAP=1`)**、**52 の advise (既定 off。`TF_EXPERT_MMAP_ADVISE=1`。両腕に出る)**。**出力はバイト一致なので過去の測定値は生きるが、速度の数字は 45 以降 8.8% 速い側で取られる** |
+| 製品に入った変更 | **45 の `sym`**、**51 の D + 52 の advise (2026-08-20 に既定 on。§2a)**。**出力はバイト一致なので過去の測定値は生きるが、速度の数字は 45 以降 8.8% 速い側で、D の既定化以降はさらに速い側で取られる** |
 | 開いている W の枝 | 44 §7 の「`head` と dense 射影の `sym9`」1 枚 (46 §6) |
 | 開いている GPU の枝 | 41 §5 の dense 射影 (`attn` 11.0 ms/ブロックの 76% が qkv/oproj/post)。**見積もり未了** |
 | N4/N5/N6 | 37 §3 のまま |
 
-### 次の 1 手 — **3 軸とも勝った。残っているのは既定にするかの判断**
+### 2a. **D は既定になった** (2026-08-20、ユーザー判断)
+
+`TF_EXPERT_MMAP` / `TF_EXPERT_MMAP_ADVISE` は「計器」をやめ、**既定 on の設定**に
+なった。CLI・サーバー・Mac アプリ・KernelCheck が同じ既定を共有する
+(経路を決めるのは `Model.swift` の `useMmap:` 1 か所)。
+
+| | |
+| --- | --- |
+| 既定 | **mmap + residency set**、`F_RDADVISE` は **mmap の腕のときだけ**出す (52 §5: pread には効かない) |
+| 外し方 | **`TF_EXPERT_MMAP=0`** で 51 までの私有スロット + `pread` に丸ごと戻る。`TF_EXPERT_MMAP_ADVISE=1/0` は advise だけを腕と無関係に固定する (52 §5 のドライバがそう回す) |
+| 目印 | CLI の footer の **`[expert mmap layers=30 …]`** の行、サーバーの ready 行の **`expert_io=mmap`**、デモの見出しの `expert mmap` のピル |
+| テスト | `PreadExpertStreamer` を直に作るテストは **`useMmap: false` が既定**なので `pread` のまま (17 テスト green) |
+| 確認した (**n=1 の疎通確認。スコアではない** — 40 §4-1) | CLI (17×23 の説明、96 tok、32 スロット、temp 0、連続 2 run): mmap `peak 1.29 GB / 24.88 tok/s`、`TF_EXPERT_MMAP=0` `4.90 GB / 16.79 tok/s`。表示された範囲の生成文は一致。**測定として読むのは 52 §4 の表であり、この 2 行ではない** |
+
+**bench の腕は動かない** — `bench/mtp5*` は `TF_EXPERT_MMAP` を明示的に 0/1 で
+渡す。**動いたのは advise の既定のほう**なので、advise 以前のログを再現する
+ドライバには `--advise off` / `TF_EXPERT_MMAP_ADVISE=0` を書き足した
+(`mtp51_mmap_ab.py` に `--advise auto|on|off`、`mtp52_slot_sweep.sh`、
+`mtp52_single_arm.sh`)。**`--advise auto` は今の製品の形を測る。**
+
+### 次の 1 手 — **既定にした。残っているのは既定の形での検証**
 
 **52 で ttft の負けは消えた。**51 §5 が「帰属していない」と置いた prompt prefill の
 ×1.52 は、(a) ABBA の汚染 (約 0.14) と (b) **キュー深度**だった。prompt prefill は
@@ -56,10 +76,13 @@ MTP の続きを進めて。
 **51 §2 の +18.0% は控えめな数字だった** — ABBA の汚染と先読みの欠如を両方
 含んでいる。**残っている 3 つ、優先順**:
 
-1. **既定にするかの判断** — その前に **`iogpu.wired_limit_mb` を既定 8192 に
-   戻した run**、**サーバー経路 (`Scripts/demo/serve.py`)**、**`story` と MTP で
-   advise を振る**ことが要る。**`--expert-cache-slots` の振り直しは済んだ**
+1. **既定の形での検証** (§2a で既定にしたので、残りは確認である) —
+   **`iogpu.wired_limit_mb` を既定 8192 に戻した run**、**サーバー経路
+   (`Scripts/demo/serve.py`) の数字**、**`story` と MTP (bs=4) での advise**。
+   いずれも**未実施**。**`--expert-cache-slots` の振り直しは済んだ**
    (52 §1: prefill はスロットに依存しない。要求 1963 / ヒット 0% が 16/32/64 で不動)。
+   **既定が mmap になったので、48 スロットの `wired_limit` 前提も測り直す価値がある**
+   (私有スロットが無いぶん peak は 1.3 GB で、スロット数はもう占有を動かさない)。
 2. **decode も速くなった理由を分ける** (52 §6) — 19.56 → 27.41 GB/s。decode 経路は
    既に advise を出しているはずなので、**`shouldSkipRDAdvice` が落としている**か
    **タイミングが悪い**かのどちらか。`rdadvisePolicyMode` を振っていない。

@@ -299,8 +299,9 @@ private func statsFooter(loadSeconds: Double,
         lines += " towerLoad=\(s(runner.visionLoadSeconds))s]\n"
     }
 
-    // D の試作 (`TF_EXPERT_MMAP=1`) のときだけ。residency set の更新が
-    // 何回・何 ms 掛かったか = 49 §3 の prep が production でいくらか。
+    // D の経路 (既定) のときだけ出る。residency set の更新が何回・何 ms
+    // 掛かったか = 49 §3 の prep が production でいくらか。`TF_EXPERT_MMAP=0`
+    // なら 1 行も出ない — この行の有無がどちらの腕で回ったかの目印である。
     let mm = MmapExpertMapping.stats
     if mm.layers > 0 {
         lines += "[expert mmap layers=\(mm.layers)"

@@ -33,7 +33,16 @@
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
   .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
              color: var(--muted); margin: 0 0 10px; font-weight: 600; }
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+  /* 3 列固定だと 50 枚で 17 行 (約 1,800 px) になり、下のプロンプト欄まで
+     スクロールしないと届かない。列は幅に追従させ、一覧自体を高さ上限つきの
+     スクロール領域にして、カードの丈を枚数から切り離す。 */
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); gap: 6px;
+    max-height: 40vh; overflow-y: auto; overscroll-behavior: contain;
+    padding: 2px 4px 2px 2px;
+  }
+  .grid::-webkit-scrollbar { width: 8px; }
+  .grid::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
   .thumb {
     position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; cursor: pointer;
     border: 2px solid transparent; background: var(--panel-2); padding: 0;
@@ -109,13 +118,13 @@
   <h1>TurboFieldfare — 画像デモ</h1>
   <span class="pill" id="pill-state">起動中…</span>
   <span class="pill" id="pill-model">model —</span>
-  <span class="pill">16K ctx / 80 slots / MTP 4</span>
+  <span class="pill" id="pill-config">config —</span>
   <span class="pill" id="pill-warm">warmup —</span>
 </header>
 
 <main>
   <section class="card">
-    <h2>画像 (sample_imgs)</h2>
+    <h2>画像 <span id="imgcount" style="text-transform:none;letter-spacing:0"></span></h2>
     <div class="grid" id="grid"></div>
     <div class="imgnote" id="imgnote">最大 4 枚。クリックで選択。</div>
     <label class="field">自分の画像を追加</label>
@@ -273,6 +282,20 @@ function resetSteps() {
 
 const overlaySteps = ["preflight", "launching", "loading", "ready", "warming", "warm"];
 
+// The header pill says what this server actually runs, including which
+// routed-expert path (mmap is the default; `--expert-io pread` is the old one).
+function applyConfig(cfg) {
+  if (!cfg) return;
+  const parts = [(cfg.max_context / 1024) + "K ctx", cfg.expert_cache_slots + " slots",
+                 "MTP " + cfg.draft_block_size];
+  if (cfg.expert_io) parts.push("expert " + cfg.expert_io);
+  $("pill-config").textContent = parts.join(" / ");
+}
+
+function refreshConfig() {
+  fetch("/api/status").then(r => r.json()).then(s => applyConfig(s.config)).catch(() => {});
+}
+
 function applyPhase(phase, detail) {
   const idx = overlaySteps.indexOf(phase);
   if (idx >= 0) {
@@ -289,6 +312,7 @@ function applyPhase(phase, detail) {
     pill.textContent = "ウォームアップ中"; pill.className = "pill busy";
   } else if (phase === "warm") {
     setStep("o-warm", "done");
+    refreshConfig();
     state.ready = true;
     $("overlay").classList.add("hidden");
     pill.textContent = "待機中"; pill.className = "pill ok";
@@ -384,6 +408,7 @@ async function loadImages() {
   const data = await res.json();
   const grid = $("grid");
   grid.innerHTML = "";
+  $("imgcount").textContent = "(" + data.images.length + " 枚)";
   data.images.forEach((entry) => {
     const b = document.createElement("button");
     b.className = "thumb";
@@ -714,6 +739,7 @@ function finish(run, message, isError) {
 (async function boot() {
   const status = await (await fetch("/api/status")).json();
   if (status.model_id) $("pill-model").textContent = "model " + status.model_id;
+  applyConfig(status.config);
   applyPhase(status.phase, { model_id: status.model_id, warmup: status.warmup,
                              message: status.error });
   await loadImages();
