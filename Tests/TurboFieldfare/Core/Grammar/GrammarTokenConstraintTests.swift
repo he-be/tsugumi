@@ -396,10 +396,16 @@ struct GrammarTokenConstraintTests {
 
     @Test("GEN_1_measures_the_table_build_and_the_two_hot_paths")
     func measuresCost() throws {
-        var built: GrammarVocabulary?
+        // 実メモリは 1 本ぶんの差では読めない (直前に捨てた表のページが
+        // 残るので phys_footprint がほぼ動かない)。生かしたまま複数本積んで
+        // 割る。
+        var live: [GrammarVocabulary] = []
+        let copies = 3
         let before = Self.physFootprint()
-        let fresh = ContinuousClock().measure { built = GrammarVocabulary(tok) }
+        let fresh = ContinuousClock().measure { live.append(GrammarVocabulary(tok)) }
+        for _ in 1..<copies { live.append(GrammarVocabulary(tok)) }
         let after = Self.physFootprint()
+        let perCopy = live.count == copies ? (after &- before) / UInt64(copies) : 0
         let cached = ContinuousClock().measure { _ = GrammarVocabulary.shared(for: tok) }
 
         let constraint = try GrammarTokenConstraint(Self.jsonish, vocabulary: vocab)
@@ -429,13 +435,13 @@ struct GrammarTokenConstraintTests {
         let codePoints = vocab.decodedCodePoints.reduce(0) { $0 + $1.count }
         print("""
             [GrammarTokenConstraint] 語彙表の構築 \(fresh) (\(vocab.count) 個, \
-            phys_footprint +\((after &- before) / 1_048_576) MB) / \
+            実メモリ 1 本あたり \(perCopy / 1_048_576) MB) / \
             共有の再取得 \(cached) / allows 1 回 \(probe / probes) / \
             fillAllowedMask 1 回 \(batch) / partialUTF8 有りの回 \(slow) / \
             piece 合計 \(pieceBytes) B / コードポイント合計 \(codePoints)
             """)
         #expect(vocab.count == tok.vocabSize)
-        #expect(built?.count == tok.vocabSize)
+        #expect(live.allSatisfy { $0.count == tok.vocabSize })
     }
 
     /// このプロセスの実メモリ使用量 (バイト)。取れなければ 0。

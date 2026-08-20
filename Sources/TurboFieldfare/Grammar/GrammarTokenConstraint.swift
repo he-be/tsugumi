@@ -30,10 +30,13 @@ import Foundation
 /// `llama_grammar_apply_impl` で「空 piece」と「先頭が NUL の piece」を
 /// 文法にかける前に落とすのはそのためで、こちらも同じ扱いをする。
 ///
-/// **費用と共有**: 262 144 個ぶんの `convertIdToToken` + 変換で、実測
-/// 0.5〜1 秒 (M3 Pro, debug)。要求ごとに払う額ではないので
+/// **費用と共有**: 262 144 個ぶんの `convertIdToToken` + 変換 + UTF-8 の
+/// 復号で、実測 0.4 秒 (M3 Pro, debug)。要求ごとに払う額ではないので
 /// `shared(for:)` でプロセス内に 1 本だけ作って使い回す。値型だが中身は
 /// 配列の CoW なので、複製も受け渡しも参照 1 個ぶんしかかからない。
+/// piece の実体は合計 2.0 MB しかないが、要素ごとに配列を 1 本ずつ確保する
+/// ので実メモリはその数倍になる (`GrammarMatcher.RejectContext` が
+/// `[[UInt32]]` を要求するため、復号表も平らにはできない)。
 public struct GrammarVocabulary: Sendable {
     /// 表の要素数 (= 語彙数)。
     public var count: Int { pieces.count }
@@ -74,7 +77,15 @@ public struct GrammarVocabulary: Sendable {
         let size = tokenizer.vocabSize
         var pieces = [[UInt8]](repeating: [], count: size)
         var candidates: [GrammarCandidate] = []
+        var decodedCodePoints: [[UInt32]] = []
+        var decodedPartials: [GrammarPartialUTF8] = []
+        var candidateTokenIDs: [Int32] = []
+        var baseWork: [GrammarMatcher.WorkCandidate] = []
         candidates.reserveCapacity(size)
+        decodedCodePoints.reserveCapacity(size)
+        decodedPartials.reserveCapacity(size)
+        candidateTokenIDs.reserveCapacity(size)
+        baseWork.reserveCapacity(size)
 
         for id in 0..<size {
             guard let token = tokenizer.tokenizer.convertIdToToken(id) else { continue }
@@ -90,16 +101,22 @@ public struct GrammarVocabulary: Sendable {
             pieces[id] = piece
             // 参照実装 `llama_grammar_apply_impl` と同じ足切り。
             guard !piece.isEmpty, piece[0] != 0 else { continue }
+            let slot = candidates.count
             candidates.append(GrammarCandidate(index: id, tokenID: Int32(id), piece: piece))
+            // 空の `partialUTF8` からの復号。棄却経路の速い側がこれを使う。
+            let decoded = GrammarMatcher.decodeUTF8(piece, GrammarPartialUTF8())
+            decodedCodePoints.append(decoded.codePoints)
+            decodedPartials.append(decoded.partial)
+            candidateTokenIDs.append(Int32(id))
+            baseWork.append(GrammarMatcher.WorkCandidate(slot: slot, offset: 0))
         }
 
         self.pieces = pieces
         self.candidates = candidates
-        // TODO(P2-G4a 緑): 復号表を 1 度だけ作る。
-        self.decodedCodePoints = []
-        self.decodedPartials = []
-        self.candidateTokenIDs = []
-        self.baseWork = []
+        self.decodedCodePoints = decodedCodePoints
+        self.decodedPartials = decodedPartials
+        self.candidateTokenIDs = candidateTokenIDs
+        self.baseWork = baseWork
     }
 
     /// トークン 1 個の piece。範囲外の ID は空バイト列 (= 文法が常に拒む)。
@@ -184,6 +201,14 @@ public struct GrammarTrigger: Sendable, Equatable {
 ///
 /// スレッド安全性: 生成ループ 1 本から順に呼ばれる前提で、内部に錠は無い
 /// (`StubConstraint` など既存の実装と同じ約束)。
+///
+/// **`GrammarMatcher` への結合**: 速いマスク経路は `rejectedIndices` では
+/// なく、その内側の `rejectCandidates` を復号済みの `RejectContext` 付きで
+/// 直に呼ぶ (`rejectedIndices` は候補ごとに毎回復号し直す作りで、復号を
+/// 外から渡す入口が無い)。`rejectedIndices` が候補を組み立てる部分 —
+/// 空 / NUL の足切りと slot の採番 — はこちら側で再現している。照合器の
+/// 側でその前処理が変わったら、ここも合わせること。等価性は
+/// `GrammarTokenConstraintTests` が全語彙で毎回突き合わせる。
 public final class GrammarTokenConstraint: GenerationConstraint, @unchecked Sendable {
     private let vocabulary: GrammarVocabulary
     private let trigger: GrammarTrigger?
@@ -241,20 +266,53 @@ public final class GrammarTokenConstraint: GenerationConstraint, @unchecked Send
         return matcher.allows(piece: piece, tokenID: tokenID)
     }
 
-    /// 全語彙のマスク。交差計算は `rejectedIndices` の中で 1 回しか走らない。
+    /// 全語彙のマスク。交差計算は候補集合につき 1 回しか走らない。
+    ///
+    /// 速い側は語彙表の復号 (`decodedCodePoints`) をそのまま使う。
+    /// `GrammarMatcher.rejectedIndices` は候補ごとに毎回 UTF-8 を復号し直す
+    /// ので、262k 候補では棄却 1 回の 43% が復号になる (実測 0.349 秒中
+    /// 0.148 秒)。復号が使い回せるのは
+    /// **`matcher.partialUTF8.remaining == 0` のときだけ**で、根拠は
+    /// `decodeUTF8` の定義そのもの: `start.remaining` が 0 なら前置ループ
+    /// (`remaining > 0` が条件) は回らず、`start.remaining > 0` の分岐も
+    /// 通らないので、出力は `bytes` だけの関数になる。残りが 0 でない
+    /// (= 直前の piece が多バイト文字の途中で切れた) ときは合成せずに
+    /// `rejectedIndices` へ落とす — 継ぎ足しでも同じ結果を作れるはずだが、
+    /// 「壊れた列は途中結果ごと捨てる」という `decodeUTF8` の畳み込みまで
+    /// 再現する必要があり、等価だと言い切れないので採らない。生成の
+    /// ほとんどの手はこちらに来ないので、遅い側でよい。
     public func fillAllowedMask(_ allowed: UnsafeMutableBufferPointer<Bool>) throws {
         guard isApplied else {
             allowed.update(repeating: true)
             return
         }
-        // 既定は拒否。ここに残るのは表に無い ID と、空 / NUL 始まりの piece。
+        // 既定は拒否。ここに残るのは表に無い ID と、空 / NUL 始まりの piece
+        // (参照実装 `llama_grammar_apply_impl` が文法にかける前に落とす分)。
         allowed.update(repeating: false)
         let limit = allowed.count
-        for candidate in vocabulary.candidates where candidate.index < limit {
+        let candidates = vocabulary.candidates
+        for candidate in candidates where candidate.index < limit {
             allowed[candidate.index] = true
         }
-        for index in matcher.rejectedIndices(vocabulary.candidates) where index < limit {
-            allowed[index] = false
+
+        guard matcher.partialUTF8.remaining == 0 else {
+            for index in matcher.rejectedIndices(candidates) where index < limit {
+                allowed[index] = false
+            }
+            return
+        }
+
+        // `rejectedIndices` が内側でやることと同じで、復号だけが済んでいる。
+        // 空 / NUL の候補は `candidates` に入っていないので前置きも要らない。
+        let context = GrammarMatcher.RejectContext(
+            rules: matcher.grammar.rules,
+            decoded: vocabulary.decodedCodePoints,
+            partials: vocabulary.decodedPartials,
+            tokenIDs: vocabulary.candidateTokenIDs
+        )
+        for work in GrammarMatcher.rejectCandidates(matcher.stacks, vocabulary.baseWork, context) {
+            let index = candidates[work.slot].index
+            if index < limit { allowed[index] = false }
         }
     }
 
