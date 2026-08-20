@@ -30,6 +30,11 @@ public struct DraftConfig: Sendable, Equatable {
     public let sharedFullKVLayer: Int
     public let quantBits: Int
     public let quantGroupSize: Int
+    /// How the drafter's own 4-bit groups encode their zero point. Independent
+    /// of the target's: the drafter is a separate checkpoint packed on its own
+    /// terms, and it gets a shader library specialized for this value
+    /// (`DraftContextPlan`).
+    public let quantScheme: Quantization.AffineScheme
 
     public func headDim(forLayer layer: Int) -> Int {
         fullAttentionLayerMask[layer] == 1 ? fullHeadDim : headDim
@@ -370,7 +375,9 @@ extension DraftConfig {
                   sharedSlidingKVLayer: manifest.sharedSlidingKVLayer,
                   sharedFullKVLayer: manifest.sharedFullKVLayer,
                   quantBits: manifest.quant.weightBits,
-                  quantGroupSize: manifest.quant.groupSize)
+                  quantGroupSize: manifest.quant.groupSize,
+                  // 未実装: `manifest.quant.scheme` is not read yet.
+                  quantScheme: .affine)
     }
 
     /// The codec checked the manifest against *some* arch; this checks it
