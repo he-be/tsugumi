@@ -41,10 +41,7 @@ C3 だけがモデルを積む。
 
 | SPEC ID | 現状 (実測 2026-08-19) | 段 |
 | --- | --- | --- |
-| GEN-3 | 501 化は済み。文法拘束の実挙動はこれから | P2 |
-| GEN-1 / GEN-2 | 事後パース + スキーマ入口 400 | P2 |
-| GEN-4 | `required` / 名前指定が 501 | P2 |
-| GEN-5 / GEN-6 / GEN-7 | 遅延文法・思考中の抑止・棄却サンプリングはまだ無い | P2 |
+| GEN-13 | 非遅延の文法が思考ブロックを飲まない (思考 ON + `response_format` が最初のトークンで詰まる) | P2 |
 | RSN-1 / RSN-4 | `--thinking` 独自フラグ。予算切れで本文 0 字 (`max_tokens: 80` で reasoning 357 字・content 空を実測) | P4 |
 | RSP-3 / RSP-5 | `timings` / `system_fingerprint` 無し | P5 |
 | EP-5 / EP-6 | `/tokenize` 系・`/slots`・`/metrics` 無し | P5 |
@@ -65,6 +62,16 @@ ERR-2 の 401・405・415 と 413 の撤去 (DEV-11)、FLAG-5 (`--api-key`)、FL
 `ServerLifecycleEndpointTests` + `ServerPropsTests` + `ServerLifecycleAuthTests` +
 `ServerLifecycleCORSTests` + `HTTPServerTests`)。ポートは先に開き、ロード中は
 経路表より手前で 503 を返す。ロード失敗はプロセス終了。
+
+**GEN-1 / GEN-2 / GEN-3 / GEN-4 / GEN-5 / GEN-6 / GEN-7 / GEN-8 / GEN-9 /
+GEN-10 / GEN-11 / GEN-12** (2026-08-22、P2 の G1〜G4c-2)。GBNF エンジンと
+JSON Schema → 文法の変換を移植し、棄却サンプリングで生成に効かせ、
+501 を実挙動へ置き換えた。テストは `GrammarEngineTests` +
+`JSONSchemaGrammar*Tests` + `GrammarTokenConstraintTests` +
+`GenerationConstraintTests` + `ChatGrammarBuilderTests` +
+`ServerGenerationPlanTests` + `ChatRequestConstraintTests`。
+**ただし機構そのもの (GEN-5/6/7) を実機で見たわけではない** — 見えるのは
+C3 だけで、まだ走っていない。
 
 **C3 は書けた** (2026-08-22、`Scripts/c3_smoke.sh`、14 検査)。**まだ 1 度も
 走っていない** — 実機で走らせるのは人であり、走らせた結果はここに書き足す。
