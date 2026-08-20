@@ -164,7 +164,7 @@ struct JSONSchemaGrammarApproximationTests {
             schema: ##"{"type": "object", "properties": {"a b": {"type": "integer"}}, "required": ["a b"]}"##,
             dialect: .gemmaToolArguments,
             approximations: ["unrepresentable-key: a b"],
-            rootRule: ##""{" space a-b-kv space "}""##,
+            rootRule: ##""{" a-b-kv "}""##,
             referenceRejects: false),
     ]
 }
