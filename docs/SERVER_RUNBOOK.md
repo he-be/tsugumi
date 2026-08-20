@@ -129,7 +129,7 @@ nohup .build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo \
 error: expert cache configuration exceeds this device's recommended Metal working set —
 resident 1.51 GB + vision 1.15 GB + experts 8.93 GB (80 slots) + kv 3.31 GB
 + prefill scratch 0.29 GB = 15.19 GB; device recommends at most 12.88 GB.
-Lower --expert-cache-slots or --max-context.
+Lower the expert-cache slots or the context size.
 ```
 
 ## 3. 建ったことの確認
@@ -264,7 +264,7 @@ request chatcmpl-… completed in … finish=tool_calls        ← tool 呼び�
 
 | 症状 | 原因と対処 |
 | --- | --- |
-| `exit 2` + usage が出る | フラグの値が許可リストの外。`--max-context` は 4096 / 8192 / 16384 / 32768 / 65536 / 131072、`--expert-cache-slots` は 8/16/24/32/48/64/80/96/112、`--draft-block-size` は 0 または 2...8 |
+| `exit 2` + usage が出る | フラグの値が受け付けられない。**`-c/--ctx-size` と `--expert-cache-slots` は列挙で断らず、この機体が確保できる値へ下に丸める** (SPEC FLAG-2 / DEV-2) — 断られるのは 0 と負のときだけ。実効値は `/props` の `n_ctx` で読める。列挙で断るのは `--draft-block-size` (0 または 2...8) と `--prefill-chunk-tokens` |
 | `exceeds this device's recommended Metal working set` | §2。スロットを 1 段下げる |
 | `--draft-block-size 4 requires --prefill on` | MTP はチャンク prefill の経路を通る。`--prefill off` とは併用できない |
 | `needs a model installed with the drafter section` | そのモデルにドラフターが入っていない。`TurboFieldfareRepack --add-draft <model>` で 236 MB を追記する |
