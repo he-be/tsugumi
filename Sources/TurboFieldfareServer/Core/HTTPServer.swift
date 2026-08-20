@@ -34,10 +34,11 @@ public struct ServerProperties: Equatable, Sendable {
     /// (DEV-3), so this is a constant and not a flag.
     public static let totalSlots = 1
 
-    /// EP-4 `build_info`. SPEC names the field but not its contents, and this
-    /// checkout stamps no build number, so the honest value is the name of the
-    /// binary answering.
-    public static let buildInfo = "TurboFieldfareServer"
+    /// EP-4 `build_info`, which EP-4 also makes RSP-5's `system_fingerprint`.
+    /// One value, defined once in `ServerBuildIdentity` and read from there by
+    /// both — re-deriving it here would be a second answer to a question SPEC
+    /// says has one.
+    public static var buildInfo: String { ServerBuildIdentity.fingerprint }
 
     public init(modelPath: String = "",
                 contextLength: Int = 0,
@@ -671,6 +672,10 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 "finish_reason": completion.finishReason,
             ]],
             "usage": usageObject(completion.usage),
+            // RSP-5, in the place OpenAI puts it: alongside `model`, on the
+            // completion object itself. EP-4 makes it the same string `/props`
+            // answers with as `build_info`.
+            "system_fingerprint": ServerProperties.buildInfo,
         ]
         writeJSON(context, status: .ok, object: object)
     }
@@ -750,6 +755,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 "model": responseModel,
                 "choices": [],
                 "usage": usageObject(completion.usage),
+                "system_fingerprint": ServerProperties.buildInfo,
             ])
         }
         let contextBox = SendableContext(context)
@@ -776,6 +782,11 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 "delta": delta,
                 "finish_reason": encodedReason,
             ]],
+            // RSP-5 rides every chunk, not only the last one: the reference
+            // puts it on each `chat.completion.chunk` it builds
+            // (`server-task.cpp`'s `add_delta` at the pin), and a client that
+            // only ever sees the stream would otherwise never read it.
+            "system_fingerprint": ServerProperties.buildInfo,
         ]
     }
 
