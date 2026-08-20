@@ -142,7 +142,8 @@ public enum ChatGrammarBuilder {
         if let schema = responseFormat.schema {
             return responseFormatConstraint(schema: schema,
                                             tools: tools,
-                                            toolChoice: toolChoice)
+                                            toolChoice: toolChoice,
+                                            markers: markers)
         }
         return toolConstraint(tools: tools,
                               toolChoice: toolChoice,
@@ -150,12 +151,49 @@ public enum ChatGrammarBuilder {
                               markers: markers)
     }
 
+    // MARK: - GEN-13
+
+    /// Writes `root`, giving a non-lazy grammar the optional leading thought
+    /// block GEN-13 asks for.
+    ///
+    /// A non-lazy grammar is applied from the very first generated token. With
+    /// thinking on, that token is the thought channel's opener and not the
+    /// body, so a `root` that only spells the body leaves no token allowed at
+    /// all — which GEN-7 turns into a 500. The reference reaches the same shape
+    /// by prefixing `ctx.reasoning_parser` to every generated parser.
+    ///
+    /// **Optional, never required.** With thinking off the template writes a
+    /// closed, empty `<|channel>thought\n<channel|>` into the generation prompt
+    /// itself, so the first generated token is already the body. The same
+    /// grammar has to serve both.
+    ///
+    /// A lazy grammar keeps `root` as the trigger rule: it is not applied until
+    /// the trigger fires, so it never sees the thought block (GEN-6 owns that).
+    private static func addRoot(_ builder: inout JSONSchemaGrammarBuilder,
+                                body: String,
+                                isLazy: Bool,
+                                markers: ChatGrammarMarkers) {
+        guard !isLazy,
+              let start = markers.channelStartTokenID,
+              let end = markers.channelEndTokenID else {
+            _ = builder.addRule("root", body)
+            return
+        }
+        // The opener, then any run of tokens that is not the closer, then the
+        // closer. `!<[N]>` (TOKEN_NOT) is the only element that can say "any
+        // token except this one", and the thought text is arbitrary.
+        let thought = builder.addRule(
+            "thought", "<[\(start)]> !<[\(end)]>* <[\(end)]>")
+        _ = builder.addRule("root", "\(thought)? \(body)")
+    }
+
     // MARK: - GEN-3
 
     private static func responseFormatConstraint(
         schema: JSONValue,
         tools: [GFTokenizer.FunctionDefinition],
-        toolChoice: ChatToolChoice
+        toolChoice: ChatToolChoice,
+        markers: ChatGrammarMarkers
     ) -> ChatGrammarConstraint {
         var approximations: [String] = []
         switch toolChoice {
@@ -171,7 +209,11 @@ public enum ChatGrammarBuilder {
         case .auto, .none:
             break
         }
-        let result = JSONSchemaGrammar.grammar(for: schema, dialect: .json)
+        let result = JSONSchemaGrammar.build(dialect: .json) { builder in
+            // The schema is a named rule, not `root`: GEN-13's `root` wraps it.
+            let body = builder.addSchema("response-format", schema)
+            addRoot(&builder, body: body, isLazy: false, markers: markers)
+        }
         return ChatGrammarConstraint(grammar: result.grammar,
                                      isLazy: false,
                                      trigger: nil,
@@ -224,7 +266,7 @@ public enum ChatGrammarBuilder {
             // writes parallel calls back to back with no separator.
             let section = builder.addRule("tool-call",
                                           parallelToolCalls ? body + "+" : body)
-            _ = builder.addRule("root", section)
+            addRoot(&builder, body: section, isLazy: isLazy, markers: markers)
         }
         return ChatGrammarConstraint(
             grammar: result.grammar,
