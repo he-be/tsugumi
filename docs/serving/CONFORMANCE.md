@@ -45,12 +45,9 @@ C3 だけがモデルを積む。
 | GEN-1 / GEN-2 | 事後パース + スキーマ入口 400 | P2 |
 | GEN-4 | `required` / 名前指定が 501 | P2 |
 | GEN-5 / GEN-6 / GEN-7 | 遅延文法・思考中の抑止・棄却サンプリングはまだ無い | P2 |
-| LIF-1 / LIF-2 | ロード完了までポートを開かない (接続拒否、約 8〜40 秒) | P3 |
-| EP-1 | `/v1/health` 別名が 404 | P3 |
-| EP-4 / EP-7 | `/props` が 404。採らないパスも 404 (501 と区別なし) | P3 |
 | RSN-1 / RSN-4 | `--thinking` 独自フラグ。予算切れで本文 0 字 (`max_tokens: 80` で reasoning 357 字・content 空を実測) | P4 |
 | RSP-3 / RSP-5 | `timings` / `system_fingerprint` 無し | P5 |
-| EP-5 / EP-6 / FLAG-5 | `/tokenize` 系・`/slots`・`/metrics`・`--api-key`・CORS 無し | P5 |
+| EP-5 / EP-6 | `/tokenize` 系・`/slots`・`/metrics` 無し | P5 |
 
 緑になった行: **INV-1** (2026-08-20、P1-D2、SPEC §12 DEV-12 のサーバー変種 +
 MSG-5 の `reasoning_content` 入力)。**MSG-5** の入力側も同時。
@@ -61,6 +58,16 @@ MSG-5 の `reasoning_content` 入力)。**MSG-5** の入力側も同時。
 別建てのダイジェスト検定は撤去した。写真が違う要求は全体 miss ではなく
 **その写真の手前までヒット**する。
 **深い巻き戻しの正しさは式からの導出で、実測していない** (SPEC §12 DEV-13)。C3 送り。
+
+**LIF-1 / LIF-2 / LIF-3 / LIF-4 / LIF-5 / LIF-6 / LIF-7、EP-1 / EP-4 / EP-7 / EP-8、
+ERR-2 の 401・405・415 と 413 の撤去 (DEV-11)、FLAG-5 (`--api-key`)、FLAG-6
+(`--cors-origins`)** (2026-08-22、P3。`ServerLifecycleTests` +
+`ServerLifecycleEndpointTests` + `ServerPropsTests` + `ServerLifecycleAuthTests` +
+`ServerLifecycleCORSTests` + `HTTPServerTests`)。ポートは先に開き、ロード中は
+経路表より手前で 503 を返す。ロード失敗はプロセス終了。
+
+**C3 は書けた** (2026-08-22、`Scripts/c3_smoke.sh`、14 検査)。**まだ 1 度も
+走っていない** — 実機で走らせるのは人であり、走らせた結果はここに書き足す。
 
 すでに適合している (壊さないことをテストで固定する): RSP-2 (SSE の並び)、
 R2 (`null` = 未指定)、R1 (未知キー無視)、RSP-1 (usage + cached_tokens)、
