@@ -94,6 +94,16 @@ public struct SpeculativeDecodeResult: Sendable {
 /// sampler position and seed a plain `runRawCompletion` would have used, the
 /// text is the text of the non-speculative run. That identity is the gate, not
 /// an aspiration (04-PHASES §3 gate 1).
+///
+/// **DEV-14.** A request with a generation constraint does not use this loop:
+/// GEN-7 can redraw a token, and a redraw invalidates the premise every later
+/// position in the block was verified against. The parameter exists — rather
+/// than being absent — and throws, deliberately: it mirrors the
+/// `repetitionPenalty != 1.0` guard a few lines down, which refuses for exactly
+/// the same reason, and it means a caller that threads a constraint through
+/// both loops finds out at the first constrained request instead of quietly
+/// generating unconstrained text. The caller's job is the one-line branch to
+/// `runRawCompletion` that `ServerInference` already has for the penalty.
 public func runSpeculativeCompletion(producer: any LogitProducer,
                                      tokenizer: GFTokenizer,
                                      promptIds: [Int32],
@@ -108,9 +118,14 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
                                      shouldStop: () -> Bool = { false },
                                      onProgress: (RawDecodeProgress) -> Void) async throws
     -> SpeculativeDecodeResult {
-    if constraint != nil {
-        throw GenerationConstraintError.notImplemented(
-            "P2 G3: DEV-14 の判定は未実装")
+    // DEV-14. Checked before anything else, so a constrained request is refused
+    // for the reason that actually applies rather than for whatever the
+    // producer happens to lack.
+    guard constraint == nil else {
+        throw SpeculativeDraftError.unsupportedConfig(
+            "DEV-14: a constrained request cannot use speculative decoding "
+            + "(GEN-7 redraws break the verified block's premise); "
+            + "run it through runRawCompletion")
     }
     guard var drafting = producer as? any SpeculativeDrafting else {
         throw SpeculativeDraftError.unsupportedConfig(

@@ -70,13 +70,9 @@ public enum GenerationConstraintError: Error, CustomStringConvertible, Equatable
     /// constraint could not be applied. Refusing is the only honest answer:
     /// the alternative is unconstrained text under a constrained request.
     case logitsUnavailable(String)
-    /// The hook exists but the mechanism behind it does not yet (P2 G3, red).
-    case notImplemented(String)
 
     public var description: String {
         switch self {
-        case .notImplemented(let reason):
-            return reason
         case .noAllowedToken(let position):
             return "the constraint allows no token at generation position \(position)"
         case .maskedDrawRejected(let position, let tokenID):

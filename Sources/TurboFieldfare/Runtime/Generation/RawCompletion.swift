@@ -73,6 +73,12 @@ protocol FusedGreedyReporting: LogitProducer {
 
 extension RealForwardRunner: FusedGreedyReporting {}
 
+/// The refusal both fused-greedy shortcuts share: the producer answered with a
+/// GPU argmax and never wrote the logits a constraint has to mask.
+private let unconstrainableGreedyToken = GenerationConstraintError.logitsUnavailable(
+    "the producer answered with a GPU argmax instead of logits, so the constraint "
+    + "could not be applied; construct the runner with forceLogitsHead: true")
+
 extension GenerationConfig {
     /// A pure-greedy config can use the fused head's GPU argmax
     /// (`RealForwardRunner.lastGreedyToken`) instead of sampling from the
@@ -92,6 +98,11 @@ extension GenerationConfig {
 /// logits buffer is never written; the loop then requires a pure-greedy config
 /// and reads `lastGreedyToken`. Callers with sampling configs must construct
 /// the runner with `forceLogitsHead: true`.
+///
+/// `constraint` is the GEN-7 hook. Nil is the path everything took before it
+/// existed, down to the sampler call, so an unconstrained caller draws the same
+/// tokens it always did. Non-nil applies rejection sampling per token and rules
+/// out the fused-greedy shortcut, which never writes the logits a mask needs.
 public func runRawCompletion(producer: any LogitProducer,
                              tokenizer: GFTokenizer,
                              promptIds: [Int32],
@@ -104,9 +115,18 @@ public func runRawCompletion(producer: any LogitProducer,
                              start: RawCompletionStart = .reset,
                              shouldStop: () -> Bool = { false },
                              onProgress: (RawDecodeProgress) -> Void) async throws -> RawDecodeResult {
-    if constraint != nil {
-        throw GenerationConstraintError.notImplemented(
-            "P2 G3: GEN-7 の拘束フックは未実装")
+    // GEN-7: one gate for the whole generation. It carries the end-of-generation
+    // ids the constraint itself does not know about, so `mayEndHere` can mask
+    // them, and it is consulted per draw, so it always reflects the state the
+    // last `accept` left behind.
+    let gate = constraint.map {
+        ConstraintGate(constraint: $0,
+                       endOfGenerationTokenIDs: tokenizer.stopTokenIDs.union(config.extraStopTokens))
+    }
+    if gate != nil, (producer as? any FusedGreedyReporting)?.usesFusedGreedyHead == true {
+        throw GenerationConstraintError.logitsUnavailable(
+            "a constrained request needs real logits, and this producer runs the "
+            + "fused greedy head; construct the runner with forceLogitsHead: true")
     }
     let prepared = try await prepareGeneration(producer: producer,
                                                promptIds: promptIds,
@@ -140,19 +160,24 @@ public func runRawCompletion(producer: any LogitProducer,
         if generated == 0, let seed = prefillSeed {
             switch seed {
             case .greedyToken(let token):
+                guard gate == nil else { throw unconstrainableGreedyToken }
                 tokenID = Int32(bitPattern: token)
             case .logitsWritten:
                 tokenID = try sampleOnce(scratch: scratch, context: context,
                                          history: history, config: config,
-                                         position: generated)
+                                         position: generated, constraint: gate).id
             }
         } else if fusedGreedy {
+            guard gate == nil else { throw unconstrainableGreedyToken }
             tokenID = Int32(bitPattern: fusedRunner!.lastGreedyToken)
         } else {
             tokenID = try sampleOnce(scratch: scratch, context: context,
                                      history: history, config: config,
-                                     position: generated)
+                                     position: generated, constraint: gate).id
         }
+        // Every token the loop keeps is accepted, in order, including the one
+        // that ends generation.
+        try gate?.accept(tokenID)
         generated += 1
         if generated == 1 {
             timeToFirstToken = Date().timeIntervalSince(prefillStart)

@@ -75,15 +75,46 @@ enum SamplePath: Sendable, Equatable {
 /// `constraint` nil is the unconstrained path and delegates to the plain
 /// `sampleOnce` unchanged, so a caller that passes no constraint draws the same
 /// token, from the same seed, as it did before this hook existed.
+///
+/// The rejection path costs, on top of the draw that was thrown away: one
+/// `fillAllowedMask` over the vocabulary (the constraint's own cost — for a
+/// grammar this is the expensive part), one host pass that rebuilds `probs` as
+/// the masked distribution (~V byte reads, V FP16 writes, and one `tanh`+`exp`
+/// per *allowed* id), and one extra command buffer holding the draw kernel
+/// alone. At the pinned vocabulary that is well under a millisecond of host
+/// work plus one round trip — paid per rejected token, never per token.
 func sampleOnce(scratch: RawCompletionScratch, context: MetalContext,
                 history: [Int32], config: GenerationConfig, position: Int,
                 constraint gate: ConstraintGate?) throws -> (id: Int32, path: SamplePath) {
     let drawn = try sampleOnce(scratch: scratch, context: context,
                               history: history, config: config, position: position)
     let path = scratch.sampler.lastPath
-    guard gate != nil else { return (drawn, path) }
-    throw GenerationConstraintError.notImplemented(
-        "P2 G3: GEN-7 の棄却サンプリングは未実装")
+    guard let gate, !gate.allows(drawn) else { return (drawn, path) }
+
+    let allowed = try scratch.sampler.writeMaskedProbs(logits: scratch.logits,
+                                                       probs: scratch.probs,
+                                                       gate: gate)
+    guard allowed > 0 else {
+        throw GenerationConstraintError.noAllowedToken(position: position)
+    }
+    guard let cb = context.queue.makeCommandBuffer() else { throw MetalError.noDevice }
+    // Only the draw: `probs` already holds the masked distribution, and the
+    // repetition penalty was applied in place to `logits` by the first draw —
+    // running the front end again would penalize the same history twice.
+    scratch.sampler.encodeDraw(commandBuffer: cb, probs: scratch.probs,
+                               config: config, position: position,
+                               outToken: scratch.outToken)
+    cb.commit(); cb.waitUntilCompleted()
+    try checkCommandBufferError(cb.error)
+    let redrawn = Int32(bitPattern: scratch.outToken.contents().load(as: UInt32.self))
+    // The probe already recorded this step from the first draw; recording the
+    // masked distribution too would double-count the position.
+    guard gate.allows(redrawn) else {
+        throw GenerationConstraintError.maskedDrawRejected(position: position,
+                                                           tokenID: redrawn)
+    }
+    scratch.sampler.noteConstraintResample()
+    return (redrawn, .constraintResampled)
 }
 
 /// Turns `GenerationConfig` + a logits buffer into one token id, staying
@@ -112,6 +143,9 @@ final class Sampler {
     /// Path of the most recent `sample(...)`, so a caller that wraps the draw
     /// (the GEN-7 rejection path) can report it without re-deriving it.
     private(set) var lastPath: SamplePath = .greedyGPU
+    /// Reused across rejections so a masked draw allocates nothing. Stays empty
+    /// for a run with no constraint.
+    private var allowedMask: [Bool] = []
 
     init(context: MetalContext, vocab: Int = 262_144,
                 logitSoftcap: Float = 30.0) throws {
@@ -184,6 +218,80 @@ final class Sampler {
                                 position: UInt32(position))
         }
         return isGreedy ? .greedyGPU : .gpuSampled
+    }
+
+    func noteConstraintResample() { lastPath = .constraintResampled }
+
+    // MARK: - Constraint mask (GEN-7)
+
+    /// Rebuild `probs` as the constraint-masked distribution and return how many
+    /// ids survived. Returns 0 when the constraint allows nothing; the caller
+    /// turns that into `GenerationConstraintError.noAllowedToken`.
+    ///
+    /// **Why the host, and why `probs` rather than `logits`.** The reference
+    /// masks by writing `-INFINITY` into the candidate logits
+    /// (`llama_grammar_apply_impl`) and letting the softmax turn that into an
+    /// exact zero. That does not carry over here: this runtime's front end is
+    /// the *fused* `logit_softcap_softmax`, and softcap is `30*tanh(z/30)`,
+    /// which maps `-inf` — and equally the most negative finite Float16 — to
+    /// exactly `-softcap`. A masked id would therefore keep the weight
+    /// `exp(-softcap - m)` relative to the surviving maximum `m`, which is
+    /// negligible when the model is confident and catastrophic when it is not
+    /// (with the whole vocabulary at `-softcap` and the allowed ids only a few
+    /// units above it, the rejected mass dominates the draw). No sentinel
+    /// value fixes that, because `tanh` has already floored it. So the mask is
+    /// applied where it is exact: the masked softmax is computed here, over the
+    /// allowed ids only, and rejected ids are written as a literal zero, which
+    /// the draw kernel skips (`!(p > 0)`) and the greedy argmax can never
+    /// prefer. Normalizing over the allowed set is also what keeps top-p
+    /// meaning what it means in the reference — the nucleus is taken from the
+    /// *masked* distribution.
+    ///
+    /// Cost: one pass to find the masked maximum, one to sum, one to write, and
+    /// `tanh`/`exp` only for allowed ids. `expf` here against the kernel's
+    /// `fast::exp` there is a last-bit difference in FP16 probabilities.
+    func writeMaskedProbs(logits: MTLBuffer, probs: MTLBuffer,
+                          gate: ConstraintGate) throws -> Int {
+        if allowedMask.count != vocab {
+            allowedMask = [Bool](repeating: false, count: vocab)
+        }
+        var allowedCount = 0
+        try allowedMask.withUnsafeMutableBufferPointer { mask in
+            try gate.fillAllowedMask(mask)
+            allowedCount = maskedSoftmax(logits: logits, probs: probs, allowed: mask)
+        }
+        return allowedCount
+    }
+
+    private func maskedSoftmax(logits: MTLBuffer, probs: MTLBuffer,
+                               allowed: UnsafeMutableBufferPointer<Bool>) -> Int {
+        let src = logits.contents().bindMemory(to: Float16.self, capacity: vocab)
+        let dst = probs.contents().bindMemory(to: Float16.self, capacity: vocab)
+        var m = -Float.infinity
+        var count = 0
+        for i in 0..<vocab where allowed[i] {
+            count += 1
+            let z = softcapped(Float(src[i]))
+            if z > m { m = z }
+        }
+        guard count > 0 else { return 0 }
+        var d: Float = 0
+        for i in 0..<vocab where allowed[i] {
+            d += expf(softcapped(Float(src[i])) - m)
+        }
+        // `d >= 1`: the id that set `m` contributes exp(0).
+        let invD = 1 / d
+        for i in 0..<vocab {
+            dst[i] = allowed[i]
+                ? Float16(expf(softcapped(Float(src[i])) - m) * invD)
+                : 0
+        }
+        return count
+    }
+
+    /// The same cap the front-end kernel applies, on the host.
+    private func softcapped(_ z: Float) -> Float {
+        logitSoftcap > 0 ? logitSoftcap * tanhf(z / logitSoftcap) : z
     }
 
     // MARK: - Repetition penalty (host, in place)
