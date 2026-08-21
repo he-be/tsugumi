@@ -1103,7 +1103,11 @@ public actor ServerModelSession: ServerInferenceBackend {
         // EP-6 `/metrics`: the totals are the sum of what RSP-3 reported for
         // each finished completion, and of nothing else. (The `max_tokens: 0`
         // exit above adds nothing — it decodes no token and spends no time.)
-        let timings = ServerTimings(result)
+        // RSP-3 / GEN-14: `draft_n` / `draft_n_accepted` come from the summary
+        // the speculative loop reported, and are absent for a request that took
+        // the plain path — the only place on the wire where a client can see
+        // whether MTP actually ran.
+        let timings = ServerTimings(result, speculative: speculativeSummary)
         accumulatedMetrics = accumulatedMetrics.adding(timings)
         return ServerCompletion(
             content: content,

@@ -27,9 +27,11 @@ public struct ServerTimings: Equatable, Sendable {
     /// `predicted_ms`: wall time spent generating them.
     public let predictedMilliseconds: Double
 
-    /// `draft_n`. P6 M4 未実装: まだ常に 0 で、`jsonObject` にも出ない。
+    /// `draft_n`: proposals the drafter made across the whole request. Zero for
+    /// a request that did not speculate, and the two keys then stay off the
+    /// wire entirely (`jsonObject`).
     public let draftTokens: Int
-    /// `draft_n_accepted`. P6 M4 未実装。
+    /// `draft_n_accepted`: how many of those the target's own draw agreed with.
     public let draftAcceptedTokens: Int
 
     public init(cacheTokens: Int,
@@ -44,11 +46,8 @@ public struct ServerTimings: Equatable, Sendable {
         self.promptMilliseconds = promptMilliseconds
         self.predictedTokens = predictedTokens
         self.predictedMilliseconds = predictedMilliseconds
-        // P6 M4 未実装。
-        _ = draftTokens
-        _ = draftAcceptedTokens
-        self.draftTokens = 0
-        self.draftAcceptedTokens = 0
+        self.draftTokens = draftTokens
+        self.draftAcceptedTokens = draftAcceptedTokens
     }
 
     /// The measurements the decode loop already takes, read off its result.
@@ -61,10 +60,16 @@ public struct ServerTimings: Equatable, Sendable {
     }
 
     /// RSP-3 / GEN-14: the same measurements plus what the speculative loop
-    /// reported, for a request that ran it. P6 M4 未実装。
+    /// reported, for a request that ran it. `nil` — the plain path — leaves the
+    /// two counters at zero, which is what keeps them off the wire.
     public init(_ result: RawDecodeResult, speculative: ServerSpeculativeSummary?) {
-        _ = speculative
-        self.init(result)
+        self.init(cacheTokens: result.cachedPromptTokens,
+                  promptTokens: result.computedPrefillTokens,
+                  promptMilliseconds: result.prefillSeconds * 1_000,
+                  predictedTokens: result.newTokens,
+                  predictedMilliseconds: result.decodeSeconds * 1_000,
+                  draftTokens: speculative?.proposed ?? 0,
+                  draftAcceptedTokens: speculative?.accepted ?? 0)
     }
 
     /// RSP-3's last sentence: what this request left in the context.
@@ -92,8 +97,16 @@ public struct ServerTimings: Equatable, Sendable {
     }
 
     /// The `timings` object as it goes on the wire.
+    ///
+    /// The two draft counters are written **only when something was drafted**,
+    /// which is the reference's own gate (`server_slot_stats::to_json` writes
+    /// them under `n_draft_tokens > 0`, pin `34af94cd9`). That is what lets a
+    /// client tell "MTP did not run" from "MTP ran and accepted nothing": the
+    /// first has no keys, the second has `draft_n > 0` with
+    /// `draft_n_accepted == 0`. CONFORMANCE §5 measures the everyday client
+    /// exactly this way.
     public var jsonObject: [String: Any] {
-        [
+        var object: [String: Any] = [
             "cache_n": cacheTokens,
             "prompt_n": promptTokens,
             "prompt_ms": promptMilliseconds,
@@ -103,6 +116,11 @@ public struct ServerTimings: Equatable, Sendable {
             "predicted_per_token_ms": predictedMillisecondsPerToken,
             "predicted_per_second": predictedTokensPerSecond,
         ]
+        if draftTokens > 0 {
+            object["draft_n"] = draftTokens
+            object["draft_n_accepted"] = draftAcceptedTokens
+        }
+        return object
     }
 }
 
@@ -134,6 +152,10 @@ public final class ServerTimingsMonitor: Sendable {
 /// thing this has to follow is the generated half and the wall clock.
 ///
 /// **The prompt wall time here is not the one the finished response carries.**
+/// Neither are the draft counters: the round bookkeeping is reported when the
+/// speculative loop returns, so a running snapshot has nothing to say about it
+/// and says nothing rather than a made-up zero. The final chunk and the
+/// non-stream body carry them (RSP-3 / GEN-14).
 /// The decode loop measures its own prefill and only reports it in
 /// `RawDecodeResult`, when the generation is over; a request that asked for
 /// per-token timings needs a number before that, so `prompt_ms` is measured
