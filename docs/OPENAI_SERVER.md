@@ -113,9 +113,22 @@ Japanese prose, which the drafter predicts far less well
 
 The flag needs `--prefill on` (the default) and a model with the drafter
 section; either missing exits at startup rather than failing on the first
-request. A request that asks for a `repeat_penalty` other than `1.0` runs
-on the plain decode path for that request alone. Prompt reuse is unaffected:
-`cached_tokens` is the same with the flag on and off.
+request. Prompt reuse is unaffected: `cached_tokens` is the same with the flag
+on and off.
+
+Declaring `tools` — or a `response_format`, or any `tool_choice` — does **not**
+turn speculation off. A constrained request is drawn one position at a time with
+the grammar applied and verified the same way an unconstrained one is
+(SPEC §6 GEN-14). Two kinds of request still run on the plain decode path for
+that request alone: one asking for a `repeat_penalty` other than `1.0`, and one
+whose thought channel is open *and* bounded (a `reasoning_budget_tokens`, or a
+`max_tokens`, while thinking is on), because the closing tag the budget forces
+is a token that was placed rather than drawn (SPEC §12 DEV-14).
+
+**To see whether it ran**, read `timings.draft_n` on the response: it is the
+number of tokens the drafter proposed, and `timings.draft_n_accepted` how many
+the target agreed with. Both keys are **absent** from a request that did not
+speculate, so "no keys" and "ran but accepted nothing" are different answers.
 
 Each completed request logs what the round bookkeeping saw:
 
@@ -408,7 +421,10 @@ build and is the same string `/props` reports as `build_info`. Every response
 also carries `timings` — the prompt and prediction token counts, milliseconds,
 and rates — on the non-stream body and on the last SSE chunk; send
 `"timings_per_token": true` to get one on every chunk. Context usage is
-`timings.prompt_n + timings.cache_n + timings.predicted_n`.
+`timings.prompt_n + timings.cache_n + timings.predicted_n`. A request that ran
+speculative decoding also carries `draft_n` and `draft_n_accepted` there; a
+request that did not carries neither key (see
+[Speculative decoding](#speculative-decoding-mtp)).
 
 Chat Completions supports JSON and Server-Sent Events responses. Set
 `"stream": true` for streaming. Set

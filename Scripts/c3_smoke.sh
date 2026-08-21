@@ -68,7 +68,7 @@ FILLER_LINES="${TF_C3_FILLER_LINES:-260}"
 PGREP_PATTERN='TurboFieldfareServer|TurboFieldfareMac|TurboFieldfareDecodeService|TurboFieldfareCLI|TurboFieldfarePackageTests|swiftpm-testing-helper|mlx_lm|mlx-lm'
 
 # 検査の並び。DEV-13 はキャッシュ状態を捨てさせるので必ず最後。
-ALL_CHECKS="GEN-1 GEN-3-object GEN-3-schema GEN-4-required GEN-4-named GEN-4-reject GEN-12 GEN-8 RSN-4-max-tokens RSN-4-budget CACHE-1 CACHE-1-thinking MSG-6 DEV-13"
+ALL_CHECKS="GEN-1 GEN-3-object GEN-3-schema GEN-4-required GEN-4-named GEN-4-reject GEN-12 GEN-8 GEN-14 RSN-4-max-tokens RSN-4-budget CACHE-1 CACHE-1-thinking MSG-6 DEV-13"
 
 usage() {
     cat <<USAGE
@@ -101,6 +101,7 @@ RSN-4-max-tokens  max_tokens 80 の思考 ON で本文が空にならない (CON
 RSN-4-budget      reasoning_budget_tokens を使い切っても本文が空にならない
 CACHE-1           2 ターン目の cached_tokens > 0 (思考 OFF)
 CACHE-1-thinking  同上 + reasoning_content を返した思考 ON のターン (MSG-5 / INV-1)
+GEN-14            tools を宣言した要求でも投機デコードが走る (timings.draft_n > 0)
 MSG-6             tools × 画像 × 思考を 1 要求で同時に (入口で 400 にしない)
 DEV-13            リングより深い巻き戻し → 全 prefill に落ち、答えは正しいまま
 LIST
@@ -778,6 +779,75 @@ check_gen8() {
     finish
 }
 
+# GEN-14 / RSP-3: 文法拘束は投機デコードを止めない。**ワイヤから見えるのは
+# `timings.draft_n` だけ**であり、CONFORMANCE §5 の完了の定義が「MTP が効いて
+# いる」をこの数字で見ると決めている (2026-08-21 に数字で見たら、tools を
+# 宣言した要求は 1 本も走っていなかった)。
+#
+# 3 本投げる: (a) tools 無しの下敷き — ここで `draft_n` が無ければサーバーが
+# `--draft-block-size 0` で建っているので SKIP、(b) tools + `tool_choice: auto`
+# (遅延文法。常用クライアントの形)、(c) `tool_choice: required` (非遅延。最初の
+# トークンから拘束がかかる形)。
+#
+# **どれも思考 OFF で投げる。**思考 ON かつ `max_tokens` 指定の要求は RSN-4 の
+# 終了タグ強制が働きうるので、SPEC §12 **DEV-14** によって plain 経路に落ちる —
+# それは GEN-14 の話ではない。思考 ON でも `max_tokens` と
+# `reasoning_budget_tokens` の両方が無制限なら投機経路に入る。
+check_gen14() {
+    begin GEN-14 "tools を宣言した要求でも投機が走る (timings.draft_n > 0)"
+    local prompt='Name three prime numbers larger than one hundred and say why each is prime.'
+
+    jq -n --arg model "$MODEL" --arg p "$prompt" '{
+        model: $model,
+        messages: [{role:"user", content:$p}],
+        reasoning_effort: "none",
+        temperature: 0,
+        max_tokens: 128
+    }' > "$RUN_DIR/gen14a.req.json"
+    post "$RUN_DIR/gen14a.req.json" gen14a || { finish; return; }
+    expect_status 200 || { finish; return; }
+    if ! jq -e '.timings.draft_n? // empty | . > 0' "$LAST_BODY" >/dev/null 2>&1; then
+        skip "tools 無しの要求でも draft_n が無い — サーバーが --draft-block-size 0 で建っているか、ドラフターの入っていないバンドルを積んでいる。GEN-14 はここでは判定できない"
+        finish
+        return
+    fi
+    note "下敷き (tools 無し): draft_n=$(capture '.timings.draft_n') accepted=$(capture '.timings.draft_n_accepted')"
+
+    jq -n --arg model "$MODEL" --arg p "$prompt" --argjson tools "$(tools_json)" '{
+        model: $model,
+        messages: [{role:"user", content:$p}],
+        tools: $tools,
+        reasoning_effort: "none",
+        temperature: 0,
+        max_tokens: 128
+    }' > "$RUN_DIR/gen14b.req.json"
+    post "$RUN_DIR/gen14b.req.json" gen14b || { finish; return; }
+    expect_status 200 || { finish; return; }
+    assert '.timings.draft_n > 0' \
+           'tools 宣言 (遅延文法) の要求でも投機が走った (GEN-14)'
+    assert '.timings.draft_n_accepted >= 0' 'draft_n_accepted が載っている (RSP-3)'
+    assert '.timings.draft_n_accepted <= .timings.draft_n' '採用数は提案数を超えない'
+    note "tools 宣言: draft_n=$(capture '.timings.draft_n') accepted=$(capture '.timings.draft_n_accepted')"
+
+    jq -n --arg model "$MODEL" --argjson tools "$(tools_json)" '{
+        model: $model,
+        messages: [{role:"user",
+            content:"Call the get_weather tool for Kyoto. Do not answer in prose."}],
+        tools: $tools,
+        tool_choice: "required",
+        reasoning_effort: "none",
+        temperature: 0,
+        max_tokens: 128
+    }' > "$RUN_DIR/gen14c.req.json"
+    post "$RUN_DIR/gen14c.req.json" gen14c || { finish; return; }
+    expect_status 200 || { finish; return; }
+    assert '(.choices[0].message.tool_calls | length) >= 1' 'required でツールが呼ばれた'
+    assert '.timings.draft_n > 0' \
+           'tool_choice: required (非遅延。全位置が拘束される) でも投機が走った (GEN-14)'
+    note "required: draft_n=$(capture '.timings.draft_n') accepted=$(capture '.timings.draft_n_accepted')"
+    finish
+}
+
 # MSG-6: tools × 画像 × 思考は同時に成立する。組合せを入口で 400 にしない。
 check_msg6() {
     begin MSG-6 "tools × 画像 × 思考を 1 要求で同時に"
@@ -950,6 +1020,7 @@ run_check() {
         CACHE-1)          check_cache1 ;;
         CACHE-1-thinking) check_cache1_thinking ;;
         GEN-8)            check_gen8 ;;
+        GEN-14)           check_gen14 ;;
         MSG-6)            check_msg6 ;;
         DEV-13)           check_dev13 ;;
         *) die "知らない検査: $1 (--list で一覧)" ;;
