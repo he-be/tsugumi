@@ -1352,6 +1352,40 @@ let verifyCold = arguments.contains("--verify-cold")
 // have nothing to say about the pass this run is here to check.
 let modelOnly = arguments.contains("--model-only") || verifyBlockModel != nil
 
+// `--gdn` runs the Gated DeltaNet checks (GatedDeltaNetCheck.swift): the
+// recurrence that carries 30 of Qwen3.5-MoE's 40 layers, against a CPU
+// reference at two precisions. No model and no checkpoint — the inputs are
+// synthetic in the shapes the model produces. `docs/qwen35moe/04-PHASES.md`
+// Phase 2. `--gdn-tokens` sets the prefill length; the exit condition is
+// stated at 2048 because one token cannot show an accumulation bug.
+if arguments.contains("--gdn") {
+    var gdnTokens = 2048
+    if let index = arguments.firstIndex(of: "--gdn-tokens"),
+       index + 1 < arguments.count, let value = Int(arguments[index + 1]), value > 1 {
+        gdnTokens = value
+    }
+    if arguments.contains("--gdn-bench") {
+        var gdnIterations = 20
+        if let index = arguments.firstIndex(of: "--gdn-bench-iterations"),
+           index + 1 < arguments.count, let value = Int(arguments[index + 1]), value > 0 {
+            gdnIterations = value
+        }
+        try runGatedDeltaNetBench(tokens: gdnTokens, iterations: gdnIterations)
+        exit(0)
+    }
+    let gdnResults = try runGatedDeltaNetCheck(tokens: gdnTokens)
+    printCases(gdnResults)
+    let gdnFailures = gdnResults.filter { !$0.passed }
+    print("")
+    if gdnFailures.isEmpty {
+        print("PASS  \(gdnResults.count) cases (gated deltanet)")
+        exit(0)
+    }
+    print("FAIL  \(gdnFailures.count)/\(gdnResults.count) cases")
+    for failure in gdnFailures { print("  \(failure.name) — \(failure.detail)") }
+    exit(1)
+}
+
 // `--rows-bench` measures the k-row dense GEMV on its own (RowsBench.swift).
 // It needs no model and no expert cache, so the k-scaling that
 // `docs/mtp/19-M4.7-RESULTS.md` §5 attributes to arithmetic can be read

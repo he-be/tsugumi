@@ -218,7 +218,10 @@ public final class MetalContext: @unchecked Sendable {
         "vision",
     ]
 
-    /// Bundle locations for runtime shader modules.
+    /// Bundle locations for runtime shader modules. `tensorops` and `gdn` are
+    /// listed here but not in `shaderModules`: they are compiled on their own
+    /// through `moduleLibrary(device:module:)` so they cost the Gemma 4 path
+    /// nothing at startup.
     private static let shaderSubdirectories: [String: String] = [
         "attention": "Metal/Attention",
         "dequant_int4": "Metal/Quant",
@@ -229,6 +232,7 @@ public final class MetalContext: @unchecked Sendable {
         "prefill": "Metal/Prefill",
         "rmsnorm": "Metal/Primitives",
         "rope": "Metal/Primitives",
+        "gdn": "Metal/Qwen",
         "tensorops": "Metal/TensorCore",
         "utility": "Metal/Primitives",
         "vision": "Metal/Vision",

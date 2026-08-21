@@ -7,24 +7,33 @@
 
 | Phase | 状態 |
 | --- | --- |
-| Phase 0 事実確定 | **大半済み。**`gate_up` の順序・RMSNorm の `+1`・`conv1d` の軸順・`in_proj_a` の感度が確定 ([10](10-MLX4BIT-AUDIT.md))。**`oQ4e-g64` 側の照合も完了** ([12](12-OQ4E-G64-AUDIT.md))。**残: 実活性での再測 (合成入力でしか測っていない)、fixtures の作成** |
+| Phase 0 事実確定 | **ほぼ済み。**`gate_up` の順序・RMSNorm の `+1`・`conv1d` の軸順・`in_proj_a` の感度が確定 ([10](10-MLX4BIT-AUDIT.md))。**`oQ4e-g64` 側の照合も完了** ([12](12-OQ4E-G64-AUDIT.md))。**float32 参照器が動き、算式が上流実装と一致** ([14](14-REFERENCE.md))。**残: fixtures の絞り込みと 2048 トークン後の状態** |
 | Phase 1 変換 | **完了** ([13](13-PHASE1-REPACK.md))。`oQ4e-g64-baked` を repack し `--verify-install` が緑。20.49 GB / `expertStride 1,769,472` / 上流とバイト一致 |
-| Phase 2 以降 | 未着手。**GPU はまだ 0 回。**GPU 不要の作業はここで尽きた |
+| Phase 2 カーネル | **着手。本命の `qwen_delta_rule` が通った** ([15](15-PHASE2-GDN.md))。CPU float32 の床と 3 桁一致、2048 トークン後の状態も一致、prefill 30 層 **125.7 ms** (中止線 150 ms の内側)。**残りは norm gate / conv1d / partial RoPE / LM head** |
+| Phase 3 以降 | 未着手。ランタイム側の最初の障害はカーネルではなく**混在ビット幅** ([13 §4-2](13-PHASE1-REPACK.md)) |
 
 ---
 
 ## Phase 0 — 事実確定 (GPU 不要)
 
-1. `Scripts/qwen35/dump_reference.py`: CPU / float32 の `transformers` で 8 トークンの
-   プロンプトを 1 回流し、**層ごとの入出力・線形注意の状態・router の top-8・logits** を
-   `.npy` で落とす (`Scripts/vision/dump_vision_fixtures.py` と同じ立て付け)
+1. ~~`Scripts/qwen35/dump_reference.py`~~ → **`reference_forward.py` として完了**
+   ([14](14-REFERENCE.md))。ただし計画とは形が違う: **上流 bf16 は手元に無く、
+   18 GB の RAM に 21.9 GB は載らない**ので、`transformers` をランタイムとして
+   使うのではなく、**層を 1 つずつ開いて捨てる float32 参照器**を書いた
+   (`transformers` は**算式の出典と検証相手**として使う)。層ごとの入出力・
+   線形注意の状態・router の top-8・logits が `.npz` で落ちる
 2. `gate_up_proj` の連結順 — **解決済み** (MLX が分割済み)。ただし fixtures で 1 度だけ突き合わせる
 3. `A_log` / `dt_bias` / `in_proj_a` の値域 — **出した** ([10 §5](10-MLX4BIT-AUDIT.md))。
-   残: **実活性での再測** (合成入力 `x ~ N(0,1)` でしか測っていない)
+   残: **実活性での再測** (合成入力 `x ~ N(0,1)` でしか測っていない)。
+   参照器が実活性を持つようになったので、**測る道具は揃った**
 4. 4-bit RTN を通したときの品質: **層ごとの相対誤差と最終 logits の KL** を出す。
    imatrix 版 (oQ4e-g64) との対照もここで取る
 
 **出口:** fixtures がリポジトリに入り、「4-bit で行けるか」に数字が付いている。
+**注意:** 参照器が展開するのは**4-bit チェックポイントを float32 に戻したもの**で、
+bf16 そのものではない。したがって「4-bit で行けるか」を bf16 との差として測ることは
+**この機械ではできない** (全 70 GB の取得が要る)。候補どうしの比較 (NLL) は測れる
+([14 §7](14-REFERENCE.md))。
 
 **中止線:** 4-bit affine で logits の top-1 一致率が参照に対し 95% を切ったら、
 attention と `in_proj_*` を int8 に上げる案 (+約 580 MB) を先に評価する。
@@ -48,6 +57,11 @@ attention と `in_proj_*` を int8 に上げる案 (+約 580 MB) を先に評価
 **出口:** 全カーネルが誤差床の中。特に `qwen_delta_rule` は
 **2048 トークン流した後の状態**が参照と一致すること (1 トークンだけでは足りない)。
 
+**`qwen_delta_rule` は済んだ** ([15](15-PHASE2-GDN.md))。検証は fixtures ではなく
+**実物と同じ形の合成入力 + CPU 参照 2 本** (float32 の床 / double の真値) で立てた
+— チェックポイントを開かずに済み、2048 トークンの検査長を自由に取れるため。
+`--gdn` で 15 本。残るカーネルも同じ形で足す。
+
 ## Phase 3 — decode 結線
 
 `QwenForwardRunner` の decode 経路のみ。prefill は off、投機も off、
@@ -67,6 +81,9 @@ attention と `in_proj_*` を int8 に上げる案 (+約 580 MB) を先に評価
 
 **出口:** prefill 経由の greedy 64 トークンが Phase 3 と一致。
 **線形注意の 30 層合計が 150 ms 以内** ([05 §2](05-RISKS.md) #2)。
+
+**TB の 3 通りは合成入力で済んだ: TB=32 が最良** (125.7 / 128.4 / 144.8 ms、
+[15 §4](15-PHASE2-GDN.md))。実物の活性での再測は結線後。
 
 ## Phase 5 — トークナイザ / テンプレート / CLI
 
@@ -156,39 +173,39 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 
 ## 次の一手 (2026-08-21 夜)
 
-**GPU 不要 (全部終わった):**
+**済んだもの:**
 
-1. ~~`oQ4e-g64` の norm 規約の照合~~ → **完了。焼き済み / `linear_attn.norm` は素**
-   ([12 §2](12-OQ4E-G64-AUDIT.md))
-2. ~~`conv1d.weight` の軸順~~ → **完了。`[8192,4,1]`、squeeze 後 30/30 ビット一致**
-   ([12 §1](12-OQ4E-G64-AUDIT.md))
-3. ~~router のビット幅~~ → **完了。BF16。公式版 (int8) と違い、MTP 経路に効く**
-   ([12 §4](12-OQ4E-G64-AUDIT.md))
-4. ~~`q_norm` への `1/16` の焼き込み~~ → **完了。**差分シャード 1 枚を足す形で、
-   **無損失** (2 のべき乗なので指数だけが動く) を検査つきで
-   ([12 §5](12-OQ4E-G64-AUDIT.md))
-5. **名前寄せ** ([03 §1-2](03-DESIGN.md)) — `.mlp.switch_mlp.` を `routedExpertRole` に当てる 1 文字列
-6. `.gturbo` への repack を通す
+1〜4. ~~`oQ4e-g64` の norm 規約 / `conv1d` の軸順 / router のビット幅 / `q_norm` の
+   焼き込み~~ → **完了** ([12](12-OQ4E-G64-AUDIT.md))
+5〜6. ~~名前寄せ~~ / ~~`.gturbo` への repack~~ → **完了** ([13](13-PHASE1-REPACK.md))
+7. ~~生成スモーク~~ → **完了。文が出た** ([14 §6](14-REFERENCE.md))
+9. ~~2 候補の品質差 (NLL)~~ → **完了。4 本とも `oQ4e-g64` が低い。本線を
+   `oQ4e-g64` に決めた** ([16 §1](16-QUALITY.md))
+12. ~~Gated DeltaNet カーネル~~ → **完了。GPU が初めて回った**
+   ([15](15-PHASE2-GDN.md))。2048 トークン後の状態が CPU float32 の床と一致、
+   prefill 30 層 125.7 ms で中止線の内側
 
-道具: `Scripts/qwen35/audit_checkpoint.py` / `bake_snapshot.py` (numpy だけ、GPU 不要)。
-repack 済みモデルは `scratch/ornith-oq4e-g64.gturbo`。
-`--bf16` を付けると上流 bf16 の抽出と突き合わせる。
-repack の入力は焼き込み済みの `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-baked`。
+**次にやること:**
 
-**GPU が要る (ここから先は指示待ち。GPU 不要の作業はもう無い):**
+| # | やること | 要るもの |
+| --- | --- | --- |
+| 13 | **Phase 2 の残りのカーネル。**`qwen_delta_norm_gate` ([03 §2-7](03-DESIGN.md))・因果 `conv1d`・partial RoPE のペア `(i, 32+i)` ([03 §2-2](03-DESIGN.md))・LM head の `D=2048 / vocab=248,320` specialization。**検証は 15 と同じ形** (合成入力 + CPU 参照 2 本) で足せる | GPU |
+| 11 | **混在ビット幅の受け入れ** ([13 §4-2](13-PHASE1-REPACK.md))。`Model.swift` は `quant.attention` のスロット 1 個で全 attention を検証しており、**今のままでは本線の `oQ4e-g64` を開けない。**索引から導くか、スロットを層ごとに割るかを決める | Swift。GPU 不要 |
+| 14 | **Phase 3 の結線** (`QwenForwardRunner` の decode 経路)。カーネルが揃い、11 が片付いてから | GPU |
+| 8 | `in_proj_a` の実活性再測を 200 トークン級の `--dump` でやり直す ([16 §2](16-QUALITY.md))。**本線は 8-bit なので、これは本線を止めない** | CPU |
+| 10 | fixtures を Phase 3 が要る層だけに絞る ([14 §5](14-REFERENCE.md))。**2048 トークン後の状態は 15 が合成入力で見たので、fixtures 側の宿題ではなくなった** | CPU |
 
-7. **生成スモーク。`oQ4e-g64` はまだ 1 度も推論を通していない。**
-   相対 L2 誤差を測っただけで、文が出るかは未確認
-8. `in_proj_a` の感度 ([10 §5](10-MLX4BIT-AUDIT.md)) を**合成入力ではなく実活性**で
-   測り直す (Phase 0 の宿題)
-9. 2 候補の品質差を測る。**ここで初めて「imatrix に 2.35 GB の価値があるか」が決まる**
+道具: `Scripts/qwen35/audit_checkpoint.py` / `bake_snapshot.py` / `mlx_quant.py` /
+`reference_forward.py` (numpy だけ)。`test_reference_forward.py` だけ torch を使う。
+カーネルの検査は `TurboFieldfareKernelCheck --gdn` (モデルもチェックポイントも要らない)。
+repack 済みモデルは `scratch/ornith-oq4e-g64.gturbo`、repack の入力は
+`~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-baked`。**参照器には焼き込み前の
+`~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64` を渡す** (`q_norm` の 1/16 は本ランタイム
+専用の細工なので、参照の算式には入れない)。
 
 **まだ手を付けていない前提:**
 
 - **tokenizer は確実に弾かれる** ([10 §3](10-MLX4BIT-AUDIT.md))。`decoder.type = ByteLevel` が
   `verifyDecoderConfiguration` の要求と合わない。Phase 5 の作業として据え置き
-- Gated DeltaNet カーネル ([03 §2-6](03-DESIGN.md)) は 1 行も書いていない
-- **ランタイムはまだこの `.gturbo` を開けない。**最初の障害はカーネルではなく
-  **attention のビット幅が層ごとに違うこと** ([13 §4-2](13-PHASE1-REPACK.md))。
-  `Model.swift` は `quant.attention` のスロット 1 個に対して全層を検証している
 - 運用点 (スロット数・チャンク幅) は Gemma 4 の値のままで、Ornith 用には何も測っていない
+- **参照器では bf16 との差は測れない** ([14 §7](14-REFERENCE.md))
