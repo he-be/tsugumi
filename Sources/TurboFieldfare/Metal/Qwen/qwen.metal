@@ -725,3 +725,263 @@ kernel void qwen_moe_shared_gate_logit(
     if (tid >= count) return;
     y[tid] = half(float(y[tid]) * qwen_sigmoid(float(logit[0])));
 }
+
+// ============================================================================
+// qwen_int8_qmm_* — INT8 affine の QMM (`Y[T,N] = X[T,K] · W[N,K]^T`)
+//
+// `docs/qwen35moe/04-PHASES.md` Phase 4。prefill には T 行を一度に通す GEMM が
+// 要るが、本リポジトリが持っている `prefill_int4_qmm_*` (prefill.metal) は
+// **INT4 しか読めない。**本線 `oQ4e-g64` は 15 ロール中 5 つが 1 つのスロットの
+// 中で幅を混ぜており (docs/qwen35moe/18-MIXED-BITS.md §3)、prefill が通る道の
+// うち `linear_attn.{in_proj_z, in_proj_a, in_proj_b, out_proj}` の 30 層と
+// `mlp.shared_expert.*` の 40 層は**全部 8-bit**、`self_attn.{q,k,v,o}_proj` と
+// `in_proj_qkv` は層ごとに 4/8 が混ざる。LM head で通ったのと同じ理屈で
+// (docs/qwen35moe/19-LM-HEAD-INT8.md)、**ニブルの展開は行の幾何であって
+// 引数ではない**ので、幅を渡して済ませることはできない。
+//
+// 幾何は `prefill_int4_qmm_simdgroup_f16` を 1 行ずつ写している。違いは 2 つ:
+//
+//   1. 行の刻みが `K / 2` ではなく **`K`** (1 重み 1 バイト)
+//   2. 8 幅のチャンクを埋めるのに 4 バイト読んでニブルを開くのではなく、
+//      **8 バイトをそのまま読む**
+//
+// 1 を写し忘れると隣の行を読む — 落ちも NaN も出さず、それらしい数を出す
+// (検査の負例 `int4-row-stride`)。
+//
+// 対称量子化 (`TURBO_AFFINE_SYMMETRIC`) の分岐は**持たない**。あれは
+// `bias == -8·scale` という INT4 のゼロ点の話で (docs/mtp/44-W1-WEIGHT-DIET.md
+// §1)、8-bit の group は bias 配列を持つ。既存の `dequant_int8_gemv_simd` と
+// `qwen_lm_head_greedy_int8_rows_chunk_raw` も同じく直に読む。
+//
+// scalar 版を残してあるのは 2 つの理由から: tiled 版は逆量子化した重みを
+// **FP16 で** threadgroup に置く (重み 1 個につき丸め 1 回) のに対し scalar 版は
+// FP32 のまま積むので、**カーネルのバグと staging の丸めを分けられる**
+// (`TF_QWEN_QMM=scalar`)。そして N < 64 のとき tiled 版は 64 幅のタイルの
+// ほとんどを捨てる。
+// ============================================================================
+
+constant constexpr uint kQwenQMMTileM  = 64;
+constant constexpr uint kQwenQMMTileN  = 64;
+constant constexpr uint kQwenQMMTileK  = 32;
+constant constexpr uint kQwenQMMThreads = 128;
+
+/// 1 スレッドが (token, row) 1 組の K 縮約を丸ごと持つ素の形。FP32 で積む。
+kernel void qwen_int8_qmm_f16_block(
+    device const uint8_t* W      [[buffer(0)]],   // [N, K] bytes
+    device const bfloat*  scales [[buffer(1)]],   // [N, K/G] BF16
+    device const bfloat*  biases [[buffer(2)]],   // [N, K/G] BF16
+    device const half*    X      [[buffer(3)]],   // [T, K] FP16
+    device       half*    Y      [[buffer(4)]],   // [T, N] FP16
+    constant     uint&    T      [[buffer(5)]],
+    constant     uint&    N      [[buffer(6)]],
+    constant     uint&    K      [[buffer(7)]],
+    uint2                 tid    [[thread_position_in_threadgroup]],
+    uint2                 tgid   [[threadgroup_position_in_grid]]
+) {
+    const uint n = tgid.x * 8u + tid.x;
+    const uint t = tgid.y * 8u + tid.y;
+    if (t >= T || n >= N) return;
+
+    const uint groups = K / kQwenHeadGroupSize;
+    device const uint8_t* w_row = W      + uint(n) * K;   // INT8: 刻みは K
+    device const bfloat*  s_row = scales + uint(n) * groups;
+    device const bfloat*  b_row = biases + uint(n) * groups;
+    device const half*    x_row = X      + uint(t) * K;
+
+    float acc = 0.0f;
+    for (uint g = 0; g < groups; ++g) {
+        const float scale = float(s_row[g]);
+        const float bias  = float(b_row[g]);
+        const uint  base  = g * kQwenHeadGroupSize;
+        float dot = 0.0f;
+        float sum = 0.0f;
+        for (uint kk = 0; kk < kQwenHeadGroupSize; ++kk) {
+            const float x = float(x_row[base + kk]);
+            dot = fma(float(uint(w_row[base + kk])), x, dot);
+            sum += x;
+        }
+        acc = fma(scale, dot, acc);
+        acc = fma(bias, sum, acc);
+    }
+    Y[uint(t) * N + n] = half(acc);
+}
+
+/// 64x64 の出力タイルを 1 threadgroup (4 simdgroup) が持ち、8x8 の
+/// `simdgroup_matrix` で積む版。重み 1 バイトを 64 トークンで 1 回だけ読む。
+/// K は affine の group とタイル (32) の両方の倍数であること — 呼ぶ側が見る。
+kernel void qwen_int8_qmm_simdgroup_f16(
+    device const uint8_t* W      [[buffer(0)]],
+    device const bfloat*  scales [[buffer(1)]],
+    device const bfloat*  biases [[buffer(2)]],
+    device const half*    X      [[buffer(3)]],
+    device       half*    Y      [[buffer(4)]],
+    constant     uint&    T      [[buffer(5)]],
+    constant     uint&    N      [[buffer(6)]],
+    constant     uint&    K      [[buffer(7)]],
+    uint3                 lid3   [[thread_position_in_threadgroup]],
+    uint3                 tgid3  [[threadgroup_position_in_grid]],
+    uint                  sgid   [[simdgroup_index_in_threadgroup]]
+) {
+    const uint lid = lid3.x;
+    const uint2 tgid = tgid3.xy;
+    threadgroup float stage[kQwenQMMTileM * kQwenQMMTileN];
+    threadgroup half* As = (threadgroup half*)stage;
+    threadgroup half* Bs = As + kQwenQMMTileM * kQwenQMMTileK;
+
+    const uint tBase = tgid.y * kQwenQMMTileM;
+    const uint nBase = tgid.x * kQwenQMMTileN;
+    const uint groups = K / kQwenHeadGroupSize;
+
+    const uint sg_m = (sgid / 2u) * 32u;
+    const uint sg_n = (sgid % 2u) * 32u;
+
+    simdgroup_float8x8 acc[4][4];
+    for (uint i = 0; i < 4u; ++i) {
+        for (uint j = 0; j < 4u; ++j) {
+            acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+        }
+    }
+
+    // 2 スレッドで 1 行を持ち、4 つある 8 幅のチャンクを 2 つずつ受け持つ。
+    const uint w_n_local   = lid & (kQwenQMMTileN - 1u);
+    const uint w_chunk_base = lid / kQwenQMMTileN;
+    const uint w_n = nBase + w_n_local;
+    device const uint8_t* w_row = W      + uint(w_n) * K;
+    device const bfloat*  s_row = scales + uint(w_n) * groups;
+    device const bfloat*  b_row = biases + uint(w_n) * groups;
+
+    for (uint k0 = 0; k0 < K; k0 += kQwenQMMTileK) {
+        // 活性: 64x32 の half を 1 スレッド 16 個。行内は K 連続。
+        for (uint i = 0; i < 16u; ++i) {
+            const uint idx = i * kQwenQMMThreads + lid;
+            const uint m  = idx / kQwenQMMTileK;
+            const uint kk = idx % kQwenQMMTileK;
+            const uint t = tBase + m;
+            As[idx] = (t < T) ? X[uint(t) * K + k0 + kk] : half(0.0f);
+        }
+
+        // 重み: 32x64 を K-major に置く (8x8 の load がそのまま [k, n] になる)。
+        for (uint c = 0; c < 2u; ++c) {
+            const uint kk = (w_chunk_base + c * 2u) * 8u;
+            if (w_n < N) {
+                const uint g = (k0 + kk) / kQwenHeadGroupSize;
+                const float scale = float(s_row[g]);
+                const float bias  = float(b_row[g]);
+                device const uint8_t* w_ptr = w_row + (k0 + kk);
+                for (uint p = 0; p < 8u; ++p) {
+                    const float w = fma(float(uint(w_ptr[p])), scale, bias);
+                    Bs[(kk + p) * kQwenQMMTileN + w_n_local] = half(w);
+                }
+            } else {
+                for (uint p = 0; p < 8u; ++p) {
+                    Bs[(kk + p) * kQwenQMMTileN + w_n_local] = half(0.0f);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        simdgroup_half8x8 a[4];
+        simdgroup_half8x8 b[4];
+        for (uint kk = 0; kk < kQwenQMMTileK; kk += 8u) {
+            for (uint i = 0; i < 4u; ++i) {
+                simdgroup_load(a[i],
+                               As + (sg_m + i * 8u) * kQwenQMMTileK + kk,
+                               kQwenQMMTileK);
+            }
+            for (uint j = 0; j < 4u; ++j) {
+                simdgroup_load(b[j],
+                               Bs + kk * kQwenQMMTileN + sg_n + j * 8u,
+                               kQwenQMMTileN);
+            }
+            for (uint i = 0; i < 4u; ++i) {
+                for (uint j = 0; j < 4u; ++j) {
+                    simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (uint i = 0; i < 4u; ++i) {
+        for (uint j = 0; j < 4u; ++j) {
+            simdgroup_store(acc[i][j],
+                            stage + (sg_m + i * 8u) * kQwenQMMTileN + sg_n + j * 8u,
+                            kQwenQMMTileN);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = 0; i < 32u; ++i) {
+        const uint idx = i * kQwenQMMThreads + lid;
+        const uint t = tBase + idx / kQwenQMMTileN;
+        const uint n = nBase + idx % kQwenQMMTileN;
+        if (t < T && n < N) {
+            Y[uint(t) * N + n] = half(stage[idx]);
+        }
+    }
+}
+
+// ============================================================================
+// prefill の T 行版 3 本
+//
+// decode 用に書いた 3 本 (`qwen_embed_lookup_int8` / `qwen_moe_shared_gate_logit`)
+// と blit でやっていた q の詰め直し (docs/qwen35moe/20-PHASE3-DECODE.md §3) を、
+// T トークンまとめて回す形にしたもの。decode 版は残す — 1 トークンのときに
+// トークン索引を 1 本のバッファ越しに読ませる意味が無い。
+// ============================================================================
+
+/// `out[t, :] = dequant(table[tokens[t], :])`。grid = (D, T)。
+kernel void qwen_embed_lookup_int8_block(
+    device const uint8_t* table  [[buffer(0)]],   // [V, D] bytes
+    device const bfloat*  scales [[buffer(1)]],   // [V, D/G] BF16
+    device const bfloat*  biases [[buffer(2)]],   // [V, D/G] BF16
+    device       half*    out    [[buffer(3)]],   // [T, D] FP16
+    device const uint*    tokens [[buffer(4)]],   // [T] UInt32
+    constant     uint&    d      [[buffer(5)]],
+    constant     uint&    T      [[buffer(6)]],
+    uint2                 gid    [[thread_position_in_grid]]
+) {
+    if (gid.x >= d || gid.y >= T) return;
+    const uint token_id = tokens[gid.y];
+    const uint groups_per_row = d / kQwenHeadGroupSize;
+    device const uint8_t* row_q = table  + uint(token_id) * d;
+    device const bfloat*  row_s = scales + uint(token_id) * groups_per_row;
+    device const bfloat*  row_b = biases + uint(token_id) * groups_per_row;
+    const uint g = gid.x / kQwenHeadGroupSize;
+    out[uint(gid.y) * d + gid.x] =
+        half(float(uint(row_q[gid.x])) * float(row_s[g]) + float(row_b[g]));
+}
+
+/// `y[t, :] *= sigmoid(logit[t])`。grid = (D, T)。
+kernel void qwen_moe_shared_gate_logit_block(
+    device       half* y     [[buffer(0)]],   // [T, D] FP16 (in-place)
+    device const half* logit [[buffer(1)]],   // [T] FP16 — GEMM (N=1) の出力
+    constant     uint& d     [[buffer(2)]],
+    constant     uint& T     [[buffer(3)]],
+    uint2              gid   [[thread_position_in_grid]]
+) {
+    if (gid.x >= d || gid.y >= T) return;
+    const uint i = uint(gid.y) * d + gid.x;
+    y[i] = half(float(y[i]) * qwen_sigmoid(float(logit[gid.y])));
+}
+
+/// 2 倍幅の `q_proj` の出力 `[T, NQ, 2*HD]` から q だけを `[T, NQ, HD]` に集める。
+///
+/// decode は 1 トークンなので 16 本の blit で済ませたが (20 §3)、T=2048 では
+/// 32,768 本になる。ゲートを持ち回る形は変えていない — `qwen_attn_output_gate`
+/// は attention の後で**元の 2 倍幅バッファ**から読む。
+kernel void qwen_query_compact(
+    device const half* wide    [[buffer(0)]],   // [T, NQ, 2*HD] FP16
+    device       half* out     [[buffer(1)]],   // [T, NQ, HD]   FP16
+    constant     uint& headDim [[buffer(2)]],
+    constant     uint& numQHeads [[buffer(3)]],
+    constant     uint& T       [[buffer(4)]],
+    uint2              gid     [[thread_position_in_grid]]
+) {
+    const uint compact_row = numQHeads * headDim;
+    if (gid.x >= compact_row || gid.y >= T) return;
+    const uint h = gid.x / headDim;
+    const uint i = gid.x % headDim;
+    out[uint(gid.y) * compact_row + gid.x] =
+        wide[uint(gid.y) * compact_row * 2u + h * headDim * 2u + i];
+}

@@ -166,6 +166,11 @@ scratch/vision-venv/bin/python Scripts/qwen35/reference_forward.py \
 | decode | **47.5 s/トークン** (46.9〜48.4、41 回) |
 | 生成できたトークン | 41 (**外から止めたため 48 には届いていない**) |
 
+**この生成は後で取り直した** ([21 §1](21-PHASE4-PREFILL.md))。`--max-new 64` で
+回すと **55 本目に `<|im_end|>` を出して自分で止まる**ので、48 にも 64 にも
+届かない理由は「外から止めた」ではなくなっている。fixture は
+`scratch/qwen35/decode-fixture-55.json`。
+
 出力 (`skip_special_tokens=False`):
 
 ```

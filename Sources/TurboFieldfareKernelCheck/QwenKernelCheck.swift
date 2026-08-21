@@ -826,6 +826,9 @@ func runQwenKernelCheck(tokens: Int) throws -> [CaseResult] {
     // ---- 8. INT8 の LM head chain (QwenHeadCheck.swift) ----------------------
     results.append(contentsOf: try runQwenHeadCheck(context: context))
 
+    // ---- 9. INT8 の QMM (QwenQMMCheck.swift) --------------------------------
+    results.append(contentsOf: try runQwenQMMCheck(context: context))
+
     return results
 }
 

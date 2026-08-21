@@ -72,6 +72,20 @@ static inline float prefill_gelu_pytorch_tanh(float x) {
     inner = clamp(inner, -20.0f, 20.0f);
     return 0.5f * x * (1.0f + tanh(inner));
 }
+
+// Which activation a routed expert folds into its gate/up product. The decode
+// side of this decision is `FC_MOE_ACT_SILU` in moe.metal; this is the same
+// switch on the prefill kernels (`docs/qwen35moe/20-PHASE3-DECODE.md` §8 left
+// it as Phase 4's homework). Gemma 4 is `gelu_pytorch_tanh` and never defines
+// the constant, so its pipelines compile exactly the code they were measured
+// on; Qwen3.5-MoE is SiLU.
+constant bool FC_PREFILL_MOE_ACT_SILU [[function_constant(77)]];
+
+static inline float prefill_moe_gate_activation(float x) {
+    const bool silu = is_function_constant_defined(FC_PREFILL_MOE_ACT_SILU)
+        && FC_PREFILL_MOE_ACT_SILU;
+    return silu ? (x / (1.0f + exp(-x))) : prefill_gelu_pytorch_tanh(x);
+}
 kernel void prefill_embed_lookup_int4_block(
     device const uint8_t* table     [[buffer(0)]],
     device const bfloat*  scales    [[buffer(1)]],
@@ -752,7 +766,7 @@ kernel void prefill_grouped_routed_moe_batched_phase1(
     gate_up_act_scratch[index] = half(gate);
     gate_up_act_scratch[row_elements + index] = half(up);
     gate_up_act_scratch[2u * row_elements + index] =
-        half(prefill_gelu_pytorch_tanh(gate) * up);
+        half(prefill_moe_gate_activation(gate) * up);
 }
 
 kernel void prefill_grouped_routed_moe_batched_down(
@@ -986,7 +1000,7 @@ kernel void prefill_moe_gate_up_gelu_mul(
     if (gid >= total) return;
     const float gate = float(act[gid]);
     const float up = float(act[total + gid]);
-    act[2u * total + gid] = half(prefill_gelu_pytorch_tanh(gate) * up);
+    act[2u * total + gid] = half(prefill_moe_gate_activation(gate) * up);
 }
 
 // ---------------------------------------------------------------------------
@@ -1151,7 +1165,7 @@ kernel void prefill_moe_rows_gate_up_act(
         const float up_value = simd_sum(u_acc[r]);
         if (lane == 0) {
             act[(blk.local_row + r) * p.F + f] =
-                half(prefill_gelu_pytorch_tanh(gate) * up_value);
+                half(prefill_moe_gate_activation(gate) * up_value);
         }
     }
 }

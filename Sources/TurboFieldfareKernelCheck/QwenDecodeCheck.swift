@@ -55,12 +55,14 @@ private enum QwenDecodeError: Error, CustomStringConvertible {
 ///
 /// The prompt is
 /// `<|im_start|>user\n日本の首都はどこですか。一文で答えてください。<|im_end|>\n<|im_start|>assistant\n`
-/// as the upstream tokenizer encodes it. **The continuation stops at 41 tokens
-/// because the reference run was stopped from outside, not because the model
-/// stopped** (`14-REFERENCE.md` §6); Phase 3 asks for 64, so a longer fixture
-/// passed with `--qwen-decode-fixture` is what closes the phase. Matching 41 is
-/// already decisive about the wiring — a mis-bound tensor does not survive one
-/// token, let alone forty.
+/// as the upstream tokenizer encodes it. **This built-in continuation stops at
+/// 41 tokens because that reference run was stopped from outside, not because
+/// the model stopped** (`14-REFERENCE.md` §6). The run was taken again and the
+/// model stopped itself at 55 with `<|im_end|>`, so the fixture that closes the
+/// phase is `scratch/qwen35/decode-fixture-55.json` via `--qwen-decode-fixture`
+/// (`docs/qwen35moe/21-PHASE4-PREFILL.md` §1). Matching 41 is already decisive
+/// about the wiring — a mis-bound tensor does not survive one token, let alone
+/// forty.
 struct QwenDecodeFixture: Decodable {
     let prompt: [Int32]
     let expected: [Int32]
@@ -97,25 +99,39 @@ let defaultFaultTokens = 16
 private func runOnce(runner: QwenForwardRunner,
                      fixture: QwenDecodeFixture,
                      wanted: Int,
-                     verbose: Bool) throws -> (tokens: [Int32], firstMismatch: Int?) {
+                     verbose: Bool,
+                     prefillChunk: Int? = nil) throws -> (tokens: [Int32], firstMismatch: Int?) {
     runner.reset()
     var firstMismatch: Int?
     var lastTokenEnd = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-    let tokens = try runner.generateGreedy(
-        promptTokens: fixture.prompt,
-        maxNewTokens: wanted,
-        stopTokens: [],
-        onToken: { step, token in
-            let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-            let ms = Double(now - lastTokenEnd) / 1e6
-            lastTokenEnd = now
-            let want = fixture.expected[step]
-            let agrees = token == want
-            if !agrees, firstMismatch == nil { firstMismatch = step }
-            guard verbose else { return }
-            print(String(format: "  [%3d] %@ token=%6d  expected=%6d  %6.0f ms",
-                         step, agrees ? "ok  " : "DIFF", token, want, ms))
-        })
+    let onToken: (Int, Int32) -> Void = { step, token in
+        let now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        let ms = Double(now - lastTokenEnd) / 1e6
+        lastTokenEnd = now
+        let want = fixture.expected[step]
+        let agrees = token == want
+        if !agrees, firstMismatch == nil { firstMismatch = step }
+        guard verbose else { return }
+        print(String(format: "  [%3d] %@ token=%6d  expected=%6d  %6.0f ms",
+                     step, agrees ? "ok  " : "DIFF", token, want, ms))
+    }
+    let tokens: [Int32]
+    if let chunk = prefillChunk {
+        // Phase 4: the prompt goes through the T-row path, the continuation
+        // through the same decode path Phase 3 matched. The handover — the
+        // recurrent state, the conv window and the K/V cursor a chunk leaves
+        // behind — is what this arm adds to the comparison.
+        tokens = try runner.generateGreedyPrefilled(promptTokens: fixture.prompt,
+                                                    maxNewTokens: wanted,
+                                                    chunkWidth: chunk,
+                                                    stopTokens: [],
+                                                    onToken: onToken)
+    } else {
+        tokens = try runner.generateGreedy(promptTokens: fixture.prompt,
+                                           maxNewTokens: wanted,
+                                           stopTokens: [],
+                                           onToken: onToken)
+    }
     return (tokens, firstMismatch)
 }
 
@@ -124,7 +140,8 @@ func runQwenDecodeCheck(modelPath: String,
                         maxNewTokens: Int?,
                         slotCount: Int,
                         runFaults: Bool,
-                        faultTokens: Int) throws -> Bool {
+                        faultTokens: Int,
+                        prefillChunks: [Int] = []) throws -> Bool {
     guard let device = MTLCreateSystemDefaultDevice() else {
         throw QwenDecodeError.noMetalDevice
     }
@@ -132,8 +149,11 @@ func runQwenDecodeCheck(modelPath: String,
         ?? QwenDecodeFixture.referenceSmoke
     let wanted = min(maxNewTokens ?? fixture.expected.count, fixture.expected.count)
 
-    print("=== qwen3_5_moe decode against the float32 reference "
-          + "(docs/qwen35moe/04-PHASES.md Phase 3) ===")
+    print(prefillChunks.isEmpty
+          ? "=== qwen3_5_moe decode against the float32 reference "
+            + "(docs/qwen35moe/04-PHASES.md Phase 3) ==="
+          : "=== qwen3_5_moe prefill against the float32 reference "
+            + "(docs/qwen35moe/04-PHASES.md Phase 4) ===")
     print("  model    \(modelPath)")
     print("  fixture  \(fixturePath ?? "built in (14-REFERENCE.md §6)")"
           + " — prompt \(fixture.prompt.count), expecting \(wanted)")
@@ -155,7 +175,8 @@ func runQwenDecodeCheck(modelPath: String,
     print("")
 
     let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-    let run = try runOnce(runner: runner, fixture: fixture, wanted: wanted, verbose: true)
+    let run = try runOnce(runner: runner, fixture: fixture, wanted: wanted, verbose: true,
+                          prefillChunk: prefillChunks.first)
     let elapsed = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6
     let produced = run.tokens
     let perToken = produced.isEmpty ? 0 : elapsed / Double(produced.count)
@@ -180,6 +201,23 @@ func runQwenDecodeCheck(modelPath: String,
         print("PASS  \(wanted) tokens, every one equal to the float32 reference")
     }
 
+    // The chunk width is invisible to the model, so every width has to give
+    // the same tokens. A prompt shorter than the width is one chunk and says
+    // nothing about the handover; the narrow widths are the ones that cut the
+    // prompt into three and make the state carry.
+    for chunk in prefillChunks.dropFirst() {
+        let again = try runOnce(runner: runner, fixture: fixture, wanted: wanted,
+                                verbose: false, prefillChunk: chunk)
+        let chunks = (fixture.prompt.count + chunk - 1) / chunk
+        if again.tokens.count == wanted, again.firstMismatch == nil {
+            print("PASS  chunk \(chunk) (\(chunks) chunks) — the same \(wanted) tokens")
+        } else {
+            let step = again.firstMismatch.map(String.init) ?? "-"
+            print("FAIL  chunk \(chunk) (\(chunks) chunks) diverged at step \(step)")
+            passed = false
+        }
+    }
+
     guard runFaults else { return passed }
 
     print("")
@@ -191,7 +229,8 @@ func runQwenDecodeCheck(modelPath: String,
                                            maxContext: maxContext,
                                            fault: fault)
         let result = try runOnce(runner: faulty, fixture: fixture,
-                                 wanted: faultWanted, verbose: false)
+                                 wanted: faultWanted, verbose: false,
+                                 prefillChunk: prefillChunks.first)
         if let step = result.firstMismatch {
             print(String(format: "    PASS  %-20@ diverged at step %d (%d, not %d)",
                          fault.rawValue as NSString, step,
@@ -203,4 +242,56 @@ func runQwenDecodeCheck(modelPath: String,
         }
     }
     return passed
+}
+
+// MARK: - prefill の時間 (`docs/qwen35moe/04-PHASES.md` Phase 4 / Phase 6)
+//
+// 検査ではなく**測定**。`--qwen-prefill` が答えるのは「同じトークンが出るか」で、
+// こちらは「1 チャンクに何 ms 掛かるか」を見る。
+//
+//   swift run -c release TurboFieldfareKernelCheck \
+//     --qwen-prefill-bench scratch/ornith-oq4e-g64.gturbo \
+//     --qwen-prefill-bench-tokens 512
+//
+// **運用値ではない。**この経路は直列で (`QwenPrefill.swift`)、タイルごとに
+// エキスパートを取り終えるまで GPU を止める。入力も合成で、トークン ID を
+// 語彙に散らしただけのものなので、router の当たり方は本物の文章のそれではない
+// (エキスパートキャッシュのヒット率がここの数字を大きく動かす)。
+// 運用の数字は Phase 6 で `bench.sh` の作法に沿って取る。
+func runQwenPrefillBench(modelPath: String,
+                         tokens: Int,
+                         chunk: Int,
+                         slotCount: Int,
+                         iterations: Int) throws -> Bool {
+    guard let device = MTLCreateSystemDefaultDevice() else {
+        throw QwenDecodeError.noMetalDevice
+    }
+    print("=== qwen3_5_moe prefill の時間 (測定、n=\(iterations)) ===")
+    print("  model    \(modelPath)")
+    print("  合成プロンプト \(tokens) トークン / チャンク \(chunk) / スロット \(slotCount)")
+
+    let context = try MetalContext()
+    var stats = ModelLoadStats()
+    let model = try Model.load(directoryURL: URL(fileURLWithPath: modelPath),
+                               device: device,
+                               expecting: .ornith1_5_35B_A3B,
+                               streamingMode: .pread(slotCount: slotCount),
+                               loadStats: &stats)
+    let runner = try QwenForwardRunner(model: model, context: context,
+                                       maxContext: tokens + 8)
+    // 語彙に散らした ID。同じ ID を並べると 40 層の router が毎トークン同じ
+    // エキスパートを引き、キャッシュのヒット率が本物と懸け離れる。
+    let prompt = (0..<tokens).map { Int32(($0 &* 7919) % runner.scoredVocab) }
+    print("")
+    print("  回  prefill (ms)   1 トークン (ms)")
+    for iteration in 0..<iterations {
+        runner.reset()
+        let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        _ = try runner.prefill(tokens: prompt, chunkWidth: chunk)
+        let ms = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6
+        print(String(format: "  %2d %13.0f %16.2f", iteration + 1, ms, ms / Double(tokens)))
+    }
+    print("")
+    print("  1 回目はエキスパートキャッシュが冷たい。**解釈は書かない** (n=\(iterations))")
+    return true
 }

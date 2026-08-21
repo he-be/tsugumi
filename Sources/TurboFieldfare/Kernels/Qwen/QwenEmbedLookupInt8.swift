@@ -14,6 +14,7 @@ import Metal
 /// passed as 1.0 is a way to be quietly wrong (`03-DESIGN.md` §2-9).
 public final class QwenEmbedLookupInt8 {
     private let pso: MTLComputePipelineState
+    private let blockPSO: MTLComputePipelineState
     private let affineGroupSize: Int
 
     public init(context: MetalContext) throws {
@@ -22,10 +23,14 @@ public final class QwenEmbedLookupInt8 {
                                                      module: "qwen",
                                                      affineGroupSize: context.affineGroupSize,
                                                      safeMath: true)
-        guard let function = library.makeFunction(name: "qwen_embed_lookup_int8") else {
-            throw MetalError.missingFunction("qwen_embed_lookup_int8")
+        func pipeline(_ name: String) throws -> MTLComputePipelineState {
+            guard let function = library.makeFunction(name: name) else {
+                throw MetalError.missingFunction(name)
+            }
+            return try context.device.makeComputePipelineState(function: function)
         }
-        self.pso = try context.device.makeComputePipelineState(function: function)
+        self.pso = try pipeline("qwen_embed_lookup_int8")
+        self.blockPSO = try pipeline("qwen_embed_lookup_int8_block")
     }
 
     /// `table`, `scales` and `biases` are normally the one resident buffer with
@@ -51,6 +56,36 @@ public final class QwenEmbedLookupInt8 {
         encoder.setBytes(&width, length: MemoryLayout<UInt32>.size, index: 5)
         let threads = min(pso.maxTotalThreadsPerThreadgroup, 256)
         encoder.dispatchThreads(MTLSize(width: Int(d), height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
+        encoder.endEncoding()
+        return true
+    }
+
+    /// The same lookup for a whole prefill chunk: `out[t, :]` is the row for
+    /// `tokens[t]`. `tokens` is a `[T]` UInt32 buffer.
+    @discardableResult
+    public func encodeBlock(commandBuffer: MTLCommandBuffer,
+                            table: MTLBuffer, tableOffset: Int = 0,
+                            scales: MTLBuffer, scalesOffset: Int = 0,
+                            biases: MTLBuffer, biasesOffset: Int = 0,
+                            out: MTLBuffer, outOffset: Int = 0,
+                            tokens: MTLBuffer, tokensOffset: Int = 0,
+                            d: UInt32,
+                            seqLen: Int) -> Bool {
+        guard d > 0, seqLen > 0, Int(d) % affineGroupSize == 0,
+              let encoder = commandBuffer.makeComputeCommandEncoder() else { return false }
+        encoder.setComputePipelineState(blockPSO)
+        encoder.setBuffer(table, offset: tableOffset, index: 0)
+        encoder.setBuffer(scales, offset: scalesOffset, index: 1)
+        encoder.setBuffer(biases, offset: biasesOffset, index: 2)
+        encoder.setBuffer(out, offset: outOffset, index: 3)
+        encoder.setBuffer(tokens, offset: tokensOffset, index: 4)
+        var width = d
+        var t = UInt32(seqLen)
+        encoder.setBytes(&width, length: MemoryLayout<UInt32>.size, index: 5)
+        encoder.setBytes(&t, length: MemoryLayout<UInt32>.size, index: 6)
+        let threads = min(blockPSO.maxTotalThreadsPerThreadgroup, 256)
+        encoder.dispatchThreads(MTLSize(width: Int(d), height: seqLen, depth: 1),
                                 threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
         encoder.endEncoding()
         return true

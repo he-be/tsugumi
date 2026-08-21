@@ -1402,7 +1402,22 @@ if let index = arguments.firstIndex(of: "--qwen-open"), index + 1 < arguments.co
 // wiring. `--qwen-decode-fixture <json>` supplies another
 // `{"prompt": [...], "expected": [...]}`, `--qwen-decode-new N` shortens the
 // comparison, `--qwen-decode-slots N` changes the expert cache.
-if let index = arguments.firstIndex(of: "--qwen-decode"), index + 1 < arguments.count {
+//
+// `--qwen-prefill <model.gturbo>` is the same check with the prompt on the
+// T-row path instead (`docs/qwen35moe/04-PHASES.md` Phase 4): same fixture,
+// same expected tokens, same negative controls. `--qwen-prefill-chunks a,b,c`
+// sets the chunk widths to try; every width has to give the same tokens, and a
+// width narrower than the prompt is the one that tests the state handover.
+if let index = arguments.firstIndex(where: { $0 == "--qwen-decode" || $0 == "--qwen-prefill" }),
+   index + 1 < arguments.count {
+    var prefillChunks: [Int] = []
+    if arguments[index] == "--qwen-prefill" {
+        prefillChunks = [512, 8]
+        if let i = arguments.firstIndex(of: "--qwen-prefill-chunks"), i + 1 < arguments.count {
+            let parsed = arguments[i + 1].split(separator: ",").compactMap { Int($0) }
+            if !parsed.isEmpty { prefillChunks = parsed.filter { $0 > 0 } }
+        }
+    }
     var fixturePath: String?
     if let i = arguments.firstIndex(of: "--qwen-decode-fixture"), i + 1 < arguments.count {
         fixturePath = arguments[i + 1]
@@ -1427,8 +1442,40 @@ if let index = arguments.firstIndex(of: "--qwen-decode"), index + 1 < arguments.
                                 maxNewTokens: newTokens,
                                 slotCount: slots,
                                 runFaults: !arguments.contains("--qwen-decode-no-faults"),
-                                faultTokens: faultTokens)
+                                faultTokens: faultTokens,
+                                prefillChunks: prefillChunks)
          ? 0 : 1)
+}
+
+// `--qwen-prefill-bench <model.gturbo>` times the T-row path on a synthetic
+// prompt. A measurement, not a check — see the header in QwenDecodeCheck.swift
+// for why the number is not an operating one.
+if let index = arguments.firstIndex(of: "--qwen-prefill-bench"), index + 1 < arguments.count {
+    var tokens = 512
+    if let i = arguments.firstIndex(of: "--qwen-prefill-bench-tokens"), i + 1 < arguments.count,
+       let value = Int(arguments[i + 1]), value > 0 {
+        tokens = value
+    }
+    var chunk = 512
+    if let i = arguments.firstIndex(of: "--qwen-prefill-bench-chunk"), i + 1 < arguments.count,
+       let value = Int(arguments[i + 1]), value > 0 {
+        chunk = value
+    }
+    var slots = 32
+    if let i = arguments.firstIndex(of: "--qwen-decode-slots"), i + 1 < arguments.count,
+       let value = Int(arguments[i + 1]), value > 0 {
+        slots = value
+    }
+    var iterations = 2
+    if let i = arguments.firstIndex(of: "--qwen-prefill-bench-iterations"), i + 1 < arguments.count,
+       let value = Int(arguments[i + 1]), value > 0 {
+        iterations = value
+    }
+    exit(try runQwenPrefillBench(modelPath: arguments[index + 1],
+                                 tokens: tokens,
+                                 chunk: chunk,
+                                 slotCount: slots,
+                                 iterations: iterations) ? 0 : 1)
 }
 
 // `--qwen` runs the rest of the Qwen3.5-MoE kernels (QwenKernelCheck.swift):

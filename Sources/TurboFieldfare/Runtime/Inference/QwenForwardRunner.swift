@@ -88,14 +88,14 @@ public final class QwenForwardRunner {
     /// One resident projection plus the width the index says it is. The width
     /// is per tensor, not per slot: on `oQ4e-g64` five roles mix 4-bit and
     /// 8-bit inside one slot (`docs/qwen35moe/18-MIXED-BITS.md` §3).
-    private struct Projection {
+    struct Projection {
         let view: TensorView
         let bits: Int
         let rows: UInt32
         let cols: UInt32
     }
 
-    private struct LinearLayerWeights {
+    struct LinearLayerWeights {
         let inProjQKV: Projection
         let inProjZ: Projection
         let inProjA: Projection
@@ -107,7 +107,7 @@ public final class QwenForwardRunner {
         let norm: TensorView
     }
 
-    private struct FullLayerWeights {
+    struct FullLayerWeights {
         let qProj: Projection
         let kProj: Projection
         let vProj: Projection
@@ -116,7 +116,7 @@ public final class QwenForwardRunner {
         let kNorm: TensorView
     }
 
-    private struct MoEWeights {
+    struct MoEWeights {
         let router: TensorView
         let sharedGate: TensorView
         /// `nil` when `shared_expert_gate.weight` is BF16, which the fused
@@ -127,7 +127,7 @@ public final class QwenForwardRunner {
         let downProj: Projection
     }
 
-    private struct LayerWeights {
+    struct LayerWeights {
         let inputNorm: TensorView
         let postAttnNorm: TensorView
         let linear: LinearLayerWeights?
@@ -137,42 +137,42 @@ public final class QwenForwardRunner {
 
     // MARK: - Collaborators
 
-    private let model: Model
-    private let ctx: MetalContext
-    private let cfg: ArchConfig
-    private let kv: KVCacheManager
-    private let state: RecurrentStateManager
+    let model: Model
+    let ctx: MetalContext
+    let cfg: ArchConfig
+    let kv: KVCacheManager
+    let state: RecurrentStateManager
 
-    private let embed: QwenEmbedLookupInt8
+    let embed: QwenEmbedLookupInt8
     private let rms: RMSNorm
     private let int4: DequantInt4GEMV
     private let int8: DequantInt8GEMV
-    private let qwen: QwenKernels
-    private let delta: GatedDeltaNet
-    private let attention: Attention
-    private let moe: MoE
-    private let head: QwenLMHeadChainInt8
+    let qwen: QwenKernels
+    let delta: GatedDeltaNet
+    let attention: Attention
+    let moe: MoE
+    let head: QwenLMHeadChainInt8
 
-    private let layers: [LayerWeights]
+    let layers: [LayerWeights]
     /// `.none` in every run that is not the detection-power check.
     public let fault: DecodeFault
 
     // MARK: - Geometry
 
-    private let hiddenSize: Int
-    private let numKeyHeads: Int
-    private let numValueHeads: Int
-    private let keyHeadDim: Int
-    private let valueHeadDim: Int
-    private let qkvWidth: Int
-    private let valueWidth: Int
-    private let rotaryDim: Int
+    let hiddenSize: Int
+    let numKeyHeads: Int
+    let numValueHeads: Int
+    let keyHeadDim: Int
+    let valueHeadDim: Int
+    let qkvWidth: Int
+    let valueWidth: Int
+    let rotaryDim: Int
     /// Vocabulary rows the head scores. Upstream pads `vocab_size` past the
     /// tokenizer's last piece and those rows were never trained
     /// (`docs/qwen35moe/10-MLX4BIT-AUDIT.md` §3).
     public let scoredVocab: Int
     public let maxContext: Int
-    private let rmsEps: Float = 1e-6
+    let rmsEps: Float = 1e-6
 
     // MARK: - Scratch (allocated once; the decode loop never allocates)
 
@@ -201,12 +201,16 @@ public final class QwenForwardRunner {
     private let outWeights: MTLBuffer    // [topK] FP16
     private let moeActs: MTLBuffer       // [topK * F] FP16
     private let greedyToken: MTLBuffer   // [1] UInt32
+    /// The T-row scratch, allocated on the first `prefill` call and reused
+    /// (`QwenPrefill.swift`). A decode-only run never pays for it.
     /// All ones. Gemma's router folds a per-feature `router.scale` and a
     /// per-expert weight scale into the same two kernels; this family has
     /// neither, so both are the multiplicative identity rather than a second
     /// pair of router kernels (`docs/qwen35moe/03-DESIGN.md` §4-1).
-    private let unitFeatureScale: MTLBuffer  // [D] BF16 = 1
-    private let unitExpertScale: MTLBuffer   // [numExperts] BF16 = 1
+    let unitFeatureScale: MTLBuffer  // [D] BF16 = 1
+    let unitExpertScale: MTLBuffer   // [numExperts] BF16 = 1
+
+    var prefillScratch: QwenPrefillContext?
 
     // MARK: - Init
 
@@ -826,14 +830,14 @@ public final class QwenForwardRunner {
         }
     }
 
-    private func commandBuffer() throws -> MTLCommandBuffer {
+    func commandBuffer() throws -> MTLCommandBuffer {
         guard let cb = ctx.queue.makeCommandBuffer() else {
             throw QwenRunnerError.commandBufferFailed("makeCommandBuffer returned nil")
         }
         return cb
     }
 
-    private func wait(_ cb: MTLCommandBuffer, _ label: String) throws {
+    func wait(_ cb: MTLCommandBuffer, _ label: String) throws {
         cb.commit()
         cb.waitUntilCompleted()
         if let error = cb.error {
@@ -841,7 +845,7 @@ public final class QwenForwardRunner {
         }
     }
 
-    private func runSync(_ label: String, _ body: (MTLCommandBuffer) -> Void) throws {
+    func runSync(_ label: String, _ body: (MTLCommandBuffer) -> Void) throws {
         let cb = try commandBuffer()
         body(cb)
         try wait(cb, label)

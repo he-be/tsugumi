@@ -499,9 +499,16 @@ final class PrefillGroupedRoutedMoE {
         return PrefillStreamedTileArgumentBuffer(buffer: buffer)
     }
 
-    init(context: MetalContext) throws {
+    init(context: MetalContext,
+         gateActivation: MoE.GateActivation = .geluPytorchTanh) throws {
         self.affineGroupSize = context.affineGroupSize
-        self.batchedPhase1PSO = try context.pipeline("prefill_grouped_routed_moe_batched_phase1")
+        // The one line that differs between the two families in the routed
+        // experts, on the prefill side (`docs/qwen35moe/03-DESIGN.md` §4-1;
+        // decode did the same in `MoE`). Gemma passes no constant, so its
+        // pipelines are the ones it was measured on.
+        let activation = gateActivation.prefillConstants
+        self.batchedPhase1PSO = try context.pipeline("prefill_grouped_routed_moe_batched_phase1",
+                                                     constants: activation)
         self.batchedDownPSO = try context.pipeline("prefill_grouped_routed_moe_batched_down")
         if Self.forcedPath == "scalar" {
             self.gemmPSO = nil
@@ -512,13 +519,16 @@ final class PrefillGroupedRoutedMoE {
             let candidate = try? context.pipeline("prefill_moe_gemm_int4")
             let usable = (candidate?.maxTotalThreadsPerThreadgroup ?? 0) >= Self.gemmThreadsPerGroup
             self.gemmPSO = usable ? candidate : nil
-            self.geluMulPSO = usable ? try? context.pipeline("prefill_moe_gate_up_gelu_mul") : nil
+            self.geluMulPSO = usable
+                ? try? context.pipeline("prefill_moe_gate_up_gelu_mul", constants: activation)
+                : nil
         }
         // The rows path is a GEMV, so it stands on its own: `TF_PREFILL_MOE=scalar`
         // turns off the tiled kernel's FP16 weight staging, which this path
         // never had.
         let rowsThreads = 32 * Self.rowsPerThreadgroup
-        let rowsGateUp = try? context.pipeline("prefill_moe_rows_gate_up_act")
+        let rowsGateUp = try? context.pipeline("prefill_moe_rows_gate_up_act",
+                                               constants: activation)
         let rowsDown = try? context.pipeline("prefill_moe_rows_down")
         let rowsUsable = (rowsGateUp?.maxTotalThreadsPerThreadgroup ?? 0) >= rowsThreads
             && (rowsDown?.maxTotalThreadsPerThreadgroup ?? 0) >= rowsThreads
@@ -531,7 +541,7 @@ final class PrefillGroupedRoutedMoE {
                 let constants = [MetalFunctionConstant(index: 16,
                                                        value: .uint32(UInt32(cap)))]
                 gateUpCapped[cap] = try? context.pipeline("prefill_moe_rows_gate_up_act",
-                                                          constants: constants)
+                                                          constants: constants + activation)
                 downCapped[cap] = try? context.pipeline("prefill_moe_rows_down",
                                                         constants: constants)
             }

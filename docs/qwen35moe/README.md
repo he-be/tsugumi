@@ -8,7 +8,7 @@ QAT・Vision・MTP に続く 4 つ目の大改修。
 プラン内で積み重なっていた追記の層 (§15 → §16 → §17) は畳んであり、
 **各文書は現在の結論だけを書く。**実測の経緯と数字は 10 番台の結果文書が持つ。
 
-**現在地 (2026-08-21 夜): decode が動き、CPU float32 参照とトークンが一致した。**
+**現在地 (2026-08-21 深夜): prefill が通り、チャンク経由でも参照と一致した。**
 Gated DeltaNet (`qwen_delta_rule`) は 2048 トークン後の状態が **CPU float32 の床と
 3 桁一致**、prefill 30 層 **125.7 ms** ([15](15-PHASE2-GDN.md))。その周辺 7 本
 (因果 `conv1d` + l2norm / 減衰ゲート / `RMSNormGated` / partial RoPE / 出力ゲート /
@@ -25,12 +25,17 @@ MTP と vision の実物も入っている ([16 §1](16-QUALITY.md))。
 8-bit なので INT4 の specialization ではなく **INT8 の chain**で、実物の語彙で
 1 トークン **4.0 ms / 134 GB/s**。`--qwen` の検査は 39 本すべて緑。
 **Phase 3 の結線が通った** ([20](20-PHASE3-DECODE.md)): `QwenForwardRunner` (直列) と
-`RecurrentStateManager` を新設し、固定プロンプトから **41 トークンが参照と全一致**、
-負例 5 本も落ちる。実物で見えた食い違いは 3 つ (埋め込みと shared ゲートが 8-bit、
-routed の活性化が SiLU) で、いずれも**落ちずにそれらしく間違う**形だった。
-`RealForwardRunner` は 1 行も動かしていない。
-**速度・ヒット率・TTFT の運用数字は依然 導出 か 未確認** — prefill 経路 (Phase 4) と
-計測 (Phase 6) はこれから。
+`RecurrentStateManager` を新設し、固定プロンプトから参照と全一致、負例 5 本も落ちる。
+実物で見えた食い違いは 3 つ (埋め込みと shared ゲートが 8-bit、routed の活性化が SiLU) で、
+いずれも**落ちずにそれらしく間違う**形だった。`RealForwardRunner` は 1 行も動かしていない。
+**Phase 3 は閉じ、Phase 4 の prefill が通った** ([21](21-PHASE4-PREFILL.md)):
+参照を取り直したら **55 本目に `<|im_end|>` を出して止まっていた**ので、
+「64 トークン」の出口条件は**その生成の全体と一致**という形で満たされた。
+その 55 本が、**プロンプトを T 行の経路に通しても全部一致する** — チャンク幅
+512 (1 チャンク) と 8 (3 チャンク) の両方で。要ったのは **INT8 の QMM**
+(INT4 版は 8-bit を読めない) と T 行版の小物 3 本で、`--qwen` は **57 本**になった。
+**Gemma の既定 69 本と `swift test` の 1,282 件は緑のまま。**
+**速度・ヒット率・TTFT の運用数字は依然 導出 か 未確認** — 計測 (Phase 6) はこれから。
 運用点 (スロット数・チャンク幅) は Gemma 4 の値をそのまま持ち越せない —
 理由は [05 §1](05-RISKS.md)、測り直しの手順は [04](04-PHASES.md) Phase 6。
 
@@ -80,7 +85,8 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 13 | [17-PHASE2-KERNELS.md](17-PHASE2-KERNELS.md) | **実測(手元)。**`qwen.metal` の 7 本、負例 6 本を含む検査 29 本、fast math と減衰ゲート、conv のトークン分割 (50.0 → 21.9 ms)、LM head が INT8 だと分かった件 |
 | 14 | [18-MIXED-BITS.md](18-MIXED-BITS.md) | **実測(手元)。**混在ビット幅を索引から導く決定、Qwen 用の常駐スキーマ、負例 5 本、本線が開いた記録 |
 | 15 | [19-LM-HEAD-INT8.md](19-LM-HEAD-INT8.md) | **実測(手元)。**INT8 の LM head chain、負例 4 本、1 トークン 4.0 ms / 134 GB/s、天井が 79 → 71 tok/s になる話 |
-| 16 | [20-PHASE3-DECODE.md](20-PHASE3-DECODE.md) | **実測(手元)。**decode の結線、41 トークンの一致、負例 5 本、実物で見えた 3 つの食い違い、再帰状態の置き場所 |
+| 16 | [20-PHASE3-DECODE.md](20-PHASE3-DECODE.md) | **実測(手元)。**decode の結線、トークンの一致、負例 5 本、実物で見えた 3 つの食い違い、再帰状態の置き場所 |
+| 17 | [21-PHASE4-PREFILL.md](21-PHASE4-PREFILL.md) | **実測(手元)。**55 トークンの参照 (Phase 3 が閉じた)、INT8 の QMM と検査 18 本、prefill の結線、チャンクをまたぐもの 3 つ、チャンク幅の時間 |
 
 ## 表記
 

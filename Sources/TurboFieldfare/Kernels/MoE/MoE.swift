@@ -106,6 +106,15 @@ package final class MoE {
             case .silu: return [MetalFunctionConstant(index: 4, value: .bool(true))]
             }
         }
+
+        /// The same switch for the prefill library, whose constant slots are a
+        /// separate numbering (`FC_PREFILL_MOE_ACT_SILU`, index 77).
+        var prefillConstants: [MetalFunctionConstant] {
+            switch self {
+            case .geluPytorchTanh: return []
+            case .silu: return [MetalFunctionConstant(index: 77, value: .bool(true))]
+            }
+        }
     }
 
     package init(context: MetalContext,

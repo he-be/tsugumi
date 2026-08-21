@@ -83,6 +83,8 @@ public final class QwenKernels {
         case moeSharedGateLogit = "qwen_moe_shared_gate_logit"
         case siluMul         = "qwen_silu_mul"
         case residualAdd     = "qwen_residual_add"
+        case moeSharedGateLogitBlock = "qwen_moe_shared_gate_logit_block"
+        case queryCompact    = "qwen_query_compact"
     }
 
     private var pipelines: [Function: MTLComputePipelineState] = [:]
@@ -380,6 +382,66 @@ public final class QwenKernels {
         dispatch1D(encoder, pipeline, count: count)
         encoder.endEncoding()
         return true
+    }
+
+    /// `y[t, :] *= sigmoid(logit[t])` — `encodeMoESharedGateLogit` for a whole
+    /// prefill chunk, with the dot products already taken by a GEMM of `N == 1`.
+    @discardableResult
+    public func encodeMoESharedGateLogitBlock(commandBuffer: MTLCommandBuffer,
+                                              y: MTLBuffer, yOffset: Int = 0,
+                                              logit: MTLBuffer, logitOffset: Int = 0,
+                                              hiddenSize: Int,
+                                              seqLen: Int) -> Bool {
+        guard hiddenSize > 0, seqLen > 0,
+              let (encoder, pipeline) = encoder(commandBuffer, .moeSharedGateLogitBlock) else {
+            return false
+        }
+        encoder.setBuffer(y, offset: yOffset, index: 0)
+        encoder.setBuffer(logit, offset: logitOffset, index: 1)
+        var d = UInt32(hiddenSize)
+        var t = UInt32(seqLen)
+        encoder.setBytes(&d, length: MemoryLayout<UInt32>.stride, index: 2)
+        encoder.setBytes(&t, length: MemoryLayout<UInt32>.stride, index: 3)
+        dispatch2D(encoder, pipeline, width: hiddenSize, height: seqLen)
+        encoder.endEncoding()
+        return true
+    }
+
+    /// Gathers the query halves out of the doubled-width `q_proj` output,
+    /// `[T, NQ, 2*HD]` to `[T, NQ, HD]`, for the attention kernels' stride.
+    ///
+    /// Decode does the same thing with 16 blits, one per head
+    /// (`docs/qwen35moe/20-PHASE3-DECODE.md` §3); at T = 2048 that would be
+    /// 32,768 of them. The output gate still travels in the wide buffer —
+    /// `encodeAttnOutputGate` reads it there after attention.
+    @discardableResult
+    public func encodeQueryCompact(commandBuffer: MTLCommandBuffer,
+                                   wide: MTLBuffer, wideOffset: Int = 0,
+                                   out: MTLBuffer, outOffset: Int = 0,
+                                   seqLen: Int,
+                                   numQHeads: Int,
+                                   headDim: Int) -> Bool {
+        guard seqLen > 0, numQHeads > 0, headDim > 0,
+              let (encoder, pipeline) = encoder(commandBuffer, .queryCompact) else { return false }
+        encoder.setBuffer(wide, offset: wideOffset, index: 0)
+        encoder.setBuffer(out, offset: outOffset, index: 1)
+        var hd = UInt32(headDim)
+        var nq = UInt32(numQHeads)
+        var t = UInt32(seqLen)
+        encoder.setBytes(&hd, length: MemoryLayout<UInt32>.stride, index: 2)
+        encoder.setBytes(&nq, length: MemoryLayout<UInt32>.stride, index: 3)
+        encoder.setBytes(&t, length: MemoryLayout<UInt32>.stride, index: 4)
+        dispatch2D(encoder, pipeline, width: numQHeads * headDim, height: seqLen)
+        encoder.endEncoding()
+        return true
+    }
+
+    private func dispatch2D(_ encoder: MTLComputeCommandEncoder,
+                            _ pipeline: MTLComputePipelineState,
+                            width: Int, height: Int) {
+        let w = min(pipeline.maxTotalThreadsPerThreadgroup, 256)
+        encoder.dispatchThreads(MTLSize(width: width, height: height, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: w, height: 1, depth: 1))
     }
 
     private func dispatch1D(_ encoder: MTLComputeCommandEncoder,
