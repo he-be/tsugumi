@@ -8,14 +8,19 @@ QAT・Vision・MTP に続く 4 つ目の大改修。
 プラン内で積み重なっていた追記の層 (§15 → §16 → §17) は畳んであり、
 **各文書は現在の結論だけを書く。**実測の経緯と数字は 10 番台の結果文書が持つ。
 
-**現在地 (2026-08-21 夜): GPU が回った。Phase 2 の本命カーネルが通り、本線の
-チェックポイントが決まった。**Gated DeltaNet (`qwen_delta_rule`) を書き、2048
-トークン流した後の状態が **CPU float32 の床と 3 桁一致**、prefill の線形注意 30 層が
-**125.7 ms** で中止線 150 ms の内側に入った ([15](15-PHASE2-GDN.md))。突き合わせ先は
-[14](14-REFERENCE.md) の float32 参照器 (上流実装と相対 6.4e-07 / top-1 一致 100%)。
-`.gturbo` への repack は `--verify-install` が緑 (20.49 GB、[13](13-PHASE1-REPACK.md))。
+**現在地 (2026-08-21 夜): Phase 2 のカーネルは LM head を残して全部書けた。**
+Gated DeltaNet (`qwen_delta_rule`) は 2048 トークン後の状態が **CPU float32 の床と
+3 桁一致**、prefill 30 層 **125.7 ms** ([15](15-PHASE2-GDN.md))。その周辺 7 本
+(因果 `conv1d` + l2norm / 減衰ゲート / `RMSNormGated` / partial RoPE / 出力ゲート /
+shared ゲート / SiLU) も通り、**検査は 29 本すべて緑、うち 6 本は負例**
+([17](17-PHASE2-KERNELS.md))。突き合わせ先は [14](14-REFERENCE.md) の float32 参照器
+(上流実装と相対 6.4e-07 / top-1 一致 100%)。`.gturbo` への repack は
+`--verify-install` が緑 (20.49 GB、[13](13-PHASE1-REPACK.md))。
 **本線は `oQ4e-g64`** — 同じ文章 4 本の平均 NLL が公式 MLX-4bit より 4 本とも低く、
 MTP と vision の実物も入っている ([16 §1](16-QUALITY.md))。
+**残るカーネルは LM head だけ**で、本線の `lm_head` が 8-bit である以上
+**INT4 の specialization ではなく INT8 の chain**が要る ([17 §5](17-PHASE2-KERNELS.md))。
+これは混在ビット幅 ([13 §4-2](13-PHASE1-REPACK.md)) と同じ根なので、そちらが先。
 **速度・ヒット率・TTFT の運用数字は依然 導出 か 未確認**で、そこは結線 (Phase 3) が要る。
 運用点 (スロット数・チャンク幅) は Gemma 4 の値をそのまま持ち越せない —
 理由は [05 §1](05-RISKS.md)、測り直しの手順は [04](04-PHASES.md) Phase 6。
@@ -31,7 +36,7 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | # | 論点 | 結論 |
 | --- | --- | --- |
 | 1 | これは何か | **Qwen3.5-MoE。ただの「Qwen 版 Gemma」ではない。**40 層のうち **30 層が線形注意 (Gated DeltaNet)**、10 層だけが full attention。SWA は 1 層も無い (**実測(上流)**、[01 §1](01-MODEL.md)) |
-| 2 | 一番大きい実装 | **Gated DeltaNet カーネル → 書けた** ([15](15-PHASE2-GDN.md))。omlx の blocked-sequential の幾何を写し、状態はレジスタ、ホットループに barrier 無し。検証 15 本が緑、prefill 30 層 125.7 ms。**KV キャッシュではなく固定サイズの再帰状態を持つ層**という構造変更 ([03 §3-3](03-DESIGN.md)) はこれから |
+| 2 | 一番大きい実装 | **Gated DeltaNet カーネル → 書けた** ([15](15-PHASE2-GDN.md))。omlx の blocked-sequential の幾何を写し、状態はレジスタ、ホットループに barrier 無し。検証 15 本が緑、prefill 30 層 125.7 ms。**周辺 7 本も書けた** (検査 29 本、[17](17-PHASE2-KERNELS.md))。**KV キャッシュではなく固定サイズの再帰状態を持つ層**という構造変更 ([03 §3-3](03-DESIGN.md)) はこれから |
 | 3 | 重み変換 | **当初の「bf16 → MLX 4-bit 変換器を新規に書く」は消えた。**MLX 4-bit 量子化済みの候補が 2 本手元にある ([02](02-CHECKPOINTS.md))。残るのは焼き込み (`q_norm` × 1/16)・名前寄せ・repack ([03 §1](03-DESIGN.md)) |
 | 4 | チェックポイントの選定 | **`oQ4e-g64` に決めた** (21.86 GB、imatrix + MTP + vision、router は BF16)。同じ文章 4 本の平均 NLL が公式 MLX-4bit より 4 本とも低い ([16 §1](16-QUALITY.md))。対価は差 2.35 GB と、**混在ビット幅という宿題** ([13 §4-2](13-PHASE1-REPACK.md)) |
 | 5 | MoE の形は乗るか | **乗る。ただし `numExperts <= 256` の precondition にちょうど乗る (余裕ゼロ)。**top-8 は一致、`D=2048` は 64 の倍数、prefill router のスクラッチは既に 256 で確保済み。**decode/prefill の MoE カーネルは無改造で正しく動く**見込み (専用化 PSO から汎用 PSO に落ちるだけ) ([03 §4](03-DESIGN.md)) |
@@ -63,6 +68,7 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 10 | [14-REFERENCE.md](14-REFERENCE.md) | **実測(手元)。**float32 の層ストリーミング参照器、逆量子化と算式の検証、実物の初回 forward と生成スモーク、fixtures |
 | 11 | [15-PHASE2-GDN.md](15-PHASE2-GDN.md) | **実測(手元)。**Gated DeltaNet カーネル (`qwen_delta_rule`)、3 精度での検証 15 本、TB の 3 通りと 30 層の時間 |
 | 12 | [16-QUALITY.md](16-QUALITY.md) | **実測(手元)。**2 候補の平均 NLL (本線の決定) と、`in_proj_a` の実活性再測 (未決着) |
+| 13 | [17-PHASE2-KERNELS.md](17-PHASE2-KERNELS.md) | **実測(手元)。**`qwen.metal` の 7 本、負例 6 本を含む検査 29 本、fast math と減衰ゲート、conv のトークン分割 (50.0 → 21.9 ms)、LM head が INT8 だと分かった件 |
 
 ## 表記
 

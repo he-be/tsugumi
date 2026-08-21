@@ -218,10 +218,10 @@ public final class MetalContext: @unchecked Sendable {
         "vision",
     ]
 
-    /// Bundle locations for runtime shader modules. `tensorops` and `gdn` are
-    /// listed here but not in `shaderModules`: they are compiled on their own
-    /// through `moduleLibrary(device:module:)` so they cost the Gemma 4 path
-    /// nothing at startup.
+    /// Bundle locations for runtime shader modules. `tensorops`, `gdn`, and
+    /// `qwen` are listed here but not in `shaderModules`: they are compiled on
+    /// their own through `moduleLibrary(device:module:)` so they cost the
+    /// Gemma 4 path nothing at startup.
     private static let shaderSubdirectories: [String: String] = [
         "attention": "Metal/Attention",
         "dequant_int4": "Metal/Quant",
@@ -233,6 +233,7 @@ public final class MetalContext: @unchecked Sendable {
         "rmsnorm": "Metal/Primitives",
         "rope": "Metal/Primitives",
         "gdn": "Metal/Qwen",
+        "qwen": "Metal/Qwen",
         "tensorops": "Metal/TensorCore",
         "utility": "Metal/Primitives",
         "vision": "Metal/Vision",
@@ -297,20 +298,31 @@ public final class MetalContext: @unchecked Sendable {
     }
 
     /// Compile a shader module separately from the shared runtime library.
+    ///
+    /// `safeMath` turns off Metal's default fast-math for this module only.
+    /// It exists for one measured reason: under fast math the transcendentals
+    /// are the fast variants **even inside `precise::`**, and the Qwen decay
+    /// gate `g = exp(-exp(A_log)·softplus(·))` is a double exponential whose
+    /// result multiplies the recurrent state on every token. Measured on
+    /// `qwen_delta_gates`: fast math lands 19x above the float32 floor
+    /// (1.16e-06), safe math lands on it (8.9e-08). The cost measured on the
+    /// module's one hot kernel was +1.9% (`qwen_delta_qkv_prepare`, on its
+    /// pre-token-block implementation — `docs/qwen35moe/17-PHASE2-KERNELS.md` §3).
     public static func moduleLibrary(device: MTLDevice,
                                      module: String,
                                      affineGroupSize: Int = Quantization.groupSize,
-                                     affineScheme: Quantization.AffineScheme = .affine)
+                                     affineScheme: Quantization.AffineScheme = .affine,
+                                     safeMath: Bool = false)
         throws -> MTLLibrary {
         guard let url = shaderURL(module: module) else {
             throw MetalError.missingShaderResource(module)
         }
         let src = try String(contentsOf: url, encoding: .utf8)
         do {
-            return try device.makeLibrary(
-                source: src,
-                options: compileOptions(affineGroupSize: affineGroupSize,
-                                        affineScheme: affineScheme))
+            let options = compileOptions(affineGroupSize: affineGroupSize,
+                                         affineScheme: affineScheme)
+            if safeMath { options.mathMode = .safe }
+            return try device.makeLibrary(source: src, options: options)
         } catch {
             throw MetalError.libraryCompileFailed("\(error)")
         }

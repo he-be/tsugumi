@@ -9,7 +9,7 @@
 | --- | --- |
 | Phase 0 事実確定 | **ほぼ済み。**`gate_up` の順序・RMSNorm の `+1`・`conv1d` の軸順・`in_proj_a` の感度が確定 ([10](10-MLX4BIT-AUDIT.md))。**`oQ4e-g64` 側の照合も完了** ([12](12-OQ4E-G64-AUDIT.md))。**float32 参照器が動き、算式が上流実装と一致** ([14](14-REFERENCE.md))。**残: fixtures の絞り込みと 2048 トークン後の状態** |
 | Phase 1 変換 | **完了** ([13](13-PHASE1-REPACK.md))。`oQ4e-g64-baked` を repack し `--verify-install` が緑。20.49 GB / `expertStride 1,769,472` / 上流とバイト一致 |
-| Phase 2 カーネル | **着手。本命の `qwen_delta_rule` が通った** ([15](15-PHASE2-GDN.md))。CPU float32 の床と 3 桁一致、2048 トークン後の状態も一致、prefill 30 層 **125.7 ms** (中止線 150 ms の内側)。**残りは norm gate / conv1d / partial RoPE / LM head** |
+| Phase 2 カーネル | **LM head を除いて完了。**本命の `qwen_delta_rule` ([15](15-PHASE2-GDN.md)、prefill 30 層 **125.7 ms**) に続き、周辺 7 本が通った ([17](17-PHASE2-KERNELS.md)、検査 29 本すべて緑)。**残りは LM head だけで、それは INT4 ではなく INT8 の chain**だと分かった ([17 §5](17-PHASE2-KERNELS.md)) — 混在ビット幅 (#11) と同じ根 |
 | Phase 3 以降 | 未着手。ランタイム側の最初の障害はカーネルではなく**混在ビット幅** ([13 §4-2](13-PHASE1-REPACK.md)) |
 
 ---
@@ -60,7 +60,13 @@ attention と `in_proj_*` を int8 に上げる案 (+約 580 MB) を先に評価
 **`qwen_delta_rule` は済んだ** ([15](15-PHASE2-GDN.md))。検証は fixtures ではなく
 **実物と同じ形の合成入力 + CPU 参照 2 本** (float32 の床 / double の真値) で立てた
 — チェックポイントを開かずに済み、2048 トークンの検査長を自由に取れるため。
-`--gdn` で 15 本。残るカーネルも同じ形で足す。
+`--gdn` で 15 本。
+
+**周辺 7 本も同じ形で済んだ** ([17](17-PHASE2-KERNELS.md))。`--qwen` で 29 本、
+うち 6 本は「このモデルで静かに壊れる道」を参照側に作った**負例**
+(conv の軸順 / l2norm の eps / `1+w` / Gemma の RoPE の組 など)。
+**残るカーネルは LM head だけ**で、それは INT8 の chain を書く話に変わった
+([17 §5](17-PHASE2-KERNELS.md))。
 
 ## Phase 3 — decode 結線
 
@@ -84,6 +90,14 @@ attention と `in_proj_*` を int8 に上げる案 (+約 580 MB) を先に評価
 
 **TB の 3 通りは合成入力で済んだ: TB=32 が最良** (125.7 / 128.4 / 144.8 ms、
 [15 §4](15-PHASE2-GDN.md))。実物の活性での再測は結線後。
+
+**周辺のカーネルも合成入力で測ってある** ([17 §4](17-PHASE2-KERNELS.md))。
+チャンク 2048 で `qwen_delta_qkv_prepare` 21.9 ms / `qwen_delta_norm_gate` 11.5 ms /
+`qwen_delta_gates` 0.3 ms (いずれも 30 層ぶん)、`qwen_qkv_epilogue` 10.0 ms (10 層)。
+**`qwen_delta_rule` を含めた線形注意 30 層の合計は 159.4 ms** で、上の出口条件の
+読み方だと外れる。再帰カーネル単体は 125.7 ms で [05 §2](05-RISKS.md) #2 の線の内側
+なので**再設計の引き金は引いていない**。締め方の判断はユーザーに出す
+([17 §4-2](17-PHASE2-KERNELS.md))。
 
 ## Phase 5 — トークナイザ / テンプレート / CLI
 
@@ -184,20 +198,25 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 12. ~~Gated DeltaNet カーネル~~ → **完了。GPU が初めて回った**
    ([15](15-PHASE2-GDN.md))。2048 トークン後の状態が CPU float32 の床と一致、
    prefill 30 層 125.7 ms で中止線の内側
+13. ~~Phase 2 の残りのカーネル~~ → **LM head を除いて完了** ([17](17-PHASE2-KERNELS.md))。
+   `qwen.metal` に 7 本、`--qwen` の検査 29 本すべて緑。**LM head は
+   「int4 の specialization」ではなく「INT8 の chain」だった**ので #11 の後ろに回る
 
 **次にやること:**
 
 | # | やること | 要るもの |
 | --- | --- | --- |
-| 13 | **Phase 2 の残りのカーネル。**`qwen_delta_norm_gate` ([03 §2-7](03-DESIGN.md))・因果 `conv1d`・partial RoPE のペア `(i, 32+i)` ([03 §2-2](03-DESIGN.md))・LM head の `D=2048 / vocab=248,320` specialization。**検証は 15 と同じ形** (合成入力 + CPU 参照 2 本) で足せる | GPU |
-| 11 | **混在ビット幅の受け入れ** ([13 §4-2](13-PHASE1-REPACK.md))。`Model.swift` は `quant.attention` のスロット 1 個で全 attention を検証しており、**今のままでは本線の `oQ4e-g64` を開けない。**索引から導くか、スロットを層ごとに割るかを決める | Swift。GPU 不要 |
-| 14 | **Phase 3 の結線** (`QwenForwardRunner` の decode 経路)。カーネルが揃い、11 が片付いてから | GPU |
+| 11 | **混在ビット幅の受け入れ** ([13 §4-2](13-PHASE1-REPACK.md))。`Model.swift` は `quant.attention` のスロット 1 個で全 attention を検証しており、**今のままでは本線の `oQ4e-g64` を開けない。**索引から導くか、スロットを層ごとに割るかを決める。**LM head の INT8 経路 ([17 §5](17-PHASE2-KERNELS.md)) もここに乗る** | Swift。GPU 不要 |
+| 14 | **Phase 3 の結線** (`QwenForwardRunner` の decode 経路)。カーネルは LM head 以外揃った。11 が片付いてから | GPU |
+| 15 | **INT8 の LM head chain** ([17 §5](17-PHASE2-KERNELS.md))。`vocab` は 248,077 を渡して未学習の 243 行を採点しない | GPU。11 の後 |
+| 16 | **線形注意 30 層の締め方の判断** ([17 §4-2](17-PHASE2-KERNELS.md))。周辺まで数えると 159.4 ms で Phase 4 の出口条件を外れる。再帰カーネル単体は 125.7 ms で [05 §2](05-RISKS.md) #2 の内側 | ユーザー判断 |
 | 8 | `in_proj_a` の実活性再測を 200 トークン級の `--dump` でやり直す ([16 §2](16-QUALITY.md))。**本線は 8-bit なので、これは本線を止めない** | CPU |
 | 10 | fixtures を Phase 3 が要る層だけに絞る ([14 §5](14-REFERENCE.md))。**2048 トークン後の状態は 15 が合成入力で見たので、fixtures 側の宿題ではなくなった** | CPU |
 
 道具: `Scripts/qwen35/audit_checkpoint.py` / `bake_snapshot.py` / `mlx_quant.py` /
 `reference_forward.py` (numpy だけ)。`test_reference_forward.py` だけ torch を使う。
-カーネルの検査は `TurboFieldfareKernelCheck --gdn` (モデルもチェックポイントも要らない)。
+カーネルの検査は `TurboFieldfareKernelCheck --gdn` と `--qwen`
+(どちらもモデルもチェックポイントも要らない)。時間は `--gdn-bench` / `--qwen-bench`。
 repack 済みモデルは `scratch/ornith-oq4e-g64.gturbo`、repack の入力は
 `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-baked`。**参照器には焼き込み前の
 `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64` を渡す** (`q_norm` の 1/16 は本ランタイム

@@ -76,7 +76,7 @@ decode 1 トークンあたりの routed expert fetch は `numLayers × topK`:
 | # | リスク | 検知 | 中止線 / 代替 |
 | --- | --- | --- | --- |
 | 1 | 4-bit RTN の品質が足りない | Phase 0 #4 の KL / top-1 一致率 | attention と `in_proj_*` を int8 へ (+580 MB)。それでも駄目なら routed expert のみ int4、残り全部 int8 (+1.2 GB)。imatrix つきの oQ4e-g64 を本線にする手もある ([02 §1](02-CHECKPOINTS.md)) |
-| 2 | `qwen_delta_rule` 逐次形が遅い | Phase 4 の 30 層合計 | **150 ms 超で再設計。**ただし chunkwise は FLOP 2 倍 (omlx の結論) で逃げ道として薄い — 先に TB / Dv の切り方を振る ([03 §2-6](03-DESIGN.md)) |
+| 2 | `qwen_delta_rule` 逐次形が遅い | Phase 4 の 30 層合計 | **150 ms 超で再設計。**ただし chunkwise は FLOP 2 倍 (omlx の結論) で逃げ道として薄い — 先に TB / Dv の切り方を振る ([03 §2-6](03-DESIGN.md))。**現状: カーネル単体 125.7 ms で内側、周辺 (`prepare` + `norm_gate` + `gates`) を足すと 159.4 ms で外側** ([17 §4-2](17-PHASE2-KERNELS.md))。どちらで締めるかは未決 |
 | 3 | 32 スロットでヒット率が落ちすぎる | Phase 6 #1 のオフライン再計算 | 候補スロット追加をユーザーに提案。それが通らないなら **decode の I/O 律速を受け入れて数字を出す** |
 | 4 | prefill の半端ブロックで TTFT が悪化 | Phase 6 #3 | チャンク 4096 の候補追加。または `PrefillMoEGrouping.tileExpertCount` (現在 16) の見直し |
 | 5 | 状態スナップショットで 18 GB を食い潰す | Phase 7 / 8 の `peak` | slot 数を絞る。サーバーは起動時に断る (既存の作法) |

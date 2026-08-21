@@ -54,13 +54,17 @@ oQ 系の名前との対応:
 SiLU だけは共有ヘッダに置きたくなるが、`gelu_pytorch_tanh` が 4 箇所に重複定義されている
 現状に合わせて **`qwen.metal` にローカル定義する**。
 
-### 2-1. `qwen_silu_mul` — SiLU
+**LM head (§2-8) 以外は書けた** ([17](17-PHASE2-KERNELS.md))。以下は現在の設計で、
+実装との差 (conv と l2norm を 1 本にまとめた・`qwen_delta_gates` を足した) も
+反映してある。数字と検査の結果は [17](17-PHASE2-KERNELS.md) が持つ。
+
+### 2-1. `qwen_silu_mul` — SiLU (**書けた**)
 
 `grep -rni silu Sources/TurboFieldfare/Metal` は **0 件** (実測 = ソース)。
 `gelu_mul_fp16` (`utility.metal`) の SiLU 版を書く: `y = x * sigmoid(x) * up`。
 shared expert (int4) と routed expert (phase1) の両方から呼ぶ。
 
-### 2-2. `qwen_rope_partial` — Qwen 規約の partial RoPE
+### 2-2. `qwen_qkv_epilogue` — Qwen 規約の partial RoPE (**書けた**)
 
 ```
 rotary_dim = 64,  half = 32
@@ -75,20 +79,37 @@ pair >= half: そのまま (h[64..255] は無変更)
 `fused_qkv_epilogue` と同じ構造: q 16 head + k 2 head + v 2 head = 20 threadgroup)。
 **v には norm も RoPE も掛からない** (Gemma は v に no-scale norm を掛けていたので違う)。
 
-### 2-3. `qwen_attn_output_gate` — 出力ゲート
+### 2-3. `qwen_attn_output_gate` — 出力ゲート (**書けた**)
 
 `o[h,d] *= sigmoid(gate[h,d])`。gate は `q_proj` 出力の後半 4096 次元。
 `o_proj` の直前に 1 dispatch。decode では `fused` に畳んでよい (4096 要素の elementwise)。
 
-### 2-4. `qwen_moe_shared_gate` — shared expert の sigmoid ゲート
+### 2-4. `qwen_moe_shared_gate` — shared expert の sigmoid ゲート (**書けた**)
 
 `shared_out *= sigmoid(dot(shared_expert_gate, x))`。1 行 GEMV + スカラー乗算。
 `SharedExpertInt4` の後に追加する。
 
-### 2-5. `qwen_delta_conv_step` / `qwen_delta_conv_chunk` — 因果 depthwise conv
+### 2-5. `qwen_delta_qkv_prepare` — 因果 depthwise conv + l2norm (**書けた**)
 
 チャネル 8192、カーネル 4、groups=8192、bias 無し、直後に SiLU。
-decode は状態 `[8192, 3]` を持ち回して 1 step 更新。prefill は §2-6 の中に畳む。
+**当初の `conv_step` / `conv_chunk` の 2 本立ては消えた。**conv・SiLU・q/k の
+`l2norm`・q の `1/sqrt(Dk)` を 1 本にまとめ、decode (T=1) も prefill も同じ
+カーネルに入る。まとめた理由は、l2norm の縮約が 128 チャネル = 1 ヘッドの中で
+閉じ、その 128 チャネルは conv の出力を持つ threadgroup にそのままいるから
+(分けると 33.5 MB をもう 1 往復する)。出力は `qwen_delta_rule` の入力の形
+(`[T, Hk, Dk]` と `[T, Hv, Dv]`) に詰め直して書く。
+
+**トークン方向にも切る。**窓 4 の因果依存は逐次実行を強いないので、1 threadgroup が
+持つのは (1 ヘッド × R トークン)。切らないと threadgroup が 64 個しか立たず、
+帯域の 4 分の 1 しか出ない (実測 50.0 → 21.9 ms / 30 層、R=32 が最良 —
+[17 §4-1](17-PHASE2-KERNELS.md))。状態 `[3, 8192]` は入出力を別バッファにする
+(書き手と読み手が別の threadgroup になるため。T <= R なら同じでよい)。
+
+減衰ゲートは別カーネル `qwen_delta_gates` に置いた:
+`g = exp(-exp(A_log)·softplus(a+dt_bias))` と `beta = sigmoid(b)` を FP32 で書き出し、
+`qwen_delta_rule` は g を**掛ける値そのもの**として受け取る。**このモジュールは
+safe math でコンパイルする** — fast math では `precise::` を書いても超越関数が
+高速版のままで、g の誤差が float32 の床の 19 倍になる ([17 §3](17-PHASE2-KERNELS.md))。
 
 ### 2-6. `qwen_delta_rule` — 本命 (omlx の blocked-sequential を写す)
 
@@ -131,18 +152,23 @@ decode は同じカーネルに `T=1` で入る。1 dispatch = 1 層ぶんのチ
 ただし omlx の記述どおりなら chunkwise は FLOP が 2 倍で逃げ道としての魅力は薄い —
 先に「TB を振る」「Dv の切り方を変える」を試すこと。
 
-### 2-7. `qwen_delta_norm_gate` — RMSNormGated
+### 2-7. `qwen_delta_norm_gate` — RMSNormGated (**書けた**)
 
 head_v_dim=128 の RMSNorm (**`+1` しない**) → `* silu(z)`。
 `z` は `in_proj_z` の出力 4096 を 32×128 に見たもの。
 
-### 2-8. `qwen_lm_head_greedy` — LM head
+### 2-8. LM head — **INT4 ではなく INT8 の chain が要る** (未着手)
 
-`LMHeadChainInt4` は `realDecodeD=2816` / `realDecodeVocab=262144` を関数定数で焼いている
-(実測 = ソース)。**`D=2048` / `vocab=248320` の specialization を足す。**
+当初は「`LMHeadChainInt4` に `D=2048` / `vocab=248320` の specialization を足す」と
+書いていたが、**本線 `oQ4e-g64` の `lm_head` は 8-bit g64** ([02 §1](02-CHECKPOINTS.md))
+で、本リポジトリに INT8 の LM head 経路は無い (実測 = ソース)。
+**INT8 の chain を書く**のが正しい姿で、これは [13 §4-2](13-PHASE1-REPACK.md) の
+混在ビット幅と同じ根から出ている — **§7 の #11 が決着してから着手する**
+([17 §5](17-PHASE2-KERNELS.md))。
+
 `vocab_size=248,320` に対し実際の語彙は BPE 248,044 + added 33 = 248,077 なので、
-**末尾 248,077..248,319 の 243 行は学習されていない。argmax / sampling で -inf にマスクする**
-(コストはほぼゼロ、事故は防げる。[10 §3](10-MLX4BIT-AUDIT.md))。
+**末尾 248,077..248,319 の 243 行は学習されていない。**マスクのコードは要らず、
+**`vocab` に 248,077 を渡して採点しない**だけでよい ([10 §3](10-MLX4BIT-AUDIT.md))。
 
 ### 2-9. 要らないもの
 

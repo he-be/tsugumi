@@ -1386,6 +1386,43 @@ if arguments.contains("--gdn") {
     exit(1)
 }
 
+// `--qwen` runs the rest of the Qwen3.5-MoE kernels (QwenKernelCheck.swift):
+// the causal `conv1d` + l2norm that feeds the recurrence, the decay gates, the
+// gated RMSNorm, the partial-RoPE epilogue, and the small elementwise pieces.
+// Same shape as `--gdn` — synthetic inputs, no model, no checkpoint, a CPU
+// reference at two precisions, and one negative control per kernel.
+// `docs/qwen35moe/04-PHASES.md` Phase 2. `--qwen-tokens` sets the prefill
+// length; 512 is enough here because none of these kernels accumulate across
+// the sequence the way `qwen_delta_rule` does — the one that carries state
+// (`conv1d`, window 4) is checked for bit-exact chunk carry instead.
+if arguments.contains("--qwen") {
+    var qwenTokens = 512
+    if let index = arguments.firstIndex(of: "--qwen-tokens"),
+       index + 1 < arguments.count, let value = Int(arguments[index + 1]), value > 1 {
+        qwenTokens = value
+    }
+    if arguments.contains("--qwen-bench") {
+        var qwenIterations = 20
+        if let index = arguments.firstIndex(of: "--qwen-bench-iterations"),
+           index + 1 < arguments.count, let value = Int(arguments[index + 1]), value > 0 {
+            qwenIterations = value
+        }
+        try runQwenKernelBench(tokens: qwenTokens, iterations: qwenIterations)
+        exit(0)
+    }
+    let qwenResults = try runQwenKernelCheck(tokens: qwenTokens)
+    printCases(qwenResults)
+    let qwenFailures = qwenResults.filter { !$0.passed }
+    print("")
+    if qwenFailures.isEmpty {
+        print("PASS  \(qwenResults.count) cases (qwen kernels)")
+        exit(0)
+    }
+    print("FAIL  \(qwenFailures.count)/\(qwenResults.count) cases")
+    for failure in qwenFailures { print("  \(failure.name) — \(failure.detail)") }
+    exit(1)
+}
+
 // `--rows-bench` measures the k-row dense GEMV on its own (RowsBench.swift).
 // It needs no model and no expert cache, so the k-scaling that
 // `docs/mtp/19-M4.7-RESULTS.md` §5 attributes to arithmetic can be read
