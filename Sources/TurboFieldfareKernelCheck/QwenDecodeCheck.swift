@@ -226,18 +226,25 @@ func runQwenDecodeCheck(modelPath: String,
     // sorted pairs and write the same `routePartials`, so a disagreement here
     // is a bug in one of them and not a property of the prompt.
     if !prefillChunks.isEmpty {
+        // Every chunk width, not just the first. The narrow width is where the
+        // tiled path's batch planner sees the smallest groups — a chunk of 8
+        // gives an expert one or two rows of a 64-row block — and that is the
+        // shape the per-pair path never has to think about.
         for path in QwenForwardRunner.PrefillRoutedPath.allCases where path != .perPair {
-            let again = try runOnce(runner: runner, fixture: fixture, wanted: wanted,
-                                    verbose: false, prefillChunk: prefillChunks.first,
-                                    routedPath: path)
-            if again.tokens.count == wanted, again.firstMismatch == nil {
-                print("PASS  routed experts on the \(path.rawValue) path — "
-                      + "the same \(wanted) tokens")
-            } else {
-                let step = again.firstMismatch.map(String.init) ?? "-"
-                print("FAIL  routed experts on the \(path.rawValue) path "
-                      + "diverged at step \(step)")
-                passed = false
+            for chunk in prefillChunks {
+                let again = try runOnce(runner: runner, fixture: fixture, wanted: wanted,
+                                        verbose: false, prefillChunk: chunk,
+                                        routedPath: path)
+                let chunks = (fixture.prompt.count + chunk - 1) / chunk
+                if again.tokens.count == wanted, again.firstMismatch == nil {
+                    print("PASS  routed experts on the \(path.rawValue) path, "
+                          + "chunk \(chunk) (\(chunks) chunks) — the same \(wanted) tokens")
+                } else {
+                    let step = again.firstMismatch.map(String.init) ?? "-"
+                    print("FAIL  routed experts on the \(path.rawValue) path, "
+                          + "chunk \(chunk) diverged at step \(step)")
+                    passed = false
+                }
             }
         }
         runner.prefillRoutedPath = .perPair
