@@ -95,15 +95,26 @@ public struct SpeculativeDecodeResult: Sendable {
 /// text is the text of the non-speculative run. That identity is the gate, not
 /// an aspiration (04-PHASES §3 gate 1).
 ///
-/// **DEV-14.** A request with a generation constraint does not use this loop:
-/// GEN-7 can redraw a token, and a redraw invalidates the premise every later
-/// position in the block was verified against. The parameter exists — rather
-/// than being absent — and throws, deliberately: it mirrors the
-/// `repetitionPenalty != 1.0` guard a few lines down, which refuses for exactly
-/// the same reason, and it means a caller that threads a constraint through
-/// both loops finds out at the first constrained request instead of quietly
-/// generating unconstrained text. The caller's job is the one-line branch to
-/// `runRawCompletion` that `ServerInference` already has for the penalty.
+/// **GEN-14.** A constraint runs *inside* this loop rather than sending the
+/// request to `runRawCompletion`. Every position of the block is drawn with the
+/// constraint applied — GEN-7's rejection sampling, unchanged, because the
+/// redraw at a position is still the target's own draw at that position — and
+/// the drawn token is `accept`ed immediately, before the next position is
+/// drawn. The block is cut at the first position where the draw and the draft
+/// disagree, and **the constraint state needs no rewind**: it only ever
+/// advanced on tokens the round adopted, and every adopted token is emitted
+/// (参照実装 `common/sampling.cpp:678` `common_sampler_sample_and_accept_n`,
+/// pin `34af94cd9`, which is written exactly this way).
+///
+/// `onDrawnToken` is what keeps the *gates* on the constraint in step with it.
+/// GEN-5's trigger and GEN-6's suppression are decided by the caller from the
+/// tokens it sees, and in this loop a token is adopted a whole block before it
+/// is emitted — so a caller that watched `onProgress` alone would run a lazy
+/// grammar up to `bs - 1` tokens behind the thought channel it is gated on.
+/// This fires per adopted token, in order, immediately after `accept`.
+///
+/// **DEV-14** still holds for the other two: a `repetitionPenalty != 1` is
+/// refused below, and RSN-4's forced insertion has no parameter here at all.
 public func runSpeculativeCompletion(producer: any LogitProducer,
                                      tokenizer: GFTokenizer,
                                      promptIds: [Int32],
@@ -119,17 +130,21 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
                                      onDrawnToken: (Int32) -> Void = { _ in },
                                      onProgress: (RawDecodeProgress) -> Void) async throws
     -> SpeculativeDecodeResult {
-    // P6 M1 未実装: GEN-14 の口だけ開けてある。呼び出しは下の DEV-14 の
-    // guard で止まるので、この引数はまだ一度も呼ばれない。
-    _ = onDrawnToken
-    // DEV-14. Checked before anything else, so a constrained request is refused
-    // for the reason that actually applies rather than for whatever the
-    // producer happens to lack.
-    guard constraint == nil else {
-        throw SpeculativeDraftError.unsupportedConfig(
-            "DEV-14: a constrained request cannot use speculative decoding "
-            + "(GEN-7 redraws break the verified block's premise); "
-            + "run it through runRawCompletion")
+    // GEN-7: one gate for the whole generation, built exactly as
+    // `runRawCompletion` builds it — the end-of-generation ids the constraint
+    // itself does not know about ride along so `mayEndHere` can mask them.
+    let gate = constraint.map {
+        ConstraintGate(constraint: $0,
+                       endOfGenerationTokenIDs: tokenizer.stopTokenIDs.union(config.extraStopTokens))
+    }
+    // GEN-7 / GEN-14's last clause: masking needs logits, and the fused greedy
+    // head answers with a GPU argmax without ever writing them. Checked before
+    // the drafting guards so a constrained request is refused for the reason
+    // that actually applies.
+    if gate != nil, (producer as? any FusedGreedyReporting)?.usesFusedGreedyHead == true {
+        throw GenerationConstraintError.logitsUnavailable(
+            "a constrained request needs real logits, and this producer runs the "
+            + "fused greedy head; construct the runner with forceLogitsHead: true")
     }
     guard var drafting = producer as? any SpeculativeDrafting else {
         throw SpeculativeDraftError.unsupportedConfig(
@@ -216,9 +231,21 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
 
     /// The target's own token for row `row` of the verified block, drawn the way
     /// the non-speculative loop would have drawn the token with that generation
-    /// index (D5).
+    /// index (D5), **and adopted** — accepted into the constraint and announced
+    /// to `onDrawnToken` — before the caller looks at it (GEN-14).
+    ///
+    /// Adoption belongs here rather than at the call sites because the state it
+    /// leaves behind is the state the *next* row is drawn against, and there
+    /// are two call sites a few lines apart. Every token this returns is
+    /// emitted: it is either the proposal the round accepted at this position
+    /// or the bonus token that ends the round. (A round can still draw past the
+    /// point the emit loop stops at — a stop token, a stop string, the token
+    /// budget — but generation ends there, so the over-advanced constraint has
+    /// no next draw to be wrong for. The reference does the same.)
     func targetToken(row: Int, generationIndex: Int) throws -> Int32 {
         if fusedGreedy {
+            // Unreachable under a constraint: the guard at the top refused the
+            // fused greedy head, and nothing adopts a token here.
             return Int32(bitPattern: speculative.greedyRows.contents().load(
                 fromByteOffset: row * MemoryLayout<UInt32>.stride, as: UInt32.self))
         }
@@ -237,9 +264,18 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
         cb.commit()
         cb.waitUntilCompleted()
         try checkCommandBufferError(cb.error)
-        return try sampleOnce(scratch: scratch, context: context,
-                              history: history, config: config,
-                              position: generationIndex)
+        // GEN-7's rejection sampling, the same call `runRawCompletion` makes:
+        // draw, probe, and only on a rejection mask the vocabulary and draw
+        // again. The redraw is still this position's own draw by the target, so
+        // it verifies the draft at this position exactly as an unrejected draw
+        // would (GEN-14).
+        let token = try sampleOnce(scratch: scratch, context: context,
+                                   history: history, config: config,
+                                   position: generationIndex,
+                                   constraint: gate).id
+        try gate?.accept(token)
+        onDrawnToken(token)
+        return token
     }
 
     // The first bonus token is the prompt's own continuation, drawn exactly as
@@ -247,10 +283,17 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
     let seedToken: Int32
     switch prefillSeed {
     case .greedyToken(let token):
+        // The fused-greedy prefill seed: refused above when there is a gate,
+        // because a GPU argmax leaves no logits to mask (GEN-7).
         seedToken = Int32(bitPattern: token)
     case .logitsWritten:
         seedToken = try sampleOnce(scratch: scratch, context: context,
-                                   history: history, config: config, position: 0)
+                                   history: history, config: config, position: 0,
+                                   constraint: gate).id
+        // Generation index 0 is a position like any other: it is drawn under the
+        // constraint and adopted before anything else is drawn (GEN-14).
+        try gate?.accept(seedToken)
+        onDrawnToken(seedToken)
     }
     queue.append((seedToken, position))
     /// The token a round is anchored on: the one emitted last, still uncommitted.
