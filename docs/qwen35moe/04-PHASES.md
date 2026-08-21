@@ -7,7 +7,7 @@
 
 | Phase | 状態 |
 | --- | --- |
-| Phase 0 事実確定 | **大半済み。**`gate_up` の順序・RMSNorm の `+1`・`conv1d` の軸順・`in_proj_a` の感度が確定 ([10](10-MLX4BIT-AUDIT.md))。**残: 実活性での再測 (合成入力でしか測っていない)、`oQ4e-g64` 側の norm 規約の照合** |
+| Phase 0 事実確定 | **大半済み。**`gate_up` の順序・RMSNorm の `+1`・`conv1d` の軸順・`in_proj_a` の感度が確定 ([10](10-MLX4BIT-AUDIT.md))。**`oQ4e-g64` 側の照合も完了** ([12](12-OQ4E-G64-AUDIT.md))。**残: 実活性での再測 (合成入力でしか測っていない)、fixtures の作成** |
 | Phase 1 変換 | **入力が MLX 形式で揃った** (候補 2 本、どちらも赤リスト 0 本 — [02 §1](02-CHECKPOINTS.md))。**残: `q_norm` への `1/16` の焼き込み、名前寄せ、`.gturbo` への repack、`--verify-install`** |
 | Phase 2 以降 | 未着手。**GPU はまだ 0 回** |
 
@@ -158,15 +158,18 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 
 **GPU 不要 (先にこれを全部やる):**
 
-1. **`oQ4e-g64` の norm 規約を [10 §4](10-MLX4BIT-AUDIT.md) と同じやり方で照合する。**
-   `input_layernorm` / `post_attention_layernorm` / `q_norm` の平均を上流 bf16 と比べ、
-   `1+w` が焼かれているか、`linear_attn.norm` は素のままかを確定する。
-   **MLX 変換器が違えば結論も違う。公式版の結果を流用してはいけない**
-2. **`conv1d.weight` の軸順を確認する** (公式版は `[8192,4,1]`、上流は `[8192,1,4]`)
-3. **router のビット幅を確認する** ([02 §1](02-CHECKPOINTS.md) の注意)
+1. ~~`oQ4e-g64` の norm 規約の照合~~ → **完了。焼き済み / `linear_attn.norm` は素**
+   ([12 §2](12-OQ4E-G64-AUDIT.md))
+2. ~~`conv1d.weight` の軸順~~ → **完了。`[8192,4,1]`、squeeze 後 30/30 ビット一致**
+   ([12 §1](12-OQ4E-G64-AUDIT.md))
+3. ~~router のビット幅~~ → **完了。BF16。公式版 (int8) と違い、MTP 経路に効く**
+   ([12 §4](12-OQ4E-G64-AUDIT.md))
 4. **`q_norm` への `1/16` の焼き込み** ([03 §1-1](03-DESIGN.md))。どちらの候補でも要る
 5. **名前寄せ** ([03 §1-2](03-DESIGN.md)) — `.mlp.switch_mlp.` を `routedExpertRole` に当てる 1 文字列
 6. `.gturbo` への repack を通す
+
+道具: `Scripts/qwen35/audit_checkpoint.py` (numpy だけ、GPU 不要)。
+`--bf16` を付けると上流 bf16 の抽出と突き合わせる。
 
 **GPU が要る (ここから先は指示待ち):**
 

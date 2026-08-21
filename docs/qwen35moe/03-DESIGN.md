@@ -13,7 +13,7 @@ MLX 側は焼き込みをしないもの (`q_norm` の 1/16) があるので、�
 | 処理 | 要否 | 根拠 |
 | --- | --- | --- |
 | RMSNorm 系 (`input_layernorm` / `post_attention_layernorm` / `q_norm` / `k_norm` / `norm` / `mtp.*_norm`) への `+1` | **公式 MLX-4bit: 不要 (MLX 変換側が焼き済み)。足すと二重になる** | 上流 bf16 との差がちょうど +1.000001 ([10 §4](10-MLX4BIT-AUDIT.md)) |
-| 同上 (oQ4e-g64) | **未照合。**公式版の結果を流用してはいけない — 変換器が違えば結論も違う | [04](04-PHASES.md) 次の一手 #1 |
+| 同上 (oQ4e-g64) | **不要 (こちらも焼き済み)。**差は +0.99999x、MTP 側の norm も同じ規約 | [12 §2](12-OQ4E-G64-AUDIT.md) |
 | `linear_attn.norm` への `+1` | **しない (どちらでも)。**`RMSNormGated` は `1+w` 規約ではない | 上流 bf16 とビット一致 ([10 §4](10-MLX4BIT-AUDIT.md)) |
 | `q_norm.weight` × `head_dim ** -0.5 = 1/16` | **要る (どちらでも)。**q_norm は RoPE の直前で、RoPE は回転 (ノルム保存) なので順序を入れ替えてよい。attention の `scale` を **1.0** に固定でき、`scale==1.0` ゲートの tensorops 経路 (§4-3) の余地が残る | |
 | `gate_up_proj` の gate / up 分割 | **不要。**MLX が `switch_mlp.gate_proj` / `up_proj` に分割済み。`RepackPlanner.planLayerFile` の「ロール 3 本」ループが無改造で動く | [10 §3](10-MLX4BIT-AUDIT.md) |

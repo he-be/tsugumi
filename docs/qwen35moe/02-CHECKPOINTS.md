@@ -16,7 +16,8 @@
 | `in_proj_a`/`b` | 4-bit → **8-bit 打ち直しを決定済み** ([10 §5](10-MLX4BIT-AUDIT.md)) | **8-bit g64** (打ち直し後) |
 | `embed`/`lm_head` | 4-bit (品質懸念、[10 §5](10-MLX4BIT-AUDIT.md)) | **8-bit g64** |
 | shared expert | 4-bit (同上) | **8-bit g64** (打ち直し後) |
-| RMSNorm の `+1` | **MLX が焼き済み** ([10 §4](10-MLX4BIT-AUDIT.md)) | **未照合。次の一手の #1** ([04](04-PHASES.md)) |
+| RMSNorm の `+1` | **MLX が焼き済み** ([10 §4](10-MLX4BIT-AUDIT.md)) | **焼き済み** ([12 §2](12-OQ4E-G64-AUDIT.md)) |
+| router (`mlp.gate`) | **8-bit affine g64** 40 本 | **BF16 (非量子化)** 41 本 ([12 §4](12-OQ4E-G64-AUDIT.md)) |
 | 赤リスト (`group ∉ {32,64}` or `bits ∉ {4,8}`) | 0 本 | 0 本 |
 
 **差は 2.35 GB で、その対価が「imatrix + MTP + vision + 高ビットの保護箇所」である。**
@@ -25,10 +26,12 @@
 決める前に必要な照合 (norm 規約・conv1d 軸順・router のビット幅) は
 [04](04-PHASES.md) の「次の一手」1〜3。
 
-> **注意:** 公式 MLX-4bit では `mlp.gate` (router) が **8-bit g64** で、§6 の表が
-> oQ4e (打ち直し前) について言う「router は BF16」は当てはまらなかった。
-> **oQ4e-g64 側の router がどちらなのかは未確認。**変換器が違えば結論も違う —
-> 一方の照合結果をもう一方に流用してはいけない。
+> **注意 (決着済み):** 公式 MLX-4bit では `mlp.gate` (router) が **8-bit g64** で、
+> §6 の表が oQ4e (打ち直し前) について言う「router は BF16」は当てはまらなかった。
+> **oQ4e-g64 側は BF16 のままだった** ([12 §4](12-OQ4E-G64-AUDIT.md))。
+> 変換器が違えば結論も違う、が実例つきで確認された。
+> **この差は MTP 経路に効く** — 投機ブロックの rows router と router 先読みは
+> どちらも `routerWeightBits == 16` を要求し、int8 の rows カーネルは存在しない。
 
 ## 2. 手元にあるもの (2026-08-21 夜)
 
