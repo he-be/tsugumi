@@ -150,22 +150,29 @@ struct ServerGenerationPlanTests {
         #expect(!plan.isLazy, "a response-format grammar is never lazy")
     }
 
-    // MARK: - DEV-14: a constrained request leaves the speculative path
+    // MARK: - GEN-14: a constrained request keeps the speculative path
 
-    @Test("DEV-14: a constrained plan refuses the speculative path")
-    func DEV_14_a_constrained_plan_refuses_the_speculative_path() throws {
+    /// SPEC §6 **GEN-14**. The grammar left DEV-14's list on 2026-08-21: the
+    /// reference verifies each position with the grammar applied and accepts
+    /// as it goes, so a constraint is no longer a reason to drop the whole
+    /// request onto the plain path. The everyday client declares `tools` on every
+    /// request, so this line is what decides whether that client gets MTP at
+    /// all (CONFORMANCE §5).
+    @Test("GEN-14: a constrained plan keeps the speculative path")
+    func GEN_14_a_constrained_plan_keeps_the_speculative_path() throws {
         for parts in [[Self.declaredTools],
                       [Self.declaredTools, #""tool_choice":"required""#],
+                      [Self.declaredTools, #""tool_choice":{"type":"function","function":{"name":"lookup"}}"#],
                       [#""response_format":{"type":"json_object"}"#]] {
             let request = try ChatRequestParser.parse(Self.body(parts))
             let plan = ServerGenerationPlan(request: request, markers: Self.markers)
             #expect(plan.isConstrained)
-            #expect(!plan.allowsSpeculativeDecoding, "\(parts)")
+            #expect(plan.allowsSpeculativeDecoding, "\(parts)")
         }
     }
 
-    @Test("DEV-14: an unconstrained plan keeps the speculative path")
-    func DEV_14_an_unconstrained_plan_keeps_the_speculative_path() throws {
+    @Test("GEN-14: an unconstrained plan keeps it too")
+    func GEN_14_an_unconstrained_plan_keeps_the_speculative_path() throws {
         for parts in [[String](),
                       [Self.declaredTools, #""tool_choice":"none""#],
                       [#""response_format":{"type":"text"}"#]] {

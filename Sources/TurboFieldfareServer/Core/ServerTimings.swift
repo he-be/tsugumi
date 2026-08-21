@@ -27,16 +27,28 @@ public struct ServerTimings: Equatable, Sendable {
     /// `predicted_ms`: wall time spent generating them.
     public let predictedMilliseconds: Double
 
+    /// `draft_n`. P6 M4 未実装: まだ常に 0 で、`jsonObject` にも出ない。
+    public let draftTokens: Int
+    /// `draft_n_accepted`. P6 M4 未実装。
+    public let draftAcceptedTokens: Int
+
     public init(cacheTokens: Int,
                 promptTokens: Int,
                 promptMilliseconds: Double,
                 predictedTokens: Int,
-                predictedMilliseconds: Double) {
+                predictedMilliseconds: Double,
+                draftTokens: Int = 0,
+                draftAcceptedTokens: Int = 0) {
         self.cacheTokens = cacheTokens
         self.promptTokens = promptTokens
         self.promptMilliseconds = promptMilliseconds
         self.predictedTokens = predictedTokens
         self.predictedMilliseconds = predictedMilliseconds
+        // P6 M4 未実装。
+        _ = draftTokens
+        _ = draftAcceptedTokens
+        self.draftTokens = 0
+        self.draftAcceptedTokens = 0
     }
 
     /// The measurements the decode loop already takes, read off its result.
@@ -46,6 +58,13 @@ public struct ServerTimings: Equatable, Sendable {
                   promptMilliseconds: result.prefillSeconds * 1_000,
                   predictedTokens: result.newTokens,
                   predictedMilliseconds: result.decodeSeconds * 1_000)
+    }
+
+    /// RSP-3 / GEN-14: the same measurements plus what the speculative loop
+    /// reported, for a request that ran it. P6 M4 未実装。
+    public init(_ result: RawDecodeResult, speculative: ServerSpeculativeSummary?) {
+        _ = speculative
+        self.init(result)
     }
 
     /// RSP-3's last sentence: what this request left in the context.

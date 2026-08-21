@@ -473,38 +473,12 @@ import TurboFieldfareValidationSupport
         }
     }
 
-    // MARK: - DEV-14
+    // MARK: - GEN-14
 
-    /// A request with a constraint does not use speculative decoding: the
-    /// speculative entry point refuses it before it looks at anything else.
-    @Test func DEV_14_speculativeCompletionRefusesAConstraint() async throws {
-        let tok = try await GFTokenizer.load()
-        let ctx = try MetalContext()
-        let idA = tok.encode("a", addBOS: false).first!
-        // Not a drafting producer: if the refusal were not first, this would
-        // fail with `notInstalled` / "cannot draft" instead.
-        let producer = ScriptedLogitProducer(vocabSize: tok.vocabSize) { _, _ in .argmax(idA) }
-        let scratch = try RawCompletionScratch(context: ctx, vocab: tok.vocabSize)
-        let speculative = try SpeculativeScratch(context: ctx, vocab: tok.vocabSize,
-                                                 hiddenSize: 8, blockTokens: 2,
-                                                 fusedGreedy: false)
-        do {
-            _ = try await runSpeculativeCompletion(producer: producer,
-                                                   tokenizer: tok,
-                                                   promptIds: tok.encode("go", addBOS: true),
-                                                   config: GenerationConfig(maxNewTokens: 4,
-                                                                            temperature: 0),
-                                                   constraint: StubConstraint(endsAfter: 0),
-                                                   context: ctx,
-                                                   scratch: scratch,
-                                                   speculative: speculative) { _ in }
-            Issue.record("the speculative loop accepted a constraint")
-        } catch let error as SpeculativeDraftError {
-            guard case .unsupportedConfig(let reason) = error else {
-                Issue.record("wrong refusal: \(error)")
-                return
-            }
-            #expect(reason.contains("DEV-14"))
-        }
-    }
+    // 拘束のある要求が投機デコードを使えることは
+    // `SpeculativeCompletionLoopTests` が持つ (SPEC §6 GEN-14)。DEV-14 に
+    // 残ったのは強制挿入 (RSN-4) と `repeat_penalty != 1` の 2 つだけで、
+    // どちらも同じファイルの `repetitionPenaltyIsRefused` /
+    // `ServerReasoningPlan` の側で検定してある。ここにあった
+    // 「投機ループは拘束を断る」は、断らなくなったので消した。
 }

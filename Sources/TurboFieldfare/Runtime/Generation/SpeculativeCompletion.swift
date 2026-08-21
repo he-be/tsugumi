@@ -116,8 +116,12 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
                                      vision: VisionPrefillInput? = nil,
                                      start: RawCompletionStart = .reset,
                                      shouldStop: () -> Bool = { false },
+                                     onDrawnToken: (Int32) -> Void = { _ in },
                                      onProgress: (RawDecodeProgress) -> Void) async throws
     -> SpeculativeDecodeResult {
+    // P6 M1 未実装: GEN-14 の口だけ開けてある。呼び出しは下の DEV-14 の
+    // guard で止まるので、この引数はまだ一度も呼ばれない。
+    _ = onDrawnToken
     // DEV-14. Checked before anything else, so a constrained request is refused
     // for the reason that actually applies rather than for whatever the
     // producer happens to lack.

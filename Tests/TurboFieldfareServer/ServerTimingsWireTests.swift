@@ -57,6 +57,47 @@ private actor TimingsStubBackend: ServerInferenceBackend {
     }
 }
 
+/// A backend whose request ran the speculative loop (SPEC §6 GEN-14): the
+/// completion carries the summary, and RSP-3 puts its two counters on the wire.
+private actor SpeculativeTimingsStubBackend: ServerInferenceBackend {
+    static let summary = ServerSpeculativeSummary(blockTokens: 4, rounds: 3,
+                                                  proposed: 9, accepted: 5)
+    static let final = ServerTimings(cacheTokens: 40,
+                                     promptTokens: 60,
+                                     promptMilliseconds: 500,
+                                     predictedTokens: 8,
+                                     predictedMilliseconds: 200,
+                                     draftTokens: summary.proposed,
+                                     draftAcceptedTokens: summary.accepted)
+
+    func generate(
+        _ request: ValidatedChatRequest,
+        onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
+    ) async throws -> ServerCompletion {
+        try await generate(ServerPreparedRequest(request: request),
+                           monitor: nil,
+                           onEvent: onEvent)
+    }
+
+    func generate(
+        _ prepared: ServerPreparedRequest,
+        monitor: ServerTimingsMonitor?,
+        onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
+    ) async throws -> ServerCompletion {
+        onEvent(.content("ok"))
+        return ServerCompletion(
+            content: "ok",
+            toolCalls: [],
+            finishReason: "stop",
+            usage: OpenAIUsage(promptTokens: 100,
+                               completionTokens: 8,
+                               totalTokens: 108,
+                               cachedTokens: 40),
+            speculative: Self.summary,
+            timings: Self.final)
+    }
+}
+
 /// SPEC §9 **RSP-3** on the wire.
 ///
 /// `ServerTimingsTests` checks the arithmetic; this checks that the object
@@ -191,6 +232,80 @@ struct ServerTimingsWireTests {
         Self.expectTimings(chunks.last?["timings"] as? [String: Any],
                            equal: TimingsStubBackend.final,
                            "final chunk")
+
+        try await server.shutdown()
+    }
+}
+
+/// SPEC §9 **RSP-3** の `draft_n` / `draft_n_accepted` (GEN-14) on the wire.
+///
+/// CONFORMANCE §5 の完了の定義がここを名指ししている: 「MTP が効いている」は
+/// フラグではなく、`tools` を宣言した要求の応答に `timings.draft_n > 0` が
+/// あることで見る。**投機が走らなかった要求にはキーごと出さない**ので、
+/// 「0 が載っている」と「走らなかった」を取り違えることはできない。
+@Suite("RSP-3 draft counters on the wire", .serialized)
+struct ServerDraftTimingsWireTests {
+    private static func started(
+        _ backend: any ServerInferenceBackend
+    ) async throws -> (TurboFieldfareHTTPServer, Int) {
+        let server = TurboFieldfareHTTPServer(
+            modelID: "test-model", queueLimit: 1, backend: backend)
+        let channel = try await server.start(port: 0)
+        guard let port = channel.localAddress?.port else {
+            throw ServerRequestError.invalid(message: "no port")
+        }
+        return (server, port)
+    }
+
+    private static func completion(port: Int, options: String) async throws -> Data {
+        var request = URLRequest(
+            url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+        request.httpBody = Data("""
+        {"model":"test-model","messages":[{"role":"user","content":"hi"}]\(options)}
+        """.utf8)
+        let (data, response) = try await URLSession.shared.data(for: request)
+        #expect((response as? HTTPURLResponse)?.statusCode == 200)
+        return data
+    }
+
+    @Test func RSP_3_a_speculative_request_carries_the_draft_counters() async throws {
+        let (server, port) = try await Self.started(SpeculativeTimingsStubBackend())
+        let body = try #require(JSONSerialization.jsonObject(
+            with: try await Self.completion(port: port, options: "")) as? [String: Any])
+        let timings = try #require(body["timings"] as? [String: Any])
+
+        #expect(timings["draft_n"] as? Int == SpeculativeTimingsStubBackend.summary.proposed)
+        #expect(timings["draft_n_accepted"] as? Int
+                == SpeculativeTimingsStubBackend.summary.accepted)
+
+        try await server.shutdown()
+    }
+
+    @Test func RSP_3_the_final_chunk_carries_the_draft_counters() async throws {
+        let (server, port) = try await Self.started(SpeculativeTimingsStubBackend())
+        let chunks = ServerFingerprintWireTests.streamChunks(
+            try await Self.completion(port: port, options: #","stream":true"#))
+        let timings = try #require(chunks.last?["timings"] as? [String: Any])
+
+        #expect(timings["draft_n"] as? Int == SpeculativeTimingsStubBackend.summary.proposed)
+        #expect(timings["draft_n_accepted"] as? Int
+                == SpeculativeTimingsStubBackend.summary.accepted)
+
+        try await server.shutdown()
+    }
+
+    /// The other half of the claim: a request that did not speculate has
+    /// neither key, so `draft_n` is never a zero a client has to interpret.
+    @Test func RSP_3_a_plain_request_carries_neither_key() async throws {
+        let (server, port) = try await Self.started(TimingsStubBackend())
+        let body = try #require(JSONSerialization.jsonObject(
+            with: try await Self.completion(port: port, options: "")) as? [String: Any])
+        let timings = try #require(body["timings"] as? [String: Any])
+
+        #expect(timings["draft_n"] == nil)
+        #expect(timings["draft_n_accepted"] == nil)
 
         try await server.shutdown()
     }

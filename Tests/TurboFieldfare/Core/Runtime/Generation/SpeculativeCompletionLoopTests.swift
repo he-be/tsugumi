@@ -130,7 +130,8 @@ import Metal
     }
 
     private func plainRun(seq: [Int32], end: Int32,
-                          config: GenerationConfig) async throws -> Run {
+                          config: GenerationConfig,
+                          constraint: (any GenerationConstraint)? = nil) async throws -> Run {
         let ctx = try MetalContext()
         let tok = try await GFTokenizer.load()
         let next = automaton(seq, end: end)
@@ -147,6 +148,7 @@ import Metal
                                               uncommittedBoundaryTokenIDs: []))
         run.result = try await runRawCompletion(producer: producer, tokenizer: tok,
                                                 promptIds: promptIds, config: config,
+                                                constraint: constraint,
                                                 context: ctx, scratch: scratch,
                                                 prefillConfig: .defaultChunked) { progress in
             if case .token(_, let id, let delta) = progress {
@@ -161,6 +163,8 @@ import Metal
     private func speculativeRun(seq: [Int32], end: Int32,
                                 config: GenerationConfig,
                                 blockTokens: Int,
+                                constraint: (any GenerationConstraint)? = nil,
+                                onDrawnToken: (Int32) -> Void = { _ in },
                                 propose: @escaping @Sendable (Int32, Int) -> [Int32])
         async throws -> (Run, ScriptedSpeculativeProducer) {
         let ctx = try MetalContext()
@@ -185,9 +189,11 @@ import Metal
                                               uncommittedBoundaryTokenIDs: []))
         let result = try await runSpeculativeCompletion(producer: producer, tokenizer: tok,
                                                         promptIds: promptIds, config: config,
+                                                        constraint: constraint,
                                                         context: ctx, scratch: scratch,
                                                         speculative: speculative,
-                                                        prefillConfig: .defaultChunked) { progress in
+                                                        prefillConfig: .defaultChunked,
+                                                        onDrawnToken: onDrawnToken) { progress in
             if case .token(_, let id, let delta) = progress {
                 run.tokens.append(id)
                 run.text += delta
@@ -329,5 +335,198 @@ import Metal
                 Array(repeating: Int32(9999), count: count)
             })
         }
+    }
+
+    // MARK: - SPEC §6 GEN-14: 文法の下で投機デコードを回す
+
+    /// A constraint that dictates the first `forced.count` tokens and then
+    /// allows anything, recording every token it was asked to accept.
+    ///
+    /// The recording is the point: GEN-14 says the state advances on the tokens
+    /// the round *adopted* and on nothing else, so a draft the target did not
+    /// draw must never appear in `accepted`.
+    final class RecordingSequenceConstraint: GenerationConstraint, @unchecked Sendable {
+        private let forced: [Int32]
+        private(set) var accepted: [Int32] = []
+        /// How many draws took GEN-7's rejection path.
+        private(set) var maskFills = 0
+
+        init(_ forced: [Int32]) { self.forced = forced }
+
+        var mayEndHere: Bool { accepted.count >= forced.count }
+
+        func allows(tokenID: Int32) -> Bool {
+            accepted.count < forced.count ? tokenID == forced[accepted.count] : true
+        }
+
+        func fillAllowedMask(_ allowed: UnsafeMutableBufferPointer<Bool>) throws {
+            maskFills += 1
+            for i in 0..<allowed.count { allowed[i] = allows(tokenID: Int32(i)) }
+        }
+
+        func accept(tokenID: Int32) throws { accepted.append(tokenID) }
+    }
+
+    /// The five tokens the constraint dictates. None of them is on the
+    /// automaton's path, so every one of the first five draws is a GEN-7
+    /// rejection and every draft covering them is wrong.
+    private let dictated: [Int32] = [31, 32, 33, 34, 35]
+
+    /// GEN-14, the contract: a constrained speculative run emits the tokens the
+    /// *same constrained* plain run emits — whatever the drafter proposed.
+    ///
+    /// The three drafters are gate 1's three (04-PHASES §3): always right about
+    /// the automaton, always wrong, right about its first proposal only. Under
+    /// a constraint "right about the automaton" is itself wrong for the first
+    /// five positions, which is exactly the case the old DEV-14 refusal existed
+    /// to avoid and that this line now has to survive.
+    @Test("GEN-14: a constrained speculative run emits the constrained plain tokens",
+          arguments: ["perfect", "useless", "partial"])
+    func GEN_14_constrainedSpeculationMatchesConstrainedPlainDecode(
+        drafter: String
+    ) async throws {
+        let config = GenerationConfig(maxNewTokens: 12, temperature: 0, seed: 1)
+        let next = automaton(sequence, end: 1)
+        let propose: @Sendable (Int32, Int) -> [Int32]
+        switch drafter {
+        case "perfect":
+            propose = perfectDrafter(next, firstToken: sequence[0])
+        case "useless":
+            propose = { _, count in Array(repeating: Int32(9999), count: count) }
+        default:
+            propose = { bonus, count in
+                [next[bonus] ?? 9999]
+                    + Array(repeating: Int32(9999), count: max(0, count - 1))
+            }
+        }
+
+        let plainConstraint = RecordingSequenceConstraint(dictated)
+        let plain = try await plainRun(seq: sequence, end: 1, config: config,
+                                       constraint: plainConstraint)
+        let specConstraint = RecordingSequenceConstraint(dictated)
+        let (spec, _) = try await speculativeRun(seq: sequence, end: 1, config: config,
+                                                 blockTokens: 4,
+                                                 constraint: specConstraint,
+                                                 propose: propose)
+
+        // The constraint really bit: the dictated prefix is not what the
+        // automaton would have produced.
+        #expect(Array(plain.tokens.prefix(dictated.count)) == dictated)
+        #expect(plainConstraint.maskFills >= dictated.count)
+
+        #expect(spec.tokens == plain.tokens, "\(drafter)")
+        #expect(spec.text == plain.text, "\(drafter)")
+        #expect(spec.result.newTokens == plain.result.newTokens, "\(drafter)")
+        #expect(spec.result.reason == plain.result.reason, "\(drafter)")
+        #expect(spec.result.kvPosition == plain.result.kvPosition, "\(drafter)")
+        #expect(spec.result.kvBackedTokenIDs == plain.result.kvBackedTokenIDs, "\(drafter)")
+    }
+
+    /// GEN-14: the constraint advances on adopted tokens only. A draft the
+    /// target did not draw is never accepted, and the accepted sequence is the
+    /// emitted sequence — no rewind, because nothing past the mismatch was ever
+    /// accepted (参照実装 `common_sampler_sample_and_accept_n`).
+    @Test("GEN-14: the constraint advances only on the tokens the round adopted")
+    func GEN_14_theConstraintAdvancesOnlyOnAdoptedTokens() async throws {
+        let config = GenerationConfig(maxNewTokens: 12, temperature: 0, seed: 1)
+        let constraint = RecordingSequenceConstraint(dictated)
+        let (spec, _) = try await speculativeRun(
+            seq: sequence, end: 1, config: config, blockTokens: 4,
+            constraint: constraint,
+            propose: { _, count in Array(repeating: Int32(9999), count: count) })
+
+        #expect(!constraint.accepted.contains(9999),
+                "a rejected draft advanced the constraint")
+        // Every emitted token was accepted, in order. The tail can be longer
+        // only when generation ended mid-round; here it ends on the budget.
+        #expect(constraint.accepted == spec.tokens)
+    }
+
+    /// GEN-14 / GEN-5 / GEN-6: whatever gates the constraint has to advance at
+    /// the moment a token is adopted, not when the queue later emits it —
+    /// otherwise a block-wide lag hides the trigger the lazy grammar is
+    /// watching for. The hook fires once per adopted token, in order, and
+    /// before the next draw.
+    @Test("GEN-14: the adopted-token hook fires in order, once per adopted token")
+    func GEN_14_theDrawnTokenHookFiresOncePerAdoptedToken() async throws {
+        let config = GenerationConfig(maxNewTokens: 12, temperature: 0, seed: 1)
+        let next = automaton(sequence, end: 1)
+        let constraint = RecordingSequenceConstraint(dictated)
+        // A box, because the hook is called from inside the loop.
+        final class Seen: @unchecked Sendable { var tokens: [Int32] = [] }
+        let seen = Seen()
+        let (spec, _) = try await speculativeRun(
+            seq: sequence, end: 1, config: config, blockTokens: 4,
+            constraint: constraint,
+            onDrawnToken: { seen.tokens.append($0) },
+            propose: perfectDrafter(next, firstToken: sequence[0]))
+
+        #expect(seen.tokens == constraint.accepted)
+        #expect(seen.tokens == spec.tokens)
+    }
+
+    /// GEN-7: masking needs logits, and the fused greedy head answers with a
+    /// GPU argmax without writing them. The speculative loop refuses for the
+    /// same reason `runRawCompletion` does, rather than generating
+    /// unconstrained text under a constrained request.
+    @Test("GEN-7: a constrained speculative run refuses the fused greedy head")
+    func GEN_7_constrainedSpeculationRefusesTheFusedGreedyHead() async throws {
+        let tok = try await GFTokenizer.load()
+        let ctx = try MetalContext()
+        let producer = FusedGreedySpeculativeProducer(vocabSize: tok.vocabSize)
+        let scratch = try RawCompletionScratch(context: ctx, vocab: tok.vocabSize)
+        let speculative = try SpeculativeScratch(context: ctx, vocab: tok.vocabSize,
+                                                 hiddenSize: 8, blockTokens: 2,
+                                                 fusedGreedy: true)
+        await #expect(throws: GenerationConstraintError.self) {
+            _ = try await runSpeculativeCompletion(
+                producer: producer,
+                tokenizer: tok,
+                promptIds: tok.encode("go", addBOS: true),
+                config: GenerationConfig(maxNewTokens: 4, temperature: 0),
+                constraint: RecordingSequenceConstraint([31]),
+                context: ctx,
+                scratch: scratch,
+                speculative: speculative,
+                prefillConfig: .defaultChunked) { _ in }
+        }
+    }
+
+    /// A drafting producer that reports the fused greedy head, for the refusal
+    /// above and nothing else.
+    final class FusedGreedySpeculativeProducer: LogitProducer, ChunkedPrefillRunner,
+                                                SpeculativeDrafting, FusedGreedyReporting,
+                                                @unchecked Sendable {
+        let vocabSize: Int
+        let usesFusedGreedyHead = true
+        var speculativeHiddenRows: MTLBuffer?
+        var isDraftInstalled = true
+        var speculativeHiddenRowStride: Int { 8 }
+        var maxSpeculativeBlockTokens: Int { SpeculativeBlock.maxTokens }
+        var draftStepCount = 0
+        var draftNanos: UInt64 = 0
+        var verifyBlockCount = 0
+        var verifyBlockNanos: UInt64 = 0
+
+        init(vocabSize: Int) { self.vocabSize = vocabSize }
+
+        func reset() {}
+        func produce(token: Int32, position: Int, into logits: MTLBuffer) async throws {}
+        func prefillChunked(tokens: ArraySlice<Int32>,
+                            startPosition: Int,
+                            outputMode: PrefillOutputMode,
+                            config: PrefillRuntimeConfig,
+                            vision: VisionPrefillInput?,
+                            into logits: MTLBuffer,
+                            onProgress: (Int) -> Void) async throws -> PrefillResult {
+            PrefillResult(newPosition: startPosition + tokens.count, seed: .greedyToken(1))
+        }
+        func verifyBlock(tokens: ArraySlice<Int32>,
+                         startPosition: Int,
+                         into logitRows: MTLBuffer,
+                         greedyTokens: MTLBuffer?) async throws {}
+        func rewind(to position: Int) throws {}
+        func draftProposals(bonusToken: Int32, position: Int, hidden: MTLBuffer,
+                            hiddenRow: Int, count: Int) throws -> [Int32] { [] }
     }
 }

@@ -18,11 +18,15 @@ public enum ServerInferenceEvent: Equatable, Sendable {
 public struct ServerSpeculativeSummary: Equatable, Sendable {
     public let blockTokens: Int
     public let rounds: Int
+    /// SPEC §9 RSP-3's `draft_n`: proposals the drafter made.
+    public let proposed: Int
+    /// RSP-3's `draft_n_accepted`.
     public let accepted: Int
 
-    public init(blockTokens: Int, rounds: Int, accepted: Int) {
+    public init(blockTokens: Int, rounds: Int, proposed: Int, accepted: Int) {
         self.blockTokens = blockTokens
         self.rounds = rounds
+        self.proposed = proposed
         self.accepted = accepted
     }
 
@@ -990,6 +994,7 @@ public actor ServerModelSession: ServerInferenceBackend {
             speculativeSummary = ServerSpeculativeSummary(
                 blockTokens: spec.speculative.blockTokens,
                 rounds: spec.speculative.rounds,
+                proposed: spec.speculative.proposed,
                 accepted: spec.speculative.accepted)
         } else {
             result = try await runRawCompletion(

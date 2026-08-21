@@ -29,8 +29,8 @@ struct ServerTimingsTests {
     }
 
     /// RSP-3 names eight fields and the object carries those eight — no more
-    /// (the reference's `prompt_per_token_ms` and its draft counters are not
-    /// in the SPEC line) and no fewer.
+    /// (the reference's `prompt_per_token_ms` is not in the SPEC line) and no
+    /// fewer. The two draft counters are conditional and are checked below.
     @Test func RSP_3_timings_object_carries_the_eight_named_fields() {
         let timings = ServerTimings(cacheTokens: 3,
                                     promptTokens: 7,
@@ -49,6 +49,64 @@ struct ServerTimingsTests {
         #expect(object["predicted_n"] as? Int == 5)
         #expect(object["prompt_ms"] as? Double == 100)
         #expect(object["predicted_ms"] as? Double == 200)
+    }
+
+    // MARK: - RSP-3 / GEN-14: the draft counters
+
+    /// RSP-3: a request the speculative loop ran carries `draft_n` and
+    /// `draft_n_accepted`, and one it did not carries neither key. The gate is
+    /// the reference's own (`server_slot_stats::to_json`, pin `34af94cd9`):
+    /// the pair is written exactly when `n_draft_tokens > 0`.
+    ///
+    /// This is the only place on the wire where a client can see whether MTP
+    /// actually ran, which is what CONFORMANCE §5 asks for.
+    @Test func RSP_3_draft_counters_ride_a_speculative_request_only() {
+        let plain = ServerTimings(cacheTokens: 3,
+                                  promptTokens: 7,
+                                  promptMilliseconds: 100,
+                                  predictedTokens: 5,
+                                  predictedMilliseconds: 200)
+        #expect(plain.jsonObject["draft_n"] == nil)
+        #expect(plain.jsonObject["draft_n_accepted"] == nil)
+
+        let speculated = ServerTimings(cacheTokens: 3,
+                                       promptTokens: 7,
+                                       promptMilliseconds: 100,
+                                       predictedTokens: 5,
+                                       predictedMilliseconds: 200,
+                                       draftTokens: 9,
+                                       draftAcceptedTokens: 4)
+        let object = speculated.jsonObject
+        #expect(object["draft_n"] as? Int == 9)
+        #expect(object["draft_n_accepted"] as? Int == 4)
+        #expect(Set(object.keys) == Set(plain.jsonObject.keys)
+                                    .union(["draft_n", "draft_n_accepted"]))
+    }
+
+    /// A round that proposed nothing is not a request that speculated, so the
+    /// keys stay off — the reference gates on the proposal count, not on
+    /// whether the loop was entered.
+    @Test func RSP_3_a_speculative_run_that_proposed_nothing_carries_no_keys() {
+        let decoded = Self.result(cached: 0, computed: 10, prefillSeconds: 0.1,
+                                  generated: 4, decodeSeconds: 0.4)
+        let summary = ServerSpeculativeSummary(blockTokens: 4, rounds: 4,
+                                               proposed: 0, accepted: 0)
+        let timings = ServerTimings(decoded, speculative: summary)
+        #expect(timings.jsonObject["draft_n"] == nil)
+        #expect(timings.jsonObject["draft_n_accepted"] == nil)
+    }
+
+    /// The summary the loop reports is what reaches the wire, unchanged.
+    @Test func RSP_3_draft_counters_come_from_the_speculative_summary() {
+        let decoded = Self.result(cached: 0, computed: 10, prefillSeconds: 0.1,
+                                  generated: 7, decodeSeconds: 0.4)
+        let summary = ServerSpeculativeSummary(blockTokens: 4, rounds: 3,
+                                               proposed: 9, accepted: 4)
+        let timings = ServerTimings(decoded, speculative: summary)
+        #expect(timings.draftTokens == 9)
+        #expect(timings.draftAcceptedTokens == 4)
+        #expect(timings.jsonObject["draft_n"] as? Int == 9)
+        #expect(timings.jsonObject["draft_n_accepted"] as? Int == 4)
     }
 
     /// RSP-3's last sentence: a client computes context usage as
