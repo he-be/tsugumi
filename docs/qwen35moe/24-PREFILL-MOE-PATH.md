@@ -17,7 +17,7 @@ swift run -c release TurboFieldfareKernelCheck \
 
 | | |
 | --- | --- |
-| 結果 (#20) | **タイル版が通り、同じ 55 トークンが出た** (§2)。**4 通りとも速い** — GPU 時間で −22〜40%、チャンク 2048 で 1 トークン **5.46 → 3.93 ms** (§3) |
+| 結果 (#20) | **タイル版が通り、同じ 55 トークンが出た** (§2)。**4 通りとも速い** — GPU 時間で −22〜40%、チャンク 2048 で 1 トークン **5.46 → 3.93 ms** (§3)。**既定をタイル版にした** (§3-2、2026-08-22 ユーザー確定) |
 | 結果 (#21) | **説明が付いた。**増えているのは **GPU 時間**で、**4 秒空けるだけで消える** (§4)。[21 §5](21-PHASE4-PREFILL.md) の表はクールダウン無しで取ったもので、**1 行訂正が要る** (§4-3) |
 | 書いたもの | `prefillRoutedPath` の分岐 (§1)、bench の内訳 3 列とプロセス内クールダウン (§4-1) |
 | 検査 | `--qwen-prefill` に**経路の腕が 1 本増えた**。`swift test --no-parallel` は **1,329 件すべて緑** |
@@ -54,7 +54,7 @@ case .tiled:   … encodeStreamedTiled(…, groups: groups, maxRowsPerBatch: s.g
 
 | どこ | 何を |
 | --- | --- |
-| `QwenForwardRunner` | `prefillRoutedPath` (既定 `.perPair`、`TF_QWEN_PREFILL_MOE=tiled` で全体を切り替え) と `gpuSeconds` / `gpuCommandBuffers` |
+| `QwenForwardRunner` | `prefillRoutedPath` (既定 `.tiled` — §3-2) と `supportsTiledRoutedPrefill`、`gpuSeconds` / `gpuCommandBuffers` |
 | `QwenPrefillContext` | `gemmBatchRows` と、それに合わせた `gateUpAct` の幅 |
 | `QwenPrefill` | 上の `switch` |
 
@@ -74,17 +74,26 @@ routed expert は 3 本とも 4-bit だからである ([01 §3-2](01-MODEL.md) 
 
 ## 2. 検査 — 同じ 55 トークン
 
-`--qwen-prefill` に腕が 1 本増えた。同じ fixture、同じプロンプト、
-**routed expert だけ別のカーネル族**:
+`--qwen-prefill` に腕が増えた。上の 2 本は**既定の経路** (いまは tiled) で走り、
+その下が**もう一方の経路を全チャンク幅で**通したものである:
 
 ```
 PASS  55 tokens, every one equal to the float32 reference     ← チャンク 512
 PASS  chunk 8 (3 chunks) — the same 55 tokens
-PASS  routed experts on the tiled path — the same 55 tokens   ← 新
+PASS  routed experts on the per-pair path, chunk 512 (1 chunks) — the same 55 tokens
+PASS  routed experts on the per-pair path, chunk 8 (3 chunks) — the same 55 tokens
 ```
 
 2 つの経路は同じ sorted pair を読んで同じ `routePartials` に書くので、
 **ここが食い違ったらどちらかがバグ**であって、プロンプトの性質ではない。
+
+**幅を全部通すのが要点である。**最初は `prefillChunks.first` だけを通していて、
+**幅 8 をタイル版が一度も通っていなかった** — そこはエキスパート 1 本に
+64 行ブロックの 1〜2 行しか入らない、バッチ計画が一番痩せる形である。
+広げても緑だった。
+
+`TF_PREFILL_MOE=scalar` を立てるとタイル版のパイプラインが作られないので、
+**既定が `.perPair` に戻り、腕も足されない** (§3-2)。
 
 ### 2-1. 取得エキスパート数がわずかに違う
 
@@ -150,12 +159,36 @@ argmax を動かす大きさではない。ただし**取得本数と取得時�
 (6.6 → 5.0 秒) のは、まさに埋まらないブロックの費用である。占有率の話は
 **実在した**が、それでも一番埋まらないチャンク 512 でタイル版が 22% 速い。
 
-### 3-2. 既定は変えない
+### 3-2. 既定をタイル版にした (2026-08-22 ユーザー確定)
 
-[04](04-PHASES.md) の運用ルールどおり、**既定は `.perPair` のまま**にした。
-`TF_QWEN_PREFILL_MOE=tiled` と `--qwen-prefill-bench-moe tiled` で選べる。
-**候補として出すところまでがこの文書の仕事**で、切り替えの判断はユーザーが行う
-(§6)。
+[04](04-PHASES.md) の運用ルールどおり、この表はまず**候補として**出した。
+**ユーザーの判断で既定を `.tiled` に切り替えた** — 効くのが既定のチャンク幅
+(2048 で GPU −40%) で、隠れ得るのは既定でない幅の方だからである (§3-3)。
+
+| ノブ | 効き |
+| --- | --- |
+| 既定 | `.tiled` |
+| `TF_QWEN_PREFILL_MOE=per-pair` (または `scalar`) | この family だけ GEMV に戻す |
+| `TF_PREFILL_MOE=scalar` (Gemma 側の既存のノブ) | **タイル版の PSO を作らない**ので、既定も自動的に `.perPair` になる |
+| `--qwen-prefill-bench-moe per-pair\|tiled` | 測定の 1 回だけ選ぶ |
+
+**`TF_PREFILL_MOE=scalar` を既定の側が知っている**のが要点である。あれは
+好みの表明ではなく `PrefillGroupedRoutedMoE` が**タイル版のパイプラインを
+そもそも作らない**ノブなので、それを見ずに `.tiled` を既定にすると
+**「既定が例外を投げる」**ことになる。`--qwen-prefill` も
+`supportsTiledRoutedPrefill` を先に訊いてから腕を足す — **作れない経路の腕を
+落とすのと、腕を足さないのは別のこと**である。
+
+明示的に `.tiled` を頼まれて出せないときは、いまも例外を投げる (§1)。
+
+### 3-3. 切り替えのデメリット (2026-08-22 に洗い出した)
+
+| # | 中身 | 現状 |
+| --- | --- | --- |
+| 1 | **数値が変わる。**タイル版は逆量子化した重みを FP16 で staging し、per-pair は FP32 のまま積む (実測 = ソース)。§2-1 のとおり後段の router の top-8 が入れ替わる | **decode は GEMV で FP32 のまま**なので、prefill を tiled にすると decode の演算から遠ざかる。トークンは 55 本とも一致するが、**Phase 7 の受入条件「非投機と greedy でバイト一致」は tiled で 1 回確かめる**必要がある (§6) |
+| 2 | **部品が増える。**整列の前提とバッチ計画が要る ([21 §3-2](21-PHASE4-PREFILL.md) が per-pair を選んだ理由の逆) | **検査を全チャンク幅に広げた** (§2)。幅 8 = 64 行ブロックに 1〜2 行、という一番痩せた形でも同じ 55 本が出る |
+| 3 | **合成入力での測定である** | **タイル版に不利な方向の限界。**本物の文章は router が偏るのでエキスパートあたりの行数が増え、ブロックが埋まりやすくなる。実文で逆転する可能性は低く、むしろ差が開く向き (**導出**) |
+| 4 | **並列化すると利得が隠れる場面がある。**いまは直列で取得と GPU が足し算だが、重ねると `max` に寄る | チャンク 512 は取得 8.4 秒 > GPU 6.6 秒なので**そこでは隠れる**。**既定のチャンク 2048 は取得 2.5 秒 < GPU 5.0 秒**なので効き続ける。Phase 6 で見直す |
 
 ## 4. #21 — 逆転は GPU 時間だった
 
@@ -245,14 +278,16 @@ argmax を動かす大きさではない。ただし**取得本数と取得時�
 
 | 対象 | 更新 |
 | --- | --- |
-| [04](04-PHASES.md) 次の一手 #20 / #21 | **完了** |
+| [04](04-PHASES.md) 次の一手 #20 / #21 / #25 | **完了。**#25 (既定をどちらにするか) は**タイル版**で確定 (§3-2) |
 | [05 §1-2](05-RISKS.md) prefill の GEMM 占有率 | **測った。**半端ブロックは実在するが、**タイル版が 4 通りとも速い** (§3) |
 | [21 §5](21-PHASE4-PREFILL.md) 「説明の付いていない振る舞い」 | **付いた** (§4) |
 | [21 §7](21-PHASE4-PREFILL.md) 「タイル版を通していない」 | **片づいた** (§1) |
 
 ## 6. 残した宿題
 
-- **既定をどちらにするか。**§3 は候補を出すところまで。判断はユーザー
+- **Phase 7 に入る前に「非投機と greedy でバイト一致」を tiled で 1 回確かめる**
+  (§3-3 #1)。prefill だけ FP16 staging の経路になったので、**decode との
+  演算差が広がっている**
 - **直列のまま。**タイルの取得と GPU が重なっていない ([21 §3-2](21-PHASE4-PREFILL.md))。
   Phase 6
 - **ヒット率 0%** は合成プロンプトの router がほぼ一様に当たるためで、

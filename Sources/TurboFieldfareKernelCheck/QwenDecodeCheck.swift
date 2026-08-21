@@ -101,7 +101,8 @@ private func runOnce(runner: QwenForwardRunner,
                      wanted: Int,
                      verbose: Bool,
                      prefillChunk: Int? = nil,
-                     routedPath: QwenForwardRunner.PrefillRoutedPath = .perPair)
+                     routedPath: QwenForwardRunner.PrefillRoutedPath
+                         = QwenForwardRunner.defaultPrefillRoutedPath)
     throws -> (tokens: [Int32], firstMismatch: Int?) {
     runner.prefillRoutedPath = routedPath
     runner.reset()
@@ -221,16 +222,21 @@ func runQwenDecodeCheck(modelPath: String,
         }
     }
 
-    // The routed experts have two kernel families and Phase 4 only ever ran
-    // one of them (`QwenForwardRunner.prefillRoutedPath`). They read the same
-    // sorted pairs and write the same `routePartials`, so a disagreement here
-    // is a bug in one of them and not a property of the prompt.
+    // The routed experts have two kernel families
+    // (`QwenForwardRunner.prefillRoutedPath`), and the arms above ran whichever
+    // is the default. They read the same sorted pairs and write the same
+    // `routePartials`, so a disagreement here is a bug in one of them and not a
+    // property of the prompt.
     if !prefillChunks.isEmpty {
+        let others = QwenForwardRunner.PrefillRoutedPath.allCases.filter {
+            $0 != runner.prefillRoutedPath
+                && ($0 != .tiled || runner.supportsTiledRoutedPrefill)
+        }
         // Every chunk width, not just the first. The narrow width is where the
         // tiled path's batch planner sees the smallest groups — a chunk of 8
         // gives an expert one or two rows of a 64-row block — and that is the
         // shape the per-pair path never has to think about.
-        for path in QwenForwardRunner.PrefillRoutedPath.allCases where path != .perPair {
+        for path in others {
             for chunk in prefillChunks {
                 let again = try runOnce(runner: runner, fixture: fixture, wanted: wanted,
                                         verbose: false, prefillChunk: chunk,
@@ -247,7 +253,7 @@ func runQwenDecodeCheck(modelPath: String,
                 }
             }
         }
-        runner.prefillRoutedPath = .perPair
+        runner.prefillRoutedPath = QwenForwardRunner.defaultPrefillRoutedPath
     }
 
     guard runFaults else { return passed }

@@ -53,8 +53,9 @@ piece も ByteLevel 用の入口を足した — Gemma の規則だと**落ち�
 **prefill の routed expert に 2 本目の経路が入った** ([24](24-PREFILL-MOE-PATH.md)):
 `prefillRoutedPath` でタイル版 (`prefill_moe_gemm_int4`) を選べるようになり、
 **同じ 55 トークンを出したうえで 4 通りとも速い** (GPU 時間で −22〜40%、
-既定のチャンク 2048 で 1 トークン 5.46 → 3.93 ms)。**既定は `.perPair` のまま** —
-切り替えの判断はユーザー。同じ測定が [21 §5](21-PHASE4-PREFILL.md) の
+既定のチャンク 2048 で 1 トークン 5.46 → 3.93 ms)ので、**既定をタイル版にした**
+(2026-08-22 ユーザー確定)。`TF_PREFILL_MOE=scalar` を立てると既定も `.perPair` に
+戻る。同じ測定が [21 §5](21-PHASE4-PREFILL.md) の
 **説明の付いていなかった行を片づけた**: 増えていたのは GPU 時間で、
 **クールダウンを 4 秒取るだけで消える** (2048/512 は 17.80 ではなく **9.43 ms**)。
 **残るのはサーバー結線 (Phase 8) と CLI の `--tools`** ([04](04-PHASES.md))。
@@ -113,7 +114,7 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 17 | [21-PHASE4-PREFILL.md](21-PHASE4-PREFILL.md) | **実測(手元)。**55 トークンの参照 (Phase 3 が閉じた)、INT8 の QMM と検査 18 本、prefill の結線、チャンクをまたぐもの 3 つ、チャンク幅の時間 |
 | 18 | [22-PHASE5-TOKENIZER.md](22-PHASE5-TOKENIZER.md) | **実測(手元)。**ByteLevel のトークナイザと上流 jinja、上流との突き合わせ 223 本 (負例 4)、CLI の Ornith 経路、tools の JSON の食い違い (キー順の記述は [23 §5-1](23-PHASE5-TOOLS.md) が訂正) |
 | 19 | [23-PHASE5-TOOLS.md](23-PHASE5-TOOLS.md) | **実測(手元)。**XML 形のツール呼び出しのパーサと GBNF、生の値の 13 状態、ByteLevel の piece 表、検査 36 本 (負例 6)、テンプレートとの往復で閉じたもの・残ったもの |
-| 20 | [24-PREFILL-MOE-PATH.md](24-PREFILL-MOE-PATH.md) | **実測(手元)。**routed expert のタイル版、経路の A/B 4 通り、GPU / 取得 / ホストの 3 分割、クールダウンで消える GPU クロック低下 ([21 §5](21-PHASE4-PREFILL.md) の訂正) |
+| 20 | [24-PREFILL-MOE-PATH.md](24-PREFILL-MOE-PATH.md) | **実測(手元)。**routed expert のタイル版、経路の A/B 4 通り、既定の切り替えとそのデメリット 4 つ、GPU / 取得 / ホストの 3 分割、クールダウンで消える GPU クロック低下 ([21 §5](21-PHASE4-PREFILL.md) の訂正) |
 
 ## 表記
 

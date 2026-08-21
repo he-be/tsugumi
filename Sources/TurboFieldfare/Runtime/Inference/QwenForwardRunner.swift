@@ -234,12 +234,17 @@ public final class QwenForwardRunner {
     /// Phase 4 wired the per-pair GEMVs because they have no alignment
     /// precondition and no batch planner, which made the first prefill the one
     /// with the fewest moving parts between the router and the answer
-    /// (`QwenPrefill.swift`). The tiled GEMM is the other candidate, and
-    /// `docs/qwen35moe/05-RISKS.md` §1-2 — a chunk of 2048 fills a 64-row
-    /// block only about once per expert here, where Gemma filled it twice — is
-    /// a question about it that no amount of reading settles. Both paths write
-    /// `routePartials` once per pair, so this changes the wall clock and
-    /// nothing else; `--qwen-prefill` runs the fixture through both.
+    /// (`QwenPrefill.swift`). Both paths write `routePartials` once per pair,
+    /// so this changes the wall clock and nothing else that the model can see;
+    /// `--qwen-prefill` runs the fixture through both, at every chunk width.
+    ///
+    /// **The tiled path is the default** as of
+    /// `docs/qwen35moe/24-PREFILL-MOE-PATH.md`: it is faster in all four
+    /// measured shapes, by 22% of GPU time at the narrowest and 40% at the
+    /// 2048-token chunk the runtime actually uses. `docs/qwen35moe/05-RISKS.md`
+    /// §1-2's worry — that a chunk of 2048 fills a 64-row block only once per
+    /// expert here, where Gemma filled it twice — turned out to be real and
+    /// still not enough to prefer the GEMVs.
     ///
     /// Settable between runs, and read at encode time rather than at scratch
     /// allocation, so one process can time both.
@@ -252,11 +257,43 @@ public final class QwenForwardRunner {
         case tiled = "tiled"
     }
 
-    /// `TF_QWEN_PREFILL_MOE=tiled` picks the tiled path for a whole process,
-    /// which is how the bench takes the two columns without a rebuild. Unset,
-    /// or anything else, is the path Phase 4 closed on.
-    public static let defaultPrefillRoutedPath: PrefillRoutedPath =
-        ProcessInfo.processInfo.environment["TF_QWEN_PREFILL_MOE"] == "tiled" ? .tiled : .perPair
+    /// `.tiled`, unless something turned the tiled pipelines off or asked for
+    /// the GEMVs by name.
+    ///
+    /// Two spellings, because there are two knobs and they have to agree.
+    /// `TF_PREFILL_MOE=scalar` is Gemma's, and it does not merely express a
+    /// preference — `PrefillGroupedRoutedMoE` never builds the tiled pipelines
+    /// under it, so a default of `.tiled` would be a default that throws.
+    /// `TF_QWEN_PREFILL_MOE` is this family's own, and takes either case name
+    /// (`per-pair` / `tiled`); `scalar` is accepted for it too so that the two
+    /// knobs can be spelled the same way.
+    public static let defaultPrefillRoutedPath: PrefillRoutedPath = {
+        let env = ProcessInfo.processInfo.environment
+        if env["TF_PREFILL_MOE"] == "scalar" { return .perPair }
+        switch env["TF_QWEN_PREFILL_MOE"] {
+        case "per-pair", "scalar": return .perPair
+        default: return .tiled
+        }
+    }()
+
+    /// Whether `.tiled` can actually run here, without committing to run it.
+    ///
+    /// The answer is a property of the build and the geometry — the tiled
+    /// kernel walks K in 32-element steps and reads one scale/bias pair per
+    /// affine group, so both reductions have to be aligned to both — and
+    /// `TF_PREFILL_MOE=scalar` withholds the pipelines outright. `--qwen-prefill`
+    /// asks before it adds an arm for a path that cannot be built, which is the
+    /// difference between skipping a case and failing one.
+    public var supportsTiledRoutedPrefill: Bool {
+        if let scratch = prefillScratch {
+            return scratch.routedMoE.usesExpertGEMMPath(d: hiddenSize,
+                                                        f: cfg.moeIntermediateSize)
+        }
+        guard let probe = try? PrefillGroupedRoutedMoE(context: ctx, gateActivation: .silu) else {
+            return false
+        }
+        return probe.usesExpertGEMMPath(d: hiddenSize, f: cfg.moeIntermediateSize)
+    }
 
     // MARK: - Init
 
