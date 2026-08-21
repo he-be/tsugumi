@@ -1045,6 +1045,14 @@ public final class RemoteStreamingRepacker {
                                expertStride: UInt64,
                                repoID: String,
                                resolvedCommit: String) throws {
+        // A slot's width is the **widest** tensor filling that role, not the
+        // last one seen. `oQ4e-g64` quantizes attention per layer -- 4 bit here,
+        // 8 bit there (`docs/qwen35moe/13-PHASE1-REPACK.md` §4-2) -- so a slot
+        // cannot state the width of every tensor it covers. It states the bound
+        // the runtime must be ready for; the per-tensor truth is the resident
+        // index, which `Model.residentWeightBits` reads. For a uniformly
+        // quantized checkpoint (every Gemma 4 one) the maximum *is* the width,
+        // and these manifests keep the bytes they always had.
         var bits = GTurboJSON.QuantBitWidths(
             embedding: 4,
             attention: 4,
@@ -1055,14 +1063,20 @@ public final class RemoteStreamingRepacker {
         // spelling. Qwen3.5-MoE writes the router as `mlp.gate` and the dense
         // FFN as `mlp.shared_expert.*` (`docs/qwen35moe/03-DESIGN.md` §1-2).
         let routerSuffixes = [".router.proj.weight", ".mlp.gate.weight"]
+        // Every projection that feeds a token-mixing block, under either
+        // family's spelling. Qwen's 30 recurrent layers project through
+        // `linear_attn.*` and land in the same slot as the 10 that attend.
+        let attentionSuffixes = [".self_attn.", ".linear_attn."]
         let sharedExpertSuffixes = [".mlp.gate_proj.weight",
                                     ".mlp.shared_expert.gate_proj.weight"]
         for e in plan.resident.entries {
-            if e.name == "language_model.model.embed_tokens.weight", let s = e.quantSpec {
-                bits.embedding = s.bits
+            if e.name == "language_model.model.embed_tokens.weight"
+                || e.name == "language_model.lm_head.weight",
+               let s = e.quantSpec {
+                bits.embedding = max(bits.embedding, s.bits)
             }
-            if e.name.hasSuffix(".self_attn.q_proj.weight"), let s = e.quantSpec {
-                bits.attention = s.bits
+            if attentionSuffixes.contains(where: { e.name.contains($0) }), let s = e.quantSpec {
+                bits.attention = max(bits.attention, s.bits)
             }
             if routerSuffixes.contains(where: { e.name.hasSuffix($0) }) {
                 // The QAT checkpoints ship the router unquantized, and so does
@@ -1074,7 +1088,7 @@ public final class RemoteStreamingRepacker {
             }
             if sharedExpertSuffixes.contains(where: { e.name.hasSuffix($0) }),
                let s = e.quantSpec {
-                bits.sharedExpert = s.bits
+                bits.sharedExpert = max(bits.sharedExpert, s.bits)
             }
         }
         if let layer = plan.layers.first(where: { !$0.subTensors.isEmpty }),

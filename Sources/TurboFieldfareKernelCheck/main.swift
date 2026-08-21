@@ -1386,6 +1386,15 @@ if arguments.contains("--gdn") {
     exit(1)
 }
 
+// `--qwen-open <model.gturbo>` opens a repacked Qwen3.5-MoE install and reports
+// the weight width of every resident tensor (QwenOpenCheck.swift). It runs no
+// kernels: the check is that `Model.load` accepts a checkpoint whose attention
+// is 4-bit in some layers and 8-bit in others.
+// `docs/qwen35moe/04-PHASES.md` 次の一手 #11.
+if let index = arguments.firstIndex(of: "--qwen-open"), index + 1 < arguments.count {
+    exit(try runQwenOpenCheck(modelPath: arguments[index + 1]) ? 0 : 1)
+}
+
 // `--qwen` runs the rest of the Qwen3.5-MoE kernels (QwenKernelCheck.swift):
 // the causal `conv1d` + l2norm that feeds the recurrence, the decay gates, the
 // gated RMSNorm, the partial-RoPE epilogue, and the small elementwise pieces.

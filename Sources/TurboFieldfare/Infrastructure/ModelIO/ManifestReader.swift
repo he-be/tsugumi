@@ -6,6 +6,18 @@ public struct ManifestFileEntry: Decodable, Equatable, Sendable {
     public let sha256: String
 }
 
+/// Geometry of a family whose non-full layers keep a fixed-size recurrent
+/// state instead of a KV cache. Absent for Gemma 4
+/// (`docs/qwen35moe/01-MODEL.md` §1).
+public struct ManifestLinearAttention: Decodable, Equatable, Sendable {
+    public let numKeyHeads: Int
+    public let numValueHeads: Int
+    public let keyHeadDim: Int
+    public let valueHeadDim: Int
+    public let convKernelDim: Int
+    public let layerCount: Int
+}
+
 public struct ManifestArch: Decodable, Equatable, Sendable {
     public let hiddenSize: Int
     public let ffnIntermediate: Int
@@ -28,6 +40,20 @@ public struct ManifestArch: Decodable, Equatable, Sendable {
     public let attentionKEqV: Bool
     public let hiddenActivation: String
     public let fullAttentionLayerMask: [Int]
+    /// Which architecture wrote this model. `nil` means Gemma 4: every manifest
+    /// written before the Qwen work omits the key, and a reader that sees no
+    /// family must keep reading it as Gemma.
+    public let family: String?
+    /// Per-layer kind. `fullAttentionLayerMask` stays the compatibility
+    /// surface; this says what the zeros are, which Gemma (sliding attention)
+    /// and Qwen (a recurrent state) disagree about.
+    public let layerKinds: [String]?
+    public let linearAttention: ManifestLinearAttention?
+
+    /// True for the family this format was written for. The 8-bit slots and the
+    /// per-tensor widths below are gated on *not* being this, so a Gemma model
+    /// is validated exactly as strictly as it always has been.
+    public var isGemma4: Bool { family == nil }
 }
 
 public struct ManifestQuantSlot: Decodable, Equatable, Sendable {
@@ -203,7 +229,7 @@ public enum ManifestReader {
             throw ModelError.missingFile(name: draft.weightsPath)
         }
         if let quant = m.quant {
-            try validateQuant(quant)
+            try validateQuant(quant, isGemma4: m.arch.isGemma4)
         } else if expected.numLayers == ArchConfig.gemma4_26B_A4B.numLayers,
                   expected.hiddenSize == ArchConfig.gemma4_26B_A4B.hiddenSize {
             throw ModelError.indexCorrupt(detail: "manifest.quant is required for the production architecture")
@@ -213,10 +239,18 @@ public enum ManifestReader {
         }
     }
 
-    private static func validateQuant(_ quant: ManifestQuant) throws {
+    /// `isGemma4` is the whole reason this takes an argument. Gemma 4 is
+    /// quantized to one width per slot and its embedding is read by an INT4-only
+    /// lookup kernel, so widening the allowed set for every family would let a
+    /// Gemma manifest through that the runtime then reads as garbage. A second
+    /// family may hand out 8 bits where Gemma hands out 4 — `oQ4e-g64` does, for
+    /// the embedding, the LM head and part of the attention
+    /// (`docs/qwen35moe/13-PHASE1-REPACK.md` §4-2).
+    private static func validateQuant(_ quant: ManifestQuant, isGemma4: Bool) throws {
+        let wideCapable: Set<Int> = isGemma4 ? [4] : [4, 8]
         let slots: [(String, ManifestQuantSlot, Set<Int>)] = [
-            ("embedding", quant.embedding, [4]),
-            ("attention", quant.attention, [4]),
+            ("embedding", quant.embedding, wideCapable),
+            ("attention", quant.attention, wideCapable),
             ("router", quant.router, [8, 16]),
             ("sharedExpert", quant.sharedExpert, [4, 8]),
             ("routedExpert", quant.routedExpert, [4]),
@@ -378,7 +412,17 @@ private extension ManifestArch {
                   tieWordEmbeddings: wire.tieWordEmbeddings,
                   attentionKEqV: wire.attentionKEqV,
                   hiddenActivation: wire.hiddenActivation,
-                  fullAttentionLayerMask: wire.fullAttentionLayerMask)
+                  fullAttentionLayerMask: wire.fullAttentionLayerMask,
+                  family: wire.family,
+                  layerKinds: wire.layerKinds,
+                  linearAttention: wire.linearAttention.map {
+                      ManifestLinearAttention(numKeyHeads: $0.numKeyHeads,
+                                              numValueHeads: $0.numValueHeads,
+                                              keyHeadDim: $0.keyHeadDim,
+                                              valueHeadDim: $0.valueHeadDim,
+                                              convKernelDim: $0.convKernelDim,
+                                              layerCount: $0.layerCount)
+                  })
     }
 }
 

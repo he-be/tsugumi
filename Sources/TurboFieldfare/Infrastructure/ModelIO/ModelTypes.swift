@@ -104,6 +104,49 @@ public struct ArchConfig: Sendable, Equatable {
         for i in stride(from: 5, to: 30, by: 6) { mask[i] = 1 }
         return mask
     }
+
+    /// Ornith-1.5-35B-A3B (`qwen3_5_moe`), the second architecture this runtime
+    /// carries (`docs/qwen35moe/01-MODEL.md`). Three fields read oddly against
+    /// the Gemma baseline and are correct:
+    ///
+    /// - `slidingWindow = 0` — there is no sliding layer at all. The 30 zeros in
+    ///   `fullAttentionLayerMask` are recurrent layers, not windowed ones, which
+    ///   is why the manifest also carries `layerKinds`.
+    /// - `numKVHeads` / `headDim` restate the full-attention values. The
+    ///   recurrent layers have no K/V of that kind; their geometry lives in
+    ///   `manifest.arch.linearAttention`.
+    /// - `intermediateSize = moeIntermediateSize = 512` — upstream gives the
+    ///   shared expert and one routed expert the same width.
+    public static let ornith1_5_35B_A3B = ArchConfig(
+        hiddenSize: 2048,
+        intermediateSize: 512,
+        moeIntermediateSize: 512,
+        numHeads: 16,
+        numKVHeads: 2,
+        numFullKVHeads: 2,
+        headDim: 256,
+        fullHeadDim: 256,
+        vocabSize: 248320,
+        slidingWindow: 0,
+        finalLogitSoftcap: 0.0,
+        ropeTheta: 10_000_000.0,
+        fullRopeTheta: 10_000_000.0,
+        partialRotaryFactor: 0.25,
+        numLayers: 40,
+        numExperts: 256,
+        topKExperts: 8,
+        tieWordEmbeddings: false,
+        attentionKEqV: false,
+        fullAttentionLayerMask: Self.ornithLayerMask(),
+        hiddenActivation: "silu"
+    )
+
+    /// Every fourth layer attends; the other three keep a recurrent state.
+    private static func ornithLayerMask() -> [UInt8] {
+        var mask = [UInt8](repeating: 0, count: 40)
+        for i in stride(from: 3, to: 40, by: 4) { mask[i] = 1 }
+        return mask
+    }
 }
 
 /// Compile-time vision tower baseline, checked field-by-field against

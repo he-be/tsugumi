@@ -173,6 +173,8 @@ specialization を足す」と書いてあるが、**本線の `oQ4e-g64` の `e
 「INT8 の LM head chain を書く」**に変わる。これは [13 §4-2](13-PHASE1-REPACK.md) の
 混在ビット幅 (#11) と同じ根から出ているので、**#11 の決着を待ってから着手する**のが
 筋が通る (索引からビット幅を導くなら、LM head もその仕組みに乗る)。
+**#11 はその通りに決着した** ([18](18-MIXED-BITS.md)) — 幅は
+`Model.residentWeightBits(_:)` がテンソル名から返す。
 語彙の末尾 243 行が未学習である件 ([10 §3](10-MLX4BIT-AUDIT.md)) は、
 **`vocab` に 248,077 を渡して行を採点しない**だけで済む — マスクのコードは要らない。
 
@@ -180,7 +182,7 @@ specialization を足す」と書いてあるが、**本線の `oQ4e-g64` の `e
 
 | | やること | 状態 |
 | --- | --- | --- |
-| a | INT8 の LM head chain | #11 待ち (§5) |
+| a | INT8 の LM head chain | **着手できる。**#11 は片づいた ([18](18-MIXED-BITS.md))。幅は `Model.residentWeightBits` で引く |
 | b | `qwen_qkv_epilogue` の 70 GB/s | 余地はあるが 10 層で 10.0 ms。後回し |
 | c | 実物の活性での再測 | Phase 3 の結線後 |
 | d | `qwen_silu_mul` / `qwen_moe_shared_gate` の結線先 | prefill / decode の MoE 経路 (Phase 3) |

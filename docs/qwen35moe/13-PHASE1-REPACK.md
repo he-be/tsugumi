@@ -98,7 +98,8 @@ oQ4e-g64 の 8-bit を弾く。
 
 **逃げ道はある:** resident 索引は各テンソルの `sizeBytes` / `shape` / `scaleSize` を
 持っているので、**ビット幅と group はテンソルごとに導出できる** (形式変更は要らない)。
-Phase 3 の設計で「manifest のスロットを層ごとに割る」か「索引から導く」かを決める。
+**→ 決着した ([18](18-MIXED-BITS.md))。索引から導くことにし、manifest のスロットは
+幅の上限を述べるだけになった。本線は `Model.load` を通る。**
 **公式 MLX-4bit は attention 一律 4-bit なので、この論点は oQ4e-g64 固有。**
 
 ### 4-3. 4-bit の対称性はあと 1 グループで成立しなかった
@@ -122,5 +123,5 @@ affine: 1 of 7,946,240 groups break bias == -8 * scale
 | [04](04-PHASES.md) Phase 1 | **完了。**GPU 不要の作業は全部終わった |
 | [03 §1-2](03-DESIGN.md) 名前寄せ | 「1 文字列」+ **MTP の切り出し**が要った (§3) |
 | [03 §1-3](03-DESIGN.md) ディスク | 実測 20.49 GB (テキストのみ)。install の門 26 GB は妥当 |
-| Phase 3 の宿題 | **混在ビット幅の受け入れ** (§4-2)。ランタイム側の最初の障害はカーネルではなくここ |
+| Phase 3 の宿題 | **混在ビット幅の受け入れ** (§4-2) → **片づいた** ([18](18-MIXED-BITS.md)) |
 | 形式 v1 | minor 3 / `flags.linearAttention` / `layout.json` 64 MB |
