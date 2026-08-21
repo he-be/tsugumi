@@ -86,6 +86,7 @@ import Testing
             topKExperts: 1, tieWordEmbeddings: true, attentionKEqV: true,
             fullAttentionLayerMask: [0], hiddenActivation: "gelu_pytorch_tanh")
         let arch = ArchInfo(
+            family: ArchInfo.gemma4Family,
             hiddenSize: config.hiddenSize,
             intermediateSize: config.intermediateSize,
             moeIntermediateSize: config.moeIntermediateSize,

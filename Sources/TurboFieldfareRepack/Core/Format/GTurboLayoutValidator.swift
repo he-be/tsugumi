@@ -5,7 +5,8 @@ enum GTurboLayoutValidator {
     static func validate(path: String,
                                 plan: RepackPlan,
                                 audit: RepackAudit? = nil) throws {
-        let data = try Posix.readBoundedData(path, maximumBytes: 16 * 1024 * 1024)
+        let data = try Posix.readBoundedData(
+            path, maximumBytes: GTurboFormatV1.packedExpertsLayoutMaxBytes)
         let layout: GTurboPackedExpertsLayoutV1
         do { layout = try GTurboPackedExpertsLayoutCodec.decode(data) }
         catch {

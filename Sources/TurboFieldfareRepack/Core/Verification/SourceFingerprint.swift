@@ -22,6 +22,10 @@ public enum SourceFingerprint {
                     revision: QATAlignedModelSource.revision,
                     indexSha256Hex: QATAlignedModelSource.sourceIndexSHA256,
                     displayName: QATAlignedModelSource.displayName),
+        KnownSource(repoID: OrnithModelSource.repoID,
+                    revision: OrnithModelSource.revision,
+                    indexSha256Hex: OrnithModelSource.sourceIndexSHA256,
+                    displayName: OrnithModelSource.displayName),
     ]
 
     public static let knownFingerprints: [String: String] = Dictionary(

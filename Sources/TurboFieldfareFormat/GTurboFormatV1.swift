@@ -12,14 +12,24 @@ package enum GTurboFormatV1 {
     /// shape as the vision bump: descriptive, with `mtpDraft` doing the
     /// rejecting.
     package static let versionMinorDraft = 2
+    /// Minor version stamped on a manifest whose `arch` carries the
+    /// `linearAttention` section. Same shape as the two bumps above:
+    /// descriptive, with the `linearAttention` flag doing the rejecting.
+    package static let versionMinorLinearAttention = 3
     package static let alignmentBytes: UInt64 = 16_384
     package static let residentHeaderBytes = 24
     package static let residentEntryBytes = 72
     package static let residentIndexMaxBytes: UInt64 = 16 * 1024 * 1024
+    /// Bound on `packed_experts/layout.json`. It grows with layers × experts:
+    /// Gemma 4's 30 × 128 experts come to 8.5 MB, Qwen3.5-MoE's 40 × 256 to
+    /// 22.5 MB. 64 MB leaves room for a model of that shape again without
+    /// letting an untrusted file be unbounded. Writer, verifier and runtime
+    /// reader all take this one number so they cannot drift apart.
+    package static let packedExpertsLayoutMaxBytes: UInt64 = 64 * 1024 * 1024
 
     package static let knownFlags: Set<String> = [
         "streamingPresent", "turboQuantKV", "aneSharedExpert", "visionTower",
-        "mtpDraft",
+        "mtpDraft", "linearAttention",
     ]
 
     /// Where a vision-capable install keeps the tower weights. A separate file

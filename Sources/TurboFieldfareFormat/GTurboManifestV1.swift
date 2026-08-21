@@ -10,6 +10,32 @@ package struct GTurboManifestFileV1: Codable, Equatable, Sendable {
     }
 }
 
+/// Facts about a family whose layers keep a fixed-size recurrent state instead
+/// of a KV cache (Qwen3.5-MoE's Gated DeltaNet). Absent for Gemma 4, whose every
+/// layer attends. `docs/qwen35moe/01-MODEL.md` §1.
+package struct GTurboManifestLinearAttentionV1: Codable, Equatable, Sendable {
+    package let numKeyHeads: Int
+    package let numValueHeads: Int
+    package let keyHeadDim: Int
+    package let valueHeadDim: Int
+    package let convKernelDim: Int
+    /// How many of `arch.numLayers` are linear-attention layers. The per-layer
+    /// truth is `arch.layerKinds`; this is the count a reader can budget from
+    /// without walking it.
+    package let layerCount: Int
+
+    package init(numKeyHeads: Int, numValueHeads: Int,
+                 keyHeadDim: Int, valueHeadDim: Int,
+                 convKernelDim: Int, layerCount: Int) {
+        self.numKeyHeads = numKeyHeads
+        self.numValueHeads = numValueHeads
+        self.keyHeadDim = keyHeadDim
+        self.valueHeadDim = valueHeadDim
+        self.convKernelDim = convKernelDim
+        self.layerCount = layerCount
+    }
+}
+
 package struct GTurboManifestArchV1: Codable, Equatable, Sendable {
     package let hiddenSize: Int
     package let ffnIntermediate: Int
@@ -32,6 +58,16 @@ package struct GTurboManifestArchV1: Codable, Equatable, Sendable {
     package let attentionKEqV: Bool
     package let hiddenActivation: String
     package let fullAttentionLayerMask: [Int]
+    /// Which architecture wrote this model. Absent means Gemma 4: every
+    /// manifest written before the Qwen work omits the key, and a reader that
+    /// sees no family must keep reading it as Gemma.
+    package let family: String?
+    /// Per-layer kind: `full_attention`, `sliding_attention` or
+    /// `linear_attention`. `fullAttentionLayerMask` stays the compatibility
+    /// surface (1 where this reads `full_attention`); this says what the zeros
+    /// are, which Gemma and Qwen disagree about.
+    package let layerKinds: [String]?
+    package let linearAttention: GTurboManifestLinearAttentionV1?
 
     package init(hiddenSize: Int, ffnIntermediate: Int, moeIntermediateSize: Int,
                  numHeads: Int, numKVHeads: Int, numFullKVHeads: Int,
@@ -40,7 +76,10 @@ package struct GTurboManifestArchV1: Codable, Equatable, Sendable {
                  ropeTheta: Double, fullRopeTheta: Double,
                  partialRotaryFactor: Double, numLayers: Int, numExperts: Int,
                  topKExperts: Int, tieWordEmbeddings: Bool, attentionKEqV: Bool,
-                 hiddenActivation: String, fullAttentionLayerMask: [Int]) {
+                 hiddenActivation: String, fullAttentionLayerMask: [Int],
+                 family: String? = nil,
+                 layerKinds: [String]? = nil,
+                 linearAttention: GTurboManifestLinearAttentionV1? = nil) {
         self.hiddenSize = hiddenSize
         self.ffnIntermediate = ffnIntermediate
         self.moeIntermediateSize = moeIntermediateSize
@@ -62,6 +101,9 @@ package struct GTurboManifestArchV1: Codable, Equatable, Sendable {
         self.attentionKEqV = attentionKEqV
         self.hiddenActivation = hiddenActivation
         self.fullAttentionLayerMask = fullAttentionLayerMask
+        self.family = family
+        self.layerKinds = layerKinds
+        self.linearAttention = linearAttention
     }
 }
 
@@ -360,7 +402,11 @@ package enum GTurboManifestCodec {
               arch.moeIntermediateSize > 0, arch.numHeads > 0,
               arch.numKVHeads > 0, arch.numFullKVHeads > 0,
               arch.headDim > 0, arch.fullHeadDim > 0,
-              arch.vocabSize > 0, arch.slidingWindow > 0,
+              arch.vocabSize > 0,
+              // A family whose non-full layers are recurrent has no window at
+              // all; every attending-everywhere family still must name one.
+              arch.slidingWindow > 0 || arch.linearAttention != nil,
+              arch.slidingWindow >= 0,
               arch.topKExperts > 0, arch.topKExperts <= arch.numExperts,
               arch.finalLogitSoftcap.isFinite,
               arch.ropeTheta.isFinite, arch.ropeTheta > 0,
@@ -390,6 +436,7 @@ package enum GTurboManifestCodec {
                 }
             }
         }
+        try validateLinearAttentionSection(manifest)
         try validateVisionSection(manifest)
         try validateDraftSection(manifest)
         let reservedFiles: Set<String> = ["manifest.json", "verified-install.json"]
@@ -430,6 +477,82 @@ package enum GTurboManifestCodec {
                         reason: "file path collides with a directory prefix")
                 }
             }
+        }
+    }
+
+    /// Layer kinds a v1 manifest may name. `sliding_attention` and
+    /// `full_attention` are Gemma's; `linear_attention` is Qwen3.5-MoE's
+    /// recurrent layer, which holds a fixed-size state instead of a KV cache.
+    package static let knownLayerKinds: Set<String> = [
+        "full_attention", "sliding_attention", "linear_attention",
+    ]
+
+    /// The linear-attention section and its flag are one fact written twice,
+    /// for the same reason the tower's are: a runtime that predates recurrent
+    /// layers must reject the model rather than read its zeros as sliding
+    /// windows and quietly produce nonsense.
+    private static func validateLinearAttentionSection(_ manifest: GTurboManifestV1) throws {
+        let arch = manifest.arch
+        if let family = arch.family, family.isEmpty {
+            throw GTurboFormatError.invalid(
+                field: "manifest.arch.family", reason: "empty family name")
+        }
+        if let kinds = arch.layerKinds {
+            guard kinds.count == arch.numLayers else {
+                throw GTurboFormatError.invalid(
+                    field: "manifest.arch.layerKinds",
+                    reason: "expected \(arch.numLayers) entries, got \(kinds.count)")
+            }
+            guard kinds.allSatisfy({ knownLayerKinds.contains($0) }) else {
+                throw GTurboFormatError.invalid(
+                    field: "manifest.arch.layerKinds", reason: "unknown v1 layer kind")
+            }
+            // The mask is the compatibility surface: it must agree with the
+            // list, or a reader that only knows the mask sees a different model.
+            let maskFromKinds = kinds.map { $0 == "full_attention" ? 1 : 0 }
+            guard maskFromKinds == arch.fullAttentionLayerMask else {
+                throw GTurboFormatError.invalid(
+                    field: "manifest.arch.layerKinds",
+                    reason: "disagrees with fullAttentionLayerMask")
+            }
+        }
+        let flagged = manifest.flags["linearAttention"] == true
+        guard let linear = arch.linearAttention else {
+            guard !flagged else {
+                throw GTurboFormatError.invalid(
+                    field: "manifest.arch.linearAttention",
+                    reason: "flags.linearAttention is set but the section is absent")
+            }
+            return
+        }
+        guard flagged else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.flags.linearAttention",
+                reason: "linearAttention section present but the flag is not set")
+        }
+        guard manifest.versionMinor >= GTurboFormatV1.versionMinorLinearAttention else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.version",
+                reason: "linear attention requires minor >= "
+                    + "\(GTurboFormatV1.versionMinorLinearAttention)")
+        }
+        guard let kinds = arch.layerKinds else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.arch.layerKinds",
+                reason: "a linear-attention model must say which layers are which")
+        }
+        guard linear.numKeyHeads > 0, linear.numValueHeads > 0,
+              linear.keyHeadDim > 0, linear.valueHeadDim > 0,
+              linear.convKernelDim > 0,
+              linear.layerCount > 0, linear.layerCount <= arch.numLayers else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.arch.linearAttention", reason: "invalid linear-attention values")
+        }
+        let counted = kinds.filter { $0 == "linear_attention" }.count
+        guard counted == linear.layerCount else {
+            throw GTurboFormatError.invalid(
+                field: "manifest.arch.linearAttention.layerCount",
+                reason: "layerKinds has \(counted) linear layers, section says \(linear.layerCount)")
         }
     }
 

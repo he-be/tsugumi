@@ -95,6 +95,10 @@ struct RepackPlan: Sendable {
     let layers: [LayerFilePlan]
     let matchedModelID: String?
     let excludedMultimodalTensorNames: [String]
+    /// Drafter tensors that sat inside the text checkpoint and were left out of
+    /// the text install. Recorded so the audit can show they were seen and
+    /// skipped on purpose rather than silently dropped.
+    var excludedInlineDraftTensorNames: [String] = []
     /// Vision tower weights, when the install was asked for them. A separate
     /// resident file so a text-only run never reads or hashes its bytes.
     var vision: VisionFilePlan? = nil
@@ -132,11 +136,19 @@ enum RepackPlanner {
         case lmResident
         case routedExpert(role: String, layer: Int)   // role = "gate"|"up"|"down"
         case excludedMultimodal
+        /// An MTP head shipped inside the text checkpoint (Qwen3.5-MoE carries
+        /// its own drafter). It has a layer index of its own that collides with
+        /// the body's, so it is split off here and installed separately
+        /// (`docs/qwen35moe/03-DESIGN.md` §6).
+        case excludedDraft
         case unknown
     }
 
     static func classify(_ name: String, numLayers: Int) -> Bucket {
         if name.hasPrefix("language_model.") {
+            if isInlineDraftTensorName(name) {
+                return .excludedDraft
+            }
             // Routed expert?
             if let role = routedExpertRole(in: name),
                let layer = layerIndex(in: name),
@@ -152,11 +164,23 @@ enum RepackPlanner {
     }
 
     private static func routedExpertRole(in name: String) -> String? {
-        guard name.contains(".experts.switch_glu.") else { return nil }
+        // Gemma writes its per-layer expert stack as `experts.switch_glu`;
+        // the MLX conversion of Qwen3.5-MoE writes the same three roles as
+        // `mlp.switch_mlp` (`docs/qwen35moe/03-DESIGN.md` §1-2). The tensors
+        // underneath have the same shape and the same meaning.
+        guard name.contains(".experts.switch_glu.") || name.contains(".mlp.switch_mlp.") else {
+            return nil
+        }
         if name.contains(".gate_proj.") { return "gate" }
         if name.contains(".up_proj.")   { return "up" }
         if name.contains(".down_proj.") { return "down" }
         return nil
+    }
+
+    /// A drafter that ships inside the text checkpoint rather than in a
+    /// repository of its own. Its `layers.0` is not the body's `layers.0`.
+    static func isInlineDraftTensorName(_ name: String) -> Bool {
+        name.hasPrefix("language_model.mtp.")
     }
 
     private static func layerIndex(in name: String) -> Int? {
@@ -197,10 +221,14 @@ enum RepackPlanner {
 
         var lmResidentBases: [String] = []
         var excludedMultimodalNames: [String] = []
+        var excludedDraftNames: [String] = []
         var routedByLayerAndRole: [Int: [String: String]] = [:]
         for (name, _) in registry {
             if isMultimodalTensorName(name) {
                 excludedMultimodalNames.append(name)
+            }
+            if isInlineDraftTensorName(name) {
+                excludedDraftNames.append(name)
             }
             if name.hasSuffix(".scales") || name.hasSuffix(".biases") { continue }
             let b = classify(name, numLayers: arch.numLayers)
@@ -215,6 +243,7 @@ enum RepackPlanner {
                 byRole[role] = name
                 routedByLayerAndRole[layer] = byRole
             case .excludedMultimodal:           continue
+            case .excludedDraft:                continue
             case .unknown:                      throw RepackError.unknownTensorPrefix(name: name)
             }
         }
@@ -222,6 +251,7 @@ enum RepackPlanner {
         // Sort deterministically. The LM order follows a fixed template.
         lmResidentBases.sort(by: lmResidentOrdering())
         excludedMultimodalNames.sort()
+        excludedDraftNames.sort()
 
         // Decide the scheme before laying anything out: it changes which
         // regions exist, so it cannot be revisited once offsets are assigned.
@@ -291,7 +321,8 @@ enum RepackPlanner {
                           resident: resident,
                           layers: layerPlans,
                           matchedModelID: matched,
-                          excludedMultimodalTensorNames: excludedMultimodalNames)
+                          excludedMultimodalTensorNames: excludedMultimodalNames,
+                          excludedInlineDraftTensorNames: excludedDraftNames)
     }
 
     private static func isMultimodalTensorName(_ name: String) -> Bool {
@@ -563,6 +594,31 @@ enum RepackPlanner {
         if n.hasSuffix(".post_feedforward_layernorm_1.weight") { return 17 }
         if n.hasSuffix(".post_feedforward_layernorm_2.weight") { return 18 }
         if n.hasSuffix(".layer_scalar")           { return 19 }
+        return qwenSlotRank(in: n)
+    }
+
+    /// The Qwen3.5-MoE half of the same order. Its layers come in two shapes —
+    /// one that attends and one that holds a recurrent state — so the ranks
+    /// below interleave: whichever tensors a layer has, they come out in the
+    /// order the layer runs them (`docs/qwen35moe/01-MODEL.md` §2).
+    private static func qwenSlotRank(in n: String) -> Int {
+        // Linear-attention layer.
+        if n.contains(".linear_attn.in_proj_qkv.")  { return 20 }
+        if n.contains(".linear_attn.in_proj_z.")    { return 21 }
+        if n.contains(".linear_attn.in_proj_a.")    { return 22 }
+        if n.contains(".linear_attn.in_proj_b.")    { return 23 }
+        if n.contains(".linear_attn.conv1d.")       { return 24 }
+        if n.hasSuffix(".linear_attn.A_log")        { return 25 }
+        if n.hasSuffix(".linear_attn.dt_bias")      { return 26 }
+        if n.contains(".linear_attn.norm.")         { return 27 }
+        if n.contains(".linear_attn.out_proj.")     { return 28 }
+        // MoE block. The router comes first because its choice is what decides
+        // which expert bytes the layer will need.
+        if n.contains(".mlp.gate.")                 { return 29 }
+        if n.contains(".mlp.shared_expert_gate.")   { return 30 }
+        if n.contains(".mlp.shared_expert.gate_proj.") { return 31 }
+        if n.contains(".mlp.shared_expert.up_proj.")   { return 32 }
+        if n.contains(".mlp.shared_expert.down_proj.") { return 33 }
         return 100
     }
 }

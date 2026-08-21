@@ -60,7 +60,21 @@ enum GTurboJSON {
             tieWordEmbeddings: arch.tieWordEmbeddings,
             attentionKEqV: arch.attentionKEqV,
             hiddenActivation: arch.hiddenActivation,
-            fullAttentionLayerMask: arch.fullAttentionLayerMask.map(Int.init))
+            fullAttentionLayerMask: arch.fullAttentionLayerMask.map(Int.init),
+            // Gemma 4 is the family this format was written for, and its
+            // manifests must stay byte-for-byte what they have always been:
+            // the three keys below are written only for a family that needs
+            // them, and an absent family means Gemma.
+            family: arch.isGemma4 ? nil : arch.family,
+            layerKinds: arch.isGemma4 ? nil : arch.layerKinds,
+            linearAttention: arch.linearAttention.map {
+                GTurboManifestLinearAttentionV1(numKeyHeads: $0.numKeyHeads,
+                                                numValueHeads: $0.numValueHeads,
+                                                keyHeadDim: $0.keyHeadDim,
+                                                valueHeadDim: $0.valueHeadDim,
+                                                convKernelDim: $0.convKernelDim,
+                                                layerCount: $0.layerCount)
+            })
         func slot(_ name: String) throws -> GTurboManifestQuantSlotV1 {
             guard let weightBits = bitWidthsByQuantSlot[name] else {
                 throw RepackError.configurationInvalid(
@@ -111,6 +125,12 @@ enum GTurboJSON {
             "turboQuantKV": false,
             "aneSharedExpert": false,
         ]
+        if wireArch.linearAttention != nil {
+            // Same compatibility gate as the tower's and the drafter's: a
+            // runtime that predates recurrent layers must refuse this model,
+            // not read its zeros as sliding windows.
+            flags["linearAttention"] = true
+        }
         var wireVision: GTurboManifestVisionV1?
         if let vision = plan.vision {
             // The flag is the compatibility gate: a runtime that predates vision
@@ -156,6 +176,9 @@ enum GTurboJSON {
         }
         if wireDraft != nil {
             versionMinor = max(versionMinor, GTurboFormatV1.versionMinorDraft)
+        }
+        if wireArch.linearAttention != nil {
+            versionMinor = max(versionMinor, GTurboFormatV1.versionMinorLinearAttention)
         }
         return try GTurboManifestCodec.encode(GTurboManifestV1(
             versionMinor: versionMinor,

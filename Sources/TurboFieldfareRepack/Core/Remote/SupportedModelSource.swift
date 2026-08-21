@@ -40,3 +40,21 @@ public enum QATAlignedModelSource {
     public static let sourceIndexSHA256 =
         "7dbbeef0345505798abcf0ac54434116a48c2f1e7aad828071c17a7a871adfe7"
 }
+
+/// Qwen3.5-MoE (Ornith-1.5-35B-A3B), staged on disk and repacked with
+/// `--source-snapshot` like the QAT checkpoint. The pinned digest is the one
+/// `Scripts/qwen35/bake_snapshot.py` writes: the published oQ4e-g64 conversion
+/// with `head_dim ** -0.5` folded into `q_norm`
+/// (`docs/qwen35moe/12-OQ4E-G64-AUDIT.md` §5). The bake is deterministic, so
+/// re-running it reproduces this digest.
+public enum OrnithModelSource {
+    public static let displayName = "Ornith-1.5-35B-A3B oQ4e-g64 (q_norm baked)"
+    public static let repoID = "scottlowry/Ornith-1.5-35B-A3B-oQ4e-mtp"
+    /// A staged snapshot has no commit of its own, and the install checkpoint
+    /// records a 40-character revision, so the index digest stands in for one —
+    /// the same substitution `LocalSnapshotLoader` makes for an unpinned
+    /// snapshot.
+    public static let revision = "4280eb9999b17eeb94f45f8ac6ba60510afbf4e1"
+    public static let sourceIndexSHA256 =
+        "4280eb9999b17eeb94f45f8ac6ba60510afbf4e1ea5adf32aa83754e68d33bf3"
+}

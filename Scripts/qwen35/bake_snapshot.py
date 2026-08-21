@@ -133,15 +133,24 @@ def main() -> int:
         raise SystemExit(f"出力先が既にある: {out} (--force で作り直す)")
     out.mkdir(parents=True, exist_ok=True)
 
-    # 元のファイルは symlink で持ってくる。index.json だけ書き換える。
+    # 元のファイルは **ハードリンク** で持ってくる。repack はシャードを
+    # `openReadNoFollow` で開く (symlink を踏まない) ので、symlink では弾かれる。
+    # 同じファイルシステムなら実体は 1 つのままでバイトは増えない。
     linked = 0
+    fallback: list[str] = []
     for entry in sorted(src.root.iterdir()):
         if entry.name in {"model.safetensors.index.json", OVERLAY_SHARD, BAKE_MANIFEST}:
             continue
         target = out / entry.name
         if target.is_symlink() or target.exists():
             target.unlink()
-        os.symlink(entry.resolve(), target)
+        try:
+            os.link(entry.resolve(), target)
+        except OSError:
+            # 別ファイルシステムならハードリンクは張れない。symlink に落とすが、
+            # そのままでは repack に食わせられないので言っておく。
+            os.symlink(entry.resolve(), target)
+            fallback.append(entry.name)
         linked += 1
 
     write_safetensors(out / OVERLAY_SHARD, baked, {
@@ -181,7 +190,10 @@ def main() -> int:
         ratio = check.f32(name) / np.where(src.f32(name) == 0, np.nan, src.f32(name))
         finite = ratio[np.isfinite(ratio)]
         worst = max(worst, float(np.max(np.abs(finite - factor))))
-    print(f"\n  symlink {linked} 本 + 差分シャード 1 枚 + 書き換えた index")
+    print(f"\n  ハードリンク {linked} 本 + 差分シャード 1 枚 + 書き換えた index")
+    if fallback:
+        print(f"  ! {len(fallback)} 本は symlink になった (別ファイルシステム)。"
+              "repack はシャードの symlink を拒む — 同じ FS に出力し直すこと")
     print(f"  読み直し検査: 比の {factor} からの最大ずれ {worst:.3e}")
     print(f"  → {out}")
     src.close()

@@ -370,6 +370,7 @@ public final class RemoteStreamingRepacker {
         audit.sourceSnapshotSha256 = source.metadata.indexSha256Hex
         audit.bitWidthOverridesHonored = source.metadata.bitsOverrides.count
         audit.tensorsDroppedMultimodal = plan.excludedMultimodalTensorNames
+        audit.tensorsDroppedInlineDraft = plan.excludedInlineDraftTensorNames
         audit.packedExpertLayoutMode = "identity"
         if let visionPlan = plan.vision, let vision {
             audit.visionRepoID = vision.pin.repoID
@@ -1050,6 +1051,12 @@ public final class RemoteStreamingRepacker {
             router: 8,
             sharedExpert: 8,
             routedExpert: 4)
+        // The four names below are the same four roles under either family's
+        // spelling. Qwen3.5-MoE writes the router as `mlp.gate` and the dense
+        // FFN as `mlp.shared_expert.*` (`docs/qwen35moe/03-DESIGN.md` §1-2).
+        let routerSuffixes = [".router.proj.weight", ".mlp.gate.weight"]
+        let sharedExpertSuffixes = [".mlp.gate_proj.weight",
+                                    ".mlp.shared_expert.gate_proj.weight"]
         for e in plan.resident.entries {
             if e.name == "language_model.model.embed_tokens.weight", let s = e.quantSpec {
                 bits.embedding = s.bits
@@ -1057,14 +1064,16 @@ public final class RemoteStreamingRepacker {
             if e.name.hasSuffix(".self_attn.q_proj.weight"), let s = e.quantSpec {
                 bits.attention = s.bits
             }
-            if e.name.hasSuffix(".router.proj.weight") {
-                // The QAT checkpoints ship the router unquantized, so it has no
-                // quant spec and no scale/bias companions. 16 is what the
-                // manifest reader reads as "BF16, no affine metadata".
+            if routerSuffixes.contains(where: { e.name.hasSuffix($0) }) {
+                // The QAT checkpoints ship the router unquantized, and so does
+                // the oQ conversion of Qwen3.5-MoE, so it has no quant spec and
+                // no scale/bias companions. 16 is what the manifest reader
+                // reads as "BF16, no affine metadata".
                 bits.router = e.quantSpec?.bits
                     ?? (e.dtype == GTurboFormatV1.DType.bf16.rawValue ? 16 : bits.router)
             }
-            if e.name.hasSuffix(".mlp.gate_proj.weight"), let s = e.quantSpec {
+            if sharedExpertSuffixes.contains(where: { e.name.hasSuffix($0) }),
+               let s = e.quantSpec {
                 bits.sharedExpert = s.bits
             }
         }

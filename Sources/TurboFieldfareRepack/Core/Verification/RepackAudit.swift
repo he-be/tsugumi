@@ -16,6 +16,9 @@ public final class RepackAudit {
     public var bitWidthOverridesHonored: Int = 0
     public var sourceSnapshotSha256: String = ""
     public var tensorsDroppedMultimodal: [String] = []
+    /// Drafter tensors that shipped inside the text checkpoint and were not
+    /// written into the text install (`docs/qwen35moe/03-DESIGN.md` §6).
+    public var tensorsDroppedInlineDraft: [String] = []
     public var wallTimeSeconds: Double = 0
     public var peakRssBytes: UInt64 = 0
     public var outputFiles: [OutputFile] = []
@@ -133,6 +136,7 @@ public final class RepackAudit {
             "bit_width_overrides_honored": bitWidthOverridesHonored,
             "source_snapshot_sha256": sourceSnapshotSha256,
             "tensors_dropped_multimodal": tensorsDroppedMultimodal,
+            "tensors_dropped_inline_draft": tensorsDroppedInlineDraft,
             "wall_time_s": wallTimeSeconds,
             "packed_expert_layout_mode": packedExpertLayoutMode,
             "packed_expert_reordered_layer_count": packedExpertReorderedLayerCount,
