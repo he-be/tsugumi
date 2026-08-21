@@ -8,8 +8,8 @@
 | Phase | 状態 |
 | --- | --- |
 | Phase 0 事実確定 | **大半済み。**`gate_up` の順序・RMSNorm の `+1`・`conv1d` の軸順・`in_proj_a` の感度が確定 ([10](10-MLX4BIT-AUDIT.md))。**`oQ4e-g64` 側の照合も完了** ([12](12-OQ4E-G64-AUDIT.md))。**残: 実活性での再測 (合成入力でしか測っていない)、fixtures の作成** |
-| Phase 1 変換 | **入力が MLX 形式で揃った** (候補 2 本、どちらも赤リスト 0 本 — [02 §1](02-CHECKPOINTS.md))。**残: `q_norm` への `1/16` の焼き込み、名前寄せ、`.gturbo` への repack、`--verify-install`** |
-| Phase 2 以降 | 未着手。**GPU はまだ 0 回** |
+| Phase 1 変換 | **完了** ([13](13-PHASE1-REPACK.md))。`oQ4e-g64-baked` を repack し `--verify-install` が緑。20.49 GB / `expertStride 1,769,472` / 上流とバイト一致 |
+| Phase 2 以降 | 未着手。**GPU はまだ 0 回。**GPU 不要の作業はここで尽きた |
 
 ---
 
@@ -156,7 +156,7 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 
 ## 次の一手 (2026-08-21 夜)
 
-**GPU 不要 (先にこれを全部やる):**
+**GPU 不要 (全部終わった):**
 
 1. ~~`oQ4e-g64` の norm 規約の照合~~ → **完了。焼き済み / `linear_attn.norm` は素**
    ([12 §2](12-OQ4E-G64-AUDIT.md))
@@ -171,10 +171,11 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 6. `.gturbo` への repack を通す
 
 道具: `Scripts/qwen35/audit_checkpoint.py` / `bake_snapshot.py` (numpy だけ、GPU 不要)。
+repack 済みモデルは `scratch/ornith-oq4e-g64.gturbo`。
 `--bf16` を付けると上流 bf16 の抽出と突き合わせる。
 repack の入力は焼き込み済みの `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-baked`。
 
-**GPU が要る (ここから先は指示待ち):**
+**GPU が要る (ここから先は指示待ち。GPU 不要の作業はもう無い):**
 
 7. **生成スモーク。`oQ4e-g64` はまだ 1 度も推論を通していない。**
    相対 L2 誤差を測っただけで、文が出るかは未確認
@@ -187,4 +188,7 @@ repack の入力は焼き込み済みの `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-bake
 - **tokenizer は確実に弾かれる** ([10 §3](10-MLX4BIT-AUDIT.md))。`decoder.type = ByteLevel` が
   `verifyDecoderConfiguration` の要求と合わない。Phase 5 の作業として据え置き
 - Gated DeltaNet カーネル ([03 §2-6](03-DESIGN.md)) は 1 行も書いていない
+- **ランタイムはまだこの `.gturbo` を開けない。**最初の障害はカーネルではなく
+  **attention のビット幅が層ごとに違うこと** ([13 §4-2](13-PHASE1-REPACK.md))。
+  `Model.swift` は `quant.attention` のスロット 1 個に対して全層を検証している
 - 運用点 (スロット数・チャンク幅) は Gemma 4 の値のままで、Ornith 用には何も測っていない

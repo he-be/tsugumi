@@ -8,7 +8,9 @@ QAT・Vision・MTP に続く 4 つ目の大改修。
 プラン内で積み重なっていた追記の層 (§15 → §16 → §17) は畳んであり、
 **各文書は現在の結論だけを書く。**実測の経緯と数字は 10 番台の結果文書が持つ。
 
-**現在地 (2026-08-21 夜): GPU はまだ 1 度も回していない。**
+**現在地 (2026-08-21 夜): GPU はまだ 1 度も回していない。Phase 1 まで完了。**
+`oQ4e-g64` を焼き込んで `.gturbo` に repack し、`--verify-install` が緑
+(20.49 GB、[13](13-PHASE1-REPACK.md))。**GPU 不要の作業はここで尽きた。**
 チェックポイント候補は 2 本とも手元にあり ([02 §1](02-CHECKPOINTS.md))、どちらも
 量子化制約 (`group ∈ {32,64}`、bits ∈ {4,8}、routed expert は int4 のみ) への
 赤リストは **0 本**。**両者の規約照合は済んだ** ([12](12-OQ4E-G64-AUDIT.md)) —
@@ -58,7 +60,8 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 5 | [05-RISKS.md](05-RISKS.md) | 性能リスク、中止線、残る未確認、やらないこと |
 | 6 | [10-MLX4BIT-AUDIT.md](10-MLX4BIT-AUDIT.md) | **実測(手元)。**公式 MLX-4bit の検証、上流 bf16 との規約照合、減衰ゲート (`in_proj_a`) の感度測定 |
 | 7 | [11-OQ4E-G64-REBUILD.md](11-OQ4E-G64-REBUILD.md) | **実測(手元)。**oQ4e-mtp の取得と、非互換 248 本の 8-bit g64 打ち直し (`oQ4e-g64` の作成) |
-| 8 | [12-OQ4E-G64-AUDIT.md](12-OQ4E-G64-AUDIT.md) | **実測(手元)。**`oQ4e-g64` の規約照合 (norm / `conv1d` / router) と、2 候補を同じ物差しで並べた表 |
+| 8 | [12-OQ4E-G64-AUDIT.md](12-OQ4E-G64-AUDIT.md) | **実測(手元)。**`oQ4e-g64` の規約照合 (norm / `conv1d` / router) と、2 候補を同じ物差しで並べた表、`q_norm` の焼き込み |
+| 9 | [13-PHASE1-REPACK.md](13-PHASE1-REPACK.md) | **実測(手元)。**`.gturbo` への repack と `--verify-install`、形式に足した 3 つのセクション、混在ビット幅という Phase 3 の宿題 |
 
 ## 表記
 

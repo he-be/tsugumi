@@ -19,7 +19,7 @@ MLX 側は焼き込みをしないもの (`q_norm` の 1/16) があるので、�
 | `gate_up_proj` の gate / up 分割 | **不要。**MLX が `switch_mlp.gate_proj` / `up_proj` に分割済み。`RepackPlanner.planLayerFile` の「ロール 3 本」ループが無改造で動く | [10 §3](10-MLX4BIT-AUDIT.md) |
 | `conv1d.weight` の軸順 | **MLX は `[8192, 4, 1]`** (上流 bf16 は `[8192, 1, 4]`)。squeeze 後の値はビット一致。読み込み側で軸を必ず確認 | [10 §4](10-MLX4BIT-AUDIT.md) |
 
-### 1-2. 名前寄せ
+### 1-2. 名前寄せ (実施済み — [13 §3](13-PHASE1-REPACK.md))
 
 `RepackPlanner.classify` は `language_model.` 接頭辞を要求する (実測 = ソース)。
 oQ 系の名前との対応:
@@ -29,7 +29,7 @@ oQ 系の名前との対応:
 | `language_model.model.layers.{i}.…` | `classify` の `language_model.` 接頭辞に**そのまま合致する** |
 | `…mlp.switch_mlp.{gate,up,down}_proj` | `routedExpertRole` が見る `.experts.switch_glu.` を **`.mlp.switch_mlp.` にも当てる** (1 文字列) |
 | `vision_tower.…` | `isMultimodalTensorName` の既存接頭辞と**一致する** |
-| `language_model.mtp.…` | draft セクションへ (§6-4) |
+| `language_model.mtp.…` | draft セクションへ (§6-4)。**本体より先に外す。**同梱ドラフターの `layers.0` は本体の `layers.0` ではないので、`switch_mlp` の文字列だけ足すと層 0 の routed expert が二重になって planner が落ちる ([13 §3](13-PHASE1-REPACK.md)) |
 | `language_model.lm_head` | tie しないので常駐に入れる |
 
 ### 1-3. ディスク
@@ -37,6 +37,7 @@ oQ 系の名前との対応:
 候補はローカルに揃っているのでダウンロードは無い。repack の出力
 (19.5〜21.9 GB) ぶんの空きが要る。`DiskSpaceChecker` の予約と合わせて
 **空き 26 GB を install の門にする** (bf16 変換案時代の「30 GB / ピーク 25 GB」は消滅)。
+実測: テキストのみの install は **20.49 GB** ([13 §2](13-PHASE1-REPACK.md))。
 
 ### 1-4. Phase 1 の出口で導出が実測に変わる
 
