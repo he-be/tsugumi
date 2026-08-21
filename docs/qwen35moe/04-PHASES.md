@@ -13,6 +13,7 @@
 | Phase 3 decode 結線 | **完了** ([20](20-PHASE3-DECODE.md) / [21 §1](21-PHASE4-PREFILL.md))。`QwenForwardRunner` / `RecurrentStateManager` / `LayerKind.linear` が入り、**参照の生成 55 本すべてと一致**。負例 5 本も落ちる。64 本に届かないのは**モデルが `<\|im_end\|>` を出して止まった**ため — その生成に 56 本目は無い |
 | Phase 4 prefill | **一致の条件が通った** ([21](21-PHASE4-PREFILL.md))。`QwenPrefill.swift` と **INT8 の QMM**が入り、**チャンク経由でも 55 本すべてが一致** (幅 512 と 8 の 2 通り)。**routed expert のタイル版も通り、同じ 55 本を出した** ([24](24-PREFILL-MOE-PATH.md))。時間の条件は #16 と一緒 |
 | Phase 5 tokenizer/CLI | **完了** ([22](22-PHASE5-TOKENIZER.md) / [23](23-PHASE5-TOOLS.md) / [25](25-CLI-TOOLS.md))。`QwenTokenizer` (ByteLevel) と上流 jinja が入り、**CLI が日本語と英語で答える** (`--qwen-tokenizer` 223 本)。**XML 形のツール呼び出しと GBNF も入った** — `--qwen-tools` が 36 本、うち 6 本は負例。**CLI の `--tools` も入り、実物が呼び出しを書いた** ([25](25-CLI-TOOLS.md))。残るのはサーバー結線 (Phase 8) |
+| Phase 8 サーバー | **完了** ([26](26-PHASE8-SERVER.md))。`QwenServerSession` (`ServerModelSession` の兄弟) と `QwenGenerationPlan` が入り、**HTTP から実物が答える** — 日本語・ストリーミング・ツール呼び出しとその応答の往復まで。**HTTP 層は 1 行も変えていない。**prompt cache は持たない (`cache_n` は常に 0) と決めたので、`ExpertCacheBudget` に足す勘定は無かった |
 | Phase 6 以降 | 計測はこれから。エキスパート計数の phase stamp は入った ([22 §6](22-PHASE5-TOKENIZER.md))。**bench に内訳 3 列 (GPU / 取得 / ホスト) とプロセス内クールダウンが入った** ([24 §4-1](24-PREFILL-MOE-PATH.md)) |
 
 ---
@@ -221,9 +222,33 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 
 ## Phase 8 — サーバー
 
-[03 §5](03-DESIGN.md)。prompt cache のスナップショット方針を決め、
-`ExpertCacheBudget` に勘定を足す。[docs/serving/SPEC.md](../serving/SPEC.md) に
-Qwen 固有の行を足すかは、そこで別途判断する。
+**通った** ([26](26-PHASE8-SERVER.md))。ただし計画とは形が違う:
+
+- ~~prompt cache のスナップショット方針を決める~~ → **持たないことに決めた。**
+  [03 §5](03-DESIGN.md) の推奨 (slot あたり 62.8 MiB) は採らず、要求ごとに
+  ランナーを `reset()` してプロンプトを全部計算する。`cache_n` は常に 0
+- ~~`ExpertCacheBudget` に勘定を足す~~ → **足す勘定が無かった。**スナップショットを
+  持たないので、生きている再帰状態 1 本 (62.8 MiB、`QwenForwardRunner` の中) だけが
+  残る。DEV-3 の「生成スロットは 1 本」がそれを許している
+- [docs/serving/SPEC.md](../serving/SPEC.md) は**書き換えていない。**家族ごとの
+  差は SPEC の規範ではなく、既存の語彙 (R3 の「受理して無視」、DEV-16 の
+  `approximations`、EP-4 の `modalities`) で表現できた
+
+**入ったもの:** `QwenServerSession` (`ServerInferenceBackend` の実装、
+`ServerModelSession` の兄弟)、`QwenGenerationPlan` (純粋型、C0 で 12 本)、
+`QwenForwardRunner.runGreedyCompletion` (停止・キャンセル・RSP-3 の内訳)、
+`QwenReasoningSplitter` を CLI からライブラリへ、`main.swift` の家族分岐。
+**HTTP 層・要求検証・待ち行列・timings は 1 行も変えていない。**
+
+**できないこと 4 つ** ([26 §4](26-PHASE8-SERVER.md)): 画像は 400、投機は起動時に
+断る、prompt cache は無い、サンプラは**受理して無視** (R3 — 既定の要求の
+`temperature` は 1.0 なので、断ると既定の客が全部落ちる)。
+
+**残った判断が 1 つ** ([26 §6-1](26-PHASE8-SERVER.md)): `tool_choice: required` に
+ツールと無関係な質問を与えると、**呼び出しを書かないまま `max_tokens` まで
+散文が続く**。非遅延文法の前置きが「セクション開始でない任意のトークン」なので、
+止まれはしないが出てもこない。締める案は既存の検査 2 本と
+[23](23-PHASE5-TOOLS.md) の判断に触るので、**変えずにユーザーに出す**。
 
 ## Phase 9 — Vision
 
@@ -320,6 +345,11 @@ Qwen 固有の行を足すかは、そこで別途判断する。
    `QwenForwardRunner` は直列 (1 層 = コマンドバッファ 2 本)、`RealForwardRunner` は無変更。
    `RecurrentStateManager` (62.8 MiB、文脈長に依らない) と `LayerKind.linear` が入り、
    `ExpertCacheBudget` は再帰層に K/V を数えなくなった
+24. ~~Phase 8 のサーバー結線~~ → **完了。HTTP から実物が答えた**
+   ([26](26-PHASE8-SERVER.md))。`QwenServerSession` は `ServerModelSession` の
+   **兄弟**で、HTTP 層は 1 行も変えていない。prompt cache は**持たない**と決め、
+   `ExpertCacheBudget` に足す勘定は無かった。`swift test` は **1,350 件**。
+   `tool_choice: required` の前置きに 1 件、ユーザー判断が残った (#26)
 23. ~~CLI の `--tools`~~ → **完了。実物が呼び出しを書いた** ([25](25-CLI-TOOLS.md))。
    融合ヘッドのまま文法をかけるために **マスクつきの再畳み込み**を足した
    (`qwen_lm_head_greedy_int8_rows_chunk_masked`)。`--qwen` は **63 本**、
@@ -331,6 +361,7 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 | # | やること | 要るもの |
 | --- | --- | --- |
 | 16 | ~~**線形注意 30 層の締め方の判断**~~ → **2026-08-22 のユーザー判断で保留。**周辺まで数えると 159.4 ms で Phase 4 の出口条件を外れ、再帰カーネル単体は 125.7 ms で [05 §2](05-RISKS.md) #2 の内側 ([17 §4-2](17-PHASE2-KERNELS.md))。**放置してよい理由が 1 つ増えた**: prefill 全体の GPU 時間はチャンク 2048 で 5,036 ms ([24 §3](24-PREFILL-MOE-PATH.md)) なので、**159.4 ms はその約 3%** (別々に測った 2 つの比なので **導出**)。どちらの定義で締めても prefill 全体はほとんど動かない — chunkwise 形の FLOP 2 倍を払う理由はこの比率では出てこない | 保留 |
+| 26 | **`tool_choice: required` の前置きの締め方の判断** ([26 §6-1](26-PHASE8-SERVER.md))。案 A は前置きを `responseFormatGrammar` と同じ `(!</think>* </think> [ \t\n]{0,20})?` に揃える (thinking off なら 1 手目から呼び出しが強制される) が、チェックポイント自身のシステムプロンプトと食い違い、既存の検査 2 本が落ちる。案 B は現状維持 | ユーザー判断 |
 | 8 | `in_proj_a` の実活性再測を 200 トークン級の `--dump` でやり直す ([16 §2](16-QUALITY.md))。**本線は 8-bit なので、これは本線を止めない** | CPU |
 | 10 | fixtures を Phase 3 が要る層だけに絞る ([14 §5](14-REFERENCE.md))。**2048 トークン後の状態は 15 が合成入力で見たので、fixtures 側の宿題ではなくなった** | CPU |
 
@@ -357,6 +388,8 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 (`~/LLM/venv/bin/python3` に `tokenizers` と `transformers` が入っている)。
 **CLI から実物に話しかけるのは `TurboFieldfareCLI --model … --messages-file …`**
 (family は `manifest.json` から読む)。
+**HTTP から話しかけるのは `TurboFieldfareServer --model …`** — 家族は同じく
+`manifest.json` から読み、起動ログの `family=` が名乗る ([26](26-PHASE8-SERVER.md))。
 参照の fixture は `scratch/qwen35/decode-fixture-55.json`、
 トークナイザの fixture は `scratch/qwen35/tokenizer-fixture.json`。
 repack 済みモデルは `scratch/ornith-oq4e-g64.gturbo`、repack の入力は
@@ -368,12 +401,15 @@ repack 済みモデルは `scratch/ornith-oq4e-g64.gturbo`、repack の入力は
 
 - ~~**tokenizer は確実に弾かれる**~~ → 片づいた ([22 §1](22-PHASE5-TOKENIZER.md))。
   弾いていたのは **Gemma のローダ**で、それは正しい。Ornith は `QwenTokenizer` が開く
-- **ツール呼び出しは CLI までは通った** ([25](25-CLI-TOOLS.md))。
-  **サーバーはまだ呼んでいない** — `QwenChatGrammarBuilder` に呼び出し側が
-  無く、`ServerInference` / `ChatRequestParser` / `ServerGenerationPlan` は
-  Gemma の型を通っている。サーバー (Phase 8) と vision (Phase 9) は手つかず
+- ~~**ツール呼び出しはサーバーがまだ呼んでいない**~~ → 片づいた
+  ([26](26-PHASE8-SERVER.md))。`QwenChatGrammarBuilder` に読み手ができ、
+  実物が HTTP 経由でツールを呼び、その応答を読んで答えた。**vision (Phase 9)
+  は手つかず**で、画像は 400 で断る
 - **Ornith の経路は貪欲のまま。**マスクつき argmax は分布を作らないので、
-  温度を入れるには語彙幅の logit ヘッドが要る ([25 §1](25-CLI-TOOLS.md))
+  温度を入れるには語彙幅の logit ヘッドが要る ([25 §1](25-CLI-TOOLS.md))。
+  **サーバーはこれを断らず、受理して無視する** (R3) — 既定の要求の
+  `temperature` は 1.0 なので、断ると既定の客が全部 400 になる
+  ([26 §4-1](26-PHASE8-SERVER.md))
 - 運用点 (スロット数・チャンク幅) は Gemma 4 の値のままで、Ornith 用には何も測っていない
 - **参照器では bf16 との差は測れない** ([14 §7](14-REFERENCE.md))
 - **パッケージテストは `--no-parallel` で回す。**素の `swift test` は remote install 系が

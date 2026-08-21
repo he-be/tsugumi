@@ -111,6 +111,26 @@ public struct QwenTokenizer: @unchecked Sendable {
         return try await load(from: folder)
     }
 
+    /// The checkpoint's own `chat_template.jinja`, as text.
+    ///
+    /// SPEC EP-4 `chat_template` is "the template the server actually renders
+    /// with", and for this family that is the file the checkpoint ships — the
+    /// repack copies it into the sidecar beside `tokenizer.json`, and
+    /// `applyChatTemplate` renders it through swift-jinja. Read from the file
+    /// rather than reconstructed, so `/props` cannot describe a template that
+    /// is not the one in use.
+    public static func chatTemplateJinja(
+        forModelDirectory modelDirectory: URL,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> String {
+        guard let folder = GFTokenizer.tokenizerFolder(forModelDirectory: modelDirectory,
+                                                       environment: environment) else {
+            throw QwenTokenizerError.missingTokenizerConfig
+        }
+        return try String(contentsOf: folder.appendingPathComponent("chat_template.jinja"),
+                          encoding: .utf8)
+    }
+
     private static func make(from hub: LanguageModelConfigurationFromHub) async throws -> QwenTokenizer {
         guard let tokenizerConfig = try await hub.tokenizerConfig else {
             throw QwenTokenizerError.missingTokenizerConfig

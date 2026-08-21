@@ -322,9 +322,13 @@ final class RecurrentStateManager {
 | `maximumSafeRewind` | リング容量 − window | 線形層は 0 |
 | reasoning 分離 | `<\|channel\|>thought` の 3 状態機械 | `<think>` / `</think>` の**トークン ID 248068 / 248069** で切る別実装 ([04](04-PHASES.md) Phase 5) |
 
-**推奨:** slot あたり 62.8 MiB のスナップショットを持つ。32 slot なら 2.0 GB。
-18 GB 機では重い。**Phase 8 で「slot 数 × 62.8 MiB」を `ExpertCacheBudget` の勘定に入れ、
-入らない構成は起動時に断る**という、既存と同じ作法にする。
+~~**推奨:** slot あたり 62.8 MiB のスナップショットを持つ~~ → **採らなかった**
+([26 §4-3](26-PHASE8-SERVER.md))。Phase 8 は **prompt cache を持たない**方に決めた:
+要求ごとにランナーを `reset()` し、プロンプトを毎回全部計算する (`cache_n` は常に 0)。
+したがって `ExpertCacheBudget` に足す勘定も無く、生きている再帰状態 1 本
+(62.8 MiB、`QwenForwardRunner` の中) だけが残る。DEV-3 の「生成スロットは 1 本」が
+それを許している。**文脈シフトと `maximumSafeRewind` の行は生きている** —
+どちらも「持たない」で回避したのであって、できるようになったわけではない。
 
 ---
 

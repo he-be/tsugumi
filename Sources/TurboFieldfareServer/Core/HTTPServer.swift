@@ -29,6 +29,12 @@ public struct ServerProperties: Equatable, Sendable {
     /// which is the repo-owned variant of DEV-12 and not the file the
     /// checkpoint ships.
     public let chatTemplate: String
+    /// EP-4 `modalities.vision`: whether *this* install has a vision path.
+    /// True for Gemma 4, which has one; false for Ornith, whose tower is Phase
+    /// 9 (`docs/qwen35moe/04-PHASES.md`) and whose backend refuses an image
+    /// with a 400. A client that reads `/props` to decide whether to attach a
+    /// picture should not have to send one to find out.
+    public let supportsVision: Bool
 
     /// EP-4 `total_slots`. Generation is one slot on this machine, fixed
     /// (DEV-3), so this is a constant and not a flag.
@@ -42,10 +48,12 @@ public struct ServerProperties: Equatable, Sendable {
 
     public init(modelPath: String = "",
                 contextLength: Int = 0,
-                chatTemplate: String = "") {
+                chatTemplate: String = "",
+                supportsVision: Bool = true) {
         self.modelPath = modelPath
         self.contextLength = contextLength
         self.chatTemplate = chatTemplate
+        self.supportsVision = supportsVision
     }
 }
 
@@ -545,7 +553,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             "total_slots": .integer(Int64(ServerProperties.totalSlots)),
             "model_path": .string(properties.modelPath),
             "chat_template": .string(properties.chatTemplate),
-            "modalities": .object(["vision": .bool(true)]),
+            "modalities": .object(["vision": .bool(properties.supportsVision)]),
             "build_info": .string(ServerProperties.buildInfo),
         ])
     }

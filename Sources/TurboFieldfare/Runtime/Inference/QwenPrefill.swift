@@ -192,6 +192,30 @@ final class QwenPrefillContext {
     }
 }
 
+/// What one greedy completion produced, and the partition of its wall clock.
+///
+/// The Gemma path answers this with `RawDecodeResult`, which carries a K/V
+/// snapshot and a cached-prefix count besides. Neither has a meaning here:
+/// this family's prompt cache is off because a recurrent state cannot be
+/// rewound (`docs/qwen35moe/03-DESIGN.md` §5), so every run starts at position
+/// zero and the whole prompt is computed.
+public struct QwenGreedyRun: Sendable {
+    /// The generated tokens, stop token included when one ended the run — the
+    /// caller decides whether to show it, exactly as the CLI does.
+    public let tokens: [Int32]
+    /// SPEC §9 RSP-3 `prompt_n`: the prompt this run actually computed.
+    public let promptTokens: Int
+    /// RSP-3 `prompt_ms`.
+    public let prefillSeconds: Double
+    /// RSP-3 `predicted_ms`.
+    public let decodeSeconds: Double
+    /// From the start of prefill to the first generated token.
+    public let timeToFirstTokenSeconds: Double
+    public let reason: StopReason
+
+    public var newTokens: Int { tokens.count }
+}
+
 extension QwenForwardRunner {
 
     /// Runs `tokens` through the model in chunks and returns the greedy
@@ -208,6 +232,38 @@ extension QwenForwardRunner {
                                         stopTokens: Set<Int32> = [],
                                         constraint: (any GenerationConstraint)? = nil,
                                         onToken: ((Int, Int32) throws -> Void)? = nil) throws -> [Int32] {
+        try runGreedyCompletion(promptTokens: promptTokens,
+                                maxNewTokens: maxNewTokens,
+                                chunkWidth: chunkWidth,
+                                stopTokens: stopTokens,
+                                constraint: constraint,
+                                onToken: onToken).tokens
+    }
+
+    /// The same loop, with the three things a server needs and a check does
+    /// not: a way to be stopped from outside, a way to be cancelled, and the
+    /// partition of the wall clock that SPEC §9 RSP-3 reports.
+    ///
+    /// One loop, not two. `generateGreedyPrefilled` above is this function with
+    /// its extra answers dropped — so the rule that decides where a constrained
+    /// draw comes from, and the rule that a stop token is *emitted* and then
+    /// ends the run, exist once (`docs/qwen35moe/26-PHASE8-SERVER.md` §2).
+    ///
+    /// `shouldStop` is asked after the caller has seen the token, which is what
+    /// makes a stop *string* work: the matcher upstream only knows the answer
+    /// once the text of that token has reached it. A run ended that way reports
+    /// `.stopString`, and the token that triggered it has already been emitted
+    /// — the caller is the one holding text back, not this loop.
+    public func runGreedyCompletion(
+        promptTokens: [Int32],
+        maxNewTokens: Int,
+        chunkWidth: Int = 512,
+        stopTokens: Set<Int32> = [],
+        constraint: (any GenerationConstraint)? = nil,
+        shouldStop: () -> Bool = { false },
+        onPrefill: ((Int, Double) -> Void)? = nil,
+        onToken: ((Int, Int32) throws -> Void)? = nil
+    ) throws -> QwenGreedyRun {
         precondition(!promptTokens.isEmpty, "the prompt must have at least one token")
         precondition(promptTokens.count + maxNewTokens <= maxContext,
                      "prompt + generation exceeds maxContext \(maxContext)")
@@ -219,19 +275,44 @@ extension QwenForwardRunner {
         let gate = constraint.map {
             ConstraintGate(constraint: $0, endOfGenerationTokenIDs: stopTokens)
         }
-        var next = try constrained(try prefill(tokens: promptTokens, chunkWidth: chunkWidth),
-                                   gate: gate, position: 0)
+        let startedAt = DispatchTime.now()
+        let rawToken = try prefill(tokens: promptTokens, chunkWidth: chunkWidth)
+        // The prompt's own clock stops when the last chunk has run — the head
+        // pass that produced `rawToken` is part of it, and the rescore that a
+        // constraint may add on top of it is not: that one is spent on the
+        // first *generated* token.
+        let prefillSeconds = Self.seconds(since: startedAt)
+        onPrefill?(promptTokens.count, prefillSeconds)
+        let decodeStart = DispatchTime.now()
+        var next = try constrained(rawToken, gate: gate, position: 0)
         var produced: [Int32] = []
+        var reason: StopReason = .maxTokens
+        var timeToFirstToken: Double = 0
         for index in 0..<maxNewTokens {
             produced.append(next)
+            if index == 0 { timeToFirstToken = Self.seconds(since: startedAt) }
             try gate?.accept(next)
             try onToken?(index, next)
-            if stopTokens.contains(next) { break }
+            if stopTokens.contains(next) { reason = .endOfTurn; break }
+            if shouldStop() { reason = .stopString; break }
             if produced.count == maxNewTokens { break }
+            // Between two tokens is the only place a cancelled request can be
+            // dropped: one step is forty layers of command buffers that are
+            // waited on, and nothing inside them is interruptible.
+            try Task.checkCancellation()
             next = try constrained(try step(token: next, emitToken: true),
                                    gate: gate, position: index + 1)
         }
-        return produced
+        return QwenGreedyRun(tokens: produced,
+                             promptTokens: promptTokens.count,
+                             prefillSeconds: prefillSeconds,
+                             decodeSeconds: Self.seconds(since: decodeStart),
+                             timeToFirstTokenSeconds: timeToFirstToken,
+                             reason: reason)
+    }
+
+    private static func seconds(since start: DispatchTime) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds &- start.uptimeNanoseconds) / 1e9
     }
 
     /// Runs `tokens` through the T-row path and returns the greedy token that

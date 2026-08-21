@@ -300,11 +300,15 @@ struct StructuredOutputFailure: Error, CustomDebugStringConvertible, Sendable {
 
 public struct ServerPreparedRequest: Sendable {
     public let request: ValidatedChatRequest
-    fileprivate let promptIDs: [Int32]?
+    /// Module-internal, not private to this file: the Ornith backend
+    /// (`QwenServerSession`) is a second reader of the same prepared request.
+    /// Still not public — a prepared prompt is a backend's own business, and
+    /// the HTTP layer only ever asks it for `promptTokenCount`.
+    let promptIDs: [Int32]?
     /// Set when the request carried images. Built here rather than at generation
     /// time so the resize and patchify run before the coordinator's single
     /// generation slot is taken, not while holding it.
-    fileprivate let vision: VisionPrefillInput?
+    let vision: VisionPrefillInput?
 
     public var promptTokenCount: Int? { promptIDs?.count }
 

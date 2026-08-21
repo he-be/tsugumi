@@ -30,49 +30,6 @@ import TurboFieldfare
 // arguments. Greedy stays greedy — the constraint is applied to the argmax
 // rather than to a distribution (`QwenForwardRunner.constrained`).
 
-/// Which turn a piece of the model's output belongs to.
-///
-/// Ornith writes its reasoning inline, between `<think>` and `</think>`, and
-/// the template *opens* that block in the generation prompt — so a run with
-/// thinking on starts inside it and the closing marker is the only signal.
-/// Tracking the marker IDs rather than the text means a token that merely
-/// spells `<think>` in the answer cannot move the boundary.
-private struct QwenReasoningSplitter {
-    private let thinkStart: Int32
-    private let thinkEnd: Int32
-    private(set) var insideReasoning: Bool
-
-    init(tokenizer: QwenTokenizer, startsInsideReasoning: Bool) {
-        self.thinkStart = tokenizer.thinkStartID
-        self.thinkEnd = tokenizer.thinkEndID
-        self.insideReasoning = startsInsideReasoning
-    }
-
-    /// Where `id`'s text belongs, and — for a marker — the marker's own
-    /// spelling, which is framing rather than content and is not printed.
-    ///
-    /// The spelling has to come back out because these markers are *not*
-    /// special tokens (`tokenizer.json` declares them `special: false`), so the
-    /// detokenizer emits them as text, preceded by whatever bytes it was
-    /// holding back from before them. Dropping the whole delta would drop those
-    /// bytes too — a codepoint that straddles the token in front of `</think>`
-    /// would vanish from the answer.
-    mutating func route(_ id: Int32) -> (channel: Channel, marker: String?) {
-        if id == thinkStart {
-            insideReasoning = true
-            return (.reasoning, "<think>")
-        }
-        if id == thinkEnd {
-            // The held-back bytes belong to the reasoning that ends here.
-            insideReasoning = false
-            return (.reasoning, "</think>")
-        }
-        return (insideReasoning ? .reasoning : .content, nil)
-    }
-
-    enum Channel { case reasoning, content }
-}
-
 /// One turn from `--messages-file`, in the subset Ornith's template renders.
 /// Images are refused rather than dropped: the vision tower for this family is
 /// Phase 9, and a silently text-only answer about an image is the failure mode
@@ -356,20 +313,7 @@ func runQwen(args: Args,
             if firstTokenAt == nil { firstTokenAt = Date() }
             let delta = detokenizer.push(id)
             guard let decoder else {
-                let route = splitter!.route(id)
-                var text = delta
-                if let marker = route.marker, text.hasSuffix(marker) {
-                    text = String(text.dropLast(marker.count))
-                }
-                guard !text.isEmpty else { return }
-                switch route.channel {
-                case .reasoning:
-                    reasoningText += text
-                    if !args.quiet { stderr.write(Data(text.utf8)) }
-                case .content:
-                    answerText += text
-                    stdout.write(Data(text.utf8))
-                }
+                emit(splitter!.consume(tokenID: id, delta: delta))
                 return
             }
             let events = try decoder.consume(tokenID: id, delta: delta)
@@ -387,14 +331,8 @@ func runQwen(args: Args,
             // Refuses a call the model left half-written rather than reporting
             // the ones before it as if the turn were complete.
             try decoder.finish()
-        } else if !tail.isEmpty {
-            if splitter!.insideReasoning {
-                reasoningText += tail
-                if !args.quiet { stderr.write(Data(tail.utf8)) }
-            } else {
-                answerText += tail
-                stdout.write(Data(tail.utf8))
-            }
+        } else {
+            emit(splitter!.consumeTail(tail))
         }
         stdout.write(Data("\n".utf8))
         // One call per line, after the text: a shell reads them with `tail`,

@@ -1,8 +1,15 @@
 # Local OpenAI-compatible server
 
-`TurboFieldfareServer` exposes a local Chat Completions API for one Gemma
+`TurboFieldfareServer` exposes a local Chat Completions API for one installed
 model. It binds to `127.0.0.1` without authentication or TLS. Do not expose it
 through a proxy or tunnel.
+
+Everything below describes the Gemma 4 install, which is what the flags, the
+measured numbers and the runbook are written around. **An Ornith
+(`qwen3_5_moe`) install is also served** — the server reads the family out of
+`manifest.json` and says which one it picked in the ready line
+(`family=qwen3_5_moe`) — but four things behave differently there; see
+[Ornith installs](#ornith-installs) at the end.
 
 For the M3 Pro this branch targets, [`SERVER_RUNBOOK.md`](SERVER_RUNBOOK.md)
 (Japanese) has the exact commands, the context/slot combinations that fit in
@@ -487,3 +494,32 @@ generating, completed, or failed. It includes token counts and timing, but not
 prompt text, tool arguments, headers, or request bodies. How much of a prompt
 was served from the cache is the `cached=` count on the completed line, which
 is the same number as `usage.prompt_tokens_details.cached_tokens`.
+
+## Ornith installs
+
+An install whose `manifest.json` declares `qwen3_5_moe` (Ornith-1.5-35B-A3B) is
+served by a different backend. The API, the flags and the response shapes are
+the same; four behaviours are not, and each is refused or reported rather than
+silently dropped.
+
+| | Gemma 4 | Ornith |
+| --- | --- | --- |
+| sampling | `temperature` / `top_p` / `top_k` / `repeat_penalty` as sent | **greedy always.** The head this family runs never writes logits, so there is no distribution to shape. The request is accepted and the sampler ignored; what you asked for is named in the server's own log line for that request |
+| images | supported | **400 `unsupported_image`.** `/props` reports `modalities.vision: false`, so a client can check before sending one |
+| speculative decoding | `--draft-block-size 2…8` | **refused at startup.** Run with `--draft-block-size 0` |
+| prompt reuse | see [Prompt reuse](#prompt-reuse) | **none.** Thirty of the forty layers keep a recurrent state that cannot be rewound, so every request recomputes the whole prompt and `cached_tokens` is always 0. A long conversation pays for its whole history each turn |
+
+Tool calls work, including the round trip: declare `tools`, get a
+`tool_calls` message back, send the result as a `role: "tool"` message, get the
+answer. `tool_choice` takes the same four values. One caveat: with
+`tool_choice: "required"` and a question that has nothing to do with any
+declared tool, the model can write prose up to `max_tokens` without ever
+producing a call, and the response comes back with `finish_reason: "length"`.
+
+Reasoning is the checkpoint's own `<think>` block. `reasoning_format`,
+`chat_template_kwargs.enable_thinking` and `reasoning_effort: "none"` all work;
+`reasoning_budget_tokens` is **not enforced** on this family — the block is not
+cut short.
+
+The design, the measurements and what is still open are in
+[`docs/qwen35moe/26-PHASE8-SERVER.md`](qwen35moe/26-PHASE8-SERVER.md).
