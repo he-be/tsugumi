@@ -174,7 +174,7 @@
 | --- | --- | --- |
 | RSP-1 | 非ストリーム応答は OpenAI の chat.completion 形。`usage` は常に載せ、`prompt_tokens_details.cached_tokens` を含む | 実装済 |
 | RSP-2 | SSE: `delta.role` チャンク → `delta.content` / `delta.reasoning_content` / `delta.tool_calls` → `finish_reason` チャンク → (include_usage 時) `choices: []` + `usage` → `data: [DONE]`。無音時は `: ping` コメント (5 秒) | 実装済 (旧 16 §3 で適合を実測) |
-| RSP-3 | `timings` オブジェクト (`cache_n`, `prompt_n`, `prompt_ms`, `prompt_per_second`, `predicted_n`, `predicted_ms`, `predicted_per_token_ms`, `predicted_per_second`) を非ストリーム応答と最終チャンクに載せる。`timings_per_token: true` で毎チャンク。コンテキスト使用量は `prompt_n + cache_n + predicted_n` で計算できる。**投機デコードが走った要求では `draft_n` と `draft_n_accepted` も載せ、走らなかった要求ではキーごと出さない** (参照実装 `tools/server/server-common.cpp:82`)。投機が走ったかどうかをワイヤから見られるのはここだけであり、GEN-14 の適合テストはこの 2 つを見る | `draft_*` は P6 |
+| RSP-3 | `timings` オブジェクト (`cache_n`, `prompt_n`, `prompt_ms`, `prompt_per_second`, `predicted_n`, `predicted_ms`, `predicted_per_token_ms`, `predicted_per_second`) を非ストリーム応答と最終チャンクに載せる。`timings_per_token: true` で毎チャンク。コンテキスト使用量は `prompt_n + cache_n + predicted_n` で計算できる。**投機デコードが走った要求では `draft_n` と `draft_n_accepted` も載せ、走らなかった要求ではキーごと出さない** (参照実装 `tools/server/server-common.cpp:82`)。投機が走ったかどうかをワイヤから見られるのはここだけであり、GEN-14 の適合テストはこの 2 つを見る | 実装済 |
 | RSP-4 | `finish_reason`: `stop` / `length` / `tool_calls` | 実装済 |
 | RSP-5 | `system_fingerprint`: ビルドのハッシュ。EP-4 の `build_info` と**同じ値**を 1 か所から読む | 実装済 |
 

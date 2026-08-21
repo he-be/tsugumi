@@ -39,12 +39,14 @@ C3 だけがモデルを積む。
 初期状態。**このリストを上から緑にしていくのが作業のすべて**であり、
 緑になった行はこの表から消す (履歴は git log)。
 
-**いま赤なのは 2 行**、どちらも 2026-08-21 に足した **GEN-14** と **RSP-3 の
-`draft_*`** である (P6)。それ以外の行は緑になり、この表から消してある。
+**この表は空になった。**最後に残っていた **GEN-14** と **RSP-3 の `draft_*`**
+は 2026-08-22 に緑になっている (P6、下記)。残っているのは表の行ではなく
+**§5 完了の定義の 2 つ目と 3 つ目** — pi の実セッションと OpenAI SDK を
+実機で通すこと — である。
 
-**GEN-14 / RSP-3 の `draft_n`・`draft_n_accepted`** (2026-08-21 に赤として登録)。
-実機で pi のセッションを見て分かったこと: **`tools` を宣言した要求は 1 本も
-投機デコードを通っていない。**`tools` があれば文法が付き、文法が付けば
+**GEN-14 / RSP-3 の `draft_n`・`draft_n_accepted`** (2026-08-21 に赤として登録、
+**2026-08-22 に緑**)。登録時に分かっていたこと: **`tools` を宣言した要求は 1 本も
+投機デコードを通っていなかった。**`tools` があれば文法が付き、文法が付けば
 `ServerGenerationPlan.allowsSpeculativeDecoding` が偽になり (旧 DEV-14)、
 要求まるごと plain 経路に落ちる。遅延文法 (`tool_choice: auto` でトリガ未発火)
 でも同じ。コーディングエージェントは毎要求 `tools` を宣言するので、
@@ -53,8 +55,32 @@ C3 だけがモデルを積む。
 `--ctx-size 65536` / 19K 文脈 / temp 0、各 n=1): tools あり **9.8 tok/s** に対し
 tools なし **16.8 tok/s** (`accept=1.357`)。参照実装は文法と投機を併用しており、
 しかも**文法状態の巻き戻しをしていない** (`common/sampling.cpp:678`) ので、
-逸脱として残す理由が無い。SPEC に GEN-14 を足し、DEV-14 を強制挿入と
-repetition penalty だけに縮めた。赤テストの置き場所は下の P6。
+逸脱として残す理由が無かった。
+
+直した形 (P6 の M1〜M5):
+
+- `runSpeculativeCompletion` が位置ごとに**文法込みで**引き (GEN-7 の棄却
+  サンプリングをそのまま呼ぶ)、引いたトークンをその場で `accept` する。
+  巻き戻しは要らない — 状態が進むのは採用したトークンだけで、採用した
+  トークンは必ず emit される。prefill の種トークン (生成位置 0) も同じ扱い。
+- 拘束があって融合 greedy ヘッドなら `logitsUnavailable` で断る (GEN-7)。
+- **GEN-6 を採用時の粒度にした** (`onDrawnToken`)。投機ループはブロックを
+  丸ごと採用してから emit するので、`onProgress` から抑止を動かすと遅延文法が
+  チャンネルの最大 `bs - 1` トークン後ろを走り、閉じの直後の tool call を
+  文法が眠ったまま通してしまう。
+- `ServerGenerationPlan.allowsSpeculativeDecoding` は常に真になった。
+  DEV-14 に残るのは強制挿入 (RSN-4) と `repeat_penalty != 1` の 2 つだけ。
+- `timings` に `draft_n` / `draft_n_accepted` が載る。門は参照実装と同じ
+  `n_draft_tokens > 0` なので、**走らなかった要求にはキーごと無い**。
+
+テストは C2 (`SpeculativeCompletionLoopTests` — 拘束付きの投機ランが**同じ
+拘束の** plain ランと同一のトークン列を出すことを、ドラフター 3 通りで。
+採用したトークンだけが `accept` されること。採用時フックが順に 1 回ずつ
+鳴ること)、`ServerGrammarWiringTests` (採用時の判定と emit 時の判定が一致)、
+C0/C1 (`ServerGenerationPlanTests`、`ServerTimingsTests`、
+`ServerDraftTimingsWireTests`)。**実機ではまだ見ていない** — C3 の `GEN-14`
+検査 (15 個目) がそれを見る。**速くなったかどうかも測っていない**:
+GEN-14 は「併用できる」までが契約で、常に速いとは言っていない。
 
 緑になった行: **INV-1** (2026-08-20、P1-D2、SPEC §12 DEV-12 のサーバー変種 +
 MSG-5 の `reasoning_content` 入力)。**MSG-5** の入力側も同時。
@@ -102,7 +128,7 @@ C3 だけで、まだ走っていない。
 `ServerSlotsMetricsTests` + `ServerEndpointGateTests`)。5 つの経路はロードゲート・
 API キー・CORS preflight の内側にあることをテストで固定してある。
 
-**C3 を実機で走らせた** (2026-08-21、`Scripts/c3_smoke.sh`、14 検査。
+**C3 を実機で走らせた** (2026-08-21、`Scripts/c3_smoke.sh`、当時 14 検査。
 `--ctx-size 65536 --expert-cache-slots 32 --draft-block-size 4`)。
 **1 回目は 13 緑 / 1 赤**、赤は `GEN-4-required` の **500** — tool call の文法が
 マーカーを**綴りのリテラル**で書いていたため、思考 ON のモデルが開きを
@@ -130,7 +156,7 @@ ERR-1 の封筒の形、および P0 で緑にした REQ-* 全行 (C0 の 41 本
 | **P3** | ライフサイクルとエンドポイント。listen 先行 + ロード中 503、`/v1/health`、`/props`、採らないパスの 501 | LIF-*, EP-1/4/7 |
 | ~~**P4**~~ | **済** (2026-08-22)。`--reasoning-budget` / `--reasoning-format` へ改名し、`--thinking` を退役。予算切れで終了タグを強制挿入する (RSN-4)。`max_tokens` の分け方は §12 **DEV-21** | — |
 | ~~**P5**~~ | **済** (2026-08-22)。`timings`、`system_fingerprint`、`/tokenize` 系、`/slots`・`/metrics`、`--api-key`、CORS、`-c/--ctx-size` と `--expert-cache-slots` の丸め | — |
-| **P6** | **文法の下で投機デコードを回す** (2026-08-21 に登録)。**M1** 検証を「位置ごとに文法込みで引き、その場で `accept` し、食い違いで打ち切る」に変える (`runSpeculativeCompletion` の `targetToken` が唯一の変更点。`constraint == nil` の門番を落とす) → **M2** 拘束のある要求は logits 行で検証する (融合 greedy ヘッドを使わない。GEN-7) → **M3** `ServerGenerationPlan.allowsSpeculativeDecoding` を「強制挿入と repetition penalty だけ偽」に縮める → **M4** `draft_n` / `draft_n_accepted` を `timings` に載せる (RSP-3) → **M5** C3 に検査を 1 つ足す | **GEN-14**、**RSP-3 の `draft_*`** |
+| ~~**P6**~~ | **済** (2026-08-22)。M1 検証を「位置ごとに文法込みで引き、その場で `accept` し、食い違いで打ち切る」に変えた → M2 拘束のある要求は融合 greedy ヘッドを断る (GEN-7) → M3 `ServerGenerationPlan.allowsSpeculativeDecoding` は常に真、`ServerInference` が拘束を投機ループへ渡す、GEN-6 の抑止を採用時の粒度にした → M4 `draft_n` / `draft_n_accepted` を `timings` に載せた → M5 C3 に `GEN-14` を足した (15 検査目)。**実機と速度はまだ見ていない** | — |
 
 CLI 対話モード (旧 S4) と既定値の自動選択 (旧 S5) は **P2 のあと**。
 今の受理規則・キャッシュを CLI に複製すると乖離が 2 か所に増えるため。

@@ -1,11 +1,11 @@
 # 引き継ぎ — サーバー再実装ループ
 
-最終更新: 2026-08-21 (P6 の登録)。ブランチ `macos15-support`。**P0〜P5 が全部済み。**
-`swift test` は **1231 本で全緑** (`Scripts/test.sh`、約 110 秒。2026-08-21 の
-C3 修正で 2 本増えた)。
-**次にやるのは P6 — 文法の下で投機デコードを回す。**赤テストはまだ 1 本も
-書いていない (書くところから始める)。CONFORMANCE §2 に **GEN-14** と
-**RSP-3 の `draft_*`** が赤として登録してある。
+最終更新: 2026-08-22 (P6 を緑にした)。ブランチ `macos15-support`。
+**P0〜P6 が全部済み**で、CONFORMANCE §2 の赤リストは空になった。
+`swift test` は **1249 本で全緑** (`Scripts/test.sh`、約 117 秒)。
+**次にやるのは実機** — `Scripts/c3_smoke.sh` を 15 検査で走らせ、tools ありの
+tok/s を 3 回測り、pi の既定セッションと OpenAI SDK を通すこと。
+書けたものは全部緑だが、**P6 は一度も実機に当たっていない。**
 
 この文書は**次のセッションが同じループを再開するための唯一の入口**である。
 仕様は書かない ([SPEC.md](docs/serving/SPEC.md) が唯一の規範)。作業の並べ方も
@@ -47,61 +47,36 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
 | **P2** 生成の拘束 | **済** (2026-08-22)。下の §3.1 |
 | **P3** ライフサイクル / EP | **済** (2026-08-22)。listen 先行 + ロード中 503、`/v1/health`、`/props`、採らないパスの 501、`/v1` 無しの別名、ERR-2 の 401/405/415、413 の撤去 |
 | **P4** 思考 | **済** (2026-08-22)。`--reasoning-budget` / `--reasoning-format` へ改名、`--thinking` 退役、予算切れの終了タグ強制 (RSN-4) |
-| **P6** 文法下の投機デコード | **未着手 (次の一手)**。SPEC **GEN-14** + RSP-3 の `draft_n` / `draft_n_accepted`。下の「次の一手」 |
+| **P6** 文法下の投機デコード | **済** (2026-08-22)。SPEC **GEN-14** + RSP-3 の `draft_n` / `draft_n_accepted`。下の §3.2。**実機と速度は未確認** |
 | **P5** 残り | **済** (2026-08-22)。`timings` (RSP-3)、`system_fingerprint` (RSP-5)、`/tokenize` `/detokenize` `/apply-template` (EP-5)、`/slots` `/metrics` (EP-6、FLAG-7 でゲート)、`--api-key` (FLAG-5)、CORS (FLAG-6)、`-c/--ctx-size` と `--expert-cache-slots` の丸め (FLAG-1/FLAG-2) |
 
-### 次の一手 — **P6: 文法の下で投機デコードを回す (GEN-14)**
+### 次の一手 — **P6 を実機に当てる**
 
-**なぜ最優先か。**2026-08-21 に pi の実セッションのログを数字で見たところ、
-**`tools` を宣言した要求は 1 本も投機デコードを通っていなかった**。`tools` が
-あれば文法が付き、文法が付けば `ServerGenerationPlan.allowsSpeculativeDecoding`
-が偽になり、要求まるごと plain 経路に落ちる (旧 DEV-14)。遅延文法
-(`tool_choice: auto` でトリガ未発火) でも同じ。コーディングエージェントは
-毎要求 `tools` を宣言するので、**§5 完了の定義が名指ししている経路だけが
-構造的に MTP を使えない**。実測 (M3 Pro / 32 スロット / `--ctx-size 65536` /
-19K 文脈 / temp 0、各 **n=1**): tools あり **9.8 tok/s**、tools なし
-**16.8 tok/s** (`accept=1.357`)。**この数字は n=1 なので、P6 の受け入れに使う
-前に 3 回ずつ取り直すこと。**
+P6 (文法の下で投機デコードを回す、SPEC **GEN-14**) は 2026-08-22 に書けて
+全部緑になったが、**一度も実機に当たっていない。**入っている形は §3.2。
+やることは 3 つで、順に:
 
-参照実装は文法と投機を併用していて、しかも**文法状態の巻き戻しをしていない**
-(`common/sampling.cpp:678` `common_sampler_sample_and_accept_n`) — 位置ごとに
-文法込みで引き、その場で `accept` し、下書きと食い違った位置で打ち切るだけ。
-後続位置は捨てるので前提は崩れない。SPEC に **GEN-14** を足し、DEV-14 は
-強制挿入 (RSN-4) と `repeat_penalty != 1` だけに縮めてある。
+**1. `Scripts/c3_smoke.sh` を 15 検査で走らせる。**15 個目が `GEN-14` で、
+`tools` を宣言した要求の `timings.draft_n > 0` を見る。**サーバーは人が
+建てる** (スクリプトは建てない・止めない)。前に走らせた構成:
 
-**赤から始める。**書く順に:
+```
+.build/release/TurboFieldfareServer \
+  --model scratch/gemma4-qat-sym.gturbo --port 8091 \
+  --ctx-size 65536 --expert-cache-slots 32 --draft-block-size 4
+```
 
-| # | 層 | 赤テスト | 置き場所 |
-| --- | --- | --- | --- |
-| 1 | C2 | 文法付きの `runSpeculativeCompletion` が、同じ文法・同じ台本の `runRawCompletion` と**同一のトークン列**を出す。ドラフターは「常に当たる / 常に外す / 半分当たる」の 3 通り (既存の gate 1 と同じ形) | `SpeculativeCompletionLoopTests.swift` (`ScriptedSpeculativeProducer` がもうある。`constraint:` を渡すだけ) |
-| 2 | C2 | 文法状態は**採用したトークンだけ**進む。食い違った位置の下書きは `accept` されていない | 同上。台本文法 + `accept` の記録を取る fake `GenerationConstraint` |
-| 3 | C0/C1 | `ServerGenerationPlan.allowsSpeculativeDecoding` が、文法ありで**真**、強制挿入ありと `repeat_penalty != 1` で**偽** | `ServerGenerationPlanTests.swift` |
-| 4 | C1 | 投機が走った応答の `timings` に `draft_n` / `draft_n_accepted` があり、走っていない応答には**キーごと無い** (スタブ backend) | `ServerTimingsTests.swift` / `ServerTimingsWireTests.swift` |
-| 5 | C3 | tools を宣言した要求で `timings.draft_n > 0` かつ `draft_n_accepted >= 0`。検査名は `GEN-14` | `Scripts/c3_smoke.sh` (`ALL_CHECKS` に足す。DEV-13 より前) |
+**2. tools ありの tok/s を 3 回測る。**P6 前の数字は **9.8 tok/s** (tools なしは
+16.8、`accept=1.357`) だが、**これは n=1 なので比較に使う前に取り直すこと**
+(M3 Pro / 32 スロット / `--ctx-size 65536` / 19K 文脈 / temp 0)。
+測り方は AGENTS.md "Test rules" と `docs/COMMUNITY_BENCHMARKS.md`。
 
-**実装は 5 か所しか触らないはず** (CONFORMANCE §3 の P6 の M1〜M5):
+**踏む前に読む罠**: 拘束下の棄却は debug で 0.14 秒/棄却かかる (§3.1)。
+ブロック幅 4 で毎位置に棄却が出る文法だと、投機が**遅くなる**ことはありうる。
+その場合は「速くならなかった」を数字で報告する — **GEN-14 は「併用できる」
+までが契約で、常に速いとは言っていない。**
 
-1. `SpeculativeCompletion.swift` の入口の `guard constraint == nil` を落とす。
-2. 同ファイルの `targetToken(row:generationIndex:)` — ここが唯一の本体。引いた
-   トークンを `ConstraintGate` に通し、棄却されたらマスクで引き直し (GEN-7)、
-   採用したら `constraint.accept(tokenID:)`。食い違いで打ち切るのは既存の
-   accept ループがすでにやっている。
-3. 拘束のある要求は `fusedGreedy` を使わない (`prepareGeneration` の選択。
-   融合 greedy は logits を書かないので棄却サンプリングができない — GEN-7)。
-4. `ServerGenerationPlan.allowsSpeculativeDecoding` を縮める + `ServerInference`
-   の分岐 (`plan.allowsSpeculativeDecoding` の行) を追随させる。
-5. `ServerSpeculativeSummary` → `timings` の `draft_n` / `draft_n_accepted`
-   (`ServerLog` にはもう `mtp=/rounds=/accept=` がある。同じ値の出口を増やす)。
-
-**受け入れ**: 上の 5 本が緑 + `Scripts/c3_smoke.sh` が 15 検査で全緑 +
-tools ありの tok/s を 3 回測って P6 前 (9.8) より上がっていること。
-**測り方は AGENTS.md "Test rules" と `docs/COMMUNITY_BENCHMARKS.md`。**
-サーバーは人が建てる (スクリプトは建てない)。
-
-**踏む前に読む罠**: 拘束下の棄却は debug で 0.14 秒/棄却かかる
-(§3.1)。ブロック幅 4 で毎位置に棄却が出る文法だと、投機が**遅くなる**ことは
-ありうる。その場合は「速くならなかった」を数字で報告する — GEN-14 は
-「併用できる」までが契約で、常に速いとは言っていない。
+**3. §5 完了の定義の残り 2 つ** (下の「そのあと」)。
 
 ### そのあと — **C3 の残り 2 つ (pi と OpenAI SDK)**
 
@@ -115,7 +90,7 @@ tools ありの tok/s を 3 回測って P6 前 (9.8) より上がっている�
    「開きの無い閉じ」になる。マーカーを文法要素 `TOKEN` (`<[id]>`) にして
    (SPEC GEN-8 / §12 DEV-22)、**2 回目は 14 緑**。CONFORMANCE §2 に記録済み。
 2. **pi の既定セッション** (tools ON + 画像 + Reasoning ON + MTP) を通しで動かす。
-   **P6 のあと。**「通しで動く」と「動くときに MTP が効いている」は別の主張で、
+   **P6 は済んだので、次はこれ。**「通しで動く」と「動くときに MTP が効いている」は別の主張で、
    2026-08-21 に数字で見たら後者が偽だった (だから P6 がある)。見るのは
    応答の `timings.draft_n`、サーバー側なら footer の `mtp=/rounds=/accept=`。
    **前提は 2026-08-21 に揃えた** — `scratch/gemma4-qat-sym.gturbo` は本体だけで、
@@ -154,12 +129,37 @@ tools ありの tok/s を 3 回測って P6 前 (9.8) より上がっている�
 - **`-Float16.infinity` は softcap カーネルを通らない** (`tanh(-inf) = -1` で
   確率が 0 にならない)。マスクは host で softmax を計算し直して 0 を書く。
 - **強制挿入 (RSN-4) と `repeat_penalty != 1` の要求は投機デコードを使わない**
-  (DEV-14)。**文法はこの列から外れた** — GEN-14 で併用する (P6、未着手)。
+  (DEV-14)。**文法はこの列から外れた** — GEN-14 で併用する (§3.2)。
+  思考 ON でも `reasoning_budget_tokens` と `max_tokens` の**両方**が無制限なら
+  投機経路に入る。片方でも有限だと強制挿入がありうるので plain に落ちる。
 - **tool call の文法はテンプレートの正準形しか許さない** (GEN-8〜GEN-11)。
   空白なし・裸キー昇順・`<|"|>` 文字列・エスケープ無し・null 無し・桁数制限。
   **緩めると INV-1 が破れて毎ターン LCP が切れる**。数値のずれだけは受け入れている。
 - **非遅延の文法は先頭に思考ブロックを飲む** (GEN-13)。ここを外すと
   思考 ON + `response_format` が最初のトークンで詰まる。
+
+### 3.2 P6 で入った形 (GEN-14。次が壊しやすい場所)
+
+| 場所 | 何が入ったか |
+| --- | --- |
+| `SpeculativeCompletion.swift` の `targetToken(row:generationIndex:)` | **唯一の本体。**位置ごとに `sampleOnce(..., constraint: gate)` で引き (GEN-7 の棄却サンプリングをそのまま呼ぶ)、引いたトークンをその場で `gate.accept` し、`onDrawnToken` に流す。**採用は必ずここ** — 呼び出し側 2 か所のどちらでやっても、次の行の引きが古い状態を見る |
+| 同ファイルの入口 | `ConstraintGate` を組み、拘束があって融合 greedy ヘッドなら `logitsUnavailable` で断る。prefill の種トークン (生成位置 0) も同じ拘束・同じ採用を通る |
+| `onDrawnToken` | GEN-5 のトリガ判定と GEN-6 の抑止の口。**このループでは emit がブロック 1 個ぶん遅れる**ので、`onProgress` から抑止を動かすと遅延文法がチャンネルの閉じに置いていかれる |
+| `ServerThoughtSuppression.observe(tokenID:)` | 上の口が呼ぶ、**イベントの無い**判定。境界トークン (`<\|channel>` / `<channel\|>`) だけを読む。ラベルを読まなくてよい根拠は SPEC **RSN-6** |
+| `ServerGenerationPlan.allowsSpeculativeDecoding` | 常に `true` になった。DEV-14 に残るのは強制挿入 (`ServerReasoningPlan`) と `repeat_penalty != 1` (生成設定) の 2 つだけ |
+| `ServerTimings.draftTokens` / `draftAcceptedTokens` | RSP-3 の `draft_n` / `draft_n_accepted`。**`draft_n > 0` のときだけ書く** (参照実装の門と同じ)。`ServerLiveTimings` には載らない — 集計はループが返るときに出るため |
+
+**踏みやすい罠:**
+
+- **文法状態の巻き戻しは要らないし、足してはいけない。**状態が進むのは採用した
+  トークンだけで、採用したトークンは必ず emit される。停止でブロックを捨てる
+  ときは生成自体が終わるので、進みすぎた状態には次の引きが無い
+  (参照実装 `common_sampler_sample_and_accept_n` がそう書いてある)。
+- **採用と emit は別の時刻**である。C2 の
+  `SpeculativeCompletionLoopTests.GEN_14_theDrawnTokenHookFiresOncePerAdoptedToken`
+  がその順序を固定している。
+- **速いとは限らない。**GEN-14 は「併用できる」までが契約。棄却が毎位置に出る
+  文法だと投機が遅くなることはありうる (§3.1 の 0.14 秒/棄却)。
 
 ## 4. 土台 (P0〜P4 で入った、次の段が乗る場所)
 
@@ -174,7 +174,7 @@ tools ありの tok/s を 3 回測って P6 前 (9.8) より上がっている�
 | `GFTokenizer.ChatTemplateVariant` | D2 で入った。`.modelBundled` (CLI・アプリ・KernelCheck) と `.serverRedraw` (サーバー) の 2 値。**既定は `.modelBundled`** なので、足した経路を明示的に渡さない限り描画は動かない |
 | `ServerChatTemplate` | リポジトリ所有の jinja (`Sources/TurboFieldfare/Templates/server_chat_template.jinja`)。SPEC §12 DEV-12 |
 | `ServerReadiness` / `ServerProperties` | P3。ロード状態は経路表より手前で見る。`/props` は `ChatRequestSchema` の表を歩いて作る — **既定値の第 2 の写しを作らないこと** |
-| `Scripts/c3_smoke.sh` | C3 の 14 検査。**2026-08-21 に実機で 14 緑** (§3 の次の一手) |
+| `Scripts/c3_smoke.sh` | C3 の **15 検査**。2026-08-21 に 14 緑。**15 個目の `GEN-14` はまだ走らせていない** |
 
 削除済み: `OpenAIRequestValidator`、`OpenAIChatRequest`、`OpenAIStop`、
 `OpenAIStreamOptions`、`OpenAIReasoning`、`ServerRequestError.payloadTooLarge` /
@@ -233,10 +233,11 @@ tools ありの tok/s を 3 回測って P6 前 (9.8) より上がっている�
   棄却サンプリングと遅延文法と思考中の抑止 (GEN-5/6/7) が本物のサンプラで
   動くこと、予算切れの終了タグ強制 (RSN-4) がモデルの上で本文を書かせること、
   リングより深い巻き戻し (DEV-13)、拘束された tool call が次のターンの
-  描き直しと一致すること (INV-1 × GEN-8)。**この段落の 14 検査は 2026-08-21 に
-  走って全部緑になった** (上の §3 の次の一手)。残っているのは pi の実セッションと
-  OpenAI SDK。**「書けた」と「通った」は別**なので、走らせた結果は
-  CONFORMANCE §2 に書き足すこと。
+  描き直しと一致すること (INV-1 × GEN-8)。**この 14 検査は 2026-08-21 に
+  走って全部緑になった。**そのあと 15 個目の `GEN-14` を足したが、
+  **これはまだ走らせていない** (上の §3 の次の一手)。残っているのは
+  それと pi の実セッションと OpenAI SDK。**「書けた」と「通った」は別**なので、
+  走らせた結果は CONFORMANCE §2 に書き足すこと。
 - サブエージェントを使うときは**共有インデックスに注意**。`git add` だけでは
   他のエージェントが stage したファイルを巻き込むので、**`git commit -- <paths>`**
   で経路を限ること。実際に 2 回巻き込みが起きた。
