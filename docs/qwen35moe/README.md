@@ -8,7 +8,7 @@ QAT・Vision・MTP に続く 4 つ目の大改修。
 プラン内で積み重なっていた追記の層 (§15 → §16 → §17) は畳んであり、
 **各文書は現在の結論だけを書く。**実測の経緯と数字は 10 番台の結果文書が持つ。
 
-**現在地 (2026-08-21 深夜): prefill が通り、チャンク経由でも参照と一致した。**
+**現在地 (2026-08-22 未明): CLI が日本語と英語で答えた (Phase 5 の出口)。**
 Gated DeltaNet (`qwen_delta_rule`) は 2048 トークン後の状態が **CPU float32 の床と
 3 桁一致**、prefill 30 層 **125.7 ms** ([15](15-PHASE2-GDN.md))。その周辺 7 本
 (因果 `conv1d` + l2norm / 減衰ゲート / `RMSNormGated` / partial RoPE / 出力ゲート /
@@ -34,7 +34,14 @@ MTP と vision の実物も入っている ([16 §1](16-QUALITY.md))。
 その 55 本が、**プロンプトを T 行の経路に通しても全部一致する** — チャンク幅
 512 (1 チャンク) と 8 (3 チャンク) の両方で。要ったのは **INT8 の QMM**
 (INT4 版は 8-bit を読めない) と T 行版の小物 3 本で、`--qwen` は **57 本**になった。
-**Gemma の既定 69 本と `swift test` の 1,282 件は緑のまま。**
+**Phase 5 が通った** ([22](22-PHASE5-TOKENIZER.md)): `QwenTokenizer` は
+`GFTokenizer` の分岐ではなく**兄弟**で (Gemma の検査を緩めないため)、decode は
+**ByteLevel** の streaming、framing は**上流の `chat_template.jinja` そのもの**。
+`--qwen-tokenizer` の **223 本**は上流 `tokenizers` / `transformers` との
+突き合わせで、うち 4 本は負例。CLI は `RunQwen.swift` という別経路で、
+**推論 (`<think>`) は stderr、答えは stdout** に分かれる。
+**残るのは XML 形のツール呼び出しと GBNF** ([04](04-PHASES.md) 次の一手 #22)。
+**Gemma の既定 69 本と `swift test` の 1,297 件 (旧 1,282 + 新規 15) は緑のまま。**
 **速度・ヒット率・TTFT の運用数字は依然 導出 か 未確認** — 計測 (Phase 6) はこれから。
 運用点 (スロット数・チャンク幅) は Gemma 4 の値をそのまま持ち越せない —
 理由は [05 §1](05-RISKS.md)、測り直しの手順は [04](04-PHASES.md) Phase 6。
@@ -87,6 +94,7 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 15 | [19-LM-HEAD-INT8.md](19-LM-HEAD-INT8.md) | **実測(手元)。**INT8 の LM head chain、負例 4 本、1 トークン 4.0 ms / 134 GB/s、天井が 79 → 71 tok/s になる話 |
 | 16 | [20-PHASE3-DECODE.md](20-PHASE3-DECODE.md) | **実測(手元)。**decode の結線、トークンの一致、負例 5 本、実物で見えた 3 つの食い違い、再帰状態の置き場所 |
 | 17 | [21-PHASE4-PREFILL.md](21-PHASE4-PREFILL.md) | **実測(手元)。**55 トークンの参照 (Phase 3 が閉じた)、INT8 の QMM と検査 18 本、prefill の結線、チャンクをまたぐもの 3 つ、チャンク幅の時間 |
+| 18 | [22-PHASE5-TOKENIZER.md](22-PHASE5-TOKENIZER.md) | **実測(手元)。**ByteLevel のトークナイザと上流 jinja、上流との突き合わせ 223 本 (負例 4)、CLI の Ornith 経路、tools の JSON の食い違い |
 
 ## 表記
 

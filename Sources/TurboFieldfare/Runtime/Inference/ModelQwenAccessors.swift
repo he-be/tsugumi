@@ -111,4 +111,27 @@ extension Model {
     /// `arch.family` as the manifest states it. Absent means Gemma 4, which is
     /// the family this format was written for.
     public var modelFamily: String { manifest.arch.family ?? "gemma4" }
+
+    /// The family an install *declares*, read from `manifest.json` alone.
+    ///
+    /// For the one decision that has to be made before loading: which
+    /// tokenizer and which runner an install needs. It is a hint, not a
+    /// verification — the manifest is not authenticated here, and nothing is
+    /// mapped. `Model.load` still runs every gate afterwards, including
+    /// `expecting:`, so a manifest that lies about its family fails there
+    /// instead of here. Unreadable or unparsable means "the family this format
+    /// was written for", which is what an old install with no `family` field
+    /// also means.
+    public static func declaredFamily(at directoryURL: URL) -> String {
+        struct Peek: Decodable {
+            struct Arch: Decodable { let family: String? }
+            let arch: Arch?
+        }
+        let url = directoryURL.appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+              let peek = try? JSONDecoder().decode(Peek.self, from: data),
+              let family = peek.arch?.family, !family.isEmpty
+        else { return "gemma4" }
+        return family
+    }
 }

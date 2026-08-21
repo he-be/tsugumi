@@ -259,6 +259,10 @@ extension QwenForwardRunner {
         let T = tokens.count
         let start = kv.position
         let D = UInt32(hiddenSize)
+        // The routed-expert counters are per phase; a chunk is prefill, and
+        // the step it is stamped with is where the chunk starts
+        // (`ExpertTelemetry`, same convention as `RealForwardRunner`).
+        model.telemetry.beginPhase(.prefill, step: start)
         if fault == .forgetRecurrentState { state.reset() }
 
         let ids = s.tokenIDs.contents().bindMemory(to: UInt32.self, capacity: T)

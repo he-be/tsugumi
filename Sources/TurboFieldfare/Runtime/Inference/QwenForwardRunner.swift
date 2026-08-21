@@ -495,6 +495,10 @@ public final class QwenForwardRunner {
     @discardableResult
     public func step(token: Int32, emitToken: Bool) throws -> Int32 {
         let position = kv.position
+        // Stamp the phase so the routed-expert counters land in the decode
+        // column rather than all in prefill's — the hit rates Phase 6 asks for
+        // are per phase (`ExpertTelemetry`).
+        model.telemetry.beginPhase(.decode, step: position)
         guard position < maxContext else {
             throw QwenRunnerError.geometryMismatch(
                 "position \(position) reached maxContext \(maxContext)")

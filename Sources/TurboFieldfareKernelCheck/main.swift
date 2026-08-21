@@ -1395,6 +1395,23 @@ if let index = arguments.firstIndex(of: "--qwen-open"), index + 1 < arguments.co
     exit(try runQwenOpenCheck(modelPath: arguments[index + 1]) ? 0 : 1)
 }
 
+// `--qwen-tokenizer <model.gturbo|tokenizer dir>` checks the Ornith tokenizer
+// against the upstream one (QwenTokenizerCheck.swift): marker IDs, the byte
+// alphabet, encode, decode in both modes, and the bundled chat template.
+// `--qwen-tokenizer-fixture <json>` supplies what
+// `Scripts/qwen35/tokenizer_fixture.py` recorded from `tokenizers` /
+// `transformers`; without it only the parts that need no fixture run.
+// `docs/qwen35moe/04-PHASES.md` Phase 5.
+if let index = arguments.firstIndex(of: "--qwen-tokenizer"), index + 1 < arguments.count {
+    var fixture: String?
+    if let i = arguments.firstIndex(of: "--qwen-tokenizer-fixture"), i + 1 < arguments.count {
+        fixture = arguments[i + 1]
+    }
+    let ok = try await runQwenTokenizerCheck(modelPath: arguments[index + 1],
+                                             fixturePath: fixture)
+    exit(ok ? 0 : 1)
+}
+
 // `--qwen-decode <model.gturbo>` runs the decode path over the real weights and
 // compares the greedy tokens with the CPU float32 reference
 // (QwenDecodeCheck.swift). This is Phase 3's exit condition: every kernel it

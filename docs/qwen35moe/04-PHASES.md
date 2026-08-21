@@ -3,7 +3,7 @@
 各 Phase は「出口条件」を満たすまで次へ行かない。**GPU を使う Phase は 2 以降**
 (Phase 2 は GPU を使うがモデルは載せない)。
 
-## 進捗 (2026-08-21 深夜)
+## 進捗 (2026-08-22 未明)
 
 | Phase | 状態 |
 | --- | --- |
@@ -12,7 +12,8 @@
 | Phase 2 カーネル | **完了。**`qwen_delta_rule` ([15](15-PHASE2-GDN.md)、prefill 30 層 **125.7 ms**)、周辺 7 本 ([17](17-PHASE2-KERNELS.md))、**INT8 の LM head chain** ([19](19-LM-HEAD-INT8.md)、1 トークン 4.0 ms / 134 GB/s)。`--qwen` の検査は **39 本すべて緑**、うち 10 本は負例 |
 | Phase 3 decode 結線 | **完了** ([20](20-PHASE3-DECODE.md) / [21 §1](21-PHASE4-PREFILL.md))。`QwenForwardRunner` / `RecurrentStateManager` / `LayerKind.linear` が入り、**参照の生成 55 本すべてと一致**。負例 5 本も落ちる。64 本に届かないのは**モデルが `<\|im_end\|>` を出して止まった**ため — その生成に 56 本目は無い |
 | Phase 4 prefill | **一致の条件が通った** ([21](21-PHASE4-PREFILL.md))。`QwenPrefill.swift` と **INT8 の QMM**が入り、**チャンク経由でも 55 本すべてが一致** (幅 512 と 8 の 2 通り)。時間の条件は #16 と一緒 |
-| Phase 5 以降 | tokenizer / テンプレート / CLI が手つかず。計測 (Phase 6) もこれから |
+| Phase 5 tokenizer/CLI | **出口条件が通った** ([22](22-PHASE5-TOKENIZER.md))。`QwenTokenizer` (ByteLevel) と上流 jinja が入り、**CLI が日本語と英語で答える。**`<think>` は stderr、答えは stdout。`--qwen-tokenizer` は **223 本すべて緑**、うち 4 本は負例。**残りは XML 形のツール呼び出しと GBNF** |
+| Phase 6 以降 | 計測はこれから。エキスパート計数の phase stamp は入った ([22 §6](22-PHASE5-TOKENIZER.md)) |
 
 ---
 
@@ -121,23 +122,36 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 
 ## Phase 5 — トークナイザ / テンプレート / CLI
 
-- `verifyDecoderConfiguration` に **ByteLevel** を許す分岐 (現状は metaspace +
-  ByteFallback + Fuse の 3 段固定を要求しており、**確実に弾かれる** — [10 §3](10-MLX4BIT-AUDIT.md))
-- `GemmaDecoding` の兄弟として `ByteLevelDecoding` (GPT-2 の byte↔unicode 表)
-- `GrammarVocabulary` の piece 復元をデコーダ種別で切り替える
-- `vocabSize = 262_144` のリテラルを tokenizer から読むように
-- 特殊トークン: `<|im_start|>` 248045 / `<|im_end|>` 248046 / `<|endoftext|>` 248044 /
-  `<think>` 248068 / `</think>` 248069 / `<tool_call>` 248058。
-  **停止トークンは `[248046, 248044]`** (`generation_config.json`、実測(上流))
-- チャットテンプレートは**上流の `chat_template.jinja` をそのまま同梱する**。
-  Gemma 側は「上流に chat_template が無い」から Swift で書いていた (実測 = ソース) が、
-  Ornith は持っている。サーバーの redraw 不変条件用の兄弟 jinja は Phase 8 で
+**通った** ([22](22-PHASE5-TOKENIZER.md))。ただし**計画とは形が違う**:
+
+- ~~`verifyDecoderConfiguration` に ByteLevel を許す分岐~~ → **やめた。**
+  Gemma の検査は「よそのトークナイザを弾く」ために在るので、そこに ByteLevel を
+  通す穴を開けない。代わりに **`QwenTokenizer` という別の型**を書き、
+  両方向 (Ornith の宣言は Gemma の検査に落ち、逆も落ちる) を検査に入れた
+  ([22 §1](22-PHASE5-TOKENIZER.md))
+- `GemmaDecoding` の兄弟 → **`ByteLevelDecoding` / `ByteLevelRun`** が入った。
+  **落ちた特殊トークンをまたいで run は融合する**という上流の規則が
+  実装の分かれ目で、そこが負例になっている ([22 §2](22-PHASE5-TOKENIZER.md))
+- `vocabSize = 262_144` のリテラル → Qwen 経路は tokenizer から読む (248,070)。
+  **LM head の幅とは別の数**である ([19](19-LM-HEAD-INT8.md))
+- チャットテンプレート → **上流の `chat_template.jinja` をそのまま**
+  swift-jinja が描画する。`--thinking` が `enable_thinking` に直結する
+- 停止トークンは `[248046, 248044]` (実測(上流)) で、`QwenTokenizer` が持つ
+
+**出口条件は満たした:** `TurboFieldfareCLI --model … --messages-file …` が
+日本語でも英語でも答え、`<think>` ブロックは stderr、答えは stdout に分かれる
+([22 §5](22-PHASE5-TOKENIZER.md))。
+
+**残っているもの (Phase 5 の箇条書きのうち):**
+
 - ツール呼び出しは `<tool_call><function=名前><parameter=名前>値</parameter></function></tool_call>`
   という **XML 形** (実測(上流))。Gemma の `call:name{...}` とは別物なので
-  パーサと GBNF ビルダを新設
-
-**出口:** `TurboFieldfareCLI --model … --prompt …` が日本語と英語で通る。
-`<think>` ブロックが `reasoning_content` に分離される。
+  パーサと GBNF ビルダを新設 — **未着手**
+- `GrammarVocabulary` の piece 復元は Gemma の `▁` / `<0xXX>` 前提のまま。
+  ByteLevel 用に切り替えが要る — **未着手**
+- テンプレートの `tools` ブロックは、swift-jinja と Python で **JSON の
+  区切りとキー順が違う** ([22 §4-2](22-PHASE5-TOKENIZER.md))。ツール経路に
+  着手するときの判断材料
 
 ## Phase 6 — 計測と運用点
 
@@ -205,7 +219,7 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 
 ---
 
-## 次の一手 (2026-08-21 夜)
+## 次の一手 (2026-08-22 未明)
 
 **済んだもの:**
 
@@ -236,6 +250,12 @@ Qwen 固有の行を足すかは、そこで別途判断する。
    ([21](21-PHASE4-PREFILL.md))。`QwenPrefill.swift` は decode と同じく直列。
    **INT8 の QMM** が要った (INT4 版は 8-bit を読めない) ので `--qwen` は 57 本に。
    `prefill.metal` の SiLU も関数定数で分けた
+19. ~~Phase 5 の tokenizer / テンプレート / CLI~~ → **完了。CLI が日本語と
+   英語で答えた** ([22](22-PHASE5-TOKENIZER.md))。`GFTokenizer` に分岐を足すのでは
+   なく **`QwenTokenizer` という兄弟**にした (Gemma の検査を緩めないため)。
+   `--qwen-tokenizer` の 223 本は上流 (`tokenizers` / `transformers`) の実行
+   結果との突き合わせで、うち 4 本は負例。**XML 形のツール呼び出しと GBNF は
+   残っている** (#22)
 14. ~~Phase 3 の結線~~ → **完了。decode が参照と一致した** ([20](20-PHASE3-DECODE.md))。
    `QwenForwardRunner` は直列 (1 層 = コマンドバッファ 2 本)、`RealForwardRunner` は無変更。
    `RecurrentStateManager` (62.8 MiB、文脈長に依らない) と `LayerKind.linear` が入り、
@@ -246,7 +266,7 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 | # | やること | 要るもの |
 | --- | --- | --- |
 | 16 | **線形注意 30 層の締め方の判断** ([17 §4-2](17-PHASE2-KERNELS.md))。周辺まで数えると 159.4 ms で Phase 4 の出口条件を外れる。再帰カーネル単体は 125.7 ms で [05 §2](05-RISKS.md) #2 の内側。**prefill が通ったので、実物の壁時計も出せるようになった** ([21 §5](21-PHASE4-PREFILL.md)) | ユーザー判断 |
-| 19 | **Phase 5。**tokenizer の ByteLevel 分岐 / `ByteLevelDecoding` / 上流 `chat_template.jinja` の同梱 / XML 形のツール呼び出し。**ここを通すまで CLI から日本語の 1 文も打てない** | CPU |
+| 22 | **XML 形のツール呼び出しと GBNF** ([22 §7](22-PHASE5-TOKENIZER.md))。`GemmaToolCallParser` / `ChatGrammarBuilder` の兄弟と、`GrammarVocabulary` の piece 復元を ByteLevel に切り替える。テンプレートの `tools` ブロックが Python と**バイト一致していない**件 ([22 §4-2](22-PHASE5-TOKENIZER.md)) もここで扱う | CPU |
 | 20 | **routed expert のタイル版を prefill に通す** ([21 §3-2](21-PHASE4-PREFILL.md))。いま通しているのは per-pair GEMV の方で、[05 §1-2](05-RISKS.md) の占有率の話はまだ始まっていない | GPU |
 | 21 | **2048 トークン / チャンク 512 の逆転**を説明する ([21 §5](21-PHASE4-PREFILL.md))。他の 3 行と違い 1 回目より 2・3 回目が遅い | GPU |
 | 8 | `in_proj_a` の実活性再測を 200 トークン級の `--dump` でやり直す ([16 §2](16-QUALITY.md))。**本線は 8-bit なので、これは本線を止めない** | CPU |
@@ -261,7 +281,14 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 `--qwen-decode-fixture` / `--qwen-decode-new` / `--qwen-decode-fault-tokens`)、
 **プロンプトを T 行の経路に通すのは `--qwen-prefill <path>`**
 ([21](21-PHASE4-PREFILL.md); `--qwen-prefill-chunks`)。時間は `--qwen-prefill-bench`。
-参照の fixture は `scratch/qwen35/decode-fixture-55.json`。
+**トークナイザを上流と突き合わせるのは `--qwen-tokenizer <path>`**
+([22](22-PHASE5-TOKENIZER.md); `--qwen-tokenizer-fixture`)。その fixture は
+`Scripts/qwen35/tokenizer_fixture.py` が上流を 1 度回して作る
+(`~/LLM/venv/bin/python3` に `tokenizers` と `transformers` が入っている)。
+**CLI から実物に話しかけるのは `TurboFieldfareCLI --model … --messages-file …`**
+(family は `manifest.json` から読む)。
+参照の fixture は `scratch/qwen35/decode-fixture-55.json`、
+トークナイザの fixture は `scratch/qwen35/tokenizer-fixture.json`。
 repack 済みモデルは `scratch/ornith-oq4e-g64.gturbo`、repack の入力は
 `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-baked`。**参照器には焼き込み前の
 `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64` を渡す** (`q_norm` の 1/16 は本ランタイム
@@ -269,8 +296,9 @@ repack 済みモデルは `scratch/ornith-oq4e-g64.gturbo`、repack の入力は
 
 **まだ手を付けていない前提:**
 
-- **tokenizer は確実に弾かれる** ([10 §3](10-MLX4BIT-AUDIT.md))。`decoder.type = ByteLevel` が
-  `verifyDecoderConfiguration` の要求と合わない。Phase 5 の作業として据え置き
+- ~~**tokenizer は確実に弾かれる**~~ → 片づいた ([22 §1](22-PHASE5-TOKENIZER.md))。
+  弾いていたのは **Gemma のローダ**で、それは正しい。Ornith は `QwenTokenizer` が開く
+- **ツール呼び出しの経路は無い** (#22)。サーバー (Phase 8) と vision (Phase 9) も同じ
 - 運用点 (スロット数・チャンク幅) は Gemma 4 の値のままで、Ornith 用には何も測っていない
 - **参照器では bf16 との差は測れない** ([14 §7](14-REFERENCE.md))
 - **パッケージテストは `--no-parallel` で回す。**素の `swift test` は remote install 系が

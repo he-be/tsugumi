@@ -134,6 +134,13 @@ public func run(args: Args,
                 stderr: FileHandle = .standardError) async -> RunResult {
     do {
         let modelURL = URL(fileURLWithPath: args.model)
+        // Which family an install declares decides the tokenizer and the
+        // runner, and that decision has to be made before either exists
+        // (`Model.declaredFamily`). Everything below this line is Gemma 4's
+        // path, untouched.
+        if Model.declaredFamily(at: modelURL) == "qwen3_5_moe" {
+            return await runQwen(args: args, stdout: stdout, stderr: stderr)
+        }
         let tokenizer = try await GFTokenizer.load(forModelDirectory: modelURL)
         let prepared = try preparePrompt(args: args, tokenizer: tokenizer)
         let promptIds = prepared.ids
