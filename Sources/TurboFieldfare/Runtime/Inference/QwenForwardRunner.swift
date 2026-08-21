@@ -227,6 +227,7 @@ public final class QwenForwardRunner {
     public func resetProfile() {
         gpuSeconds = 0
         gpuCommandBuffers = 0
+        constraintRescores = 0
     }
 
     /// Which kernels a prefill chunk's routed experts run on.
@@ -549,28 +550,141 @@ public final class QwenForwardRunner {
     public func generateGreedy(promptTokens: [Int32],
                                maxNewTokens: Int,
                                stopTokens: Set<Int32> = [],
-                               onToken: ((Int, Int32) -> Void)? = nil) throws -> [Int32] {
+                               constraint: (any GenerationConstraint)? = nil,
+                               onToken: ((Int, Int32) throws -> Void)? = nil) throws -> [Int32] {
         precondition(!promptTokens.isEmpty, "the prompt must have at least one token")
         precondition(promptTokens.count + maxNewTokens <= maxContext,
                      "prompt + generation exceeds maxContext \(maxContext)")
 
+        let gate = constraint.map {
+            ConstraintGate(constraint: $0, endOfGenerationTokenIDs: stopTokens)
+        }
         var produced: [Int32] = []
         var next: Int32 = 0
         for (index, token) in promptTokens.enumerated() {
             let emit = index == promptTokens.count - 1
             next = try step(token: token, emitToken: emit)
         }
+        next = try constrained(next, gate: gate, position: 0)
         for index in 0..<maxNewTokens {
             produced.append(next)
-            onToken?(index, next)
+            // Before the callback: the state the constraint leaves behind is
+            // what the caller's own decoder reads (GEN-6), and what the next
+            // draw is judged by.
+            try gate?.accept(next)
+            try onToken?(index, next)
             // A stop token is reported, like the reference's `generate`, and
             // then ends the run. The last wanted token is not followed by a
             // forward pass nobody reads.
             if stopTokens.contains(next) { break }
             if produced.count == maxNewTokens { break }
-            next = try step(token: next, emitToken: true)
+            next = try constrained(try step(token: next, emitToken: true),
+                                   gate: gate, position: index + 1)
         }
         return produced
+    }
+
+    // MARK: - GEN-7 on a head that never writes the logits
+
+    /// One bit per scored vocabulary row. Allocated on the first rejection, so
+    /// an unconstrained run never pays for it.
+    private var allowedBits: MTLBuffer?
+    /// The `Bool` view `GenerationConstraint.fillAllowedMask` fills. Reused, so
+    /// a rejection allocates nothing after the first.
+    private var allowedFlags: [Bool] = []
+    /// How many tokens the constraint refused, and so how many extra head
+    /// passes this run paid for. The number a caller wants when asking what a
+    /// grammar cost: zero means the model was already writing what the grammar
+    /// wanted and the constraint only watched.
+    public private(set) var constraintRescores = 0
+
+    /// The constraint's verdict on the argmax the head just produced, and — on
+    /// a refusal — the argmax among the tokens it does allow.
+    ///
+    /// The shape is GEN-7's: probe first, and pay the whole-vocabulary mask
+    /// only when the probe says no. What differs from `Sampler`'s version is
+    /// what the second pass costs. There, the logits are already in a buffer
+    /// and the redraw is a host pass plus one tiny kernel; here the logits were
+    /// never written — that is the entire point of the fused head
+    /// (`docs/qwen35moe/19-LM-HEAD-INT8.md`) — so the 508 MB table is read a
+    /// second time with the rejected rows switched off. A refused token
+    /// therefore costs one extra head pass — 4.086 ms against the unmasked
+    /// pass's 4.084 ms, so consulting the mask is not measurable next to the
+    /// read (`docs/qwen35moe/25-CLI-TOOLS.md` §2-3) — and an accepted one costs
+    /// a single `allows` call.
+    func constrained(_ token: Int32,
+                     gate: ConstraintGate?,
+                     position: Int) throws -> Int32 {
+        guard let gate else { return token }
+        if gate.allows(token) { return token }
+        return try rescoreGreedy(gate: gate, position: position)
+    }
+
+    /// Score the same hidden row again over the allowed rows only.
+    ///
+    /// Valid exactly while `head.normalizedHidden` still holds the row the last
+    /// head pass normalized — which is true for both producers, decode's
+    /// `step` and prefill's last chunk, because they share this one chain
+    /// object and neither runs anything between the pass and the verdict.
+    private func rescoreGreedy(gate: ConstraintGate, position: Int) throws -> Int32 {
+        constraintRescores += 1
+        let wordCount = QwenLMHeadChainInt8.maskWordCount(vocab: scoredVocab)
+        let bits: MTLBuffer
+        if let existing = allowedBits {
+            bits = existing
+        } else {
+            guard let created = ctx.device.makeBuffer(
+                      length: wordCount * MemoryLayout<UInt32>.size,
+                      options: .storageModeShared) else { throw MetalError.noDevice }
+            allowedBits = created
+            bits = created
+        }
+        if allowedFlags.count != scoredVocab {
+            allowedFlags = [Bool](repeating: false, count: scoredVocab)
+        }
+
+        var allowedCount = 0
+        try allowedFlags.withUnsafeMutableBufferPointer { flags in
+            try gate.fillAllowedMask(flags)
+            let words = bits.contents().bindMemory(to: UInt32.self, capacity: wordCount)
+            for word in 0..<wordCount {
+                var packed: UInt32 = 0
+                let base = word * 32
+                for bit in 0..<32 where base + bit < flags.count && flags[base + bit] {
+                    packed |= 1 << UInt32(bit)
+                    allowedCount += 1
+                }
+                words[word] = packed
+            }
+        }
+        // GEN-7 calls an empty mask an error rather than a stop, and it is
+        // caught here rather than by the kernel: a dispatch with no scored row
+        // reduces to the sentinel id, which is not a token.
+        guard allowedCount > 0 else {
+            throw GenerationConstraintError.noAllowedToken(position: position)
+        }
+
+        let lm = try model.qwenLMHead
+        try runSync("masked head") { cb in
+            self.head.encodeMaskedRescore(commandBuffer: cb,
+                                          weights: lm.buffer, weightsOffset: Int(lm.offset),
+                                          scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
+                                          biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
+                                          allowedBits: bits,
+                                          outToken: self.greedyToken,
+                                          d: UInt32(self.hiddenSize),
+                                          vocab: UInt32(self.scoredVocab))
+        }
+        let token = Int32(bitPattern: greedyToken.contents().load(as: UInt32.self))
+        // The mask and the probe are the same constraint answering twice; if
+        // they disagree, the token that came back is not one the caller asked
+        // for, and emitting it would be unconstrained text under a constrained
+        // request.
+        guard gate.allows(token) else {
+            throw GenerationConstraintError.maskedDrawRejected(position: position,
+                                                               tokenID: token)
+        }
+        return token
     }
 
     /// One token in, one greedy token out (or 0 when `emitToken` is false, in

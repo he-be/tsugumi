@@ -141,6 +141,15 @@ public func run(args: Args,
         if Model.declaredFamily(at: modelURL) == "qwen3_5_moe" {
             return await runQwen(args: args, stdout: stdout, stderr: stderr)
         }
+        // Gemma 4 has a tool format, a parser and a grammar of its own, but
+        // they are wired to the server and not to this path. Refusing is the
+        // honest answer: a run that quietly dropped the declarations would look
+        // like a model that ignores its tools.
+        guard args.toolsFile == nil else {
+            return errored(stderr, "--tools is wired for the qwen3_5_moe family only "
+                           + "(docs/qwen35moe/25-CLI-TOOLS.md); this install is "
+                           + "Gemma 4, whose tool path is the server's", 2)
+        }
         let tokenizer = try await GFTokenizer.load(forModelDirectory: modelURL)
         let prepared = try preparePrompt(args: args, tokenizer: tokenizer)
         let promptIds = prepared.ids

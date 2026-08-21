@@ -227,6 +227,80 @@ private func runHeadOnGPU(_ context: MetalContext,
                    token: Int(headRead(token, count: 1, as: UInt32.self)[0]))
 }
 
+/// 許可マスクを 1 行 1 bit に詰める。`reverseBitOrder` は負例のためのもので、
+/// ワード内の並びだけを逆さにする (32 本の塊の中で ID が入れ替わる)。
+private func packedMask(_ allowed: [Bool], reverseBitOrder: Bool = false) -> [UInt32] {
+    let words = QwenLMHeadChainInt8.maskWordCount(vocab: allowed.count)
+    var packed = [UInt32](repeating: 0, count: words)
+    for (index, isAllowed) in allowed.enumerated() where isAllowed {
+        let bit = reverseBitOrder ? 31 - (index % 32) : index % 32
+        packed[index / 32] |= UInt32(1) << UInt32(bit)
+    }
+    return packed
+}
+
+/// 許可された行だけの argmax。参照側。
+private func maskedBest(_ logits: [Double], _ allowed: [Bool]) -> Int {
+    var best = -1
+    var bestValue = -Double.infinity
+    for row in 0..<logits.count where allowed[row] {
+        if logits[row] > bestValue { bestValue = logits[row]; best = row }
+    }
+    return best
+}
+
+/// 融合ヘッドを 1 回通してから、同じ hidden をマスクつきでもう一度畳む。
+///
+/// 2 本目は前段の RMSNorm を走らせない (`encodeMaskedRescore` の約束) ので、
+/// 1 本目が `xNormed` を書いていることがこの順序の前提そのものである。
+private func runMaskedHeadOnGPU(_ context: MetalContext,
+                                _ chain: QwenLMHeadChainInt8,
+                                _ inputs: HeadInputs,
+                                _ shape: HeadShape,
+                                vocab: Int,
+                                allowed: [Bool],
+                                reverseBitOrder: Bool = false) throws -> Int {
+    let device = context.device
+    let hidden = headBuffer(device, inputs.hidden)
+    let normWeight = headBuffer(device, inputs.normWeight.bits)
+    let weights = headBuffer(device, inputs.quantized)
+    let scales = headBuffer(device, inputs.scales.bits)
+    let biases = headBuffer(device, inputs.biases.bits)
+    let bits = headBuffer(device, packedMask(allowed, reverseBitOrder: reverseBitOrder))
+    let token = device.makeBuffer(length: MemoryLayout<UInt32>.size,
+                                  options: .storageModeShared)!
+
+    guard let first = context.queue.makeCommandBuffer() else {
+        throw QwenCheckError.noCommandBuffer
+    }
+    guard chain.encodeGreedyDecode(commandBuffer: first,
+                                   hidden: hidden, normWeight: normWeight,
+                                   weights: weights, scales: scales, biases: biases,
+                                   outToken: token,
+                                   d: UInt32(shape.d), vocab: UInt32(vocab),
+                                   rmsEps: shape.rmsEps) else {
+        throw QwenCheckError.encodeRefused("qwen_lm_head_greedy_int8")
+    }
+    first.commit()
+    first.waitUntilCompleted()
+    if let error = first.error { throw QwenCheckError.dispatchFailed("\(error)") }
+
+    guard let second = context.queue.makeCommandBuffer() else {
+        throw QwenCheckError.noCommandBuffer
+    }
+    guard chain.encodeMaskedRescore(commandBuffer: second,
+                                    weights: weights, scales: scales, biases: biases,
+                                    allowedBits: bits,
+                                    outToken: token,
+                                    d: UInt32(shape.d), vocab: UInt32(vocab)) else {
+        throw QwenCheckError.encodeRefused("qwen_lm_head_greedy_int8_masked")
+    }
+    second.commit()
+    second.waitUntilCompleted()
+    if let error = second.error { throw QwenCheckError.dispatchFailed("\(error)") }
+    return Int(headRead(token, count: 1, as: UInt32.self)[0])
+}
+
 /// 一致 / 不一致を `CaseResult` の物差しに載せる。トークン ID は連続量ではないので、
 /// 誤差ではなく 0/1 で採点する。
 private func agreement(_ actual: Int, _ expected: Int) -> Double {
@@ -333,6 +407,82 @@ func runQwenHeadCheck(context: MetalContext) throws -> [CaseResult] {
                                    rel: agreement(allRun.token, scoredRun.token),
                                    floor: 1,
                                    detail: "vocab=\(shape.total) なら \(allRun.token)"))
+
+    // ---- 4. マスクつきの畳み込み (GEN-7 の棄却経路) --------------------------
+    //
+    // `docs/qwen35moe/25-CLI-TOOLS.md` §2。融合ヘッドは logit を書かないので、
+    // 文法が argmax を拒んだときは**同じ hidden をマスクつきでもう一度**畳む。
+    // 行の演算は `_raw` と共有しているので、ここで採点しているのは
+    // **どの行を採点したか**だけである。
+    let everything = [Bool](repeating: true, count: shape.scored)
+    let allMasked = try runMaskedHeadOnGPU(context, chain, inputs, shape,
+                                           vocab: shape.scored, allowed: everything)
+    results.append(result("qwen_lm_head_int8 マスク全許可 == 素の argmax",
+                          groupSize: shape.groupSize,
+                          rel: agreement(allMasked, got.token),
+                          tolerance: 0,
+                          detail: "マスク \(allMasked) / 素 \(got.token)"))
+
+    var withoutWinner = everything
+    withoutWinner[truth.best] = false
+    let runnerUp = try runMaskedHeadOnGPU(context, chain, inputs, shape,
+                                          vocab: shape.scored, allowed: withoutWinner)
+    let expectedRunnerUp = maskedBest(truth.logits, withoutWinner)
+    results.append(result("qwen_lm_head_int8 勝者を落とすと 2 位",
+                          groupSize: shape.groupSize,
+                          rel: agreement(runnerUp, expectedRunnerUp),
+                          tolerance: 0,
+                          detail: "GPU \(runnerUp) / 参照 \(expectedRunnerUp)"))
+
+    // 疎なマスク。64 行に 1 本ほどしか通さないので、threadgroup (8 行) の中に
+    // 許可行が 1 本も無い塊が生まれる — そこが `-INFINITY` のまま畳まれ、
+    // 畳み込みの番兵 (0xFFFFFFFF) が答えに出てこないことまで見る。
+    var sparse = [Bool](repeating: false, count: shape.scored)
+    var sparseRNG = QwenRNG(state: 0x1_5EAD_0A55)
+    for row in 0..<shape.scored where sparseRNG.next() % 64 == 0 { sparse[row] = true }
+    if !sparse.contains(true) { sparse[7] = true }
+    let sparseAllowed = sparse.filter { $0 }.count
+    let sparseToken = try runMaskedHeadOnGPU(context, chain, inputs, shape,
+                                             vocab: shape.scored, allowed: sparse)
+    let expectedSparse = maskedBest(truth.logits, sparse)
+    results.append(result("qwen_lm_head_int8 疎なマスク (\(sparseAllowed) 行)",
+                          groupSize: shape.groupSize,
+                          rel: agreement(sparseToken, expectedSparse),
+                          tolerance: 0,
+                          detail: "GPU \(sparseToken) / 参照 \(expectedSparse)"))
+
+    // 文法が 1 本しか許さない状態 (綴りが決まりきっている途中) は実際に起きる。
+    var single = [Bool](repeating: false, count: shape.scored)
+    let onlyRow = (truth.best + 1_234) % shape.scored
+    single[onlyRow] = true
+    let singleToken = try runMaskedHeadOnGPU(context, chain, inputs, shape,
+                                             vocab: shape.scored, allowed: single)
+    results.append(result("qwen_lm_head_int8 許可が 1 本ならそれを返す",
+                          groupSize: shape.groupSize,
+                          rel: agreement(singleToken, onlyRow),
+                          tolerance: 0,
+                          detail: "GPU \(singleToken) / 許可 \(onlyRow)"))
+
+    // ---- 5. 負例 2 本 (マスク) ----------------------------------------------
+    //
+    // 1 本目はマスクを読まないカーネル。勝者を落としても勝者が返るので、
+    // 上の「2 位」の案がそれを捕まえられることをここで示す。
+    results.append(detectionResult("qwen_lm_head_int8 検出力 (マスクを読まない)",
+                                   groupSize: shape.groupSize,
+                                   rel: agreement(runnerUp, truth.best),
+                                   floor: 1,
+                                   detail: "読まなければ \(truth.best) が返る"))
+    // 2 本目はワード内の bit 順の取り違え。**落ちずに別の行を採点する**形の
+    // 間違いで、マスクが密なうちは答えが変わらないこともあるので、1 本だけ
+    // 許す形に当てる (逆順なら許されるのは別の ID になる)。
+    let flipped = try runMaskedHeadOnGPU(context, chain, inputs, shape,
+                                         vocab: shape.scored, allowed: single,
+                                         reverseBitOrder: true)
+    results.append(detectionResult("qwen_lm_head_int8 検出力 (ワード内の bit 順が逆)",
+                                   groupSize: shape.groupSize,
+                                   rel: agreement(flipped, onlyRow),
+                                   floor: 1,
+                                   detail: "逆順で選ばれたのは \(flipped)"))
     return results
 }
 
@@ -355,33 +505,56 @@ func runQwenHeadBench(context: MetalContext, iterations: Int) throws {
     let token = device.makeBuffer(length: MemoryLayout<UInt32>.size,
                                   options: .storageModeShared)!
 
-    var samples: [Double] = []
-    for _ in 0..<iterations {
-        guard let commandBuffer = context.queue.makeCommandBuffer() else {
-            throw QwenCheckError.noCommandBuffer
+    // The rejection path reads the same table with a bit test in front of each
+    // row, so the two lines answer one question: does consulting the mask cost
+    // anything on top of the read? (`docs/qwen35moe/25-CLI-TOOLS.md` §2.)
+    // Every row is allowed here — a sparse mask would skip rows and measure a
+    // best case rather than the one a refused token actually pays.
+    let allowed = headBuffer(device, [UInt32](
+        repeating: 0xFFFF_FFFF,
+        count: QwenLMHeadChainInt8.maskWordCount(vocab: shape.scored)))
+
+    func measure(_ label: String, _ encode: (MTLCommandBuffer) -> Bool) throws {
+        var samples: [Double] = []
+        for _ in 0..<iterations {
+            guard let commandBuffer = context.queue.makeCommandBuffer() else {
+                throw QwenCheckError.noCommandBuffer
+            }
+            guard encode(commandBuffer) else {
+                throw QwenCheckError.encodeRefused(label)
+            }
+            commandBuffer.commit()
+            commandBuffer.waitUntilCompleted()
+            if let error = commandBuffer.error {
+                throw QwenCheckError.dispatchFailed("\(error)")
+            }
+            samples.append((commandBuffer.gpuEndTime - commandBuffer.gpuStartTime) * 1e3)
         }
-        guard chain.encodeGreedyDecode(commandBuffer: commandBuffer,
-                                       hidden: hidden, normWeight: normWeight,
-                                       weights: weights, scales: scales, biases: biases,
-                                       outToken: token,
-                                       d: UInt32(shape.d), vocab: UInt32(shape.scored),
-                                       rmsEps: shape.rmsEps) else {
-            throw QwenCheckError.encodeRefused("qwen_lm_head_greedy_int8")
-        }
-        commandBuffer.commit()
-        commandBuffer.waitUntilCompleted()
-        if let error = commandBuffer.error {
-            throw QwenCheckError.dispatchFailed("\(error)")
-        }
-        samples.append((commandBuffer.gpuEndTime - commandBuffer.gpuStartTime) * 1e3)
+        samples.sort()
+        let median = samples[samples.count / 2]
+        let bytes = Double(shape.scored * shape.d)
+            + Double(shape.scored * shape.groupsPerRow * 2 * 2)
+        print("  \(label.padding(toLength: 30, withPad: " ", startingAt: 0))"
+              + "\(String(format: "%6d", 1))"
+              + "\(String(format: "%12.3f", median))"
+              + "\(String(format: "%14.1f", median))"
+              + String(format: "   %.0f GB/s (%.0f MB)",
+                       bytes / (median * 1e-3) / 1e9, bytes / 1e6))
     }
-    samples.sort()
-    let median = samples[samples.count / 2]
-    let bytes = Double(shape.scored * shape.d)
-        + Double(shape.scored * shape.groupsPerRow * 2 * 2)
-    print("  \("qwen_lm_head_int8".padding(toLength: 30, withPad: " ", startingAt: 0))"
-          + "\(String(format: "%6d", 1))"
-          + "\(String(format: "%12.3f", median))"
-          + "\(String(format: "%14.1f", median))"
-          + String(format: "   %.0f GB/s (%.0f MB)", bytes / (median * 1e-3) / 1e9, bytes / 1e6))
+
+    try measure("qwen_lm_head_int8") { commandBuffer in
+        chain.encodeGreedyDecode(commandBuffer: commandBuffer,
+                                 hidden: hidden, normWeight: normWeight,
+                                 weights: weights, scales: scales, biases: biases,
+                                 outToken: token,
+                                 d: UInt32(shape.d), vocab: UInt32(shape.scored),
+                                 rmsEps: shape.rmsEps)
+    }
+    try measure("qwen_lm_head_int8 masked") { commandBuffer in
+        chain.encodeMaskedRescore(commandBuffer: commandBuffer,
+                                  weights: weights, scales: scales, biases: biases,
+                                  allowedBits: allowed,
+                                  outToken: token,
+                                  d: UInt32(shape.d), vocab: UInt32(shape.scored))
+    }
 }

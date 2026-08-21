@@ -31,6 +31,14 @@ public struct Args: Equatable, Sendable {
     /// speculation, 2...8 runs one bonus token plus `bs - 1` drafted ones.
     public var draftBlockSize: Int
     public var dumpExpertTrace: String?
+    /// A JSON file of OpenAI-shaped function declarations. Ornith only
+    /// (`docs/qwen35moe/25-CLI-TOOLS.md`); the Gemma arm refuses it rather than
+    /// ignoring it.
+    public var toolsFile: String?
+    /// Which tools the request lets the model reach for (SPEC §6 GEN-1/4).
+    public var toolChoice: CLIToolChoice
+    /// Whether one turn may carry more than one call.
+    public var parallelToolCalls: Bool
 
     public init(model: String,
                 prompt: String? = nil,
@@ -54,7 +62,10 @@ public struct Args: Equatable, Sendable {
                 verification: ModelIntegrityPolicy = .fullSha256,
                 thinking: Bool = false,
                 draftBlockSize: Int = 0,
-                dumpExpertTrace: String? = nil) {
+                dumpExpertTrace: String? = nil,
+                toolsFile: String? = nil,
+                toolChoice: CLIToolChoice = .auto,
+                parallelToolCalls: Bool = true) {
         self.model = model
         self.prompt = prompt
         self.messagesFile = messagesFile
@@ -78,6 +89,31 @@ public struct Args: Equatable, Sendable {
         self.thinking = thinking
         self.draftBlockSize = draftBlockSize
         self.dumpExpertTrace = dumpExpertTrace
+        self.toolsFile = toolsFile
+        self.toolChoice = toolChoice
+        self.parallelToolCalls = parallelToolCalls
+    }
+}
+
+/// `--tool-choice`, in the four shapes SPEC §6 gives it.
+///
+/// The server has its own `ChatToolChoice` and this is deliberately not that
+/// type: it lives in `TurboFieldfareServerCore`, which links NIO, and the CLI
+/// has no business pulling an HTTP stack in to name four cases. What the two
+/// share is the grammar builder underneath them.
+public enum CLIToolChoice: Equatable, Sendable {
+    case auto
+    case none
+    case required
+    case function(String)
+
+    public init(commandLineName: String) {
+        switch commandLineName {
+        case "auto": self = .auto
+        case "none": self = .none
+        case "required": self = .required
+        default: self = .function(commandLineName)
+        }
     }
 }
 
@@ -166,6 +202,20 @@ extension Args {
                                  the ones the target itself drew, so speculation
                                  moves the wall clock and not the text.
       --dump-expert-trace <path> Write every routed-expert request to a TSV trace.
+      --tools <path>             JSON array of function declarations, in the
+                                 OpenAI shape ([{"type":"function","function":
+                                 {"name":…,"description":…,"parameters":…}}] —
+                                 a bare [{"name":…}] list is accepted too).
+                                 Ornith (qwen3_5_moe) installs only. The calls
+                                 the model writes are printed to stdout as one
+                                 JSON object per line.
+      --tool-choice <s>          auto (default), none, required, or a declared
+                                 function name. auto constrains a call once it
+                                 starts; required constrains from the first
+                                 generated token, so the turn is a call.
+      --parallel-tool-calls on|off
+                                 Whether one turn may carry more than one call
+                                 (default on).
       --help                     Show this message.
     """
 
@@ -220,6 +270,9 @@ extension Args {
         var thinking = false
         var draftBlockSize = 0
         var dumpExpertTrace: String?
+        var toolsFile: String?
+        var toolChoice = CLIToolChoice.auto
+        var parallelToolCalls = true
 
         var index = 0
         while index < argv.count {
@@ -347,6 +400,21 @@ extension Args {
                 }
             case "--dump-expert-trace":
                 dumpExpertTrace = try takeValue(argv, &index, flag: flag)
+            case "--tools":
+                toolsFile = try takeValue(argv, &index, flag: flag)
+            case "--tool-choice":
+                let value = try takeValue(argv, &index, flag: flag)
+                guard !value.isEmpty, !value.hasPrefix("--") else {
+                    throw ArgsError.invalidValue(flag: flag, value: value)
+                }
+                toolChoice = CLIToolChoice(commandLineName: value)
+            case "--parallel-tool-calls":
+                let value = try takeValue(argv, &index, flag: flag)
+                switch value {
+                case "on": parallelToolCalls = true
+                case "off": parallelToolCalls = false
+                default: throw ArgsError.invalidValue(flag: flag, value: value)
+                }
             default:
                 throw ArgsError.unknownFlag(flag)
             }
@@ -364,6 +432,17 @@ extension Args {
         }
         if !images.isEmpty && prefillPolicy == .off {
             throw ArgsError.invalidValue(flag: "--prefill", value: "off with --image")
+        }
+        // The declarations are rendered into the system turn by the chat
+        // template, so a raw completion has nowhere to put them — and a
+        // `--prompt` run that silently dropped them would look like a model
+        // that ignores its tools.
+        if toolsFile != nil && messagesFile == nil {
+            throw ArgsError.mutuallyExclusive("--tools", "--prompt")
+        }
+        if toolsFile == nil, toolChoice != .auto {
+            throw ArgsError.invalidValue(flag: "--tool-choice",
+                                         value: "requires --tools")
         }
         if temperature > 0, topK == nil, let topP, topP < 1 {
             throw ArgsError.invalidValue(
@@ -392,7 +471,10 @@ extension Args {
                              verification: verification,
                              thinking: thinking,
                              draftBlockSize: draftBlockSize,
-                             dumpExpertTrace: dumpExpertTrace)
+                             dumpExpertTrace: dumpExpertTrace,
+                             toolsFile: toolsFile,
+                             toolChoice: toolChoice,
+                             parallelToolCalls: parallelToolCalls)
         if draftBlockSize > 0 {
             guard prefillPolicy == .chunked else {
                 throw ArgsError.invalidValue(flag: "--draft-block-size",

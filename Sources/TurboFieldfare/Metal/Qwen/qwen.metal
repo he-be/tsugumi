@@ -599,6 +599,77 @@ kernel void qwen_lm_head_greedy_int8_rows_chunk_raw(
     }
 }
 
+// ----------------------------------------------------------------------------
+// qwen_lm_head_greedy_int8_rows_chunk_masked — 許可された行だけを採点する
+//
+// GEN-7 の棄却経路 (`docs/qwen35moe/25-CLI-TOOLS.md` §2)。融合ヘッドは語彙幅の
+// logit をどこにも書かないので、文法が最初の argmax を拒んだときに CPU 側で
+// 選び直すことができない。**マスクを持たせて GPU にもう一度畳ませる**のが
+// この経路で、上の `_raw` との違いは行が 1 本増えるだけである:
+//
+//   allowed_bits[row >> 5] の bit (row & 31) が 0 なら、その行は採点しない
+//
+// `row` は SIMD group 内で一様なので分岐は発散しない。マスクが立っている行は
+// `_raw` と**同じ順序で同じ演算**を通る (`qwen_head_int8_row` を共有する) ので、
+// 全許可のマスクは `_raw` とビット一致した答えを出す — 検査の 1 本目がそれである。
+//
+// 前段の RMSNorm はここでは走らせない。棄却は「同じ hidden をもう一度採点する」
+// ことなので、`x_normed` は直前の `_raw` が書いたものをそのまま使う
+// (`QwenLMHeadChainInt8.normalizedHidden`)。
+// ----------------------------------------------------------------------------
+
+[[kernel, max_total_threads_per_threadgroup(256)]]
+kernel void qwen_lm_head_greedy_int8_rows_chunk_masked(
+    device const half*    x_normed     [[buffer(0)]],
+    device const uint8_t* W            [[buffer(1)]],
+    device const bfloat*  scales       [[buffer(2)]],
+    device const bfloat*  biases       [[buffer(3)]],
+    device       float*   summaries    [[buffer(4)]],
+    constant     uint&    d            [[buffer(5)]],
+    constant     uint&    vocab        [[buffer(6)]],
+    device const uint*    allowed_bits [[buffer(7)]],
+    uint tg_idx        [[threadgroup_position_in_grid]],
+    uint simd_lane_id  [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint simdgroups    [[simdgroups_per_threadgroup]]
+) {
+    threadgroup float partial_v[kQwenMaxSimdGroups];
+    threadgroup uint  partial_i[kQwenMaxSimdGroups];
+
+    const uint row = tg_idx * kQwenHeadRowsPerTG + simd_group_id;
+    float best_v = -INFINITY;
+    uint  best_i = 0xFFFFFFFFu;
+    const bool scored =
+        row < vocab && ((allowed_bits[row >> 5] >> (row & 31u)) & 1u) != 0u;
+    if (scored) {
+        const float z = qwen_head_int8_row(W, scales, biases, x_normed,
+                                           row, d, simd_lane_id);
+        if (simd_lane_id == 0 && isfinite(z)) {
+            best_v = z;
+            best_i = row;
+        }
+    }
+    if (simd_lane_id == 0) {
+        partial_v[simd_group_id] = best_v;
+        partial_i[simd_group_id] = best_i;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd_group_id == 0) {
+        const bool active = simd_lane_id < simdgroups;
+        const float v = active ? partial_v[simd_lane_id] : -INFINITY;
+        const uint idx = active ? partial_i[simd_lane_id] : 0xFFFFFFFFu;
+        const float v_all = simd_max(v);
+        uint i_all = (v == v_all) ? idx : 0xFFFFFFFFu;
+        i_all = simd_min(i_all);
+        if (simd_lane_id == 0) {
+            device float* slot = summaries + tg_idx * kQwenHeadRowSummaryStride;
+            slot[0] = v_all;
+            slot[1] = as_type<float>(i_all);
+        }
+    }
+}
+
 [[kernel, max_total_threads_per_threadgroup(256)]]
 kernel void qwen_lm_head_greedy_int8_rows_reduce(
     device const float* summaries  [[buffer(0)]],

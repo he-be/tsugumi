@@ -206,19 +206,30 @@ extension QwenForwardRunner {
                                         maxNewTokens: Int,
                                         chunkWidth: Int = 512,
                                         stopTokens: Set<Int32> = [],
-                                        onToken: ((Int, Int32) -> Void)? = nil) throws -> [Int32] {
+                                        constraint: (any GenerationConstraint)? = nil,
+                                        onToken: ((Int, Int32) throws -> Void)? = nil) throws -> [Int32] {
         precondition(!promptTokens.isEmpty, "the prompt must have at least one token")
         precondition(promptTokens.count + maxNewTokens <= maxContext,
                      "prompt + generation exceeds maxContext \(maxContext)")
 
-        var next = try prefill(tokens: promptTokens, chunkWidth: chunkWidth)
+        // GEN-7 is applied to the token the prompt produces too: the first
+        // generated token is as much part of the constrained sequence as the
+        // rest, and with `tool_choice: required` it is the one the preamble
+        // rule is about.
+        let gate = constraint.map {
+            ConstraintGate(constraint: $0, endOfGenerationTokenIDs: stopTokens)
+        }
+        var next = try constrained(try prefill(tokens: promptTokens, chunkWidth: chunkWidth),
+                                   gate: gate, position: 0)
         var produced: [Int32] = []
         for index in 0..<maxNewTokens {
             produced.append(next)
-            onToken?(index, next)
+            try gate?.accept(next)
+            try onToken?(index, next)
             if stopTokens.contains(next) { break }
             if produced.count == maxNewTokens { break }
-            next = try step(token: next, emitToken: true)
+            next = try constrained(try step(token: next, emitToken: true),
+                                   gate: gate, position: index + 1)
         }
         return produced
     }

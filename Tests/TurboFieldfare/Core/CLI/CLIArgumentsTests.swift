@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 import TurboFieldfare
 @testable import TurboFieldfareCLICore
@@ -72,7 +73,8 @@ import TurboFieldfare
             "--seed", "--stop", "--quiet", "--expert-cache-slots",
             "--expert-cache-policy", "--prefill", "--prefill-chunk-tokens",
             "--rdadvise", "--verification", "--thinking", "--draft-block-size",
-            "--dump-expert-trace", "--help",
+            "--dump-expert-trace", "--tools", "--tool-choice",
+            "--parallel-tool-calls", "--help",
         ]
         let words = Args.usage.split { $0.isWhitespace || $0 == "(" || $0 == ")" }
         // Prose mentions flags mid-sentence ("spends --max-new."), so the
@@ -80,6 +82,67 @@ import TurboFieldfare
         let options = Set(words.map { String($0).trimmingCharacters(in: ["."]) }
             .filter { $0.hasPrefix("--") })
         #expect(options == expected)
+    }
+
+    // MARK: - --tools (`docs/qwen35moe/25-CLI-TOOLS.md`)
+
+    @Test func toolChoiceDefaultsToAutoAndNamesAnythingElse() throws {
+        let bare = try Args.parse(["--model", "m.gturbo", "--messages-file", "c.json"])
+        #expect(bare.toolsFile == nil)
+        #expect(bare.toolChoice == .auto)
+        #expect(bare.parallelToolCalls)
+
+        let named = try Args.parse([
+            "--model", "m.gturbo", "--messages-file", "c.json",
+            "--tools", "t.json", "--tool-choice", "get_weather",
+            "--parallel-tool-calls", "off",
+        ])
+        #expect(named.toolsFile == "t.json")
+        #expect(named.toolChoice == .function("get_weather"))
+        #expect(!named.parallelToolCalls)
+    }
+
+    @Test(arguments: ["auto", "none", "required"])
+    func toolChoiceKeywordsAreNotFunctionNames(_ keyword: String) throws {
+        let parsed = try Args.parse([
+            "--model", "m.gturbo", "--messages-file", "c.json",
+            "--tools", "t.json", "--tool-choice", keyword,
+        ])
+        #expect(parsed.toolChoice != .function(keyword))
+    }
+
+    /// The declarations are rendered into the system turn by the chat
+    /// template, so a raw completion has nowhere to put them.
+    @Test func toolsRequireAChatTurn() {
+        #expect(throws: ArgsError.mutuallyExclusive("--tools", "--prompt")) {
+            _ = try Args.parse([
+                "--model", "m.gturbo", "--prompt", "hi", "--tools", "t.json",
+            ])
+        }
+    }
+
+    /// A choice with nothing to choose from is a mistake worth naming: it
+    /// reads as "constrain the answer" and would otherwise do nothing at all.
+    @Test func toolChoiceWithoutToolsIsRejected() {
+        #expect(throws: ArgsError.invalidValue(flag: "--tool-choice",
+                                               value: "requires --tools")) {
+            _ = try Args.parse([
+                "--model", "m.gturbo", "--messages-file", "c.json",
+                "--tool-choice", "required",
+            ])
+        }
+    }
+
+    /// A flag swallowed as a value is the failure mode of a positional-looking
+    /// option: `--tool-choice --quiet` must not name a function `--quiet`.
+    @Test func toolChoiceDoesNotSwallowTheNextFlag() {
+        #expect(throws: ArgsError.invalidValue(flag: "--tool-choice",
+                                               value: "--quiet")) {
+            _ = try Args.parse([
+                "--model", "m.gturbo", "--messages-file", "c.json",
+                "--tools", "t.json", "--tool-choice", "--quiet",
+            ])
+        }
     }
 
     @Test func draftBlockSizeParsesAndDefaultsToOff() throws {
@@ -307,6 +370,59 @@ import TurboFieldfare
                 "--model", "m.gturbo", "--prompt", "hi",
                 "--messages-file", "chat.json",
             ])
+        }
+    }
+}
+
+/// `--tools` file decoding (`docs/qwen35moe/25-CLI-TOOLS.md` §3).
+@Suite struct CLIToolFileTests {
+    /// A client sends the OpenAI envelope; a hand-written file usually holds
+    /// the bare declaration. Accepting only one of them would make a file that
+    /// works against the server fail here, or the other way round.
+    @Test func bothShapesDecodeToTheSameDeclaration() throws {
+        let envelope = Data("""
+        [{"type":"function","function":{"name":"get_weather",
+          "description":"Get the weather.",
+          "parameters":{"type":"object","properties":{"city":{"type":"string"}}}}}]
+        """.utf8)
+        let bare = Data("""
+        [{"name":"get_weather","description":"Get the weather.",
+          "parameters":{"type":"object","properties":{"city":{"type":"string"}}}}]
+        """.utf8)
+        let fromEnvelope = try QwenToolFile.decode(envelope)
+        let fromBare = try QwenToolFile.decode(bare)
+        #expect(fromEnvelope == fromBare)
+        #expect(fromEnvelope.count == 1)
+        #expect(fromEnvelope[0].name == "get_weather")
+    }
+
+    /// A function of no arguments is a declaration with no schema, not a
+    /// malformed one.
+    @Test func parametersMayBeOmitted() throws {
+        let tools = try QwenToolFile.decode(Data("""
+        [{"name":"ping"}]
+        """.utf8))
+        #expect(tools == [GFTokenizer.FunctionDefinition(name: "ping",
+                                                         description: "",
+                                                         parameters: .object([:]))])
+    }
+
+    @Test func duplicateNamesAreRejected() {
+        #expect(throws: ArgsError.invalidValue(flag: "--tools",
+                                               value: "duplicate tool name a")) {
+            _ = try QwenToolFile.decode(Data("""
+            [{"name":"a"},{"name":"a"}]
+            """.utf8))
+        }
+    }
+
+    /// The envelope names its own type, and this format has exactly one.
+    @Test func aNonFunctionEnvelopeIsRejected() {
+        #expect(throws: ArgsError.invalidValue(flag: "--tools",
+                                               value: "unsupported tool type retrieval")) {
+            _ = try QwenToolFile.decode(Data("""
+            [{"type":"retrieval","function":{"name":"a"}}]
+            """.utf8))
         }
     }
 }

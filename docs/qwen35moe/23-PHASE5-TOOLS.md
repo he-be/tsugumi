@@ -312,7 +312,7 @@ CLI の出力は変わっていない (日本語の smoke は推論 192 文字 /
 | 対象 | 更新 |
 | --- | --- |
 | [04](04-PHASES.md) 次の一手 #22 | **完了。**パーサ・GBNF ビルダ・ByteLevel の piece が入り、`--qwen-tools` が 36 本緑 |
-| [04](04-PHASES.md) Phase 5 | **これで Phase 5 の箇条書きは全部片づいた。**残るのはサーバー結線 (Phase 8) と CLI の `--tools` |
+| [04](04-PHASES.md) Phase 5 | 残っていた CLI の `--tools` は [25](25-CLI-TOOLS.md) で片づいた。**残るのはサーバー結線 (Phase 8)** |
 | [22 §4-2](22-PHASE5-TOKENIZER.md) | **訂正 (§5-1)。**swift-jinja のキー順は不定ではなく昇順。両方決定的 |
 | INV-1 (描き直し == 生成) | **文字列引数については閉じた** (§4 の往復 7 検体)。入れ子 JSON では**閉じていない** (§5-2) |
 
@@ -321,7 +321,8 @@ CLI の出力は変わっていない (日本語の smoke は推論 192 文字 /
 - **サーバー** (Phase 8): `ServerInference` / `ChatRequestParser` /
   `ServerGenerationPlan` は Gemma の型を通っており、Ornith の分岐は無い。
   `QwenChatGrammarBuilder` は書けたが**誰も呼んでいない**
-- **CLI の `--tools`**: `RunQwen.swift` にツールの入口は無い
+- ~~**CLI の `--tools`**~~ → **入った** ([25](25-CLI-TOOLS.md))。融合ヘッドの
+  ままで文法をかけるために、マスクつきの再畳み込みが要った
 - **入れ子 JSON の往復** (§5-2) と `<tools>` の綴り (§5-1)
 - 並列呼び出しは文法としては通るが、**実物のモデルが並列で書くかは
   見ていない** (Phase 6 以降)

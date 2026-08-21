@@ -1474,6 +1474,27 @@ if let index = arguments.firstIndex(where: { $0 == "--qwen-decode" || $0 == "--q
          ? 0 : 1)
 }
 
+// `--qwen-constrain <model.gturbo>` drives the GEN-7 hook of
+// `QwenForwardRunner` with stub constraints (QwenConstrainCheck.swift): the
+// whole-vocabulary mask, the masked re-score of the same hidden row, and
+// `ConstraintGate`'s stop-token rule. `--qwen-constrain-new N` shortens it,
+// `--qwen-decode-slots N` changes the expert cache.
+if let index = arguments.firstIndex(of: "--qwen-constrain"), index + 1 < arguments.count {
+    var slots = 32
+    if let i = arguments.firstIndex(of: "--qwen-decode-slots"), i + 1 < arguments.count,
+       let value = Int(arguments[i + 1]), value > 0 {
+        slots = value
+    }
+    var newTokens = 8
+    if let i = arguments.firstIndex(of: "--qwen-constrain-new"), i + 1 < arguments.count,
+       let value = Int(arguments[i + 1]), value > 0 {
+        newTokens = value
+    }
+    exit(try runQwenConstrainCheck(modelPath: arguments[index + 1],
+                                   slotCount: slots,
+                                   maxNewTokens: newTokens) ? 0 : 1)
+}
+
 // `--qwen-prefill-bench <model.gturbo>` times the T-row path on a synthetic
 // prompt. A measurement, not a check — see the header in QwenDecodeCheck.swift
 // for why the number is not an operating one.

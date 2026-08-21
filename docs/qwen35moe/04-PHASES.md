@@ -12,7 +12,7 @@
 | Phase 2 カーネル | **完了。**`qwen_delta_rule` ([15](15-PHASE2-GDN.md)、prefill 30 層 **125.7 ms**)、周辺 7 本 ([17](17-PHASE2-KERNELS.md))、**INT8 の LM head chain** ([19](19-LM-HEAD-INT8.md)、1 トークン 4.0 ms / 134 GB/s)。`--qwen` の検査は **39 本すべて緑**、うち 10 本は負例 |
 | Phase 3 decode 結線 | **完了** ([20](20-PHASE3-DECODE.md) / [21 §1](21-PHASE4-PREFILL.md))。`QwenForwardRunner` / `RecurrentStateManager` / `LayerKind.linear` が入り、**参照の生成 55 本すべてと一致**。負例 5 本も落ちる。64 本に届かないのは**モデルが `<\|im_end\|>` を出して止まった**ため — その生成に 56 本目は無い |
 | Phase 4 prefill | **一致の条件が通った** ([21](21-PHASE4-PREFILL.md))。`QwenPrefill.swift` と **INT8 の QMM**が入り、**チャンク経由でも 55 本すべてが一致** (幅 512 と 8 の 2 通り)。**routed expert のタイル版も通り、同じ 55 本を出した** ([24](24-PREFILL-MOE-PATH.md))。時間の条件は #16 と一緒 |
-| Phase 5 tokenizer/CLI | **完了** ([22](22-PHASE5-TOKENIZER.md) / [23](23-PHASE5-TOOLS.md))。`QwenTokenizer` (ByteLevel) と上流 jinja が入り、**CLI が日本語と英語で答える** (`--qwen-tokenizer` 223 本)。**XML 形のツール呼び出しと GBNF も入った** — `--qwen-tools` が 36 本、うち 6 本は負例。中心は**テンプレートが描いた呼び出しを文法が受理しパーサが同じ引数に戻す**こと。残るのはサーバー結線 (Phase 8) と CLI の `--tools` |
+| Phase 5 tokenizer/CLI | **完了** ([22](22-PHASE5-TOKENIZER.md) / [23](23-PHASE5-TOOLS.md) / [25](25-CLI-TOOLS.md))。`QwenTokenizer` (ByteLevel) と上流 jinja が入り、**CLI が日本語と英語で答える** (`--qwen-tokenizer` 223 本)。**XML 形のツール呼び出しと GBNF も入った** — `--qwen-tools` が 36 本、うち 6 本は負例。**CLI の `--tools` も入り、実物が呼び出しを書いた** ([25](25-CLI-TOOLS.md))。残るのはサーバー結線 (Phase 8) |
 | Phase 6 以降 | 計測はこれから。エキスパート計数の phase stamp は入った ([22 §6](22-PHASE5-TOKENIZER.md))。**bench に内訳 3 列 (GPU / 取得 / ホスト) とプロセス内クールダウンが入った** ([24 §4-1](24-PREFILL-MOE-PATH.md)) |
 
 ---
@@ -164,8 +164,28 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
   **記述を訂正した** ([23 §5-1](23-PHASE5-TOOLS.md)): swift-jinja のキー順は
   不定ではなく**昇順**で、両方決定的。だから引数を昇順で綴る設計が成り立つ
 
-**残っているもの:** サーバー結線 (Phase 8)、CLI の `--tools`、
-入れ子 JSON の往復 2 件 ([23 §5-2](23-PHASE5-TOOLS.md))。
+**CLI の `--tools` も入った** ([25](25-CLI-TOOLS.md)):
+
+- 融合ヘッドは logit をどこにも書かないので、Gemma のように
+  `forceLogitsHead: true` で語彙幅を書き出して `Sampler` に棄却再抽選させる
+  手は使えない。代わりに**マスクつきでもう一度畳む**
+  (`qwen_lm_head_greedy_int8_rows_chunk_masked` / `encodeMaskedRescore`)。
+  常の手はマスクを 1 bit も読まず、**拒まれたトークン 1 個につきヘッドを
+  もう 1 回** — 実測 4.086 ms で、素の 4.084 ms と差が測れない
+- `--tools` / `--tool-choice` / `--parallel-tool-calls`。宣言は
+  `--messages-file` だけに付き、Gemma の install には**断る**
+- 検査は `--qwen` に 6 本 (負例 2)、実物に当てる **`--qwen-constrain` が
+  9 本** (負例 1)。後者は文法ではなく**スタブ制約**を当てる — 文法の判定は
+  モデルが書くテキストの性質なので、1 回も棄却しない run は棄却経路について
+  何も言わない
+- 実物は宣言したツールを呼んだ。**素の argmax がすでに整形式だった検体では
+  文法が 1 回も効かなかった** (`--tool-choice none` と `required` が同じ 27
+  トークンを出した)。外した検体では**停止トークンが 1 回だけ拒まれ**、
+  モデルは自分で辻褄を合わせてから呼び出しを書いた
+
+**残っているもの:** サーバー結線 (Phase 8)、
+入れ子 JSON の往復 2 件 ([23 §5-2](23-PHASE5-TOOLS.md))、
+実物が並列で呼び出しを書くかどうか。
 
 ## Phase 6 — 計測と運用点
 
@@ -300,6 +320,11 @@ Qwen 固有の行を足すかは、そこで別途判断する。
    `QwenForwardRunner` は直列 (1 層 = コマンドバッファ 2 本)、`RealForwardRunner` は無変更。
    `RecurrentStateManager` (62.8 MiB、文脈長に依らない) と `LayerKind.linear` が入り、
    `ExpertCacheBudget` は再帰層に K/V を数えなくなった
+23. ~~CLI の `--tools`~~ → **完了。実物が呼び出しを書いた** ([25](25-CLI-TOOLS.md))。
+   融合ヘッドのまま文法をかけるために **マスクつきの再畳み込み**を足した
+   (`qwen_lm_head_greedy_int8_rows_chunk_masked`)。`--qwen` は **63 本**、
+   実物に当てる `--qwen-constrain` が **9 本**、`swift test` は **1,338 件**。
+   **Phase 5 の箇条書きはこれで全部片づいた**
 
 **次にやること:**
 
@@ -322,6 +347,10 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 [24](24-PREFILL-MOE-PATH.md))。
 **ツール呼び出しを実物の語彙で見るのは `--qwen-tools <path>`**
 ([23](23-PHASE5-TOOLS.md); fixture 不要)。
+**制約つき貪欲の棄却経路を実物に当てるのは `--qwen-constrain <path>`**
+([25](25-CLI-TOOLS.md); `--qwen-constrain-new N`)。
+**CLI からツールを宣言するのは `--tools <path>` と `--tool-choice`**
+([25 §3](25-CLI-TOOLS.md); 例は `scratch/qwen35/tools.json`)。
 **トークナイザを上流と突き合わせるのは `--qwen-tokenizer <path>`**
 ([22](22-PHASE5-TOKENIZER.md); `--qwen-tokenizer-fixture`)。その fixture は
 `Scripts/qwen35/tokenizer_fixture.py` が上流を 1 度回して作る
@@ -339,9 +368,12 @@ repack 済みモデルは `scratch/ornith-oq4e-g64.gturbo`、repack の入力は
 
 - ~~**tokenizer は確実に弾かれる**~~ → 片づいた ([22 §1](22-PHASE5-TOKENIZER.md))。
   弾いていたのは **Gemma のローダ**で、それは正しい。Ornith は `QwenTokenizer` が開く
-- **ツール呼び出しは文法とパーサまで** ([23](23-PHASE5-TOOLS.md))。
-  **サーバーも CLI もまだ呼んでいない** — `QwenChatGrammarBuilder` に
-  呼び出し側が無い。サーバー (Phase 8) と vision (Phase 9) は手つかず
+- **ツール呼び出しは CLI までは通った** ([25](25-CLI-TOOLS.md))。
+  **サーバーはまだ呼んでいない** — `QwenChatGrammarBuilder` に呼び出し側が
+  無く、`ServerInference` / `ChatRequestParser` / `ServerGenerationPlan` は
+  Gemma の型を通っている。サーバー (Phase 8) と vision (Phase 9) は手つかず
+- **Ornith の経路は貪欲のまま。**マスクつき argmax は分布を作らないので、
+  温度を入れるには語彙幅の logit ヘッドが要る ([25 §1](25-CLI-TOOLS.md))
 - 運用点 (スロット数・チャンク幅) は Gemma 4 の値のままで、Ornith 用には何も測っていない
 - **参照器では bf16 との差は測れない** ([14 §7](14-REFERENCE.md))
 - **パッケージテストは `--no-parallel` で回す。**素の `swift test` は remote install 系が

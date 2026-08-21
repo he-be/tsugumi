@@ -31,6 +31,7 @@ public final class QwenLMHeadChainInt8 {
 
     private let rms: RMSNorm
     private let rowGreedy: MTLComputePipelineState
+    private let rowMasked: MTLComputePipelineState
     private let rowReduce: MTLComputePipelineState
     private let xNormedBuffer: MTLBuffer
     private let summariesBuffer: MTLBuffer
@@ -60,6 +61,7 @@ public final class QwenLMHeadChainInt8 {
             return try context.device.makeComputePipelineState(function: function)
         }
         self.rowGreedy = try pipeline("qwen_lm_head_greedy_int8_rows_chunk_raw")
+        self.rowMasked = try pipeline("qwen_lm_head_greedy_int8_rows_chunk_masked")
         self.rowReduce = try pipeline("qwen_lm_head_greedy_int8_rows_reduce")
 
         let rowGroups = (maxVocab + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup
@@ -93,6 +95,86 @@ public final class QwenLMHeadChainInt8 {
     /// How many summary slots `vocab` rows fill.
     public func rowGroupCount(vocab: Int) -> Int {
         (vocab + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup
+    }
+
+    /// Words a `vocab`-wide allow mask occupies, one bit per token id.
+    public static func maskWordCount(vocab: Int) -> Int {
+        (vocab + 31) / 32
+    }
+
+    /// Score again over the allowed rows only, and hand back the argmax among
+    /// them.
+    ///
+    /// This is GEN-7's rejection path for a head that never writes the logits
+    /// (`docs/qwen35moe/25-CLI-TOOLS.md` §2). The caller has already run
+    /// `encodeGreedyDecode` for this hidden row and had the token it produced
+    /// refused by a constraint; what is missing is not a number the host could
+    /// compute from what is on the GPU — the logits were never materialized —
+    /// so the table is read a second time with the rejected rows switched off.
+    ///
+    /// **The normalization is not repeated.** `xNormedBuffer` still holds the
+    /// row `encodeGreedyDecode` normalized, and re-deriving it would be the one
+    /// way for the two passes to disagree about the same token.
+    ///
+    /// `allowedBits` is one bit per token id, lowest id in the lowest bit of
+    /// word 0, at least `maskWordCount(vocab:)` words long. A mask with every
+    /// bit set produces the same token as `encodeGreedyDecode` did, bit for
+    /// bit: both passes run the same row function in the same order.
+    @discardableResult
+    public func encodeMaskedRescore(commandBuffer: MTLCommandBuffer,
+                                    weights: MTLBuffer, weightsOffset: Int = 0,
+                                    scales: MTLBuffer, scalesOffset: Int = 0,
+                                    biases: MTLBuffer, biasesOffset: Int = 0,
+                                    allowedBits: MTLBuffer, allowedBitsOffset: Int = 0,
+                                    outToken: MTLBuffer, outTokenOffset: Int = 0,
+                                    d: UInt32,
+                                    vocab: UInt32) -> Bool {
+        guard d > 0, vocab > 0,
+              Int(d) <= maxD, Int(vocab) <= maxVocab,
+              Int(d) % affineGroupSize == 0,
+              d % 64 == 0,
+              allowedBitsOffset >= 0, allowedBitsOffset % 4 == 0,
+              allowedBits.length - allowedBitsOffset
+                  >= Self.maskWordCount(vocab: Int(vocab)) * MemoryLayout<UInt32>.size,
+              outTokenOffset >= 0, outTokenOffset % 4 == 0 else { return false }
+
+        let rowGroups = rowGroupCount(vocab: Int(vocab))
+        guard let head = commandBuffer.makeComputeCommandEncoder() else { return false }
+        head.setComputePipelineState(rowMasked)
+        head.setBuffer(xNormedBuffer, offset: 0, index: 0)
+        head.setBuffer(weights, offset: weightsOffset, index: 1)
+        head.setBuffer(scales, offset: scalesOffset, index: 2)
+        head.setBuffer(biases, offset: biasesOffset, index: 3)
+        head.setBuffer(summariesBuffer, offset: 0, index: 4)
+        var dValue = d
+        var vocabValue = vocab
+        head.setBytes(&dValue, length: MemoryLayout<UInt32>.size, index: 5)
+        head.setBytes(&vocabValue, length: MemoryLayout<UInt32>.size, index: 6)
+        head.setBuffer(allowedBits, offset: allowedBitsOffset, index: 7)
+        head.dispatchThreadgroups(
+            MTLSize(width: rowGroups, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 32 * Self.rowsPerThreadgroup,
+                                           height: 1, depth: 1))
+        head.endEncoding()
+
+        encodeReduce(commandBuffer: commandBuffer, rowGroups: rowGroups,
+                     outToken: outToken, outTokenOffset: outTokenOffset)
+        return true
+    }
+
+    /// Fold the per-threadgroup argmaxes into one token id.
+    private func encodeReduce(commandBuffer: MTLCommandBuffer,
+                              rowGroups: Int,
+                              outToken: MTLBuffer, outTokenOffset: Int) {
+        guard let reduce = commandBuffer.makeComputeCommandEncoder() else { return }
+        reduce.setComputePipelineState(rowReduce)
+        reduce.setBuffer(summariesBuffer, offset: 0, index: 0)
+        reduce.setBuffer(outToken, offset: outTokenOffset, index: 1)
+        var rowGroupValue = UInt32(rowGroups)
+        reduce.setBytes(&rowGroupValue, length: MemoryLayout<UInt32>.size, index: 2)
+        let width = MTLSize(width: 256, height: 1, depth: 1)
+        reduce.dispatchThreads(width, threadsPerThreadgroup: width)
+        reduce.endEncoding()
     }
 
     /// One hidden row in, one token id out at `outTokenOffset`.
@@ -143,15 +225,8 @@ public final class QwenLMHeadChainInt8 {
                                            height: 1, depth: 1))
         head.endEncoding()
 
-        guard let reduce = commandBuffer.makeComputeCommandEncoder() else { return false }
-        reduce.setComputePipelineState(rowReduce)
-        reduce.setBuffer(summariesBuffer, offset: 0, index: 0)
-        reduce.setBuffer(outToken, offset: outTokenOffset, index: 1)
-        var rowGroupValue = UInt32(rowGroups)
-        reduce.setBytes(&rowGroupValue, length: MemoryLayout<UInt32>.size, index: 2)
-        let width = MTLSize(width: 256, height: 1, depth: 1)
-        reduce.dispatchThreads(width, threadsPerThreadgroup: width)
-        reduce.endEncoding()
+        encodeReduce(commandBuffer: commandBuffer, rowGroups: rowGroups,
+                     outToken: outToken, outTokenOffset: outTokenOffset)
         return true
     }
 }
