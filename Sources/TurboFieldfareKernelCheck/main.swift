@@ -1498,11 +1498,29 @@ if let index = arguments.firstIndex(of: "--qwen-prefill-bench"), index + 1 < arg
        let value = Int(arguments[i + 1]), value > 0 {
         iterations = value
     }
+    // `--qwen-prefill-bench-moe tiled` is the other routed-expert path
+    // (`docs/qwen35moe/24-PREFILL-MOE-PATH.md`); unset is the one Phase 4
+    // closed on. `TF_QWEN_PREFILL_MOE=tiled` does the same for a whole process.
+    var routedPath = QwenForwardRunner.defaultPrefillRoutedPath
+    if let i = arguments.firstIndex(of: "--qwen-prefill-bench-moe"), i + 1 < arguments.count,
+       let value = QwenForwardRunner.PrefillRoutedPath(rawValue: arguments[i + 1]) {
+        routedPath = value
+    }
+    // Phase 6 の作法のクールダウンをプロセスの中で取る
+    // (`docs/qwen35moe/04-PHASES.md` Phase 6、2026-08-22 のユーザー指定は 4 秒)。
+    // 0 にすると連続で回るので、熱の効きを見る A/B がその 2 通りで取れる。
+    var cooldown = 4.0
+    if let i = arguments.firstIndex(of: "--qwen-prefill-bench-cooldown"), i + 1 < arguments.count,
+       let value = Double(arguments[i + 1]), value >= 0 {
+        cooldown = value
+    }
     exit(try runQwenPrefillBench(modelPath: arguments[index + 1],
                                  tokens: tokens,
                                  chunk: chunk,
                                  slotCount: slots,
-                                 iterations: iterations) ? 0 : 1)
+                                 iterations: iterations,
+                                 routedPath: routedPath,
+                                 cooldownSeconds: cooldown) ? 0 : 1)
 }
 
 // `--qwen` runs the rest of the Qwen3.5-MoE kernels (QwenKernelCheck.swift):

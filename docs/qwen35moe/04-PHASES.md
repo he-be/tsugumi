@@ -11,9 +11,9 @@
 | Phase 1 変換 | **完了** ([13](13-PHASE1-REPACK.md))。`oQ4e-g64-baked` を repack し `--verify-install` が緑。20.49 GB / `expertStride 1,769,472` / 上流とバイト一致 |
 | Phase 2 カーネル | **完了。**`qwen_delta_rule` ([15](15-PHASE2-GDN.md)、prefill 30 層 **125.7 ms**)、周辺 7 本 ([17](17-PHASE2-KERNELS.md))、**INT8 の LM head chain** ([19](19-LM-HEAD-INT8.md)、1 トークン 4.0 ms / 134 GB/s)。`--qwen` の検査は **39 本すべて緑**、うち 10 本は負例 |
 | Phase 3 decode 結線 | **完了** ([20](20-PHASE3-DECODE.md) / [21 §1](21-PHASE4-PREFILL.md))。`QwenForwardRunner` / `RecurrentStateManager` / `LayerKind.linear` が入り、**参照の生成 55 本すべてと一致**。負例 5 本も落ちる。64 本に届かないのは**モデルが `<\|im_end\|>` を出して止まった**ため — その生成に 56 本目は無い |
-| Phase 4 prefill | **一致の条件が通った** ([21](21-PHASE4-PREFILL.md))。`QwenPrefill.swift` と **INT8 の QMM**が入り、**チャンク経由でも 55 本すべてが一致** (幅 512 と 8 の 2 通り)。時間の条件は #16 と一緒 |
+| Phase 4 prefill | **一致の条件が通った** ([21](21-PHASE4-PREFILL.md))。`QwenPrefill.swift` と **INT8 の QMM**が入り、**チャンク経由でも 55 本すべてが一致** (幅 512 と 8 の 2 通り)。**routed expert のタイル版も通り、同じ 55 本を出した** ([24](24-PREFILL-MOE-PATH.md))。時間の条件は #16 と一緒 |
 | Phase 5 tokenizer/CLI | **完了** ([22](22-PHASE5-TOKENIZER.md) / [23](23-PHASE5-TOOLS.md))。`QwenTokenizer` (ByteLevel) と上流 jinja が入り、**CLI が日本語と英語で答える** (`--qwen-tokenizer` 223 本)。**XML 形のツール呼び出しと GBNF も入った** — `--qwen-tools` が 36 本、うち 6 本は負例。中心は**テンプレートが描いた呼び出しを文法が受理しパーサが同じ引数に戻す**こと。残るのはサーバー結線 (Phase 8) と CLI の `--tools` |
-| Phase 6 以降 | 計測はこれから。エキスパート計数の phase stamp は入った ([22 §6](22-PHASE5-TOKENIZER.md)) |
+| Phase 6 以降 | 計測はこれから。エキスパート計数の phase stamp は入った ([22 §6](22-PHASE5-TOKENIZER.md))。**bench に内訳 3 列 (GPU / 取得 / ホスト) とプロセス内クールダウンが入った** ([24 §4-1](24-PREFILL-MOE-PATH.md)) |
 
 ---
 
@@ -109,6 +109,13 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 締め方の判断 (#16) と同じ話で、そこはユーザー判断のまま。合成入力での prefill 全体は
 **チャンク 2048 で 5.5 ms/トークン** ([21 §5](21-PHASE4-PREFILL.md)、**運用値ではない**)。
 
+**routed expert の 2 つの経路を A/B した** ([24](24-PREFILL-MOE-PATH.md))。
+`prefillRoutedPath` で per-pair GEMV とタイル版を選べるようになり、
+**タイル版が 4 通りとも速い** (GPU 時間で −22〜40%)。**既定は `.perPair` のまま** —
+切り替えの判断はユーザー。同じ測定で [21 §5](21-PHASE4-PREFILL.md) の
+**説明の付いていなかった行も片づき、あの表は 1 行訂正された**
+(クールダウン無しの GPU クロック低下。2048/512 は 17.80 ではなく **9.43 ms**)。
+
 **TB の 3 通りは合成入力で済んだ: TB=32 が最良** (125.7 / 128.4 / 144.8 ms、
 [15 §4](15-PHASE2-GDN.md))。実物の活性での再測は Phase 6。
 
@@ -162,7 +169,9 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 
 ## Phase 6 — 計測と運用点
 
-`bench.sh` の作法をそのまま踏襲する。**temp 1.0 のまま、クールダウンは 4 秒**
+`bench.sh` の作法をそのまま踏襲する。**クールダウンは飾りではない** —
+空けずに回すと GPU 時間が 2.6 倍になる条件が実在する
+([24 §4-2](24-PREFILL-MOE-PATH.md))。**temp 1.0 のまま、クールダウンは 4 秒**
 (`COOLDOWN=4`。2026-08-22 のユーザー指定。Gemma 側の既定 20 秒・採点 10 秒とは
 別の値で、この Phase にだけかかる)。GPU は 1 個だけ。熱ドリフトの検定
 (先頭と末尾で base を 2 回、`|head/tail| > 5%` の run は捨てる) は**残す** —
@@ -272,6 +281,15 @@ Qwen 固有の行を足すかは、そこで別途判断する。
    `QwenToolCallGrammar` / `QwenChatGrammarBuilder` と、`GrammarVocabulary` の
    ByteLevel 入口。`--qwen-tools` は 36 本 (負例 6)、`swift test` は 1,329 件。
    [22 §4-2](22-PHASE5-TOKENIZER.md) の「キー順は不定」は**訂正した**
+20. ~~routed expert のタイル版を prefill に通す~~ → **完了。同じ 55 本が出て、
+   4 通りとも速かった** ([24](24-PREFILL-MOE-PATH.md))。`prefillRoutedPath` の
+   分岐 1 か所で、`PrefillGroupedRoutedMoE` も `RealForwardRunner` も無改造。
+   **[05 §1-2](05-RISKS.md) の占有率は実在した**が、per-pair に留まる理由には
+   ならなかった。**既定は `.perPair` のまま** (#25)
+21. ~~2048 トークン / チャンク 512 の逆転~~ → **完了。GPU 時間で、4 秒空けると
+   消える** ([24 §4](24-PREFILL-MOE-PATH.md))。bench に GPU / 取得 / ホストの
+   3 列とプロセス内クールダウンを足して割った。**[21 §5](21-PHASE4-PREFILL.md)
+   の表は 1 行訂正した**
 14. ~~Phase 3 の結線~~ → **完了。decode が参照と一致した** ([20](20-PHASE3-DECODE.md))。
    `QwenForwardRunner` は直列 (1 層 = コマンドバッファ 2 本)、`RealForwardRunner` は無変更。
    `RecurrentStateManager` (62.8 MiB、文脈長に依らない) と `LayerKind.linear` が入り、
@@ -281,9 +299,8 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 
 | # | やること | 要るもの |
 | --- | --- | --- |
+| 25 | **prefill の routed expert の既定をどちらにするか** ([24 §3](24-PREFILL-MOE-PATH.md))。タイル版が 4 通りとも速い (GPU 時間で −22〜40%) が、**既定は `.perPair` のまま**にしてある | ユーザー判断 |
 | 16 | **線形注意 30 層の締め方の判断** ([17 §4-2](17-PHASE2-KERNELS.md))。周辺まで数えると 159.4 ms で Phase 4 の出口条件を外れる。再帰カーネル単体は 125.7 ms で [05 §2](05-RISKS.md) #2 の内側。**prefill が通ったので、実物の壁時計も出せるようになった** ([21 §5](21-PHASE4-PREFILL.md)) | ユーザー判断 |
-| 20 | **routed expert のタイル版を prefill に通す** ([21 §3-2](21-PHASE4-PREFILL.md))。いま通しているのは per-pair GEMV の方で、[05 §1-2](05-RISKS.md) の占有率の話はまだ始まっていない | GPU |
-| 21 | **2048 トークン / チャンク 512 の逆転**を説明する ([21 §5](21-PHASE4-PREFILL.md))。他の 3 行と違い 1 回目より 2・3 回目が遅い | GPU |
 | 8 | `in_proj_a` の実活性再測を 200 トークン級の `--dump` でやり直す ([16 §2](16-QUALITY.md))。**本線は 8-bit なので、これは本線を止めない** | CPU |
 | 10 | fixtures を Phase 3 が要る層だけに絞る ([14 §5](14-REFERENCE.md))。**2048 トークン後の状態は 15 が合成入力で見たので、fixtures 側の宿題ではなくなった** | CPU |
 
@@ -295,7 +312,9 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 **実物を走らせて参照と突き合わせるのは `--qwen-decode <path>`** ([20](20-PHASE3-DECODE.md);
 `--qwen-decode-fixture` / `--qwen-decode-new` / `--qwen-decode-fault-tokens`)、
 **プロンプトを T 行の経路に通すのは `--qwen-prefill <path>`**
-([21](21-PHASE4-PREFILL.md); `--qwen-prefill-chunks`)。時間は `--qwen-prefill-bench`。
+([21](21-PHASE4-PREFILL.md); `--qwen-prefill-chunks`)。時間は `--qwen-prefill-bench`
+(`--qwen-prefill-bench-moe per-pair|tiled` / `--qwen-prefill-bench-cooldown <秒>`、
+[24](24-PREFILL-MOE-PATH.md))。
 **ツール呼び出しを実物の語彙で見るのは `--qwen-tools <path>`**
 ([23](23-PHASE5-TOOLS.md); fixture 不要)。
 **トークナイザを上流と突き合わせるのは `--qwen-tokenizer <path>`**

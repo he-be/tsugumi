@@ -46,6 +46,12 @@ KV リングと prefill スクラッチが増える (Ornith は SWA リングが
 scratch と full 層の KV だけ = **導出で 4096 幅なら +84 MB**)。
 **これも候補追加の提案に留める。**
 
+**測った** ([24 §3-1](24-PREFILL-MOE-PATH.md))。半端ブロックの費用は**実在する** —
+per-pair GEMV の GPU 時間は 2048 トークンをどう割っても 8.3 秒で動かないのに、
+タイル版だけがチャンク幅で 6.6 → 5.0 秒と動く。しかし**一番埋まらないチャンク 512
+でもタイル版が 22% 速く**、既定の 2048 では 40% 速い。**per-pair に留まる理由には
+ならなかった。**(既定は依然 `.perPair`。切り替えの判断はユーザー。)
+
 ### 1-3. 読み出しの本数が増える
 
 decode 1 トークンあたりの routed expert fetch は `numLayers × topK`:
@@ -78,7 +84,7 @@ decode 1 トークンあたりの routed expert fetch は `numLayers × topK`:
 | 1 | 4-bit RTN の品質が足りない | Phase 0 #4 の KL / top-1 一致率 | attention と `in_proj_*` を int8 へ (+580 MB)。それでも駄目なら routed expert のみ int4、残り全部 int8 (+1.2 GB)。imatrix つきの oQ4e-g64 を本線にする手もある ([02 §1](02-CHECKPOINTS.md)) |
 | 2 | `qwen_delta_rule` 逐次形が遅い | Phase 4 の 30 層合計 | **150 ms 超で再設計。**ただし chunkwise は FLOP 2 倍 (omlx の結論) で逃げ道として薄い — 先に TB / Dv の切り方を振る ([03 §2-6](03-DESIGN.md))。**現状: カーネル単体 125.7 ms で内側、周辺 (`prepare` + `norm_gate` + `gates`) を足すと 159.4 ms で外側** ([17 §4-2](17-PHASE2-KERNELS.md))。どちらで締めるかは未決 |
 | 3 | 32 スロットでヒット率が落ちすぎる | Phase 6 #1 のオフライン再計算 | 候補スロット追加をユーザーに提案。それが通らないなら **decode の I/O 律速を受け入れて数字を出す** |
-| 4 | prefill の半端ブロックで TTFT が悪化 | Phase 6 #3 | チャンク 4096 の候補追加。または `PrefillMoEGrouping.tileExpertCount` (現在 16) の見直し |
+| 4 | prefill の半端ブロックで TTFT が悪化 | Phase 6 #3 | チャンク 4096 の候補追加。または `PrefillMoEGrouping.tileExpertCount` (現在 16) の見直し。**§1-2 で測った**: 費用は実在するがタイル版が 4 通りとも速い ([24 §3](24-PREFILL-MOE-PATH.md)) |
 | 5 | 状態スナップショットで 18 GB を食い潰す | Phase 7 / 8 の `peak` | slot 数を絞る。サーバーは起動時に断る (既存の作法) |
 | 6 | `numExperts <= 256` の precondition に余裕が無い | — | 今回は一致するので通る。**将来 512 エキスパートのモデルを載せる余地は無い**と明記しておく |
 | 7 | Gemma 側の実測値が動く | `Scripts/test.sh` と `bench.sh` | **`RealForwardRunner` を触らない**方針 ([03 §3-2](03-DESIGN.md)) を守る。触ったら Gemma のベンチを取り直す |

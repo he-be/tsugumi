@@ -30,12 +30,13 @@ import Metal
 /// | routed experts | `prefill_grouped_routed_moe_batched_*`, SiLU by function constant |
 /// | shared expert | INT8 QMMs + `qwen_silu_mul` + `qwen_moe_shared_gate_logit_block` (new) |
 ///
-/// The routed experts take the **per-pair GEMV** path rather than the tiled
-/// `prefill_moe_gemm_int4`: it has no alignment preconditions and no batch
-/// planner, so the first prefill that runs is the one with the fewest moving
-/// parts between the router and the answer. Which path is faster is
-/// `docs/qwen35moe/05-RISKS.md` §1-2's question and needs a measurement, not a
-/// guess.
+/// The routed experts have **two** paths, picked by `prefillRoutedPath`: the
+/// per-pair GEMVs Phase 4 wired (no alignment precondition, no batch planner,
+/// so the first prefill that ran was the one with the fewest moving parts
+/// between the router and the answer) and the tiled `prefill_moe_gemm_int4`.
+/// Which one is faster is `docs/qwen35moe/05-RISKS.md` §1-2's question, and it
+/// needed a measurement rather than a guess
+/// (`docs/qwen35moe/24-PREFILL-MOE-PATH.md`).
 
 /// Everything a chunk of width `width` needs, allocated once.
 ///
@@ -81,7 +82,7 @@ final class QwenPrefillContext {
     let routerIndices: MTLBuffer   // [T, topK] UInt32
     let routerWeights: MTLBuffer   // [T, topK] FP16
     let routePartials: MTLBuffer   // [T*topK, D] FP16
-    let gateUpAct: MTLBuffer       // [3, microbatch, F] FP16
+    let gateUpAct: MTLBuffer       // [3, max(microbatch, gemmBatchRows), F] FP16
     let downScratch: MTLBuffer     // [microbatch, D] FP16
     /// The conv window the chunk hands to the next chunk.
     ///
@@ -98,6 +99,17 @@ final class QwenPrefillContext {
     /// it writes is `3 * rows * F` halves, so this is a memory knob, not a
     /// correctness one.
     static let pairMicrobatchRows = 32
+
+    /// The most rows one `encodeStreamedTiled` batch may describe, before the
+    /// chunk's own pair count caps it. Gemma's prefill layout uses the same
+    /// 2048 (`PrefillChunkScratch`), and the planner rounds down to the 64-row
+    /// tile anyway.
+    static let gemmBatchRowCap = 2048
+
+    /// Rows a tiled batch actually gets, given this chunk's width. A chunk of
+    /// `width` tokens produces at most `width * topK` pairs, so a wider budget
+    /// than that would only make `gateUpAct` bigger.
+    let gemmBatchRows: Int
 
     init(device: MTLDevice,
          context: MetalContext,
@@ -137,6 +149,14 @@ final class QwenPrefillContext {
         let topK = cfg.topKExperts
         let fullWidth = cfg.numHeads * cfg.fullHeadDim
         let rows = Self.pairMicrobatchRows
+        // Sized for both routed paths at once, not for the one this run picks:
+        // `prefillRoutedPath` is settable between runs (the A/B in
+        // `docs/qwen35moe/24-PREFILL-MOE-PATH.md`) and the scratch is cached by
+        // width, so a buffer sized for the path in force at allocation time
+        // would be a stale-scratch bug the first time the A/B flipped.
+        self.gemmBatchRows = max(64, min(Self.gemmBatchRowCap,
+                                         ((width * topK + 63) / 64) * 64))
+        let actRows = max(rows, gemmBatchRows)
 
         self.tokenIDs = try buffer(width, MemoryLayout<UInt32>.size, label: "tokenIDs")
         self.hidden = try buffer(width * d, label: "hidden")
@@ -164,7 +184,7 @@ final class QwenPrefillContext {
         self.routerIndices = try buffer(width * topK, MemoryLayout<UInt32>.size, label: "routerIndices")
         self.routerWeights = try buffer(width * topK, label: "routerWeights")
         self.routePartials = try buffer(width * topK * d, label: "routePartials")
-        self.gateUpAct = try buffer(3 * rows * f, label: "gateUpAct")
+        self.gateUpAct = try buffer(3 * actRows * f, label: "gateUpAct")
         self.downScratch = try buffer(rows * d, label: "downScratch")
         self.convStateOut = try buffer((QwenKernels.convKernel - 1) * qkvWidth,
                                        label: "convStateOut")
@@ -598,6 +618,14 @@ extension QwenForwardRunner {
     /// the next tile's fetch may be given the same ones; overlapping them is
     /// what `RealForwardRunner` uses `avoidingSlots` and a slot lifetime for.
     /// A serial loop needs neither, and pays for that in wall time.
+    ///
+    /// Which kernels a tile runs on is `prefillRoutedPath`: the per-pair GEMVs
+    /// this phase was wired with, or the 64-row tiled GEMM
+    /// (`docs/qwen35moe/05-RISKS.md` §1-2 is the question those two answer
+    /// differently). Everything either path reads and writes is the same —
+    /// same sorted pairs, same argument buffer, same `routePartials`, written
+    /// once per pair — so the reduction below and the fetch above do not know
+    /// which one ran.
     private func encodePrefillRoutedExperts(layer L: Int,
                                             tokens T: Int,
                                             routes: PrefillMoEGroupedRoutes,
@@ -632,16 +660,48 @@ extension QwenForwardRunner {
             if let set = model.routedExpertResidencySet(layer: L) {
                 cb.useResidencySet(set)
             }
-            _ = s.routedMoE.encodeStreamedBatched(commandBuffer: cb,
-                                                  hidden: s.normed,
-                                                  sortedPairs: metadata.sortedPairs,
-                                                  routePartials: s.routePartials,
-                                                  gateUpActScratch: s.gateUpAct,
-                                                  downScratch: s.downScratch,
-                                                  argumentBuffer: argumentBuffer,
-                                                  binding: binding,
-                                                  params: params,
-                                                  pairMicrobatchRows: QwenPrefillContext.pairMicrobatchRows)
+            switch prefillRoutedPath {
+            case .perPair:
+                _ = s.routedMoE.encodeStreamedBatched(commandBuffer: cb,
+                                                      hidden: s.normed,
+                                                      sortedPairs: metadata.sortedPairs,
+                                                      routePartials: s.routePartials,
+                                                      gateUpActScratch: s.gateUpAct,
+                                                      downScratch: s.downScratch,
+                                                      argumentBuffer: argumentBuffer,
+                                                      binding: binding,
+                                                      params: params,
+                                                      pairMicrobatchRows: QwenPrefillContext.pairMicrobatchRows)
+            case .tiled:
+                // No silent fallback. A run asked for this path so that its
+                // wall clock could be compared with the other one's; quietly
+                // giving it the other path would make the comparison a lie.
+                guard s.routedMoE.usesExpertGEMMPath(d: hiddenSize,
+                                                     f: cfg.moeIntermediateSize) else {
+                    throw QwenRunnerError.commandBufferFailed(
+                        "prefill layer \(L) tile \(index): the tiled routed path is not "
+                        + "available for D=\(hiddenSize) F=\(cfg.moeIntermediateSize) "
+                        + "(TF_PREFILL_MOE=scalar turns its pipelines off)")
+                }
+                let start = Int(tile.groupStart)
+                let groups = Array(routes.groups[start..<(start + Int(tile.groupCount))])
+                let batches = s.routedMoE.encodeStreamedTiled(
+                    commandBuffer: cb,
+                    hidden: s.normed,
+                    sortedPairs: metadata.sortedPairs,
+                    routePartials: s.routePartials,
+                    gateUpActScratch: s.gateUpAct,
+                    argumentBuffer: argumentBuffer,
+                    binding: binding,
+                    groups: groups,
+                    params: params,
+                    maxRowsPerBatch: s.gemmBatchRows)
+                guard batches > 0 else {
+                    throw QwenRunnerError.commandBufferFailed(
+                        "prefill layer \(L) tile \(index): the tiled routed path encoded "
+                        + "nothing for \(groups.count) groups / \(tile.pairCount) pairs")
+                }
+            }
             try wait(cb, "prefill layer \(L) tile \(index)")
         }
 

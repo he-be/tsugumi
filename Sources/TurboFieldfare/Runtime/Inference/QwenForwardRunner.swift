@@ -212,6 +212,52 @@ public final class QwenForwardRunner {
 
     var prefillScratch: QwenPrefillContext?
 
+    /// GPU time, as the driver reports it, summed over every command buffer
+    /// this runner has waited on since `resetProfile`.
+    ///
+    /// Both paths in this file are strictly serial — commit, wait, encode the
+    /// next — so the intervals cannot overlap and the sum is a duration rather
+    /// than an area. That is the whole reason it is worth having: subtract it
+    /// and the expert fetch from the wall clock and what is left is host time,
+    /// which is the three-way split `docs/qwen35moe/24-PREFILL-MOE-PATH.md` §4
+    /// needs to say *which* of the three grew.
+    public private(set) var gpuSeconds: Double = 0
+    public private(set) var gpuCommandBuffers: Int = 0
+
+    public func resetProfile() {
+        gpuSeconds = 0
+        gpuCommandBuffers = 0
+    }
+
+    /// Which kernels a prefill chunk's routed experts run on.
+    ///
+    /// Phase 4 wired the per-pair GEMVs because they have no alignment
+    /// precondition and no batch planner, which made the first prefill the one
+    /// with the fewest moving parts between the router and the answer
+    /// (`QwenPrefill.swift`). The tiled GEMM is the other candidate, and
+    /// `docs/qwen35moe/05-RISKS.md` §1-2 — a chunk of 2048 fills a 64-row
+    /// block only about once per expert here, where Gemma filled it twice — is
+    /// a question about it that no amount of reading settles. Both paths write
+    /// `routePartials` once per pair, so this changes the wall clock and
+    /// nothing else; `--qwen-prefill` runs the fixture through both.
+    ///
+    /// Settable between runs, and read at encode time rather than at scratch
+    /// allocation, so one process can time both.
+    public var prefillRoutedPath: PrefillRoutedPath = QwenForwardRunner.defaultPrefillRoutedPath
+
+    public enum PrefillRoutedPath: String, Sendable, CaseIterable {
+        /// `prefill_grouped_routed_moe_batched_*` — one GEMV per (pair, row).
+        case perPair = "per-pair"
+        /// `prefill_moe_gemm_int4` — one 64x64 GEMM tile per expert row block.
+        case tiled = "tiled"
+    }
+
+    /// `TF_QWEN_PREFILL_MOE=tiled` picks the tiled path for a whole process,
+    /// which is how the bench takes the two columns without a rebuild. Unset,
+    /// or anything else, is the path Phase 4 closed on.
+    public static let defaultPrefillRoutedPath: PrefillRoutedPath =
+        ProcessInfo.processInfo.environment["TF_QWEN_PREFILL_MOE"] == "tiled" ? .tiled : .perPair
+
     // MARK: - Init
 
     public init(model: Model,
@@ -847,6 +893,8 @@ public final class QwenForwardRunner {
         if let error = cb.error {
             throw QwenRunnerError.commandBufferFailed("\(label): \(error)")
         }
+        gpuSeconds += cb.gpuEndTime - cb.gpuStartTime
+        gpuCommandBuffers += 1
     }
 
     func runSync(_ label: String, _ body: (MTLCommandBuffer) -> Void) throws {

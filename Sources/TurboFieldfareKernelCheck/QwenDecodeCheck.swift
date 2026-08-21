@@ -100,7 +100,10 @@ private func runOnce(runner: QwenForwardRunner,
                      fixture: QwenDecodeFixture,
                      wanted: Int,
                      verbose: Bool,
-                     prefillChunk: Int? = nil) throws -> (tokens: [Int32], firstMismatch: Int?) {
+                     prefillChunk: Int? = nil,
+                     routedPath: QwenForwardRunner.PrefillRoutedPath = .perPair)
+    throws -> (tokens: [Int32], firstMismatch: Int?) {
+    runner.prefillRoutedPath = routedPath
     runner.reset()
     var firstMismatch: Int?
     var lastTokenEnd = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
@@ -218,6 +221,28 @@ func runQwenDecodeCheck(modelPath: String,
         }
     }
 
+    // The routed experts have two kernel families and Phase 4 only ever ran
+    // one of them (`QwenForwardRunner.prefillRoutedPath`). They read the same
+    // sorted pairs and write the same `routePartials`, so a disagreement here
+    // is a bug in one of them and not a property of the prompt.
+    if !prefillChunks.isEmpty {
+        for path in QwenForwardRunner.PrefillRoutedPath.allCases where path != .perPair {
+            let again = try runOnce(runner: runner, fixture: fixture, wanted: wanted,
+                                    verbose: false, prefillChunk: prefillChunks.first,
+                                    routedPath: path)
+            if again.tokens.count == wanted, again.firstMismatch == nil {
+                print("PASS  routed experts on the \(path.rawValue) path — "
+                      + "the same \(wanted) tokens")
+            } else {
+                let step = again.firstMismatch.map(String.init) ?? "-"
+                print("FAIL  routed experts on the \(path.rawValue) path "
+                      + "diverged at step \(step)")
+                passed = false
+            }
+        }
+        runner.prefillRoutedPath = .perPair
+    }
+
     guard runFaults else { return passed }
 
     print("")
@@ -262,13 +287,17 @@ func runQwenPrefillBench(modelPath: String,
                          tokens: Int,
                          chunk: Int,
                          slotCount: Int,
-                         iterations: Int) throws -> Bool {
+                         iterations: Int,
+                         routedPath: QwenForwardRunner.PrefillRoutedPath,
+                         cooldownSeconds: Double) throws -> Bool {
     guard let device = MTLCreateSystemDefaultDevice() else {
         throw QwenDecodeError.noMetalDevice
     }
     print("=== qwen3_5_moe prefill の時間 (測定、n=\(iterations)) ===")
     print("  model    \(modelPath)")
     print("  合成プロンプト \(tokens) トークン / チャンク \(chunk) / スロット \(slotCount)")
+    print("  routed expert は \(routedPath.rawValue) の経路")
+    print(String(format: "  クールダウン %.0f 秒 (Phase 6 の作法。0 なら連続)", cooldownSeconds))
 
     let context = try MetalContext()
     var stats = ModelLoadStats()
@@ -279,17 +308,34 @@ func runQwenPrefillBench(modelPath: String,
                                loadStats: &stats)
     let runner = try QwenForwardRunner(model: model, context: context,
                                        maxContext: tokens + 8)
+    runner.prefillRoutedPath = routedPath
     // 語彙に散らした ID。同じ ID を並べると 40 層の router が毎トークン同じ
     // エキスパートを引き、キャッシュのヒット率が本物と懸け離れる。
     let prompt = (0..<tokens).map { Int32(($0 &* 7919) % runner.scoredVocab) }
     print("")
-    print("  回  prefill (ms)   1 トークン (ms)")
+    // エキスパートの取得は pread で、キャッシュに無ければ 1.69 MiB を 1 個読む。
+    // 総時間だけを見ていると、GPU が遅いのか I/O が遅いのかが分からない —
+    // `docs/qwen35moe/21-PHASE4-PREFILL.md` §5 の説明の付いていない行
+    // (2048 トークン / チャンク 512 だけ 2・3 回目が遅い) がまさにそれで、
+    // 内訳の 3 列はその区別のために出す。
+    print("  回  prefill (ms)  1 トークン    GPU (ms)   取得 (ms)   ホスト (ms)"
+          + "  ヒット率   エキスパート  footprint (GB)")
     for iteration in 0..<iterations {
+        if iteration > 0, cooldownSeconds > 0 { Thread.sleep(forTimeInterval: cooldownSeconds) }
         runner.reset()
+        runner.resetProfile()
+        model.telemetry.reset()
         let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
         _ = try runner.prefill(tokens: prompt, chunkWidth: chunk)
         let ms = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6
-        print(String(format: "  %2d %13.0f %16.2f", iteration + 1, ms, ms / Double(tokens)))
+        let counters = model.telemetry.snapshot().prefill
+        let fetchMs = Double(counters.fetchNanos) / 1e6
+        let gpuMs = runner.gpuSeconds * 1e3
+        let footprint = Double(ProcessMemoryFootprint.current().physFootprintBytes) / 1e9
+        print(String(format: "  %2d %13.0f %11.2f %11.0f %11.0f %12.0f %9.1f%% %13d %15.2f",
+                     iteration + 1, ms, ms / Double(tokens), gpuMs, fetchMs,
+                     ms - gpuMs - fetchMs,
+                     100.0 * counters.hitRate, counters.experts, footprint))
     }
     print("")
     print("  1 回目はエキスパートキャッシュが冷たい。**解釈は書かない** (n=\(iterations))")
