@@ -188,6 +188,46 @@ struct ServerGrammarWiringTests {
         #expect(!constraint.mayEndHere)
     }
 
+    /// GEN-14 × GEN-6: the speculative loop adopts a whole block before the
+    /// queue emits any of it, so the suppression that gates the lazy grammar
+    /// has to move on **adoption**, where there are no decoder events yet
+    /// (`ServerThoughtSuppression.observe(tokenID:)`). RSN-6 is what makes that
+    /// possible: this template's channel blocks are thought as a whole, so the
+    /// two boundary tokens carry the whole verdict and the label is never read.
+    ///
+    /// The claim is that the event-free verdict agrees with the event-driven
+    /// one on every token of a thinking turn — otherwise the two decode loops
+    /// would arm the same grammar at different places.
+    @Test("GEN-14/GEN-6: adoption-time suppression agrees with the emitted verdict")
+    func GEN_14_adoption_time_suppression_agrees_with_the_emitted_verdict() throws {
+        let stream: [(Int32, [StructuredAssistantEvent])] = [
+            (tok.channelStartID, []),
+            (tok.toolCallStartID, []),
+            (tok.channelEndID, [.reasoning("…so I will look it up")]),
+            (tok.toolCallStartID, []),
+        ]
+        let adopted = ServerThoughtSuppression(tokenizer: tok)
+        let emitted = ServerThoughtSuppression(tokenizer: tok)
+        for (tokenID, events) in stream {
+            // The speculative loop's order: adopt every token of the block,
+            // then emit them. The plain loop's order is one token at a time.
+            adopted.observe(tokenID: tokenID)
+            adopted.observe(tokenID: tokenID, events: events)
+            emitted.observe(tokenID: tokenID, events: events)
+            #expect(adopted.isSuppressed == emitted.isSuppressed, "\(tokenID)")
+        }
+
+        // And the adoption-only verdict alone is the one that matters inside a
+        // block: it closes the channel on `<channel|>` without the events that
+        // only arrive when the token is emitted.
+        let midBlock = ServerThoughtSuppression(tokenizer: tok)
+        midBlock.observe(tokenID: tok.channelStartID)
+        #expect(midBlock.isSuppressed)
+        midBlock.observe(tokenID: tok.channelEndID)
+        #expect(!midBlock.isSuppressed,
+                "a lazy grammar would sleep through the call right after the close")
+    }
+
     private func singleToken(_ marker: String) -> Int32? {
         guard let id = tok.tokenizer.convertTokenToId(marker),
               tok.tokenizer.convertIdToToken(id) == marker,

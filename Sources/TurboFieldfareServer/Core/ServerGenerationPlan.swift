@@ -8,11 +8,11 @@ import TurboFieldfare
 /// G4c that is a decision lives here instead of inside it: given a
 /// `ValidatedChatRequest` and the tokenizer's markers, this says whether there
 /// is a grammar, what it spells, whether it is lazy and what triggers it
-/// (GEN-5), whether the speculative loop may still run (DEV-14), and what the
+/// (GEN-5), whether the speculative loop may still run (GEN-14), and what the
 /// client asked for that could only be approximated (GEN-2 / DEV-16). What is
 /// left in `ServerModelSession` is the construction of a
-/// `GrammarTokenConstraint` from this and the handing of it to
-/// `runRawCompletion`.
+/// `GrammarTokenConstraint` from this and the handing of it to whichever
+/// decode loop the request takes.
 ///
 /// The grammar itself is `ChatGrammarBuilder`'s; this type only chooses the
 /// arguments and carries the answer.
@@ -37,12 +37,22 @@ struct ServerGenerationPlan: Equatable, Sendable {
 
     var isConstrained: Bool { grammar != nil }
 
-    /// DEV-14: a constrained request takes the plain path. Verification in the
-    /// speculative loop assumes the token the target would have drawn at each
-    /// position, and GEN-7's redraw breaks that assumption for every position
-    /// after it — so the loop is not entered, rather than entered and made to
-    /// throw.
-    var allowsSpeculativeDecoding: Bool { !isConstrained }
+    /// GEN-14: a grammar is no longer a reason to leave the speculative path.
+    ///
+    /// Constant `true`, and kept as a property rather than deleted, because
+    /// this is the type that answers "how is this request constrained" and the
+    /// answer to "and may it still speculate" is part of that — it read
+    /// `!isConstrained` until 2026-08-21, and the line that changed is the one
+    /// CONFORMANCE §5 measures the everyday client by. The speculative loop
+    /// draws every position with the constraint applied and accepts as it goes
+    /// (参照実装 `common_sampler_sample_and_accept_n`), so the redraw GEN-7 can
+    /// perform is still that position's own draw by the target.
+    ///
+    /// The two requests that still take the plain path are DEV-14's remainder,
+    /// and neither is decided here: RSN-4's forced closing tag is
+    /// `ServerReasoningPlan.allowsSpeculativeDecoding`, and
+    /// `repeat_penalty != 1` is read off the generation config.
+    var allowsSpeculativeDecoding: Bool { true }
 
     /// GEN-7: masking needs logits, and the fused greedy head answers with a
     /// GPU argmax without ever writing them.
@@ -141,11 +151,12 @@ struct ServerReasoningPlan: Equatable, Sendable {
         isThinking && (budget >= 0 || deadline != Int.max)
     }
 
-    /// DEV-14's rule, for the same reason: forcing changes the token at a
-    /// position, and every later position of a verified block was drafted
+    /// DEV-14's remaining rule: forcing changes the token at a position without
+    /// drawing it, and every later position of a verified block was drafted
     /// against a prefix that then never happened. The caller branches to
-    /// `runRawCompletion`, exactly as it already does for a grammar and for a
-    /// repetition penalty.
+    /// `runRawCompletion`, as it does for a repetition penalty. A grammar left
+    /// this list on 2026-08-21 (GEN-14) — it *is* drawn, so the block stays
+    /// verifiable; forcing is not.
     var allowsSpeculativeDecoding: Bool { !forcesClosingTag }
 
     /// - Parameters:
@@ -256,19 +267,40 @@ final class ServerThoughtSuppression: @unchecked Sendable {
     func observe(tokenID: Int32, events: [StructuredAssistantEvent]) -> Bool {
         // The boundary tokens first: their events describe the text held back
         // from *before* them, which is the channel they are leaving.
+        guard !observe(tokenID: tokenID) else { return isSuppressed }
+        for event in events {
+            switch event {
+            case .reasoning: isSuppressed = true
+            case .content, .toolCall: isSuppressed = false
+            }
+        }
+        return isSuppressed
+    }
+
+    /// GEN-14: the same rule for a token that has been *adopted* but not yet
+    /// emitted, where there are no decoder events to read — the speculative
+    /// loop draws a whole block before the queue emits any of it, and a lazy
+    /// grammar that learned the channel closed a block late would sleep through
+    /// the very call it exists to constrain.
+    ///
+    /// Only the two boundary tokens can be read without the decoder, and they
+    /// are the two that matter: RSN-6 says this template's channel blocks are
+    /// thought as a whole, so `<|channel>` arms and `<channel|>` releases
+    /// without anyone reading the label. The answer says whether this token was
+    /// one of them; a token that was not leaves the state alone here and is
+    /// judged again, with its events, when it is emitted. No draw happens
+    /// between those two points, so the emitted verdict is always the one the
+    /// next draw sees.
+    @discardableResult
+    func observe(tokenID: Int32) -> Bool {
         if tokenID == channelEndID {
             isSuppressed = false
         } else if tokenID == channelStartID {
             isSuppressed = true
         } else {
-            for event in events {
-                switch event {
-                case .reasoning: isSuppressed = true
-                case .content, .toolCall: isSuppressed = false
-                }
-            }
+            return false
         }
-        return isSuppressed
+        return true
     }
 }
 

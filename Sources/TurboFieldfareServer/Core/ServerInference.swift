@@ -952,12 +952,16 @@ public actor ServerModelSession: ServerInferenceBackend {
         // rewound K/V — only the wall clock differs (docs/mtp/25-M5.6-RESULTS.md).
         // A repetition penalty makes the draw depend on history the round has
         // not committed, which cannot be verified, so such a request takes the
-        // plain path instead of being refused. SPEC §12 DEV-14 puts a grammar
-        // in the same class and for the same reason — GEN-7's redraw changes
-        // the token at a position, so every later position in the block was
-        // drafted against a prefix that never happened. The condition is where
-        // that is decided; `runSpeculativeCompletion` throws on a constraint
-        // as a backstop, not as the mechanism.
+        // plain path instead of being refused (SPEC §12 DEV-14).
+        //
+        // SPEC §6 **GEN-14**: a grammar does not. It is threaded into the
+        // speculative loop, which draws every position of the block with the
+        // constraint applied and accepts as it goes — the redraw GEN-7 can
+        // perform is still that position's own draw by the target, so the block
+        // stays verifiable. This is the line CONFORMANCE §5 measures the
+        // everyday client by: it declares `tools` on every request, so a
+        // grammar in this condition would have meant that client never
+        // speculating at all.
         let result: RawDecodeResult
         var speculativeSummary: ServerSpeculativeSummary?
         if monitor != nil {
@@ -966,12 +970,12 @@ public actor ServerModelSession: ServerInferenceBackend {
                 promptTokens: effectivePromptIDs.count - cachedPromptTokens,
                 startedAt: Date())
         }
-        // RSN-4 joins that list for the same reason and by the same rule: a
-        // forced token is a token the block was not verified against, so a
-        // request that can force one takes the plain path. `runRawCompletion`
-        // is where the forcer is consulted, and `runSpeculativeCompletion` has
-        // no parameter for it — a request that reaches the loop with one would
-        // silently generate an unbudgeted thought block.
+        // RSN-4 is DEV-14's other member, for the reason a grammar no longer is:
+        // a forced token is *placed* rather than drawn, so the block was never
+        // verified against it. `runRawCompletion` is where the forcer is
+        // consulted, and `runSpeculativeCompletion` has no parameter for it — a
+        // request that reached the loop with one would silently generate an
+        // unbudgeted thought block.
         if let speculative, config.repetitionPenalty == 1.0, plan.allowsSpeculativeDecoding,
            reasoning.allowsSpeculativeDecoding {
             let spec = try await runSpeculativeCompletion(
@@ -979,6 +983,11 @@ public actor ServerModelSession: ServerInferenceBackend {
                 tokenizer: tokenizer,
                 promptIds: effectivePromptIDs,
                 config: config,
+                // GEN-7 / GEN-14. The same object the plain branch passes, used
+                // the same way; a `GenerationConstraintError` or a `GBNFError`
+                // out of here is left to escape into a 500 `server_error`
+                // rather than a silently unconstrained answer.
+                constraint: constraint,
                 context: context,
                 scratch: scratch,
                 speculative: speculative,
@@ -986,6 +995,21 @@ public actor ServerModelSession: ServerInferenceBackend {
                 vision: prefillVision,
                 start: completionStart,
                 shouldStop: { shouldStop },
+                // GEN-6, at the granularity GEN-14 requires. `onProgress` sees
+                // a token a whole block after the round adopted it, and the
+                // suppression it drives decides whether the *next* draw is
+                // constrained — so the lazy grammar would run up to `bs - 1`
+                // tokens behind the thought channel. This fires on adoption,
+                // before the next draw, and reads the two boundary tokens
+                // directly because the decoder's events do not exist yet
+                // (RSN-6 licenses reading them without the label). The same
+                // token is observed again with its events when it is emitted,
+                // and no draw happens in between.
+                onDrawnToken: { tokenID in
+                    if let constraint, let suppression {
+                        constraint.setSuppressed(suppression.observe(tokenID: tokenID))
+                    }
+                },
                 // Passed as a literal rather than as `onProgress` itself:
                 // region isolation rejects sending an actor-isolated function
                 // value, and accepts a closure it can see is non-escaping.
