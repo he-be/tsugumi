@@ -1,0 +1,90 @@
+# Qwen3.5-MoE (Ornith-1.5-35B-A3B) 対応 — 計画
+
+QAT・Vision・MTP に続く 4 つ目の大改修。
+[`ornith-ai/Ornith-1.5-35B-A3B`](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B)
+(`architectures: ["Qwen3_5MoeForConditionalGeneration"]`, `model_type: qwen3_5_moe`) を
+本ランタイムに載せる。M3 Pro 18GB / macOS 15.7.5 / ブランチ `macos15-support`。
+2026-08-21 起草。旧 `PLAN_QWEN35.md` (単一ファイル) を分割したもの。
+プラン内で積み重なっていた追記の層 (§15 → §16 → §17) は畳んであり、
+**各文書は現在の結論だけを書く。**実測の経緯と数字は 10 番台の結果文書が持つ。
+
+**現在地 (2026-08-21 夜): GPU はまだ 1 度も回していない。**
+チェックポイント候補は 2 本とも手元にあり ([02 §1](02-CHECKPOINTS.md))、どちらも
+量子化制約 (`group ∈ {32,64}`、bits ∈ {4,8}、routed expert は int4 のみ) への
+赤リストは **0 本**。本線の選定は **oQ4e-g64 側の norm 規約の照合待ち**
+([04](04-PHASES.md) 末尾の「次の一手」)。**実測(手元)** はすべて
+「ファイルを読む / CPU で量子化する」までの数字で、速度・ヒット率・TTFT に
+関する数字は全部 **導出** か **未確認** のまま。運用点 (スロット数・チャンク幅) は
+Gemma 4 の値をそのまま持ち越せない — 理由は [05 §1](05-RISKS.md)、
+測り直しの手順は [04](04-PHASES.md) Phase 6。
+
+方針は既存 PLAN と同じ: **汎用性を捨てる。**この 1 台 (M3 Pro / 18GB /
+macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他アーキテクチャへの
+一般化は最初から狙わない。
+
+---
+
+## 結論を先に
+
+| # | 論点 | 結論 |
+| --- | --- | --- |
+| 1 | これは何か | **Qwen3.5-MoE。ただの「Qwen 版 Gemma」ではない。**40 層のうち **30 層が線形注意 (Gated DeltaNet)**、10 層だけが full attention。SWA は 1 層も無い (**実測(上流)**、[01 §1](01-MODEL.md)) |
+| 2 | 一番大きい実装 | **Gated DeltaNet カーネルの新規実装。**本ランタイムに相当物が 1 個も無い。KV キャッシュではなく**固定サイズの再帰状態**を持つ層という概念自体が無い ([03 §3-3](03-DESIGN.md))。ただし**写す実物はある** — omlx の blocked-sequential カーネル ([03 §2-6](03-DESIGN.md)) |
+| 3 | 重み変換 | **当初の「bf16 → MLX 4-bit 変換器を新規に書く」は消えた。**MLX 4-bit 量子化済みの候補が 2 本手元にある ([02](02-CHECKPOINTS.md))。残るのは焼き込み (`q_norm` × 1/16)・名前寄せ・repack ([03 §1](03-DESIGN.md)) |
+| 4 | チェックポイントの選定 | **公式 MLX-4bit** (19.51 GB、素の RTN、MTP / vision 無し) 対 **oQ4e-g64** (21.86 GB、imatrix + MTP + vision、非互換 248 本は打ち直し済み)。**未決定** — 差 2.35 GB の対価の検証が先 ([02 §1](02-CHECKPOINTS.md)) |
+| 5 | MoE の形は乗るか | **乗る。ただし `numExperts <= 256` の precondition にちょうど乗る (余裕ゼロ)。**top-8 は一致、`D=2048` は 64 の倍数、prefill router のスクラッチは既に 256 で確保済み。**decode/prefill の MoE カーネルは無改造で正しく動く**見込み (専用化 PSO から汎用 PSO に落ちるだけ) ([03 §4](03-DESIGN.md)) |
+| 6 | エキスパート 1 個のバイト数 | **1,769,472 B = 16 KiB × 108 ちょうど。パディング 0 バイト** ([01 §3-2](01-MODEL.md))。導出がのちに実物と 3 回バイト一致し、**実測に格上げ済み** ([10 §2](10-MLX4BIT-AUDIT.md))。Gemma は 205 ページ中 13,312 B が捨て札なので、そこは改善 |
+| 7 | 1 トークンあたりのバイト | **導出で Gemma の 0.78 倍** (4K 文脈、全ヒット時 2.41 GB → 1.89 GB)。**decode は Gemma より速くなり得る**。ただしヒット率が落ちる要因が別にある (#8) ([01 §3-5](01-MODEL.md)) |
+| 8 | 一番大きい性能リスク | **エキスパート母集団が 3,840 → 10,240 に増える。**32 スロットが覆う割合は 1 層あたり 25% → 12.5% に半減する。スロット 1 本の値段は 96.1 → 67.5 MiB に下がるので**バイト等価なら 45 本**だが、`allowedExpertCacheSlots` は `[8,16,24,32]` で頭打ち ([05 §1-1](05-RISKS.md)) |
+| 9 | 二番目に大きい性能リスク | **prefill の GEMM 占有率が半減する。**チャンク 2048 でエキスパート 1 個あたり平均 128 行 → 64 行。64 行ブロックがちょうど 1 個しか埋まらない ([05 §1-2](05-RISKS.md)) |
+| 10 | 一番大きい正しさリスク | **partial RoPE のペアの取り方が Gemma と違う。**本ランタイムは `(i, HD/2+i)` を回し周波数の分母に `HD` を使う。Qwen は `(i, 32+i)` を回し分母は `rotary_dim=64`。**既存カーネルを流用すると静かに間違う** ([03 §2-2](03-DESIGN.md)) |
+| 11 | ただで貰えるもの | (a) `attention_prefill_causal_qblock_d256` は head_dim だけで選ばれるので**そのまま当たる** (b) RMSNorm は Qwen も `1+w` 規約なので既存カーネルのまま (c) 文脈長は 10 層ぶんしか KV が要らず、線形層の状態は**文脈長に依らず 62.8 MiB 固定** ([01 §3-4](01-MODEL.md)) |
+| 12 | MTP | **本モデルは MTP ヘッドを同梱している** (`mtp.*`、1 層、805M のエキスパートつき)。**専用ドラフターを別リポジトリから取ってくる必要が無い。**実物 (一式 503 MB、うちエキスパート 453 MB) は oQ4e(-g64) に入っており、**全 256 エキスパートを常駐にできる** = ドラフトの I/O がゼロになる ([03 §6](03-DESIGN.md)) |
+| 13 | サーバーへの波及 | **prompt cache と投機デコードの前提が壊れる。**再帰状態は「途中を捨てる」「巻き戻す」ができない。SPEC の LCP 再利用と MTP の verify ブロックの両方に設計変更が要る ([03 §5](03-DESIGN.md)) |
+| 14 | Vision | 後回しでよい。**tower の形は Gemma と偶然ほぼ同じ** (1152 / 27 層 / 16 head / 4304) だが、**位置符号化とマージが別物**。カーネルは書き直し ([04 §11](04-PHASES.md))。bf16 の tower 実物 (893 MB) は oQ4e に入っている |
+
+---
+
+## 読む順
+
+| # | 文書 | 役割 |
+| --- | --- | --- |
+| 1 | [01-MODEL.md](01-MODEL.md) | 上流の事実 (config・テンソル・算式)、Gemma 4 26B-A4B との差分、数量 (パラメータ・ページ・バイト予算) |
+| 2 | [02-CHECKPOINTS.md](02-CHECKPOINTS.md) | チェックポイント候補 2 本と手元の持ち物、供給源選定の経緯、oQ / omlx から取り入れるもの・取り入れないもの |
+| 3 | [03-DESIGN.md](03-DESIGN.md) | 変換と repack の残作業、新規カーネル 8 本、ランタイムの構造変更、既存資産の再利用可否、サーバー波及、MTP |
+| 4 | [04-PHASES.md](04-PHASES.md) | Phase 0〜9 の分解と出口条件、Vision の中身、次の一手 |
+| 5 | [05-RISKS.md](05-RISKS.md) | 性能リスク、中止線、残る未確認、やらないこと |
+| 6 | [10-MLX4BIT-AUDIT.md](10-MLX4BIT-AUDIT.md) | **実測(手元)。**公式 MLX-4bit の検証、上流 bf16 との規約照合、減衰ゲート (`in_proj_a`) の感度測定 |
+| 7 | [11-OQ4E-G64-REBUILD.md](11-OQ4E-G64-REBUILD.md) | **実測(手元)。**oQ4e-mtp の取得と、非互換 248 本の 8-bit g64 打ち直し (`oQ4e-g64` の作成) |
+
+## 表記
+
+PLAN.md / PLAN_QAT.md / PLAN_VISION.md と同じ **実測** / **導出** / **未確認**。
+ただし本計画の **実測** は 2 種類ある。混ぜないために区別する:
+
+| 記号 | 意味 |
+| --- | --- |
+| **実測(上流)** | 上流リポジトリの実体を取得して確認した事実。`config.json`、`model.safetensors.index.json`、各シャードの safetensors ヘッダ (HTTP range で先頭のみ取得)、`tokenizer_config.json`、`chat_template.jinja`、`transformers` の `modeling_qwen3_5_moe.py`、omlx のソース |
+| **実測(手元)** | この機械で数字を取ったもの。**現時点では全部「ファイルを読む / CPU で量子化する」まで**で、GPU は 1 度も使っていない |
+
+## 運用ルール
+
+- 各文書は**現在の結論**を書く。実測の経緯と数字は 10 番台の結果文書が持ち、
+  **測定の結論を二重に書かない** (docs/mtp と同じ作法)。食い違ったら結果文書
+  (番号の大きいもの) が正
+- 反復 3 未満のセルには解釈を書かない。数字だけ置く
+- 運用点 (スロット数・チャンク幅) の**既定は変えない**。候補追加の提案に留め、
+  判断はユーザーが行う (Gemma の `[8,16,24,32]` は 2026-08-20 のユーザー確定値)
+- Gemma 4 経路の実測値を動かさない。共有コードに手を入れるときは Gemma のベンチを取り直す
+
+## 参照
+
+- 上流 (bf16): [`ornith-ai/Ornith-1.5-35B-A3B`](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B)
+- 公式 MLX 4-bit: [`ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit`](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit)
+- oQ 4-bit (MTP / vision つき): [`scottlowry/Ornith-1.5-35B-A3B-oQ4e-mtp`](https://huggingface.co/scottlowry/Ornith-1.5-35B-A3B-oQ4e-mtp)
+- 量子化ツール: [`jundot/omlx`](https://github.com/jundot/omlx) (Apache-2.0) —
+  `docs/oQ_Quantization.md` / `omlx/oq.py` / `omlx/custom_kernels/qwen35_prefill/gdn.py`
+- `transformers` `models/qwen3_5_moe/modeling_qwen3_5_moe.py`
+- 本リポジトリ: [PLAN.md](../../PLAN.md) / [PLAN_QAT.md](../../PLAN_QAT.md) /
+  [PLAN_VISION.md](../../PLAN_VISION.md) / [docs/mtp/README.md](../mtp/README.md) /
+  [docs/SYSTEM_DESIGN.md](../SYSTEM_DESIGN.md) / [docs/serving/SPEC.md](../serving/SPEC.md)
