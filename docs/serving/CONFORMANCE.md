@@ -26,7 +26,7 @@ C3 だけがモデルを積む。
 | **C0** | 要求スキーマ | `swift test` (モデル不要) | JSON 要求 → 受理されたパラメータ or エラー、の表駆動テスト。SPEC §4 の**表 1 行 = 最低 1 ケース** (既定値 / clamp の両端 / hard の両端 / null / 未知キー / 別名)。参照実装の `server-schema.cpp` と同じく、スキーマ自体を宣言的な表として実装し、この表とテストが 1:1 になるようにする |
 | **C1** | HTTP 契約 | `swift test` (スタブ backend) | `ServerInferenceBackend` をスタブに差した本物の HTTP サーバーに対して: エンドポイントの生死 (EP-*)、ロード中 503 (LIF-2)、SSE の並びと ping (RSP-2)、エラー封筒 (ERR-*)、`/props` の中身 (EP-4)。境界の型 `ValidatedChatRequest` と protocol `ServerInferenceBackend` は現行実装から**そのまま引き継ぐ** (§4) |
 | **C2** | トークン列の不変条件 | `swift test` (tokenizer のみ、重み不要) | **INV-1: 描き直し == 生成** を思考 ON/OFF × tools 有無 × 画像有無の全組合せで (SPEC §7)。プロンプトキャッシュは「この 2 要求の LCP は N トークン」という主張で検定する — 「この形は hit する」という主張は書かない。opencode 実セッションのフィクスチャは入力として残し、主張だけ LCP 長に書き換える |
-| **C3** | 実機スモーク | 手動スクリプト (モデル要) | temp 0 + md5 の流儀で: tools 宣言 → tool call が出る (GEN-1) / `json_object` → 妥当な JSON が返る (GEN-3) / 思考予算切れ → 本文が空でない (RSN-4) / 2 ターン目の `cached_tokens` > 0 (CACHE-*) / tools × 画像 × 思考の同時要求 (MSG-6)。`Scripts/` に curl ベースで置き、期待値は HTTP 番号と JSON 述語で書く |
+| **C3** | 実機スモーク | 手動スクリプト (モデル要) | temp 0 + md5 の流儀で: tools 宣言 → tool call が出る (GEN-1) / `json_object` → 妥当な JSON が返る (GEN-3) / 思考予算切れ → 本文が空でない (RSN-4) / 2 ターン目の `cached_tokens` > 0 (CACHE-*) / tools × 画像 × 思考の同時要求 (MSG-6) / tools を宣言した要求でも投機が走る (GEN-14: `timings.draft_n > 0`)。`Scripts/` に curl ベースで置き、期待値は HTTP 番号と JSON 述語で書く |
 
 **暫定実装の扱い**: GEN-3 / GEN-4 のように「最終は文法拘束、それまで 501」と
 段階のある行は、**最終挙動のテストを C3 に書き、暫定期間はスキップ印を付けて
@@ -39,8 +39,22 @@ C3 だけがモデルを積む。
 初期状態。**このリストを上から緑にしていくのが作業のすべて**であり、
 緑になった行はこの表から消す (履歴は git log)。
 
-**この表は空になった** (2026-08-22)。§5 完了の定義の 1 つ目を満たしている。
-残っているのは「書けたが実機で見ていない」もの — 下の C3 の段落を読むこと。
+**いま赤なのは 2 行**、どちらも 2026-08-21 に足した **GEN-14** と **RSP-3 の
+`draft_*`** である (P6)。それ以外の行は緑になり、この表から消してある。
+
+**GEN-14 / RSP-3 の `draft_n`・`draft_n_accepted`** (2026-08-21 に赤として登録)。
+実機で pi のセッションを見て分かったこと: **`tools` を宣言した要求は 1 本も
+投機デコードを通っていない。**`tools` があれば文法が付き、文法が付けば
+`ServerGenerationPlan.allowsSpeculativeDecoding` が偽になり (旧 DEV-14)、
+要求まるごと plain 経路に落ちる。遅延文法 (`tool_choice: auto` でトリガ未発火)
+でも同じ。コーディングエージェントは毎要求 `tools` を宣言するので、
+**§5 完了の定義が名指ししている経路 (pi の既定セッション + MTP) だけが
+構造的に MTP を使えない**状態だった。実測 (2026-08-21、M3 Pro / 32 スロット /
+`--ctx-size 65536` / 19K 文脈 / temp 0、各 n=1): tools あり **9.8 tok/s** に対し
+tools なし **16.8 tok/s** (`accept=1.357`)。参照実装は文法と投機を併用しており、
+しかも**文法状態の巻き戻しをしていない** (`common/sampling.cpp:678`) ので、
+逸脱として残す理由が無い。SPEC に GEN-14 を足し、DEV-14 を強制挿入と
+repetition penalty だけに縮めた。赤テストの置き場所は下の P6。
 
 緑になった行: **INV-1** (2026-08-20、P1-D2、SPEC §12 DEV-12 のサーバー変種 +
 MSG-5 の `reasoning_content` 入力)。**MSG-5** の入力側も同時。
@@ -116,6 +130,7 @@ ERR-1 の封筒の形、および P0 で緑にした REQ-* 全行 (C0 の 41 本
 | **P3** | ライフサイクルとエンドポイント。listen 先行 + ロード中 503、`/v1/health`、`/props`、採らないパスの 501 | LIF-*, EP-1/4/7 |
 | ~~**P4**~~ | **済** (2026-08-22)。`--reasoning-budget` / `--reasoning-format` へ改名し、`--thinking` を退役。予算切れで終了タグを強制挿入する (RSN-4)。`max_tokens` の分け方は §12 **DEV-21** | — |
 | ~~**P5**~~ | **済** (2026-08-22)。`timings`、`system_fingerprint`、`/tokenize` 系、`/slots`・`/metrics`、`--api-key`、CORS、`-c/--ctx-size` と `--expert-cache-slots` の丸め | — |
+| **P6** | **文法の下で投機デコードを回す** (2026-08-21 に登録)。**M1** 検証を「位置ごとに文法込みで引き、その場で `accept` し、食い違いで打ち切る」に変える (`runSpeculativeCompletion` の `targetToken` が唯一の変更点。`constraint == nil` の門番を落とす) → **M2** 拘束のある要求は logits 行で検証する (融合 greedy ヘッドを使わない。GEN-7) → **M3** `ServerGenerationPlan.allowsSpeculativeDecoding` を「強制挿入と repetition penalty だけ偽」に縮める → **M4** `draft_n` / `draft_n_accepted` を `timings` に載せる (RSP-3) → **M5** C3 に検査を 1 つ足す | **GEN-14**、**RSP-3 の `draft_*`** |
 
 CLI 対話モード (旧 S4) と既定値の自動選択 (旧 S5) は **P2 のあと**。
 今の受理規則・キャッシュを CLI に複製すると乖離が 2 か所に増えるため。
@@ -147,9 +162,13 @@ C2 の入力として残す。
 
 ## 5. 完了の定義
 
-- §2 の表が空 (P5 まで) — 最低ラインは P0〜P3。
+- §2 の表が空 (P6 まで) — 最低ラインは P0〜P3。
 - pi の既定セッション (tools ON + 画像 + Reasoning ON + MTP) が、
-  サーバー側の修正なしで通しで動く (旧ゴール G1)。
+  サーバー側の修正なしで通しで動く (旧ゴール G1)。**「MTP」は「フラグが
+  立っている」ではなく「実際に走っている」で見る** — tools を宣言した要求の
+  応答に `timings.draft_n > 0` があること (GEN-14 / RSP-3)。2026-08-21 に
+  ここを数字で見たら 1 本も走っていなかった。**通しで動くことと、動くときに
+  MTP が効いていることは別の主張であり、後者を見ていなかった。**
 - OpenAI 公式 Python SDK の素朴なコード (README の例のように `model` に
   適当な名前を渡すもの) がそのまま動く。
 - 新しいクライアントの症状が出たとき、直す場所が「SPEC に行を足す」以外に
