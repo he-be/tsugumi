@@ -644,3 +644,84 @@ kernel void qwen_lm_head_greedy_int8_rows_reduce(
         if (simd_lane_id == 0) { out_token[0] = i_all; }
     }
 }
+
+// ============================================================================
+// qwen_embed_lookup_int8 — 埋め込み 1 行の逆量子化
+//
+// Gemma の `embed_lookup_int4` と同じ仕事だが、**幅が違う。**本線の
+// `oQ4e-g64` は `embed_tokens` も 8-bit g64 で (docs/qwen35moe/18-MIXED-BITS.md
+// §3)、nibble の展開はあのカーネルの引数ではなく行の幾何そのものなので、
+// 幅を渡して済ませることはできない (`lm_head` を書き直したのと同じ理由 — §2-8)。
+//
+// Gemma にある `out_scale` (= sqrt(hidden)) は**持たない**。あれは Gemma だけの
+// 規約で、参照器 (`Scripts/qwen35/reference_forward.py`) の embed は
+// 逆量子化した行そのものである (docs/qwen35moe/03-DESIGN.md §2-9)。
+// 掛け算を 1 つ残して 1.0 を渡す道もあるが、渡し忘れが静かに動く形になるので
+// 引数ごと落とす。
+// ============================================================================
+
+kernel void qwen_embed_lookup_int8(
+    device const uint8_t* table    [[buffer(0)]],   // [V, D] bytes
+    device const bfloat*  scales   [[buffer(1)]],   // [V, D/64] BF16
+    device const bfloat*  biases   [[buffer(2)]],   // [V, D/64] BF16
+    device       half*    out      [[buffer(3)]],   // [D] FP16
+    constant     uint&    token_id [[buffer(4)]],
+    constant     uint&    d        [[buffer(5)]],
+    uint                  gid      [[thread_position_in_grid]]
+) {
+    if (gid >= d) return;
+    const uint groups_per_row = d / kQwenHeadGroupSize;
+    device const uint8_t* row_q = table  + uint(token_id) * d;
+    device const bfloat*  row_s = scales + uint(token_id) * groups_per_row;
+    device const bfloat*  row_b = biases + uint(token_id) * groups_per_row;
+    const uint g = gid / kQwenHeadGroupSize;
+    out[gid] = half(float(uint(row_q[gid])) * float(row_s[g]) + float(row_b[g]));
+}
+
+// ============================================================================
+// qwen_residual_add — `hidden += y`
+//
+// Qwen の残差は Gemma の sandwich と違って**素の足し算 2 本**しかない
+// (attention の後と MoE の後、`Scripts/qwen35/reference_forward.py` `forward`)。
+// Gemma 側の `fused_post_attn_setup` / `fused_layer_tail` は
+// pre/post feedforward norm 4 本と layer_scalar を畳んだもので、
+// **この族には対応物が無い**ので流用できない。
+//
+// 畳めるものはある — 足した直後は必ず RMSNorm なので、`hidden += y` と
+// 次の norm は 1 dispatch にできる。ここで分けてあるのは Phase 3 が
+// 「どの段で参照と離れたか」を段ごとに見られるようにするためで、
+// 畳むのは運用点を測る Phase 6 の仕事にする (2048 要素 × 2 dispatch / 層)。
+// ============================================================================
+
+kernel void qwen_residual_add(
+    device       half* hidden [[buffer(0)]],   // [D] FP16 (in-place)
+    device const half* y      [[buffer(1)]],   // [D] FP16
+    constant     uint& count  [[buffer(2)]],
+    uint               tid    [[thread_position_in_grid]]
+) {
+    if (tid >= count) return;
+    hidden[tid] = half(float(hidden[tid]) + float(y[tid]));
+}
+
+// ============================================================================
+// qwen_moe_shared_gate_logit — `qwen_moe_shared_gate` の内積を外に出した版
+//
+// 本線の `shared_expert_gate.weight` は **BF16 ではなく 8-bit affine**
+// (docs/qwen35moe/18-MIXED-BITS.md §3 の `shared_expert_gate` の行)。
+// 上の融合版は BF16 の重みを直に読むので、実物を渡すと**静かに**別の数を出す。
+// 逆量子化は汎用の GEMV (M=1) が既にできるので、そちらに内積を任せ、
+// ここは `sigmoid` と掛け算だけを持つ。
+//
+// 融合版は残してある: 重みを量子化しない checkpoint (router がそうであるように)
+// ではあちらが 1 dispatch で済む。どちらを呼ぶかは索引が言う幅で決める。
+// ============================================================================
+
+kernel void qwen_moe_shared_gate_logit(
+    device       half* y     [[buffer(0)]],   // [D] FP16 (in-place)
+    device const half* logit [[buffer(1)]],   // [1] FP16 — GEMV の出力
+    constant     uint& count [[buffer(2)]],
+    uint               tid   [[thread_position_in_grid]]
+) {
+    if (tid >= count) return;
+    y[tid] = half(float(y[tid]) * qwen_sigmoid(float(logit[0])));
+}

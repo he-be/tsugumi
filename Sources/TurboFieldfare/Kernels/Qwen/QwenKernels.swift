@@ -80,7 +80,9 @@ public final class QwenKernels {
         case qkvEpilogue     = "qwen_qkv_epilogue"
         case attnOutputGate  = "qwen_attn_output_gate"
         case moeSharedGate   = "qwen_moe_shared_gate"
+        case moeSharedGateLogit = "qwen_moe_shared_gate_logit"
         case siluMul         = "qwen_silu_mul"
+        case residualAdd     = "qwen_residual_add"
     }
 
     private var pipelines: [Function: MTLComputePipelineState] = [:]
@@ -317,6 +319,46 @@ public final class QwenKernels {
         encoder.setBytes(&d, length: MemoryLayout<UInt32>.stride, index: 3)
         encoder.dispatchThreadgroups(MTLSize(width: 1, height: 1, depth: 1),
                                      threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+        encoder.endEncoding()
+        return true
+    }
+
+    /// `y *= sigmoid(logit)` — the same gate as `encodeMoESharedGate` with the
+    /// dot product already taken by a dequantizing GEMV. This is the arm the
+    /// production checkpoint needs: its `shared_expert_gate.weight` is 8-bit
+    /// affine, not the BF16 the fused kernel reads
+    /// (`docs/qwen35moe/18-MIXED-BITS.md` §3).
+    @discardableResult
+    public func encodeMoESharedGateLogit(commandBuffer: MTLCommandBuffer,
+                                         y: MTLBuffer, yOffset: Int = 0,
+                                         logit: MTLBuffer, logitOffset: Int = 0,
+                                         hiddenSize: Int) -> Bool {
+        guard hiddenSize > 0,
+              let (encoder, pipeline) = encoder(commandBuffer, .moeSharedGateLogit) else {
+            return false
+        }
+        encoder.setBuffer(y, offset: yOffset, index: 0)
+        encoder.setBuffer(logit, offset: logitOffset, index: 1)
+        var d = UInt32(hiddenSize)
+        encoder.setBytes(&d, length: MemoryLayout<UInt32>.stride, index: 2)
+        dispatch1D(encoder, pipeline, count: hiddenSize)
+        encoder.endEncoding()
+        return true
+    }
+
+    /// `hidden += y`, the plain residual join this family uses twice a layer.
+    @discardableResult
+    public func encodeResidualAdd(commandBuffer: MTLCommandBuffer,
+                                  hidden: MTLBuffer, hiddenOffset: Int = 0,
+                                  y: MTLBuffer, yOffset: Int = 0,
+                                  count: Int) -> Bool {
+        guard count > 0,
+              let (encoder, pipeline) = encoder(commandBuffer, .residualAdd) else { return false }
+        encoder.setBuffer(hidden, offset: hiddenOffset, index: 0)
+        encoder.setBuffer(y, offset: yOffset, index: 1)
+        var n = UInt32(count)
+        encoder.setBytes(&n, length: MemoryLayout<UInt32>.stride, index: 2)
+        dispatch1D(encoder, pipeline, count: count)
         encoder.endEncoding()
         return true
     }

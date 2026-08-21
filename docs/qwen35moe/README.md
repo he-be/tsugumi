@@ -8,7 +8,7 @@ QAT・Vision・MTP に続く 4 つ目の大改修。
 プラン内で積み重なっていた追記の層 (§15 → §16 → §17) は畳んであり、
 **各文書は現在の結論だけを書く。**実測の経緯と数字は 10 番台の結果文書が持つ。
 
-**現在地 (2026-08-21 夜): Phase 2 のカーネルは全部書けた。本線は `Model.load` を通る。**
+**現在地 (2026-08-21 夜): decode が動き、CPU float32 参照とトークンが一致した。**
 Gated DeltaNet (`qwen_delta_rule`) は 2048 トークン後の状態が **CPU float32 の床と
 3 桁一致**、prefill 30 層 **125.7 ms** ([15](15-PHASE2-GDN.md))。その周辺 7 本
 (因果 `conv1d` + l2norm / 減衰ゲート / `RMSNormGated` / partial RoPE / 出力ゲート /
@@ -24,7 +24,13 @@ MTP と vision の実物も入っている ([16 §1](16-QUALITY.md))。
 **最後の 1 本だった LM head も書けた** ([19](19-LM-HEAD-INT8.md)): 本線の `lm_head` が
 8-bit なので INT4 の specialization ではなく **INT8 の chain**で、実物の語彙で
 1 トークン **4.0 ms / 134 GB/s**。`--qwen` の検査は 39 本すべて緑。
-**速度・ヒット率・TTFT の運用数字は依然 導出 か 未確認**で、そこは結線 (Phase 3) が要る。
+**Phase 3 の結線が通った** ([20](20-PHASE3-DECODE.md)): `QwenForwardRunner` (直列) と
+`RecurrentStateManager` を新設し、固定プロンプトから **41 トークンが参照と全一致**、
+負例 5 本も落ちる。実物で見えた食い違いは 3 つ (埋め込みと shared ゲートが 8-bit、
+routed の活性化が SiLU) で、いずれも**落ちずにそれらしく間違う**形だった。
+`RealForwardRunner` は 1 行も動かしていない。
+**速度・ヒット率・TTFT の運用数字は依然 導出 か 未確認** — prefill 経路 (Phase 4) と
+計測 (Phase 6) はこれから。
 運用点 (スロット数・チャンク幅) は Gemma 4 の値をそのまま持ち越せない —
 理由は [05 §1](05-RISKS.md)、測り直しの手順は [04](04-PHASES.md) Phase 6。
 
@@ -39,7 +45,7 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | # | 論点 | 結論 |
 | --- | --- | --- |
 | 1 | これは何か | **Qwen3.5-MoE。ただの「Qwen 版 Gemma」ではない。**40 層のうち **30 層が線形注意 (Gated DeltaNet)**、10 層だけが full attention。SWA は 1 層も無い (**実測(上流)**、[01 §1](01-MODEL.md)) |
-| 2 | 一番大きい実装 | **Gated DeltaNet カーネル → 書けた** ([15](15-PHASE2-GDN.md))。omlx の blocked-sequential の幾何を写し、状態はレジスタ、ホットループに barrier 無し。検証 15 本が緑、prefill 30 層 125.7 ms。**周辺 7 本も書けた** (検査 29 本、[17](17-PHASE2-KERNELS.md))。**KV キャッシュではなく固定サイズの再帰状態を持つ層**という構造変更 ([03 §3-3](03-DESIGN.md)) はこれから |
+| 2 | 一番大きい実装 | **Gated DeltaNet カーネル → 書けた** ([15](15-PHASE2-GDN.md))。omlx の blocked-sequential の幾何を写し、状態はレジスタ、ホットループに barrier 無し。検証 15 本が緑、prefill 30 層 125.7 ms。**周辺 7 本も書けた** (検査 29 本、[17](17-PHASE2-KERNELS.md))。**KV キャッシュではなく固定サイズの再帰状態を持つ層**という構造変更 ([03 §3-3](03-DESIGN.md)) も**入った** — `RecurrentStateManager` は 62.8 MiB で文脈長に依らない ([20 §1-1](20-PHASE3-DECODE.md)) |
 | 3 | 重み変換 | **当初の「bf16 → MLX 4-bit 変換器を新規に書く」は消えた。**MLX 4-bit 量子化済みの候補が 2 本手元にある ([02](02-CHECKPOINTS.md))。残るのは焼き込み (`q_norm` × 1/16)・名前寄せ・repack ([03 §1](03-DESIGN.md)) |
 | 4 | チェックポイントの選定 | **`oQ4e-g64` に決めた** (21.86 GB、imatrix + MTP + vision、router は BF16)。同じ文章 4 本の平均 NLL が公式 MLX-4bit より 4 本とも低い ([16 §1](16-QUALITY.md))。対価だった**混在ビット幅は片づいた** — 幅は索引から導く ([18](18-MIXED-BITS.md)) |
 | 5 | MoE の形は乗るか | **乗る。ただし `numExperts <= 256` の precondition にちょうど乗る (余裕ゼロ)。**top-8 は一致、`D=2048` は 64 の倍数、prefill router のスクラッチは既に 256 で確保済み。**decode/prefill の MoE カーネルは無改造で正しく動く**見込み (専用化 PSO から汎用 PSO に落ちるだけ) ([03 §4](03-DESIGN.md)) |
@@ -74,6 +80,7 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 13 | [17-PHASE2-KERNELS.md](17-PHASE2-KERNELS.md) | **実測(手元)。**`qwen.metal` の 7 本、負例 6 本を含む検査 29 本、fast math と減衰ゲート、conv のトークン分割 (50.0 → 21.9 ms)、LM head が INT8 だと分かった件 |
 | 14 | [18-MIXED-BITS.md](18-MIXED-BITS.md) | **実測(手元)。**混在ビット幅を索引から導く決定、Qwen 用の常駐スキーマ、負例 5 本、本線が開いた記録 |
 | 15 | [19-LM-HEAD-INT8.md](19-LM-HEAD-INT8.md) | **実測(手元)。**INT8 の LM head chain、負例 4 本、1 トークン 4.0 ms / 134 GB/s、天井が 79 → 71 tok/s になる話 |
+| 16 | [20-PHASE3-DECODE.md](20-PHASE3-DECODE.md) | **実測(手元)。**decode の結線、41 トークンの一致、負例 5 本、実物で見えた 3 つの食い違い、再帰状態の置き場所 |
 
 ## 表記
 
@@ -83,7 +90,7 @@ PLAN.md / PLAN_QAT.md / PLAN_VISION.md と同じ **実測** / **導出** / **未
 | 記号 | 意味 |
 | --- | --- |
 | **実測(上流)** | 上流リポジトリの実体を取得して確認した事実。`config.json`、`model.safetensors.index.json`、各シャードの safetensors ヘッダ (HTTP range で先頭のみ取得)、`tokenizer_config.json`、`chat_template.jinja`、`transformers` の `modeling_qwen3_5_moe.py`、omlx のソース |
-| **実測(手元)** | この機械で数字を取ったもの。**CPU のもの** (ファイルを読む / 逆量子化する / float32 で流す) と、**GPU のもの** ([15](15-PHASE2-GDN.md) 以降のカーネル検査とマイクロベンチ) がある。**モデルを載せて測った数字はまだ 1 つも無い** |
+| **実測(手元)** | この機械で数字を取ったもの。**CPU のもの** (ファイルを読む / 逆量子化する / float32 で流す) と、**GPU のもの** ([15](15-PHASE2-GDN.md) 以降のカーネル検査とマイクロベンチ) がある。**モデルを載せて動かしたのは [20](20-PHASE3-DECODE.md) が最初**で、そこの時間は直列・prefill 無しの n=1 なので運用値ではない |
 
 ## 運用ルール
 

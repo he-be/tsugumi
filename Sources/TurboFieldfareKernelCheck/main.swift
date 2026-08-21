@@ -1395,6 +1395,42 @@ if let index = arguments.firstIndex(of: "--qwen-open"), index + 1 < arguments.co
     exit(try runQwenOpenCheck(modelPath: arguments[index + 1]) ? 0 : 1)
 }
 
+// `--qwen-decode <model.gturbo>` runs the decode path over the real weights and
+// compares the greedy tokens with the CPU float32 reference
+// (QwenDecodeCheck.swift). This is Phase 3's exit condition: every kernel it
+// touches was already scored on synthetic inputs, so what is on trial is the
+// wiring. `--qwen-decode-fixture <json>` supplies another
+// `{"prompt": [...], "expected": [...]}`, `--qwen-decode-new N` shortens the
+// comparison, `--qwen-decode-slots N` changes the expert cache.
+if let index = arguments.firstIndex(of: "--qwen-decode"), index + 1 < arguments.count {
+    var fixturePath: String?
+    if let i = arguments.firstIndex(of: "--qwen-decode-fixture"), i + 1 < arguments.count {
+        fixturePath = arguments[i + 1]
+    }
+    var newTokens: Int?
+    if let i = arguments.firstIndex(of: "--qwen-decode-new"), i + 1 < arguments.count,
+       let value = Int(arguments[i + 1]), value > 0 {
+        newTokens = value
+    }
+    var slots = 32
+    if let i = arguments.firstIndex(of: "--qwen-decode-slots"), i + 1 < arguments.count,
+       let value = Int(arguments[i + 1]), value > 0 {
+        slots = value
+    }
+    var faultTokens = defaultFaultTokens
+    if let i = arguments.firstIndex(of: "--qwen-decode-fault-tokens"), i + 1 < arguments.count,
+       let value = Int(arguments[i + 1]), value > 0 {
+        faultTokens = value
+    }
+    exit(try runQwenDecodeCheck(modelPath: arguments[index + 1],
+                                fixturePath: fixturePath,
+                                maxNewTokens: newTokens,
+                                slotCount: slots,
+                                runFaults: !arguments.contains("--qwen-decode-no-faults"),
+                                faultTokens: faultTokens)
+         ? 0 : 1)
+}
+
 // `--qwen` runs the rest of the Qwen3.5-MoE kernels (QwenKernelCheck.swift):
 // the causal `conv1d` + l2norm that feeds the recurrence, the decay gates, the
 // gated RMSNorm, the partial-RoPE epilogue, and the small elementwise pieces.

@@ -10,7 +10,8 @@
 | Phase 0 事実確定 | **ほぼ済み。**`gate_up` の順序・RMSNorm の `+1`・`conv1d` の軸順・`in_proj_a` の感度が確定 ([10](10-MLX4BIT-AUDIT.md))。**`oQ4e-g64` 側の照合も完了** ([12](12-OQ4E-G64-AUDIT.md))。**float32 参照器が動き、算式が上流実装と一致** ([14](14-REFERENCE.md))。**残: fixtures の絞り込みと 2048 トークン後の状態** |
 | Phase 1 変換 | **完了** ([13](13-PHASE1-REPACK.md))。`oQ4e-g64-baked` を repack し `--verify-install` が緑。20.49 GB / `expertStride 1,769,472` / 上流とバイト一致 |
 | Phase 2 カーネル | **完了。**`qwen_delta_rule` ([15](15-PHASE2-GDN.md)、prefill 30 層 **125.7 ms**)、周辺 7 本 ([17](17-PHASE2-KERNELS.md))、**INT8 の LM head chain** ([19](19-LM-HEAD-INT8.md)、1 トークン 4.0 ms / 134 GB/s)。`--qwen` の検査は **39 本すべて緑**、うち 10 本は負例 |
-| Phase 3 以降 | **本線が `Model.load` を通るようになった** ([18](18-MIXED-BITS.md))。混在ビット幅は**索引から導く**で決着し、Qwen 用の常駐スキーマも入った。残るのは decode の結線 (#14) と INT8 の LM head (#15) |
+| Phase 3 decode 結線 | **通った** ([20](20-PHASE3-DECODE.md))。`QwenForwardRunner` / `RecurrentStateManager` / `LayerKind.linear` が入り、**固定プロンプトから 41 トークンが CPU float32 参照と全一致**。負例 5 本も落ちる。**出口条件の 64 トークンは参照の続き待ち** ([20 §8](20-PHASE3-DECODE.md)) |
+| Phase 4 以降 | prefill 経路がまだ無い。プロンプトも 1 トークンずつ流している |
 
 ---
 
@@ -79,6 +80,13 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 **中止線:** 発散点が `qwen_delta_rule` の数値的な蓄積 (fp32 でも合わない) なら、
 状態を fp64 相当 (2×fp32 の compensated summation) にする案を検討。それでも
 合わなければ chunkwise 形へ (誤差の出方が変わる)。
+
+**通った** ([20](20-PHASE3-DECODE.md))。`--qwen-decode` が **41 トークン全一致**、
+負例 5 本も落ちる。中止線は引かれていない — 発散点が無い。
+**64 本ではなく 41 本なのは参照の側の事情**で、[14 §6](14-REFERENCE.md) の生成を
+外から止めたため ([20 §8](20-PHASE3-DECODE.md))。実物で分かった食い違いは 3 つ
+(埋め込みと shared ゲートが 8-bit、routed の活性化が SiLU) で、いずれも
+**落ちずにそれらしく間違う**形だった ([20 §2](20-PHASE3-DECODE.md))。
 
 ## Phase 4 — prefill
 
@@ -209,12 +217,17 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 15. ~~INT8 の LM head chain~~ → **完了。Phase 2 が閉じた** ([19](19-LM-HEAD-INT8.md))。
    実物の語彙で 1 トークン **4.0 ms / 134 GB/s**。`vocab` に 248,077 を渡すだけで
    未学習の 243 行は採点されない (マスクのコードは要らなかった)
+14. ~~Phase 3 の結線~~ → **完了。decode が参照と一致した** ([20](20-PHASE3-DECODE.md))。
+   `QwenForwardRunner` は直列 (1 層 = コマンドバッファ 2 本)、`RealForwardRunner` は無変更。
+   `RecurrentStateManager` (62.8 MiB、文脈長に依らない) と `LayerKind.linear` が入り、
+   `ExpertCacheBudget` は再帰層に K/V を数えなくなった
 
 **次にやること:**
 
 | # | やること | 要るもの |
 | --- | --- | --- |
-| 14 | **Phase 3 の結線** (`QwenForwardRunner` の decode 経路)。**カーネルもモデルも揃った**ので、次はここ。出口は「固定プロンプトから 64 トークン、CPU float32 参照と完全一致」 | GPU |
+| 17 | **64 トークンの参照を取り直す。**[14 §6](14-REFERENCE.md) の生成は外から止めたので 41 本しかない。同じプロンプトで `--max-new 64` を回し、`--qwen-decode-fixture` に渡せば Phase 3 の出口条件の文言どおりになる (参照は 47.5 s/トークン ≒ 55 分) | CPU |
+| 18 | **Phase 4 の prefill 結線。**チャンク経路と `prefill.metal` 側の SiLU (decode は関数定数で分けたが prefill 側は手つかず — [20 §8](20-PHASE3-DECODE.md)) | GPU |
 | 16 | **線形注意 30 層の締め方の判断** ([17 §4-2](17-PHASE2-KERNELS.md))。周辺まで数えると 159.4 ms で Phase 4 の出口条件を外れる。再帰カーネル単体は 125.7 ms で [05 §2](05-RISKS.md) #2 の内側 | ユーザー判断 |
 | 8 | `in_proj_a` の実活性再測を 200 トークン級の `--dump` でやり直す ([16 §2](16-QUALITY.md))。**本線は 8-bit なので、これは本線を止めない** | CPU |
 | 10 | fixtures を Phase 3 が要る層だけに絞る ([14 §5](14-REFERENCE.md))。**2048 トークン後の状態は 15 が合成入力で見たので、fixtures 側の宿題ではなくなった** | CPU |
@@ -223,7 +236,9 @@ Qwen 固有の行を足すかは、そこで別途判断する。
 `reference_forward.py` (numpy だけ)。`test_reference_forward.py` だけ torch を使う。
 カーネルの検査は `TurboFieldfareKernelCheck --gdn` と `--qwen`
 (どちらもモデルもチェックポイントも要らない)。時間は `--gdn-bench` / `--qwen-bench`。
-**repack 済みの実物を開くのは `--qwen-open <path>`** ([18](18-MIXED-BITS.md))。
+**repack 済みの実物を開くのは `--qwen-open <path>`** ([18](18-MIXED-BITS.md))、
+**実物を走らせて参照と突き合わせるのは `--qwen-decode <path>`** ([20](20-PHASE3-DECODE.md);
+`--qwen-decode-fixture` / `--qwen-decode-new` / `--qwen-decode-fault-tokens`)。
 repack 済みモデルは `scratch/ornith-oq4e-g64.gturbo`、repack の入力は
 `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-baked`。**参照器には焼き込み前の
 `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64` を渡す** (`q_norm` の 1/16 は本ランタイム

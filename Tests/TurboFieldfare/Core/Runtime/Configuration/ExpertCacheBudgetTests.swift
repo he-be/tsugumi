@@ -23,6 +23,7 @@ import Testing
             expertCacheBytes: expertCache,
             expertResidencyRequestBytes: residencyRequest,
             kvCacheBytes: 3_310_000_000,
+            recurrentStateBytes: 0,
             prefillScratchBytes: 290_000_000,
             recommendedWorkingSetBytes: 8_590_000_000,
             slotCount: 32)
@@ -99,6 +100,7 @@ import Testing
             expertCacheBytes: 3_570_000_000,
             expertResidencyRequestBytes: 0,
             kvCacheBytes: 3_310_000_000,
+            recurrentStateBytes: 0,
             prefillScratchBytes: 290_000_000,
             recommendedWorkingSetBytes: 0,
             slotCount: 32)

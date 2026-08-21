@@ -5,7 +5,15 @@ import Metal
 /// Which attention variant a layer runs. Gemma 4 interleaves 25 sliding-window
 /// layers with 5 full-attention layers (the latter carry the K=V shared-tensor
 /// quirk). Sourced from `ArchConfig.fullAttentionLayerMask`.
-public enum LayerKind: Sendable { case swa, full }
+///
+/// `linear` is Qwen3.5-MoE's third kind: 30 of its 40 layers keep a recurrent
+/// state instead of a K/V cache (`docs/qwen35moe/03-DESIGN.md` §3-3). Nothing
+/// here stores that state — `RecurrentStateManager` does — and the point of
+/// naming the kind at all is that **these layers must not be allocated for**.
+/// Sizing them as if they held K/V is 30 layers of `maxContext` that no kernel
+/// ever reads, which on an 18 GB machine is a configuration refused for bytes
+/// it was never going to touch.
+public enum LayerKind: Sendable { case swa, full, linear }
 
 /// A read view the attention kernels bind. `offset` stays 0; ring-enabled SWA
 /// layers expose the physical start slot for diagnostics while kernels map
@@ -63,6 +71,9 @@ public final class KVCacheManager {
 
     private static let fp16Size = 2
 
+    /// `recurrentLayers` names the layers that keep a recurrent state rather
+    /// than a K/V cache. They get no storage here at all; the empty default is
+    /// Gemma 4, where every layer caches.
     public init(device: MTLDevice,
                 config: ArchConfig,
                 maxContext: Int,
@@ -70,7 +81,8 @@ public final class KVCacheManager {
                 slidingWindow: Int? = nil,
                 maxPrefillChunkTokens: Int = 128,
                 maxSpeculativeBlockTokens: Int = 0,
-                fp16RingCapacityOverride: Int? = nil) throws {
+                fp16RingCapacityOverride: Int? = nil,
+                recurrentLayers: Set<Int> = []) throws {
         precondition(maxContext > 0, "maxContext must be positive")
         precondition(maxPrefillChunkTokens > 0, "maxPrefillChunkTokens must be positive")
         precondition(maxSpeculativeBlockTokens >= 0,
@@ -116,6 +128,22 @@ public final class KVCacheManager {
         caps.reserveCapacity(config.numLayers)
 
         for layer in 0..<config.numLayers {
+            if recurrentLayers.contains(layer) {
+                // One byte because Metal will not make a zero-length buffer,
+                // and every read path asserts on `.linear` before it gets here.
+                guard let kBuf = device.makeBuffer(length: 1, options: .storageModeShared),
+                      let vBuf = device.makeBuffer(length: 1, options: .storageModeShared) else {
+                    throw ModelError.residentBufferWrapFailed
+                }
+                kBuf.label = "kv.K.layer\(layer).unused"
+                vBuf.label = "kv.V.layer\(layer).unused"
+                ks.append(kBuf)
+                vs.append(vBuf)
+                st.append(0)
+                kd.append(.linear)
+                caps.append(0)
+                continue
+            }
             let isFull = config.fullAttentionLayerMask[layer] != 0
             let stride = isFull ? fullStride : swaStride
             let capacity = ringEnabled && !isFull ? swaCapacity : maxContext
@@ -253,6 +281,11 @@ public final class KVCacheManager {
     /// mask in `prefill.metal:1607` — stays clear of that:
     /// `position - N <= capacity - slidingWindow`.
     public var maximumSafeRewind: Int {
+        // A recurrent layer cannot be rewound at all: its state folded every
+        // token in and there is no subtraction that takes one back out
+        // (`docs/qwen35moe/03-DESIGN.md` §3-4). Getting back to an earlier
+        // point needs a snapshot taken there, which is a Phase 8 decision.
+        if kinds.contains(where: { $0 == .linear }) { return 0 }
         guard fp16RingEnabled else { return position }
         var slack = position
         for layer in capacityTokens.indices where kinds[layer] == .swa {
@@ -297,7 +330,10 @@ public final class KVCacheManager {
     }
 
     private func physicalSlot(layer: Int, position: Int) -> Int {
-        position % capacityTokens[layer]
+        precondition(kinds[layer] != .linear,
+                     "layer \(layer) keeps a recurrent state; it has no K/V slot "
+                     + "(docs/qwen35moe/03-DESIGN.md §3-3)")
+        return position % capacityTokens[layer]
     }
 
     private func ringStartSlot(layer: Int, validTokenCount: Int) -> Int {

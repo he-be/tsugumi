@@ -48,6 +48,13 @@ public struct ExpertCacheBudget: Sendable, Equatable {
     public let expertResidencyRequestBytes: UInt64
     /// K and V buffers as `KVCacheManager` allocates them.
     public let kvCacheBytes: UInt64
+    /// The recurrent state of a Qwen3.5-MoE install, as
+    /// `RecurrentStateManager` allocates it: 62.8 MiB that does **not** grow
+    /// with the context. Zero for Gemma 4. It replaces the K/V those 30 layers
+    /// would otherwise have been charged for — counting both is what would push
+    /// an 18 GB machine into refusing a configuration that fits
+    /// (`docs/qwen35moe/03-DESIGN.md` §3-3).
+    public let recurrentStateBytes: UInt64
     /// Chunked-prefill scratch as `PrefillChunkScratchBuffers.allocate` sizes
     /// it. Negligible at the default 128-token chunk (about 17 MB) and no longer
     /// negligible at 2048 (about 270 MB, most of it `routePartials`), so it is
@@ -60,7 +67,7 @@ public struct ExpertCacheBudget: Sendable, Equatable {
     /// 確保するバイトの合計。**常駐要求は入らない** (上のクラス註)。
     public var totalBytes: UInt64 {
         residentBytes &+ visionResidentBytes &+ expertCacheBytes
-            &+ kvCacheBytes &+ prefillScratchBytes
+            &+ kvCacheBytes &+ recurrentStateBytes &+ prefillScratchBytes
     }
 
     public var fitsRecommendedWorkingSet: Bool {
@@ -70,6 +77,8 @@ public struct ExpertCacheBudget: Sendable, Equatable {
     public var summary: String {
         func gb(_ bytes: UInt64) -> String { String(format: "%.2f GB", Double(bytes) / 1e9) }
         let vision = visionResidentBytes == 0 ? "" : " + vision \(gb(visionResidentBytes))"
+        let recurrent = recurrentStateBytes == 0 ? ""
+            : " + recurrent state \(gb(recurrentStateBytes))"
         // 常駐要求は合計の外に置く。足し算に混ぜると、確保しないバイトで
         // 構成が弾かれていた 52 §9 以前の読み方に戻ってしまう。
         let residency = expertResidencyRequestBytes == 0 ? "" :
@@ -77,7 +86,7 @@ public struct ExpertCacheBudget: Sendable, Equatable {
             + "resident, which is not an allocation)"
         return """
             resident \(gb(residentBytes))\(vision) + experts \(gb(expertCacheBytes)) \
-            (\(slotCount) slots) + kv \(gb(kvCacheBytes)) \
+            (\(slotCount) slots) + kv \(gb(kvCacheBytes))\(recurrent) \
             + prefill scratch \(gb(prefillScratchBytes)) = \(gb(totalBytes)); \
             device recommends at most \(gb(recommendedWorkingSetBytes))\(residency)
             """
@@ -85,9 +94,20 @@ public struct ExpertCacheBudget: Sendable, Equatable {
 }
 
 extension Model {
+    /// True when this layer keeps a recurrent state instead of a K/V cache.
+    ///
+    /// A zero in `fullAttentionLayerMask` means "sliding window" for Gemma 4
+    /// and "recurrent" for Qwen3.5-MoE, so the family has to be consulted
+    /// before the mask is read — the manifest's `linearAttention` section is
+    /// the thing that says which (`docs/qwen35moe/18-MIXED-BITS.md` §4).
+    func isRecurrentLayer(_ layer: Int) -> Bool {
+        manifest.arch.linearAttention != nil && config.fullAttentionLayerMask[layer] == 0
+    }
+
     /// Bytes the KV cache will allocate for `maxContext`, mirroring
     /// `KVCacheManager.init` — sliding-window layers are capped at the ring
-    /// capacity, so long contexts only cost the full-attention layers.
+    /// capacity, so long contexts only cost the full-attention layers, and
+    /// recurrent layers cost nothing at all.
     public func kvCacheByteEstimate(maxContext: Int,
                                     fp16RingEnabled: Bool = true,
                                     maxPrefillChunkTokens: Int =
@@ -100,6 +120,7 @@ extension Model {
                               max(1, config.slidingWindow + maxPrefillChunkTokens))
         var total: UInt64 = 0
         for layer in 0..<config.numLayers {
+            if isRecurrentLayer(layer) { continue }
             let isFull = config.fullAttentionLayerMask[layer] != 0
             let stride = isFull ? fullStride : swaStride
             let capacity = fp16RingEnabled && !isFull ? swaCapacity : maxContext
@@ -107,6 +128,19 @@ extension Model {
             total &+= UInt64(capacity * stride) &* 2
         }
         return total
+    }
+
+    /// Bytes `RecurrentStateManager` will allocate. Unlike every other line of
+    /// this budget it does not read `maxContext`: the recurrence is one fixed
+    /// state per layer whatever the context length (`01-MODEL.md` §3-4).
+    public var recurrentStateByteEstimate: UInt64 {
+        guard let linear = manifest.arch.linearAttention else { return 0 }
+        let stateBytes = linear.numValueHeads * linear.valueHeadDim * linear.keyHeadDim
+            * MemoryLayout<Float>.size
+        let convChannels = 2 * linear.numKeyHeads * linear.keyHeadDim
+            + linear.numValueHeads * linear.valueHeadDim
+        let convBytes = (linear.convKernelDim - 1) * convChannels * MemoryLayout<Float16>.size
+        return UInt64(linear.layerCount) &* UInt64(stateBytes + convBytes)
     }
 
     /// `prefillConfig` must be the one the runner will actually use: a wide
@@ -136,6 +170,7 @@ extension Model {
             kvCacheBytes: kvCacheByteEstimate(
                 maxContext: maxContext,
                 maxPrefillChunkTokens: prefillConfig.chunkTokens),
+            recurrentStateBytes: recurrentStateByteEstimate,
             prefillScratchBytes: scratchBytes,
             recommendedWorkingSetBytes: UInt64(device.recommendedMaxWorkingSetSize),
             slotCount: slotCount)

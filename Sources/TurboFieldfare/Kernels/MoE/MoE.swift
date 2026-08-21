@@ -90,9 +90,30 @@ package final class MoE {
     /// that the QAT checkpoints ship.
     let routerWeightBits: Int
 
-    package init(context: MetalContext, routerWeightBits: Int = 8) throws {
+    /// The activation a routed expert folds into its gate/up product. Gemma 4 is
+    /// `gelu_pytorch_tanh`, Qwen3.5-MoE is SiLU; nothing else about these
+    /// kernels differs between the two families
+    /// (`docs/qwen35moe/03-DESIGN.md` §4-1).
+    package enum GateActivation: Sendable {
+        case geluPytorchTanh
+        case silu
+
+        /// Gemma leaves the constant undefined so its pipelines keep compiling
+        /// the code they were measured on.
+        var constants: [MetalFunctionConstant] {
+            switch self {
+            case .geluPytorchTanh: return []
+            case .silu: return [MetalFunctionConstant(index: 4, value: .bool(true))]
+            }
+        }
+    }
+
+    package init(context: MetalContext,
+                 routerWeightBits: Int = 8,
+                 gateActivation: GateActivation = .geluPytorchTanh) throws {
         self.affineGroupSize = context.affineGroupSize
         self.routerWeightBits = routerWeightBits
+        let activation = gateActivation.constants
         let routerName: String
         switch routerWeightBits {
         case 8:  routerName = "router_gemv_gemma4_r4"
@@ -127,14 +148,17 @@ package final class MoE {
         self.routerSelectK8RowsSpecializedPSO = try context.pipeline(
             "router_topk_select_k8_rows",
             constants: Self.realDecodeRouterConstants)
-        self.phase1U16PSO = try context.pipeline("moe_phase1_gate_up_act_u16load")
+        self.phase1U16PSO = try context.pipeline("moe_phase1_gate_up_act_u16load",
+                                                 constants: activation)
         self.phase1U16SpecializedPSO = try context.pipeline(
             "moe_phase1_gate_up_act_u16load",
-            constants: Self.realDecodeMoEConstants)
-        self.phase1SubsetU16PSO = try context.pipeline("moe_phase1_gate_up_act_subset_u16load")
+            constants: Self.realDecodeMoEConstants + activation)
+        self.phase1SubsetU16PSO = try context.pipeline(
+            "moe_phase1_gate_up_act_subset_u16load",
+            constants: activation)
         self.phase1SubsetU16SpecializedPSO = try context.pipeline(
             "moe_phase1_gate_up_act_subset_u16load",
-            constants: Self.realDecodeMoEConstants)
+            constants: Self.realDecodeMoEConstants + activation)
         self.phase2ReduceK8PSO = try context.pipeline("moe_phase2_down_reduce_k8")
         self.phase2ReduceK8SpecializedPSO = try context.pipeline(
             "moe_phase2_down_reduce_k8",
