@@ -473,3 +473,174 @@ kernel void qwen_silu_mul(
     if (gid >= n) { return; }
     out[gid] = half(qwen_silu(float(gate[gid])) * float(up[gid]));
 }
+
+// ============================================================================
+// qwen_lm_head_greedy_int8_* — INT8 の LM head chain
+//
+// `docs/qwen35moe/03-DESIGN.md` §2-8。当初の計画は `LMHeadChainInt4` に
+// D=2048 / vocab=248,320 の specialization を足すというものだったが、
+// **本線 `oQ4e-g64` の `lm_head` は 8-bit g64** で、本リポジトリの融合ヘッドは
+// INT4 しか読めない (`docs/qwen35moe/17-PHASE2-KERNELS.md` §5)。
+//
+// 形は `lm_head_greedy_int4_rows_chunk_raw` (logit.metal) と同じ:
+// 語彙 248,077 行ぶんの logit を**どこにも書き出さず**、threadgroup ごとの
+// argmax だけを summaries に落として、2 本目で畳む。508 MB の表を 1 回読むのが
+// この経路の全部なので、vocab 幅の FP16 バッファ (496 KB) の往復を省く。
+//
+// 行の歩き方は `dequant_int8_gemv_simd` (dequant_int8.metal) を写す:
+// 1 SIMD group = 1 行、32 レーン × 2 バイトの 64 要素ステップ。**INT4 との
+// 違いはニブルを開かないことと行の刻みが N/2 ではなく N なこと**で、
+// 後者を写し忘れると隣の行を読んで静かに壊れる (検査の負例 1 本目)。
+//
+//   w[i] = float(q[i]) * scale[i/G] + bias[i/G]
+//   z    = Σ_i w[i]·x[i] = Σ_g ( s_g·Σ q·x + b_g·Σ x )
+//
+// `vocab` には**語彙の実数 248,077 を渡す** (`vocab_size` の 248,320 ではない)。
+// 末尾 243 行は学習されていないので、採点しなければそれで済む
+// (`docs/qwen35moe/10-MLX4BIT-AUDIT.md` §3)。マスクのコードは要らない。
+// ============================================================================
+
+constant constexpr uint kQwenHeadRowsPerTG      = 8;
+constant constexpr uint kQwenHeadRowSummaryStride = 2;
+// The one compile-time affine group size the whole model is quantized at
+// (`MetalContext.affineGroupSize`); the `#ifndef` is so this file still
+// compiles standalone, as every other `.metal` here does.
+#ifndef TURBO_AFFINE_GROUP_SIZE
+#define TURBO_AFFINE_GROUP_SIZE 64
+#endif
+constant constexpr uint kQwenHeadGroupSize      = TURBO_AFFINE_GROUP_SIZE;
+
+/// One vocabulary row against the normalized activation, spread over one SIMD
+/// group. Returns the full dot product on lane 0 (`simd_sum` broadcasts, so
+/// every lane holds it).
+static inline float qwen_head_int8_row(device const uint8_t* W,
+                                       device const bfloat*  scales,
+                                       device const bfloat*  biases,
+                                       device const half*    x,
+                                       uint row,
+                                       uint d,
+                                       uint lane) {
+    const uint n_groups = d / kQwenHeadGroupSize;
+    // INT8: one byte per weight, so the row stride is `d`, not `d / 2`.
+    device const uint8_t* w_row = W      + uint(row) * d;
+    device const bfloat*  s_row = scales + uint(row) * n_groups;
+    device const bfloat*  b_row = biases + uint(row) * n_groups;
+
+    const uint groups_per_step = 64u / kQwenHeadGroupSize;
+    const uint lanes_per_group = 32u / groups_per_step;
+    const uint steps = d / 64u;
+
+    float acc = 0.0f;
+    for (uint st = 0; st < steps; ++st) {
+        const uint g = st * groups_per_step + lane / lanes_per_group;
+        const float s = float(s_row[g]);
+        const float b = float(b_row[g]);
+        const uint i0 = st * 64u + lane * 2u;
+        const float q0 = float(uint(w_row[i0]));
+        const float q1 = float(uint(w_row[i0 + 1u]));
+        const float x0 = float(x[i0]);
+        const float x1 = float(x[i0 + 1u]);
+        acc = fma(s, q0 * x0 + q1 * x1, acc);
+        acc = fma(b, x0 + x1, acc);
+    }
+    return simd_sum(acc);
+}
+
+[[kernel, max_total_threads_per_threadgroup(256)]]
+kernel void qwen_lm_head_greedy_int8_rows_chunk_raw(
+    device const half*    x_normed  [[buffer(0)]],
+    device const uint8_t* W         [[buffer(1)]],
+    device const bfloat*  scales    [[buffer(2)]],
+    device const bfloat*  biases    [[buffer(3)]],
+    device       float*   summaries [[buffer(4)]],
+    constant     uint&    d         [[buffer(5)]],
+    constant     uint&    vocab     [[buffer(6)]],
+    uint tg_idx        [[threadgroup_position_in_grid]],
+    uint simd_lane_id  [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint simdgroups    [[simdgroups_per_threadgroup]]
+) {
+    threadgroup float partial_v[kQwenMaxSimdGroups];
+    threadgroup uint  partial_i[kQwenMaxSimdGroups];
+
+    const uint row = tg_idx * kQwenHeadRowsPerTG + simd_group_id;
+    float best_v = -INFINITY;
+    uint  best_i = 0xFFFFFFFFu;
+    if (row < vocab) {
+        const float z = qwen_head_int8_row(W, scales, biases, x_normed,
+                                           row, d, simd_lane_id);
+        // A row that came out non-finite loses rather than poisoning the
+        // reduction: `max` against NaN is not ordered.
+        if (simd_lane_id == 0 && isfinite(z)) {
+            best_v = z;
+            best_i = row;
+        }
+    }
+    if (simd_lane_id == 0) {
+        partial_v[simd_group_id] = best_v;
+        partial_i[simd_group_id] = best_i;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd_group_id == 0) {
+        const bool active = simd_lane_id < simdgroups;
+        const float v = active ? partial_v[simd_lane_id] : -INFINITY;
+        const uint idx = active ? partial_i[simd_lane_id] : 0xFFFFFFFFu;
+        const float v_all = simd_max(v);
+        // Ties go to the lower token id, in both stages, so the token this
+        // chain picks does not depend on how the vocabulary was split.
+        uint i_all = (v == v_all) ? idx : 0xFFFFFFFFu;
+        i_all = simd_min(i_all);
+        if (simd_lane_id == 0) {
+            device float* slot = summaries + tg_idx * kQwenHeadRowSummaryStride;
+            slot[0] = v_all;
+            slot[1] = as_type<float>(i_all);
+        }
+    }
+}
+
+[[kernel, max_total_threads_per_threadgroup(256)]]
+kernel void qwen_lm_head_greedy_int8_rows_reduce(
+    device const float* summaries  [[buffer(0)]],
+    device       uint*  out_token  [[buffer(1)]],
+    constant     uint&  row_groups [[buffer(2)]],
+    uint lid           [[thread_position_in_threadgroup]],
+    uint lsize         [[threads_per_threadgroup]],
+    uint simd_lane_id  [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint simdgroups    [[simdgroups_per_threadgroup]]
+) {
+    threadgroup float partial_v[kQwenMaxSimdGroups];
+    threadgroup uint  partial_i[kQwenMaxSimdGroups];
+
+    float best_v = -INFINITY;
+    uint  best_i = 0xFFFFFFFFu;
+    for (uint i = lid; i < row_groups; i += lsize) {
+        device const float* slot = summaries + i * kQwenHeadRowSummaryStride;
+        const float v = slot[0];
+        const uint idx = as_type<uint>(slot[1]);
+        if (v > best_v || (v == best_v && idx < best_i)) {
+            best_v = v;
+            best_i = idx;
+        }
+    }
+    const float v_simd = simd_max(best_v);
+    uint i_simd = (best_v == v_simd) ? best_i : 0xFFFFFFFFu;
+    i_simd = simd_min(i_simd);
+
+    if (simd_lane_id == 0) {
+        partial_v[simd_group_id] = v_simd;
+        partial_i[simd_group_id] = i_simd;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd_group_id == 0) {
+        const bool active = simd_lane_id < simdgroups;
+        const float v = active ? partial_v[simd_lane_id] : -INFINITY;
+        const uint idx = active ? partial_i[simd_lane_id] : 0xFFFFFFFFu;
+        const float v_all = simd_max(v);
+        uint i_all = (v == v_all) ? idx : 0xFFFFFFFFu;
+        i_all = simd_min(i_all);
+        if (simd_lane_id == 0) { out_token[0] = i_all; }
+    }
+}

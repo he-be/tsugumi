@@ -8,7 +8,7 @@ QAT・Vision・MTP に続く 4 つ目の大改修。
 プラン内で積み重なっていた追記の層 (§15 → §16 → §17) は畳んであり、
 **各文書は現在の結論だけを書く。**実測の経緯と数字は 10 番台の結果文書が持つ。
 
-**現在地 (2026-08-21 夜): カーネルは LM head を残して全部書け、本線が `Model.load` を通った。**
+**現在地 (2026-08-21 夜): Phase 2 のカーネルは全部書けた。本線は `Model.load` を通る。**
 Gated DeltaNet (`qwen_delta_rule`) は 2048 トークン後の状態が **CPU float32 の床と
 3 桁一致**、prefill 30 層 **125.7 ms** ([15](15-PHASE2-GDN.md))。その周辺 7 本
 (因果 `conv1d` + l2norm / 減衰ゲート / `RMSNormGated` / partial RoPE / 出力ゲート /
@@ -21,8 +21,9 @@ MTP と vision の実物も入っている ([16 §1](16-QUALITY.md))。
 **混在ビット幅は片づいた** ([18](18-MIXED-BITS.md)): 幅は manifest のスロットではなく
 **常駐索引からテンソルごとに導く**ことにし、本線の `oQ4e-g64` が `Model.load` を
 1,294 ms で通るようになった (`--qwen-open`)。形式は 1 バイトも変えていない。
-**残るカーネルは LM head だけ**で、本線の `lm_head` が 8-bit である以上
-**INT4 の specialization ではなく INT8 の chain**が要る ([17 §5](17-PHASE2-KERNELS.md))。
+**最後の 1 本だった LM head も書けた** ([19](19-LM-HEAD-INT8.md)): 本線の `lm_head` が
+8-bit なので INT4 の specialization ではなく **INT8 の chain**で、実物の語彙で
+1 トークン **4.0 ms / 134 GB/s**。`--qwen` の検査は 39 本すべて緑。
 **速度・ヒット率・TTFT の運用数字は依然 導出 か 未確認**で、そこは結線 (Phase 3) が要る。
 運用点 (スロット数・チャンク幅) は Gemma 4 の値をそのまま持ち越せない —
 理由は [05 §1](05-RISKS.md)、測り直しの手順は [04](04-PHASES.md) Phase 6。
@@ -72,6 +73,7 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 12 | [16-QUALITY.md](16-QUALITY.md) | **実測(手元)。**2 候補の平均 NLL (本線の決定) と、`in_proj_a` の実活性再測 (未決着) |
 | 13 | [17-PHASE2-KERNELS.md](17-PHASE2-KERNELS.md) | **実測(手元)。**`qwen.metal` の 7 本、負例 6 本を含む検査 29 本、fast math と減衰ゲート、conv のトークン分割 (50.0 → 21.9 ms)、LM head が INT8 だと分かった件 |
 | 14 | [18-MIXED-BITS.md](18-MIXED-BITS.md) | **実測(手元)。**混在ビット幅を索引から導く決定、Qwen 用の常駐スキーマ、負例 5 本、本線が開いた記録 |
+| 15 | [19-LM-HEAD-INT8.md](19-LM-HEAD-INT8.md) | **実測(手元)。**INT8 の LM head chain、負例 4 本、1 トークン 4.0 ms / 134 GB/s、天井が 79 → 71 tok/s になる話 |
 
 ## 表記
 

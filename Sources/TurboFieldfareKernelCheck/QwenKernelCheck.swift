@@ -25,7 +25,7 @@ import TurboFieldfare
 // これらの「もっともらしい間違い」を参照側に作って、**同じ GPU 出力が桁違いに
 // 落ちる**ことを確かめる。正例が通るだけでは物差しが働いている証明にならない。
 
-private enum QwenCheckError: Error {
+enum QwenCheckError: Error {
     case noCommandBuffer
     case dispatchFailed(String)
     case encodeRefused(String)
@@ -71,7 +71,7 @@ private func qSoftplus<T: QwenScalar>(_ x: T) -> T {
 // `TurboFieldfareValidationSupport` の同名の型は `normal()` を持たないので、
 // 検査どうしで同じ流れを再現できるようこちらにも置く (種から再現できること)。
 
-private struct QwenRNG {
+struct QwenRNG {
     var state: UInt64
     mutating func next() -> UInt64 {
         state &+= 0x9E37_79B9_7F4A_7C15
@@ -121,7 +121,7 @@ private func doubles<T: BinaryFloatingPoint>(_ values: [T]) -> [Double] {
 
 /// BF16 の学習済みベクトル。GPU に渡すビット列と、参照が使う**まったく同じ値**の
 /// float を一緒に作る (丸めの差をカーネルの誤差に混ぜないため)。
-private struct BF16Vector {
+struct BF16Vector {
     var bits: [UInt16]
     var values: [Float]
 
@@ -823,6 +823,9 @@ func runQwenKernelCheck(tokens: Int) throws -> [CaseResult] {
                                              relative(doubles(siluFloor), doubles(siluTruth)))))
     }
 
+    // ---- 8. INT8 の LM head chain (QwenHeadCheck.swift) ----------------------
+    results.append(contentsOf: try runQwenHeadCheck(context: context))
+
     return results
 }
 
@@ -959,4 +962,9 @@ func runQwenKernelBench(tokens: Int, iterations: Int) throws {
                                      seqLen: seqLen, numVHeads: heads)
         }
     }
+
+    // LM head だけは実物の語彙 (248,077 行 x 2048) で測る。ここは prefill の
+    // チャンクではなく **1 トークンあたり 1 回**なので、上の表とは意味が違う。
+    // 508 MB の確保が入るので最後に置く。
+    try runQwenHeadBench(context: context, iterations: iterations)
 }

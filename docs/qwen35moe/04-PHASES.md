@@ -9,7 +9,7 @@
 | --- | --- |
 | Phase 0 事実確定 | **ほぼ済み。**`gate_up` の順序・RMSNorm の `+1`・`conv1d` の軸順・`in_proj_a` の感度が確定 ([10](10-MLX4BIT-AUDIT.md))。**`oQ4e-g64` 側の照合も完了** ([12](12-OQ4E-G64-AUDIT.md))。**float32 参照器が動き、算式が上流実装と一致** ([14](14-REFERENCE.md))。**残: fixtures の絞り込みと 2048 トークン後の状態** |
 | Phase 1 変換 | **完了** ([13](13-PHASE1-REPACK.md))。`oQ4e-g64-baked` を repack し `--verify-install` が緑。20.49 GB / `expertStride 1,769,472` / 上流とバイト一致 |
-| Phase 2 カーネル | **LM head を除いて完了。**本命の `qwen_delta_rule` ([15](15-PHASE2-GDN.md)、prefill 30 層 **125.7 ms**) に続き、周辺 7 本が通った ([17](17-PHASE2-KERNELS.md)、検査 29 本すべて緑)。**残りは LM head だけで、それは INT4 ではなく INT8 の chain**だと分かった ([17 §5](17-PHASE2-KERNELS.md)) — 混在ビット幅 (#11) と同じ根 |
+| Phase 2 カーネル | **完了。**`qwen_delta_rule` ([15](15-PHASE2-GDN.md)、prefill 30 層 **125.7 ms**)、周辺 7 本 ([17](17-PHASE2-KERNELS.md))、**INT8 の LM head chain** ([19](19-LM-HEAD-INT8.md)、1 トークン 4.0 ms / 134 GB/s)。`--qwen` の検査は **39 本すべて緑**、うち 10 本は負例 |
 | Phase 3 以降 | **本線が `Model.load` を通るようになった** ([18](18-MIXED-BITS.md))。混在ビット幅は**索引から導く**で決着し、Qwen 用の常駐スキーマも入った。残るのは decode の結線 (#14) と INT8 の LM head (#15) |
 
 ---
@@ -65,8 +65,8 @@ attention と `in_proj_*` を int8 に上げる案 (+約 580 MB) を先に評価
 **周辺 7 本も同じ形で済んだ** ([17](17-PHASE2-KERNELS.md))。`--qwen` で 29 本、
 うち 6 本は「このモデルで静かに壊れる道」を参照側に作った**負例**
 (conv の軸順 / l2norm の eps / `1+w` / Gemma の RoPE の組 など)。
-**残るカーネルは LM head だけ**で、それは INT8 の chain を書く話に変わった
-([17 §5](17-PHASE2-KERNELS.md))。
+**LM head も書けた** ([19](19-LM-HEAD-INT8.md)): INT4 の specialization ではなく
+INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉じている。**
 
 ## Phase 3 — decode 結線
 
@@ -206,13 +206,15 @@ Qwen 固有の行を足すかは、そこで別途判断する。
    上限を述べるだけにした。`.gturbo` の形式は変えていない。Qwen 用の常駐
    スキーマ (`linear_attn` 9 本 / 倍幅の `q_proj` / 別テンソルの `lm_head`) と
    `--qwen-open` も入った
+15. ~~INT8 の LM head chain~~ → **完了。Phase 2 が閉じた** ([19](19-LM-HEAD-INT8.md))。
+   実物の語彙で 1 トークン **4.0 ms / 134 GB/s**。`vocab` に 248,077 を渡すだけで
+   未学習の 243 行は採点されない (マスクのコードは要らなかった)
 
 **次にやること:**
 
 | # | やること | 要るもの |
 | --- | --- | --- |
-| 15 | **INT8 の LM head chain** ([17 §5](17-PHASE2-KERNELS.md))。`vocab` は 248,077 を渡して未学習の 243 行を採点しない。幅は `Model.residentWeightBits` で引ける ([18 §1](18-MIXED-BITS.md)) | GPU |
-| 14 | **Phase 3 の結線** (`QwenForwardRunner` の decode 経路)。カーネルは LM head 以外揃い、モデルは開くようになった | GPU |
+| 14 | **Phase 3 の結線** (`QwenForwardRunner` の decode 経路)。**カーネルもモデルも揃った**ので、次はここ。出口は「固定プロンプトから 64 トークン、CPU float32 参照と完全一致」 | GPU |
 | 16 | **線形注意 30 層の締め方の判断** ([17 §4-2](17-PHASE2-KERNELS.md))。周辺まで数えると 159.4 ms で Phase 4 の出口条件を外れる。再帰カーネル単体は 125.7 ms で [05 §2](05-RISKS.md) #2 の内側 | ユーザー判断 |
 | 8 | `in_proj_a` の実活性再測を 200 トークン級の `--dump` でやり直す ([16 §2](16-QUALITY.md))。**本線は 8-bit なので、これは本線を止めない** | CPU |
 | 10 | fixtures を Phase 3 が要る層だけに絞る ([14 §5](14-REFERENCE.md))。**2048 トークン後の状態は 15 が合成入力で見たので、fixtures 側の宿題ではなくなった** | CPU |

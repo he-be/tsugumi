@@ -182,9 +182,10 @@ specialization を足す」と書いてあるが、**本線の `oQ4e-g64` の `e
 
 | | やること | 状態 |
 | --- | --- | --- |
-| a | INT8 の LM head chain | **着手できる。**#11 は片づいた ([18](18-MIXED-BITS.md))。幅は `Model.residentWeightBits` で引く |
+| a | INT8 の LM head chain | **書けた** ([19](19-LM-HEAD-INT8.md))。1 トークン 4.0 ms / 134 GB/s |
 | b | `qwen_qkv_epilogue` の 70 GB/s | 余地はあるが 10 層で 10.0 ms。後回し |
 | c | 実物の活性での再測 | Phase 3 の結線後 |
 | d | `qwen_silu_mul` / `qwen_moe_shared_gate` の結線先 | prefill / decode の MoE 経路 (Phase 3) |
 
-**Phase 2 で残っているカーネルは LM head だけ**になった。
+**Phase 2 で残っているカーネルは LM head だけ**になった → **書けた**
+([19](19-LM-HEAD-INT8.md))。Phase 2 は閉じている。
