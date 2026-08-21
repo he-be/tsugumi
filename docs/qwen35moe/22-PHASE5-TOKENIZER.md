@@ -163,15 +163,23 @@ tools) は**ID まで一致**し、その ID を復号し直した文字列も�
 | | swift-jinja | Python (`transformers`) |
 | --- | --- | --- |
 | 区切り | `{"a":1,"b":2}` | `{"a": 1, "b": 2}` |
-| キー順 | 辞書由来で**不定** | 挿入順 (`type` → `function`) |
+| キー順 | **昇順** (訂正、下) | 挿入順 (`type` → `function`) |
+| 非 ASCII | `\uXXXX` に逃がす | 逃がさない (`ensure_ascii=False`) |
+
+**キー順についての訂正 (2026-08-22、[23 §5-1](23-PHASE5-TOOLS.md)):** ここには
+当初「辞書由来で**不定**」と書いてあったが、それは間違いだった。swift-jinja は
+両端で並べ替える — `Value(any:)` が Swift の辞書を写すときにキーを昇順にし、
+`tojson` が `.sortedKeys` で書き出す。**どちらの実装も決定的で、綴りが 2 通り
+あるだけ**である。この訂正は設計に効く: 再描画が必ず昇順なので、
+ツール呼び出しの文法が引数を昇順で綴ってよい ([23 §2](23-PHASE5-TOOLS.md))。
 
 **トークン列は違う。**tools を使う経路は Phase 5 の出口条件に入っていない
 (ツール呼び出しのパーサと GBNF は未着手、§7) ので、検査は `<tools>` ブロックを
 **JSON として解析して比較**し、その外側は逐語で比較する形にした — 同じツール・
 同じフィールド・同じ値であることは言えて、**同じバイト列だとは言っていない。**
 
-**モデルはこのブロックを Python 側の書き方で学習している。**ツール経路に
-着手するときは、ここを揃えるか、揃えないことの影響を測るかの判断が要る。
+**モデルはこのブロックを Python 側の書き方で学習している。**影響の測定は
+Phase 6 に置いた ([23 §5-2](23-PHASE5-TOOLS.md))。
 
 ## 5. CLI — `RunQwen.swift`
 
@@ -237,10 +245,8 @@ sampler も投機も vision も Ornith 側が無い)。`RawCompletion` を共有
 
 **残したもの:**
 
-- **XML 形のツール呼び出し** (`<tool_call><function=…><parameter=…>`) のパーサと
-  GBNF ビルダ。`GemmaToolCallParser` / `ChatGrammarBuilder` の兄弟が要る。
-  `GrammarVocabulary` の piece 復元も ByteLevel 用に切り替える必要がある
-  (いまは Gemma の `▁`/`<0xXX>` 前提)。**§4-2 の JSON の食い違いはここで再訪する**
+- ~~**XML 形のツール呼び出し**のパーサと GBNF ビルダ、`GrammarVocabulary` の
+  ByteLevel 化~~ → **完了** ([23](23-PHASE5-TOOLS.md))
 - **sampler / 投機 / vision** は Ornith 側が無い。CLI は断る (§5)
 - **`--stop` の文字列**は効かない (トークン停止のみ)
 - **サーバー** ([03 §5](03-DESIGN.md)、Phase 8) は手つかず。prompt cache の

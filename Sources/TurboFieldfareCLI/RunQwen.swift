@@ -41,18 +41,26 @@ private struct QwenReasoningSplitter {
         self.insideReasoning = startsInsideReasoning
     }
 
-    /// Where `id`'s text belongs, and whether the marker itself should be
-    /// printed (it should not: it is framing, not content).
-    mutating func route(_ id: Int32) -> (channel: Channel, isMarker: Bool) {
+    /// Where `id`'s text belongs, and — for a marker — the marker's own
+    /// spelling, which is framing rather than content and is not printed.
+    ///
+    /// The spelling has to come back out because these markers are *not*
+    /// special tokens (`tokenizer.json` declares them `special: false`), so the
+    /// detokenizer emits them as text, preceded by whatever bytes it was
+    /// holding back from before them. Dropping the whole delta would drop those
+    /// bytes too — a codepoint that straddles the token in front of `</think>`
+    /// would vanish from the answer.
+    mutating func route(_ id: Int32) -> (channel: Channel, marker: String?) {
         if id == thinkStart {
             insideReasoning = true
-            return (.reasoning, true)
+            return (.reasoning, "<think>")
         }
         if id == thinkEnd {
+            // The held-back bytes belong to the reasoning that ends here.
             insideReasoning = false
-            return (.reasoning, true)
+            return (.reasoning, "</think>")
         }
-        return (insideReasoning ? .reasoning : .content, false)
+        return (insideReasoning ? .reasoning : .content, nil)
     }
 
     enum Channel { case reasoning, content }
@@ -192,8 +200,11 @@ func runQwen(args: Args,
         ) { _, id in
             if firstTokenAt == nil { firstTokenAt = Date() }
             let route = splitter.route(id)
-            let delta = detokenizer.push(id)
-            guard !route.isMarker, !delta.isEmpty else { return }
+            var delta = detokenizer.push(id)
+            if let marker = route.marker, delta.hasSuffix(marker) {
+                delta = String(delta.dropLast(marker.count))
+            }
+            guard !delta.isEmpty else { return }
             switch route.channel {
             case .reasoning:
                 reasoningText += delta

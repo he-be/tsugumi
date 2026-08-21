@@ -8,7 +8,7 @@ QAT・Vision・MTP に続く 4 つ目の大改修。
 プラン内で積み重なっていた追記の層 (§15 → §16 → §17) は畳んであり、
 **各文書は現在の結論だけを書く。**実測の経緯と数字は 10 番台の結果文書が持つ。
 
-**現在地 (2026-08-22 未明): CLI が日本語と英語で答えた (Phase 5 の出口)。**
+**現在地 (2026-08-22): Phase 5 が閉じた — CLI が答え、ツール呼び出しも通る。**
 Gated DeltaNet (`qwen_delta_rule`) は 2048 トークン後の状態が **CPU float32 の床と
 3 桁一致**、prefill 30 層 **125.7 ms** ([15](15-PHASE2-GDN.md))。その周辺 7 本
 (因果 `conv1d` + l2norm / 減衰ゲート / `RMSNormGated` / partial RoPE / 出力ゲート /
@@ -40,8 +40,18 @@ MTP と vision の実物も入っている ([16 §1](16-QUALITY.md))。
 `--qwen-tokenizer` の **223 本**は上流 `tokenizers` / `transformers` との
 突き合わせで、うち 4 本は負例。CLI は `RunQwen.swift` という別経路で、
 **推論 (`<think>`) は stderr、答えは stdout** に分かれる。
-**残るのは XML 形のツール呼び出しと GBNF** ([04](04-PHASES.md) 次の一手 #22)。
-**Gemma の既定 69 本と `swift test` の 1,297 件 (旧 1,282 + 新規 15) は緑のまま。**
+**Phase 5 の残りも片づいた** ([23](23-PHASE5-TOOLS.md)): XML 形の
+ツール呼び出しに `QwenToolCallParser` と `QwenToolCallGrammar` が入り、
+**テンプレート自身が描いた呼び出しを文法が受理し、パーサが同じ引数に戻す**
+(往復 7 検体)。生の文字列値は **`\n</parameter>` を含まない任意のテキスト**を
+13 状態で綴るので、`<b>bold</b>` のような引数が通る。`GrammarVocabulary` の
+piece も ByteLevel 用の入口を足した — Gemma の規則だと**落ちずに日本語が
+1 文字も通らなくなる**ので、負例で押さえてある。`--qwen-tools` は **36 本**、
+うち 6 本は負例。**[22 §4-2](22-PHASE5-TOKENIZER.md) の「swift-jinja の
+キー順は不定」は訂正した** — 昇順で、両方決定的である
+([23 §5-1](23-PHASE5-TOOLS.md))。
+**残るのはサーバー結線 (Phase 8) と CLI の `--tools`** ([04](04-PHASES.md))。
+**Gemma の既定 69 本と `swift test` の 1,329 件 (旧 1,297 + 新規 32) は緑のまま。**
 **速度・ヒット率・TTFT の運用数字は依然 導出 か 未確認** — 計測 (Phase 6) はこれから。
 運用点 (スロット数・チャンク幅) は Gemma 4 の値をそのまま持ち越せない —
 理由は [05 §1](05-RISKS.md)、測り直しの手順は [04](04-PHASES.md) Phase 6。
@@ -94,7 +104,8 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 15 | [19-LM-HEAD-INT8.md](19-LM-HEAD-INT8.md) | **実測(手元)。**INT8 の LM head chain、負例 4 本、1 トークン 4.0 ms / 134 GB/s、天井が 79 → 71 tok/s になる話 |
 | 16 | [20-PHASE3-DECODE.md](20-PHASE3-DECODE.md) | **実測(手元)。**decode の結線、トークンの一致、負例 5 本、実物で見えた 3 つの食い違い、再帰状態の置き場所 |
 | 17 | [21-PHASE4-PREFILL.md](21-PHASE4-PREFILL.md) | **実測(手元)。**55 トークンの参照 (Phase 3 が閉じた)、INT8 の QMM と検査 18 本、prefill の結線、チャンクをまたぐもの 3 つ、チャンク幅の時間 |
-| 18 | [22-PHASE5-TOKENIZER.md](22-PHASE5-TOKENIZER.md) | **実測(手元)。**ByteLevel のトークナイザと上流 jinja、上流との突き合わせ 223 本 (負例 4)、CLI の Ornith 経路、tools の JSON の食い違い |
+| 18 | [22-PHASE5-TOKENIZER.md](22-PHASE5-TOKENIZER.md) | **実測(手元)。**ByteLevel のトークナイザと上流 jinja、上流との突き合わせ 223 本 (負例 4)、CLI の Ornith 経路、tools の JSON の食い違い (キー順の記述は [23 §5-1](23-PHASE5-TOOLS.md) が訂正) |
+| 19 | [23-PHASE5-TOOLS.md](23-PHASE5-TOOLS.md) | **実測(手元)。**XML 形のツール呼び出しのパーサと GBNF、生の値の 13 状態、ByteLevel の piece 表、検査 36 本 (負例 6)、テンプレートとの往復で閉じたもの・残ったもの |
 
 ## 表記
 

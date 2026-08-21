@@ -74,8 +74,30 @@ public struct GrammarVocabulary: Sendable {
     /// 表を 1 本作る。**要求ごとに作らないこと** — `shared(for:)` を使うか、
     /// tokenizer の隣に 1 個持って毎要求に渡す。
     public init(_ tokenizer: GFTokenizer) {
-        let size = tokenizer.vocabSize
-        var pieces = [[UInt8]](repeating: [], count: size)
+        self.init(pieces: Self.gemmaPieces(tokenizer))
+    }
+
+    /// Ornith (Qwen 3.5-MoE) の piece 表。
+    ///
+    /// **piece の作り方が家族ごとに違う**ので、`GFTokenizer` 版の分岐ではなく
+    /// 別の入口にしてある。Gemma は `<0xXX>` の run だけがバイトで、それ以外は
+    /// metaspace `▁` を空白に直した綴りだった。Ornith は `decoder: ByteLevel` で
+    /// **通常トークンは全部バイト** (GPT-2 の byte↔unicode 表を逆に引く)、
+    /// **追加トークンだけが綴りそのもの** — `QwenDetokenizer` が採るのと同じ
+    /// 2 つの規則である (docs/qwen35moe/22-PHASE5-TOKENIZER.md §2)。
+    ///
+    /// 表を Gemma の規則で作ると、`こんにちは` の piece が `ãģĵãĤĵ…` になって
+    /// 文法は日本語の 1 文字も通さなくなる。落ちるのではなく**通らなくなる**
+    /// 種類の間違いなので、負例で押さえてある。
+    public init(_ tokenizer: QwenTokenizer) {
+        self.init(pieces: Self.qwenPieces(tokenizer))
+    }
+
+    /// ID 順の piece 表から派生する分をすべて組む。家族ごとに違うのは
+    /// `pieces` の作り方だけで、ここから先 (足切り・候補の採番・復号) は
+    /// 参照実装の `llama_grammar_apply_impl` と同じ 1 本である。
+    private init(pieces: [[UInt8]]) {
+        let size = pieces.count
         var candidates: [GrammarCandidate] = []
         var decodedCodePoints: [[UInt32]] = []
         var decodedPartials: [GrammarPartialUTF8] = []
@@ -88,17 +110,7 @@ public struct GrammarVocabulary: Sendable {
         baseWork.reserveCapacity(size)
 
         for id in 0..<size {
-            guard let token = tokenizer.tokenizer.convertIdToToken(id) else { continue }
-            // `<0xXX>` はそのバイト 1 個。それ以外は metaspace `▁` を空白に
-            // 直した綴り (`GemmaDecoding` の `Replace` 段)。特殊マーカーは
-            // 綴りがそのまま piece になる — 変換で消してはならない。
-            let piece: [UInt8]
-            if let byte = GemmaDecoding.byteValue(token) {
-                piece = [byte]
-            } else {
-                piece = Array(GemmaDecoding.fragment(token).utf8)
-            }
-            pieces[id] = piece
+            let piece = pieces[id]
             // 参照実装 `llama_grammar_apply_impl` と同じ足切り。
             guard !piece.isEmpty, piece[0] != 0 else { continue }
             let slot = candidates.count
@@ -119,6 +131,38 @@ public struct GrammarVocabulary: Sendable {
         self.baseWork = baseWork
     }
 
+    /// Gemma: `<0xXX>` はそのバイト 1 個、それ以外は metaspace `▁` を空白に
+    /// 直した綴り (`GemmaDecoding` の `Replace` 段)。特殊マーカーは綴りが
+    /// そのまま piece になる — 変換で消してはならない。
+    private static func gemmaPieces(_ tokenizer: GFTokenizer) -> [[UInt8]] {
+        var pieces = [[UInt8]](repeating: [], count: tokenizer.vocabSize)
+        for id in 0..<tokenizer.vocabSize {
+            guard let token = tokenizer.tokenizer.convertIdToToken(id) else { continue }
+            if let byte = GemmaDecoding.byteValue(token) {
+                pieces[id] = [byte]
+            } else {
+                pieces[id] = Array(GemmaDecoding.fragment(token).utf8)
+            }
+        }
+        return pieces
+    }
+
+    /// Ornith: 追加トークンは綴りそのもの、それ以外は byte↔unicode 表を
+    /// 逆に引いたバイト列。表に無い文字を含むトークンは piece 無し (=
+    /// 文法が常に拒む) にする — この語彙には無いので、あれば破損である。
+    private static func qwenPieces(_ tokenizer: QwenTokenizer) -> [[UInt8]] {
+        var pieces = [[UInt8]](repeating: [], count: tokenizer.vocabSize)
+        for id in 0..<tokenizer.vocabSize {
+            guard let token = tokenizer.token(for: Int32(id)) else { continue }
+            if tokenizer.isAddedToken(Int32(id)) {
+                pieces[id] = Array(token.utf8)
+            } else if let bytes = ByteLevelDecoding.bytes(of: token) {
+                pieces[id] = bytes
+            }
+        }
+        return pieces
+    }
+
     /// トークン 1 個の piece。範囲外の ID は空バイト列 (= 文法が常に拒む)。
     public func piece(for tokenID: Int32) -> [UInt8] {
         guard tokenID >= 0, Int(tokenID) < pieces.count else { return [] }
@@ -130,6 +174,20 @@ public struct GrammarVocabulary: Sendable {
     /// してあるだけで、通常の経路は既定値でよい。
     public static func shared(for tokenizer: GFTokenizer,
                               identity: String = GFTokenizer.modelID) -> GrammarVocabulary {
+        cacheLock.lock()
+        defer { cacheLock.unlock() }
+        if let existing = cache[identity], existing.count == tokenizer.vocabSize {
+            return existing
+        }
+        let built = GrammarVocabulary(tokenizer)
+        cache[identity] = built
+        return built
+    }
+
+    /// 同じ約束の Ornith 版。鍵は既定で別 (`QwenTokenizer.modelID`) なので、
+    /// 1 プロセスに両家族が居ても取り違えない。
+    public static func shared(for tokenizer: QwenTokenizer,
+                              identity: String = QwenTokenizer.modelID) -> GrammarVocabulary {
         cacheLock.lock()
         defer { cacheLock.unlock() }
         if let existing = cache[identity], existing.count == tokenizer.vocabSize {

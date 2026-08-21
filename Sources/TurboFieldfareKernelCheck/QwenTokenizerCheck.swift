@@ -298,10 +298,13 @@ func runQwenTokenizerCheck(modelPath: String, fixturePath: String?) async throws
     //    The tool case is the one exception, and it is a real finding rather
     //    than a tolerance: `tool | tojson` is the *host's* JSON writer, and the
     //    two hosts disagree on things JSON does not define — swift-jinja emits
-    //    compact separators and, because the spec arrives as a dictionary,
-    //    unordered keys; Python emits `", "` / `": "` and keeps insertion
-    //    order. The tokens differ, so the case compares the `<tools>` block as
-    //    parsed JSON and everything around it verbatim (§`toolsBlockCases`).
+    //    compact separators and ascending key order (it sorts at both ends:
+    //    `Value(any:)` on the way in, `.sortedKeys` on the way out); Python
+    //    emits `", "` / `": "` and keeps insertion order. Both are
+    //    deterministic; there are two fixed spellings, not one fixed and one
+    //    arbitrary (`docs/qwen35moe/23-PHASE5-TOOLS.md` §5-1). The tokens
+    //    differ, so the case compares the `<tools>` block as parsed JSON and
+    //    everything around it verbatim (§`toolsBlockCases`).
     for item in fixture.chat {
         // The fixture's tool case is rendered with a tool spec; the Swift side
         // gets the same one from `toolFixture`.

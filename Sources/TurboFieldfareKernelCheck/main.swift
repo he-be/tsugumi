@@ -1412,6 +1412,16 @@ if let index = arguments.firstIndex(of: "--qwen-tokenizer"), index + 1 < argumen
     exit(ok ? 0 : 1)
 }
 
+// `--qwen-tools <model.gturbo|tokenizer dir>` checks the XML tool call over the
+// real vocabulary (QwenToolsCheck.swift): the ByteLevel piece table the grammar
+// reads, `QwenToolCallGrammar` on top of it, and `QwenToolCallParser` reading
+// the result back. The centrepiece is that the *template's own* rendering of a
+// call is accepted by the grammar and parses back to the arguments it was
+// rendered from. `docs/qwen35moe/04-PHASES.md` 次の一手 #22.
+if let index = arguments.firstIndex(of: "--qwen-tools"), index + 1 < arguments.count {
+    exit(try await runQwenToolsCheck(modelPath: arguments[index + 1]) ? 0 : 1)
+}
+
 // `--qwen-decode <model.gturbo>` runs the decode path over the real weights and
 // compares the greedy tokens with the CPU float32 reference
 // (QwenDecodeCheck.swift). This is Phase 3's exit condition: every kernel it

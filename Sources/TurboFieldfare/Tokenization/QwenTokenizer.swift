@@ -48,6 +48,11 @@ public enum QwenTokenizerError: Error, CustomStringConvertible {
 /// nothing runs HF's `clean_up_tokenization_spaces` pass (Ornith's config turns
 /// it off anyway, unlike Gemma's, which omits the key and so defaults it on).
 public struct QwenTokenizer: @unchecked Sendable {
+    /// The checkpoint this loader is pinned to. Used as a cache key where a
+    /// process could hold both families' tables at once
+    /// (`GrammarVocabulary.shared(for:)`).
+    public static let modelID = "ornith-ai/Ornith-1.5-35B-A3B"
+
     /// What a prompt cache would have to agree on: the framing is the
     /// checkpoint's own `chat_template.jinja`, rendered by swift-jinja.
     public static let chatTemplateIdentity = "ornith-1.5-bundled-jinja-v1"
