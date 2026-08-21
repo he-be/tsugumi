@@ -164,12 +164,15 @@ Qwen 固有の行を足すかは、そこで別途判断する。
    ([12 §1](12-OQ4E-G64-AUDIT.md))
 3. ~~router のビット幅~~ → **完了。BF16。公式版 (int8) と違い、MTP 経路に効く**
    ([12 §4](12-OQ4E-G64-AUDIT.md))
-4. **`q_norm` への `1/16` の焼き込み** ([03 §1-1](03-DESIGN.md))。どちらの候補でも要る
+4. ~~`q_norm` への `1/16` の焼き込み~~ → **完了。**差分シャード 1 枚を足す形で、
+   **無損失** (2 のべき乗なので指数だけが動く) を検査つきで
+   ([12 §5](12-OQ4E-G64-AUDIT.md))
 5. **名前寄せ** ([03 §1-2](03-DESIGN.md)) — `.mlp.switch_mlp.` を `routedExpertRole` に当てる 1 文字列
 6. `.gturbo` への repack を通す
 
-道具: `Scripts/qwen35/audit_checkpoint.py` (numpy だけ、GPU 不要)。
+道具: `Scripts/qwen35/audit_checkpoint.py` / `bake_snapshot.py` (numpy だけ、GPU 不要)。
 `--bf16` を付けると上流 bf16 の抽出と突き合わせる。
+repack の入力は焼き込み済みの `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-baked`。
 
 **GPU が要る (ここから先は指示待ち):**
 

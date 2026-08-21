@@ -193,6 +193,16 @@ NORM_FAMILIES = {
 }
 
 
+def bake_factors(ckpt: Checkpoint) -> dict[str, float]:
+    """`bake_snapshot.py` が焼いたテンソルと係数。上流と比べる前に割り戻す。"""
+    path = ckpt.root / "bake_manifest.json"
+    if not path.exists():
+        return {}
+    manifest = json.loads(path.read_text())
+    factor = float(manifest["factor"])
+    return {name: factor for name in manifest["tensors"]}
+
+
 def audit_norms(ckpt: Checkpoint, bf16: Checkpoint | None, report: dict) -> None:
     print("## norm 規約 (`1+w` が焼かれているか)")
     header = f"  {'family':26s} {'本':>3s} {'mean':>9s} {'min':>9s} {'max':>9s}"
@@ -200,6 +210,9 @@ def audit_norms(ckpt: Checkpoint, bf16: Checkpoint | None, report: dict) -> None
         header += f" {'照合':>3s} {'mean 差':>10s} {'判定':>8s}"
     print(header)
     out = {}
+    baked = bake_factors(ckpt)
+    if baked:
+        print(f"  ({len(baked)} 本は bake_manifest.json の係数で割り戻して照合する)")
     for family, pattern in NORM_FAMILIES.items():
         names = sorted(n for n in ckpt.tensors if re.match(pattern, n))
         if not names:
@@ -208,6 +221,7 @@ def audit_norms(ckpt: Checkpoint, bf16: Checkpoint | None, report: dict) -> None
         means = np.array([float(v.mean()) for v in values])
         row = {
             "tensors": len(names),
+            "baked": sum(1 for n in names if n in baked),
             "mean": float(means.mean()),
             "min": float(min(float(v.min()) for v in values)),
             "max": float(max(float(v.max()) for v in values)),
@@ -220,12 +234,15 @@ def audit_norms(ckpt: Checkpoint, bf16: Checkpoint | None, report: dict) -> None
                 other = upstream_name(name)
                 if other not in bf16:
                     continue
-                diffs.append(float(val.mean() - bf16.f32(other).mean()))
+                unbaked = val / baked[name] if name in baked else val
+                diffs.append(float(unbaked.mean() - bf16.f32(other).mean()))
             if diffs:
                 delta = float(np.mean(diffs))
                 # +1 が焼かれていれば差は 1、素のままならビット一致で 0。
                 verdict = "焼済み" if abs(delta - 1.0) < 5e-3 else (
                     "素のまま" if abs(delta) < 5e-4 else "不明")
+                if any(n in baked for n in names):
+                    verdict += "*"
                 row.update(compared=len(diffs), mean_delta=delta, verdict=verdict)
                 line += f" {len(diffs):3d} {delta:10.6f} {verdict:>8s}"
             else:
