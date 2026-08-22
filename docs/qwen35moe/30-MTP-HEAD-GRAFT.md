@@ -488,7 +488,7 @@ expert-0 (**4.2 MB**) を HTTP Range で取って毎回引き直せる。実行�
 
 **次の一手 (どれもユーザー判断):**
 
-- **幅 2 の 1 パス費用と GDN snapshot の実費を測る** ([33 §3-4](33-MTP-ACCEPTANCE.md))。
+- **幅 2 の 1 パス費用と GDN snapshot の実費を測る** ([33 §3-8](33-MTP-ACCEPTANCE.md))。
   Phase 7 の decode 高速化としての**符号はここで決まる**。
 - [29](29-MTP-PREFETCH-OUTLOOK.md) の在庫を、運用幅 k=2 の下で再判定する。
 

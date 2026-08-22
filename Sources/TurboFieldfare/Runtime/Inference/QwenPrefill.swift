@@ -331,11 +331,17 @@ extension QwenForwardRunner {
                 "prefill of \(tokens.count) from position \(kv.position) "
                 + "exceeds maxContext \(maxContext)")
         }
-        let ctxScratch = try prefillContext(width: min(chunkWidth, tokens.count))
+        // **要求された幅で切る。**scratch は「その幅を載せられる大きさ」でしかない
+        // ので、前の呼び出しが作った広い scratch を使い回すのは正しいが、
+        // *切り方*までそれに合わせてはいけない。ここが `ctxScratch.width` だった
+        // 間、1 プロセスの中で幅を変えても 2 本目以降は最初の幅で走っていた
+        // (`docs/qwen35moe/35-PREFILL-CHUNK-WIDTH.md`)。
+        let width = min(chunkWidth, tokens.count)
+        let ctxScratch = try prefillContext(width: width)
         var token: Int32 = 0
         var offset = 0
         while offset < tokens.count {
-            let count = min(ctxScratch.width, tokens.count - offset)
+            let count = min(width, tokens.count - offset)
             let last = offset + count == tokens.count
             token = try prefillChunk(Array(tokens[offset..<(offset + count)]),
                                      scratch: ctxScratch,

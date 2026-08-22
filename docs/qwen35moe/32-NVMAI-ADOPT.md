@@ -70,10 +70,13 @@ blit で退避してから、logits 用には `prefillFinalRowHead` が **norm �
 本ランタイムへの写像は NVMAI より**簡単**になる:
 `RecurrentStateManager` は 30 層ぶんを `stateBuffer` / `convBuffer` の
 **連続 2 本**で持っているので (NVMAI は層ごとに別バッファ)、影も 2 本、
-blit も 2 回で済む。費用は固定 62.8 MiB + conv tail ぶんのコピー 1 回/棄却。
-`qwen_delta_rule` の decode 経路に「T=2 のうち 1 行目終了時の状態を
-第 2 の出力先に書く」引数を 1 つ足すのが実装のほぼ全部で、
-これは [15](15-PHASE2-GDN.md) の状態出力の複製である。
+blit も 2 回で済む。
+
+**→ blit すら要らないと分かった ([33 §3-6](33-MTP-ACCEPTANCE.md)、実測)。**
+`qwen_delta_rule` は `stateIn` / `stateOut` を元から別引数で取るので、
+投機行の出力先を第 2 バッファにして**受理時にポインタを入れ替える**だけでよい
+(コピー 0 回、棄却時は何もしない)。カーネルへの引数追加も不要。払うのは
+T=2 を T=1 の 2 回に割る代償 **0.28%** だけである。**番号の大きい 33 が正。**
 
 ### 1-3. ループの形 — 2 トークン検証バッチ
 
@@ -173,6 +176,12 @@ NVMAI の解は巻き戻さない: **生成が終わった時点の状態を丸�
 - **publish 条件**: `endOfTurn` / `toolCalls` / `maxTokens` で止まった
   完全な 1 ターンのみ。stop-string で切ったものは載せない
 - **保管**: `ServerPromptStateStore` がメモリ層 (既定 1 エントリ) を持つ
+
+**→ 取り分と欠品は [34](34-PROMPT-CACHE-ESTIMATE.md) が机上で出した。**
+以下の読み替えのうち **(a) は訂正される** — capture/restore に**コピーは要らない**
+([34 §3-1](34-PROMPT-CACHE-ESTIMATE.md))。「前回までのトークン数 × prefill の ms/tok」
+という取り分の式も、prefill に **1.30 秒の床**があるぶん過大である
+([34 §1-1](34-PROMPT-CACHE-ESTIMATE.md))。**番号の大きい 34 が正。**
 
 本ランタイムへの読み替え:
 

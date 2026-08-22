@@ -359,3 +359,198 @@ func runGatedDeltaNetBench(tokens: Int, iterations: Int) throws {
         }
     }
 }
+
+// MARK: - 投機デコード幅 2 の再帰状態の実費 (Phase 7 の M0)
+//
+// `docs/qwen35moe/33-MTP-ACCEPTANCE.md` §3-4 の 2 番目。**カーネルを 1 本も
+// 書かずに**、幅 2 の検証パスが再帰状態に払う固定費を出す。
+//
+// 33 §3-3 が「符号を握るのは受理率ではなくパスあたりの固定費」と書いた、
+// その固定費の主犯が本節の対象である。NVMAI は同型のモデルで、和集合だけの
+// 予測 0.993 に対し実測 0.85 — **差の 16% が固定費**だった
+// (`32-NVMAI-ADOPT.md` §1-4)。当方の固定費がそれより軽いかどうかが論点。
+//
+// 測るのは 3 つ:
+//
+//   1. **restore** — 棄却時に影バッファを本物へ書き戻す blit。30 層ぶんの
+//      state (FP32) と conv (FP16) をまとめて 1 回。`RecurrentStateManager` は
+//      連続 2 本なので blit も 2 回で済む (`32-NVMAI-ADOPT.md` §1-2)
+//   2. **snapshot** — 確定行の直後の状態を取る手。NVMAI はカーネルに第 2 の
+//      状態出力を足しているが、**カーネルを触らない実装もある**: T=2 を
+//      T=1 の 2 回に割れば、境目の状態はそのまま本物のバッファに立つ。
+//      その代償 `2×T1 − T2` をここで測る
+//   3. **幅 2 の再帰層そのもの** — T=1 と T=2 の差。33 §3-2 は「パス全体が
+//      エキスパート和集合比 (1.554〜1.585 倍) で伸びる」という悲観で組んで
+//      あるが、**再帰層はエキスパートを 1 枚も読まない**ので、その仮定が
+//      どれだけ悲観かがここで分かる
+//
+// 腕は交互に取る (`32-NVMAI-ADOPT.md` §5-1 の interleaved A/B)。逐次スイープは
+// 前の腕が温めたものを次の腕の手柄にする。
+func runQwenSpeculativeStateBench(iterations: Int, cooldownSeconds: Double) throws {
+    let context = try MetalContext()
+    let kernel = try GatedDeltaNet(context: context)
+    let device = context.device
+
+    // `scratch/ornith-oq4e-g64.gturbo/manifest.json` の linearAttention と同じ:
+    // layerCount 30 / numValueHeads 32 / valueHeadDim 128 / keyHeadDim 128 /
+    // numKeyHeads 16 / convKernelDim 4。`RecurrentStateManager` の算式をそのまま。
+    let layerCount = 30
+    let numKHeads = 16, numVHeads = 32, keyHeadDim = 128, valueHeadDim = 128
+    let convKernelDim = 4
+    let stateBytesPerLayer = numVHeads * valueHeadDim * keyHeadDim * MemoryLayout<Float>.size
+    let convChannels = 2 * numKHeads * keyHeadDim + numVHeads * valueHeadDim
+    let convBytesPerLayer = (convKernelDim - 1) * convChannels * MemoryLayout<Float16>.size
+    let stateBytes = stateBytesPerLayer * layerCount
+    let convBytes = convBytesPerLayer * layerCount
+    let totalBytes = stateBytes + convBytes
+
+    print("# 投機デコード幅 2 の再帰状態の実費 (測定、n=\(iterations) の中央値、交互)")
+    print("  30 層 / Hk=\(numKHeads) Hv=\(numVHeads) Dk=Dv=\(keyHeadDim) / conv 窓 \(convKernelDim)")
+    print(String(format: "  state %d B (%.1f MiB) + conv %d B (%.2f MiB) = **%d B (%.1f MiB)**",
+                 stateBytes, Double(stateBytes) / 1048576.0,
+                 convBytes, Double(convBytes) / 1048576.0,
+                 totalBytes, Double(totalBytes) / 1048576.0))
+    print(String(format: "  クールダウン %.0f 秒", cooldownSeconds))
+
+    guard let stateSrc = device.makeBuffer(length: stateBytes, options: .storageModeShared),
+          let stateDst = device.makeBuffer(length: stateBytes, options: .storageModeShared),
+          let convSrc = device.makeBuffer(length: convBytes, options: .storageModeShared),
+          let convDst = device.makeBuffer(length: convBytes, options: .storageModeShared) else {
+        throw GDNCheckError.dispatchFailed("影バッファを確保できない")
+    }
+    memset(stateSrc.contents(), 0x3F, stateBytes)
+    memset(convSrc.contents(), 0x3C, convBytes)
+
+    // T=1 (通常の decode) と T=2 (検証パス) を同じ入力の形で用意する。
+    let shape1 = GDNShape(seqLen: 1), shape2 = GDNShape(seqLen: 2)
+    let in1 = makeGDNInputs(shape1, seed: 0x1234), in2 = makeGDNInputs(shape2, seed: 0x1234)
+    let q1 = buffer(device, in1.q), k1 = buffer(device, in1.k), v1 = buffer(device, in1.v)
+    let g1 = buffer(device, in1.g), b1 = buffer(device, in1.beta), s1 = buffer(device, in1.state0)
+    let y1 = device.makeBuffer(length: shape1.vCount * MemoryLayout<Float16>.size,
+                               options: .storageModeShared)!
+    let q2 = buffer(device, in2.q), k2 = buffer(device, in2.k), v2 = buffer(device, in2.v)
+    let g2 = buffer(device, in2.g), b2 = buffer(device, in2.beta), s2 = buffer(device, in2.state0)
+    let y2 = device.makeBuffer(length: shape2.vCount * MemoryLayout<Float16>.size,
+                               options: .storageModeShared)!
+
+    func timeGPU(_ body: (MTLCommandBuffer) throws -> Void) throws -> Double {
+        guard let commandBuffer = context.queue.makeCommandBuffer() else {
+            throw GDNCheckError.noCommandBuffer
+        }
+        try body(commandBuffer)
+        commandBuffer.commit()
+        commandBuffer.waitUntilCompleted()
+        if let error = commandBuffer.error { throw GDNCheckError.dispatchFailed("\(error)") }
+        return (commandBuffer.gpuEndTime - commandBuffer.gpuStartTime) * 1e3
+    }
+
+    func blit(_ commandBuffer: MTLCommandBuffer) throws {
+        guard let encoder = commandBuffer.makeBlitCommandEncoder() else {
+            throw GDNCheckError.dispatchFailed("blit encoder が取れない")
+        }
+        encoder.copy(from: stateSrc, sourceOffset: 0, to: stateDst,
+                     destinationOffset: 0, size: stateBytes)
+        encoder.copy(from: convSrc, sourceOffset: 0, to: convDst,
+                     destinationOffset: 0, size: convBytes)
+        encoder.endEncoding()
+    }
+
+    func deltaRule(_ commandBuffer: MTLCommandBuffer, seqLen: Int,
+                   _ block: GatedDeltaNet.TimeBlock, dispatches: Int) {
+        for _ in 0..<dispatches {
+            _ = kernel.encode(commandBuffer: commandBuffer,
+                              q: seqLen == 1 ? q1 : q2, k: seqLen == 1 ? k1 : k2,
+                              v: seqLen == 1 ? v1 : v2, g: seqLen == 1 ? g1 : g2,
+                              beta: seqLen == 1 ? b1 : b2,
+                              stateIn: seqLen == 1 ? s1 : s2,
+                              y: seqLen == 1 ? y1 : y2,
+                              stateOut: seqLen == 1 ? s1 : s2,
+                              seqLen: seqLen,
+                              numKHeads: numKHeads, numVHeads: numVHeads,
+                              keyHeadDim: keyHeadDim, valueHeadDim: valueHeadDim,
+                              timeBlock: block)
+        }
+    }
+
+    var blitSamples: [Double] = []
+    var memcpySamples: [Double] = []
+    var t1: [GatedDeltaNet.TimeBlock: [Double]] = [:]
+    var t2: [GatedDeltaNet.TimeBlock: [Double]] = [:]
+    var t1x2: [GatedDeltaNet.TimeBlock: [Double]] = [:]
+
+    for iteration in 0..<iterations {
+        if iteration > 0, cooldownSeconds > 0 { Thread.sleep(forTimeInterval: cooldownSeconds) }
+        blitSamples.append(try timeGPU(blit))
+
+        // storageModeShared なので CPU からも同じバイトを写せる。GPU を 1 度も
+        // 起こさない道があるかどうかは、棄却のたびに払う費用として意味がある。
+        let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        memcpy(stateDst.contents(), stateSrc.contents(), stateBytes)
+        memcpy(convDst.contents(), convSrc.contents(), convBytes)
+        memcpySamples.append(Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6)
+
+        for block in GatedDeltaNet.TimeBlock.allCases {
+            t1[block, default: []].append(
+                try timeGPU { deltaRule($0, seqLen: 1, block, dispatches: layerCount) })
+            t2[block, default: []].append(
+                try timeGPU { deltaRule($0, seqLen: 2, block, dispatches: layerCount) })
+            t1x2[block, default: []].append(
+                try timeGPU { deltaRule($0, seqLen: 1, block, dispatches: layerCount * 2) })
+        }
+    }
+
+    func median(_ values: [Double]) -> Double {
+        let sorted = values.sorted()
+        return sorted[sorted.count / 2]
+    }
+
+    let blitMs = median(blitSamples)
+    let memcpyMs = median(memcpySamples)
+    print("")
+    print("## 1. 影バッファの写し (30 層ぶんを 1 回)")
+    print("  手                     ms      実効 GB/s (読み+書き)")
+    print(String(format: "  blit (GPU)      %9.3f  %12.1f", blitMs,
+                 Double(totalBytes * 2) / (blitMs * 1e-3) / 1e9))
+    print(String(format: "  memcpy (CPU)    %9.3f  %12.1f", memcpyMs,
+                 Double(totalBytes * 2) / (memcpyMs * 1e-3) / 1e9))
+
+    print("")
+    print("## 2. 再帰層 30 層 — 幅 1 と幅 2")
+    print("      TB     T=1 (ms)    T=2 (ms)   T=2/T=1   T=1×2 (ms)   割る代償 (ms)")
+    for block in GatedDeltaNet.TimeBlock.allCases {
+        let a = median(t1[block] ?? [0]), b = median(t2[block] ?? [0])
+        let c = median(t1x2[block] ?? [0])
+        print("\(String(format: "%8d", block.rawValue))"
+              + "\(String(format: "%13.3f", a))\(String(format: "%12.3f", b))"
+              + "\(String(format: "%10.3f", b / a))"
+              + "\(String(format: "%13.3f", c))\(String(format: "%16.3f", c - b))")
+    }
+
+    // 期待値は 33 §2-1 の受理率で重み付けする。棄却 = 1 − P1。
+    let rejectRate = 1.0 - 0.7870
+    let decodeMsPerToken = 49.98   // `27-PHASE6-THROUGHPUT.md` §2 の重ね腕 (m.json)
+    let snapshotBlit = blitMs
+    let restore = rejectRate * blitMs
+    print("")
+    print("## 3. 期待値 (**導出**) — 1 パスあたり")
+    print("  受理率 P1 = 78.70% (`33-MTP-ACCEPTANCE.md` §2-1)、棄却 "
+          + String(format: "%.1f%%", rejectRate * 100))
+    print("  decode 1 パス = " + String(format: "%.2f ms/tok", decodeMsPerToken)
+          + " (`27-PHASE6-THROUGHPUT.md` §2)")
+    print("")
+    print("  実装                          snapshot   restore     合計    パス比")
+    print(String(format: "  blit で写す                 %8.3f  %8.3f %8.3f  %7.2f%%",
+                 snapshotBlit, restore, snapshotBlit + restore,
+                 100.0 * (snapshotBlit + restore) / decodeMsPerToken))
+    for block in GatedDeltaNet.TimeBlock.allCases {
+        let split = median(t1x2[block] ?? [0]) - median(t2[block] ?? [0])
+        print(String(format: "  T=2 を T=1×2 に割る (TB%2d)  %8.3f  %8.3f %8.3f  %7.2f%%",
+                     block.rawValue, split, restore, split + restore,
+                     100.0 * (split + restore) / decodeMsPerToken))
+    }
+    print("")
+    print("  比較対象: NVMAI の固定費は和集合予測との差 **16%** "
+          + "(`32-NVMAI-ADOPT.md` §1-4 / `33-MTP-ACCEPTANCE.md` §3-3)")
+    print("  **これは再帰状態ぶんだけ**である。KV カーソル・幅 2 の頭・"
+          + "占有率低下は別勘定 (33 §3-4 の 1 と 3)")
+}

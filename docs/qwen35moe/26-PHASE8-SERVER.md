@@ -141,6 +141,26 @@ completed in 4.3s prompt=16 cached=0 completion=32 finish=stop
   ので、生きている状態 1 本 (62.8 MiB、`QwenForwardRunner` の中) だけが残る。
   DEV-3 の「生成スロットは 1 本」がそれを許している
 
+**2026-08-22 追記 — 「無い」の根拠は半分だけ正しい。**
+[32 §2](32-NVMAI-ADOPT.md) が持ち込んだ snapshot-restore 型
+(「巻き戻さない。次の要求が**前回の厳密な延長**のときだけ続きから走る」) なら
+再帰状態と両立する。[34](34-PROMPT-CACHE-ESTIMATE.md) が机上で出したところでは:
+
+- **取り分は最大 9.2 秒** (長文文脈の 2 ターン目、TTFT 10.6 → 1.5 秒)。
+  短いチャットの 2 ターン目で 0.9 秒、ツールループ 1 ホップで 1.3 秒
+  ([34 §1](34-PROMPT-CACHE-ESTIMATE.md)、**導出**)
+- **「延長のみ」は既にコードが言っている** — `maximumSafeRewind` は再帰層が
+  1 本でもあれば 0 を返し (`KVCacheManager.swift:283-289`)、
+  `ServerPromptCache.match` はそれを要求する (`ServerPromptCache.swift:239`)。
+  **新しい規則を書く必要は無い** ([34 §4-1](34-PROMPT-CACHE-ESTIMATE.md))
+- **本節の勘定は「無かった」のままでよい。**その場保持型なら追加は
+  **0 バイト**である ([34 §2](34-PROMPT-CACHE-ESTIMATE.md))
+- 上の 2 行目「ランナーは要求ごとに `reset()` する」が変える対象
+  (`QwenServerSession.swift:169` の無条件 `runner.reset()`)
+
+**着手はしていない。判断はユーザー** ([04](04-PHASES.md) #31)。
+**番号の大きい [34](34-PROMPT-CACHE-ESTIMATE.md) が正。**
+
 ### 4-4. 投機 — 起動時に断る
 
 `--draft-block-size 4` は**リスナーが開く前に** usage で落ちる

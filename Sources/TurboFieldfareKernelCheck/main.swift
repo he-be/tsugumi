@@ -1352,6 +1352,26 @@ let verifyCold = arguments.contains("--verify-cold")
 // have nothing to say about the pass this run is here to check.
 let modelOnly = arguments.contains("--model-only") || verifyBlockModel != nil
 
+// `--qwen-state-bench` times what a width-2 speculative pass pays on the 30
+// recurrent layers: the shadow-buffer copy (restore) and the two ways of
+// taking the snapshot. No model and no checkpoint — the geometry is the
+// manifest's. `docs/qwen35moe/33-MTP-ACCEPTANCE.md` §3-4 (2).
+if arguments.contains("--qwen-state-bench") {
+    var stateIterations = 20
+    if let index = arguments.firstIndex(of: "--qwen-state-bench-iterations"),
+       index + 1 < arguments.count, let value = Int(arguments[index + 1]), value > 0 {
+        stateIterations = value
+    }
+    var stateCooldown = 0.0
+    if let index = arguments.firstIndex(of: "--qwen-state-bench-cooldown"),
+       index + 1 < arguments.count, let value = Double(arguments[index + 1]), value >= 0 {
+        stateCooldown = value
+    }
+    try runQwenSpeculativeStateBench(iterations: stateIterations,
+                                     cooldownSeconds: stateCooldown)
+    exit(0)
+}
+
 // `--gdn` runs the Gated DeltaNet checks (GatedDeltaNetCheck.swift): the
 // recurrence that carries 30 of Qwen3.5-MoE's 40 layers, against a CPU
 // reference at two precisions. No model and no checkpoint — the inputs are
@@ -1504,10 +1524,20 @@ if let index = arguments.firstIndex(of: "--qwen-prefill-bench"), index + 1 < arg
        let value = Int(arguments[i + 1]), value > 0 {
         tokens = value
     }
-    var chunk = 512
-    if let i = arguments.firstIndex(of: "--qwen-prefill-bench-chunk"), i + 1 < arguments.count,
-       let value = Int(arguments[i + 1]), value > 0 {
-        chunk = value
+    // カンマ区切りで複数の腕を渡せる (`--qwen-prefill-bench-chunk 1,2`)。
+    // 2 つ以上あると **1 プロセスの中で交互に**流す — 逐次スイープはページ
+    // キャッシュの温めを次の腕の手柄にする (`docs/qwen35moe/32-NVMAI-ADOPT.md` §5-1)。
+    var chunks = [512]
+    if let i = arguments.firstIndex(of: "--qwen-prefill-bench-chunk"), i + 1 < arguments.count {
+        let parsed = arguments[i + 1].split(separator: ",").compactMap { Int($0) }.filter { $0 > 0 }
+        if !parsed.isEmpty { chunks = parsed }
+    }
+    // `--dump-tokens` の出力を渡すと本物のトークン列を流す
+    // (`docs/qwen35moe/33-MTP-ACCEPTANCE.md` §3-7 の測定 1)。
+    var tokenFile: String?
+    if let i = arguments.firstIndex(of: "--qwen-prefill-bench-token-file"),
+       i + 1 < arguments.count {
+        tokenFile = arguments[i + 1]
     }
     var slots = 32
     if let i = arguments.firstIndex(of: "--qwen-decode-slots"), i + 1 < arguments.count,
@@ -1537,7 +1567,8 @@ if let index = arguments.firstIndex(of: "--qwen-prefill-bench"), index + 1 < arg
     }
     exit(try runQwenPrefillBench(modelPath: arguments[index + 1],
                                  tokens: tokens,
-                                 chunk: chunk,
+                                 chunks: chunks,
+                                 tokenFile: tokenFile,
                                  slotCount: slots,
                                  iterations: iterations,
                                  routedPath: routedPath,

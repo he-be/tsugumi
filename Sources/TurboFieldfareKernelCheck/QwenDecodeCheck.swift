@@ -296,9 +296,24 @@ func runQwenDecodeCheck(modelPath: String,
 // 語彙に散らしただけのものなので、router の当たり方は本物の文章のそれではない
 // (エキスパートキャッシュのヒット率がここの数字を大きく動かす)。
 // 運用の数字は Phase 6 で `bench.sh` の作法に沿って取る。
+/// 幅 k の検証パスの費用を、**verify 経路を書く前に**測るための腕。
+/// `chunks: [1, 2]` を渡すと 1 行ずつと 2 行ずつを**交互に**流し、
+/// 1 パスあたりの ms を GPU / 取得 / ホストの 3 分割で並べる
+/// (`docs/qwen35moe/33-MTP-ACCEPTANCE.md` §3-7 の測定 1)。
+///
+/// **交互でなければならない** — 逐次スイープは前の腕が温めたページキャッシュを
+/// 次の腕の手柄にする (`docs/qwen35moe/32-NVMAI-ADOPT.md` §5-1、NVMAI は
+/// これで偽の +11% を出した)。
+///
+/// `tokenFile` に `--dump-tokens` の出力を渡すと、合成 ID の代わりに
+/// **本物の生成トークン列**を流す。合成 ID (`i*7919 % vocab`) は隣接行の
+/// router が無相関になり、幅 2 のエキスパート和集合が 13.63/層 (1.704 倍) と
+/// **本物の 12.43 (1.554 倍) より太る** (`33-MTP-ACCEPTANCE.md` §3-4)。
+/// 幅を比べる腕では、ここを合成にすると測りたいものが変わってしまう。
 func runQwenPrefillBench(modelPath: String,
                          tokens: Int,
-                         chunk: Int,
+                         chunks: [Int],
+                         tokenFile: String?,
                          slotCount: Int,
                          iterations: Int,
                          routedPath: QwenForwardRunner.PrefillRoutedPath,
@@ -306,10 +321,9 @@ func runQwenPrefillBench(modelPath: String,
     guard let device = MTLCreateSystemDefaultDevice() else {
         throw QwenDecodeError.noMetalDevice
     }
-    print("=== qwen3_5_moe prefill の時間 (測定、n=\(iterations)) ===")
+    print("=== qwen3_5_moe prefill の時間 (測定、n=\(iterations)、腕は交互) ===")
     print("  model    \(modelPath)")
-    print("  合成プロンプト \(tokens) トークン / チャンク \(chunk) / スロット \(slotCount)")
-    print("  routed expert は \(routedPath.rawValue) の経路")
+    print("  routed expert は \(routedPath.rawValue) の経路 / スロット \(slotCount)")
     print(String(format: "  クールダウン %.0f 秒 (Phase 6 の作法。0 なら連続)", cooldownSeconds))
 
     let context = try MetalContext()
@@ -319,38 +333,115 @@ func runQwenPrefillBench(modelPath: String,
                                expecting: .ornith1_5_35B_A3B,
                                streamingMode: .pread(slotCount: slotCount),
                                loadStats: &stats)
+
+    var prompt: [Int32]
+    if let tokenFile {
+        // `--dump-tokens` の形: {"prompt": [...], "generated": [...]}。
+        // 位置 0 から順に流すので、再帰状態も KV も本物と同じ道を通る。
+        let data = try Data(contentsOf: URL(fileURLWithPath: tokenFile))
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let head = root["prompt"] as? [Int], let tail = root["generated"] as? [Int] else {
+            throw QwenDecodeError.badFixture(
+                "\(tokenFile) に prompt / generated の配列が無い")
+        }
+        prompt = (head + tail).map { Int32($0) }
+        print("  トークン列 \(tokenFile) — prompt \(head.count) + generated \(tail.count)"
+              + " = \(prompt.count) (**本物**)")
+        if tokens > 0, tokens < prompt.count {
+            prompt = Array(prompt.prefix(tokens))
+            print("  先頭 \(tokens) に切った")
+        }
+    } else {
+        prompt = [Int32](repeating: 0, count: tokens)
+        print("  合成プロンプト \(tokens) トークン (**隣接行の router は無相関**)")
+    }
+
     let runner = try QwenForwardRunner(model: model, context: context,
-                                       maxContext: tokens + 8)
+                                       maxContext: prompt.count + 8)
     runner.prefillRoutedPath = routedPath
-    // 語彙に散らした ID。同じ ID を並べると 40 層の router が毎トークン同じ
-    // エキスパートを引き、キャッシュのヒット率が本物と懸け離れる。
-    let prompt = (0..<tokens).map { Int32(($0 &* 7919) % runner.scoredVocab) }
+    if tokenFile == nil {
+        // 語彙に散らした ID。同じ ID を並べると 40 層の router が毎トークン同じ
+        // エキスパートを引き、キャッシュのヒット率が本物と懸け離れる。
+        prompt = (0..<prompt.count).map { Int32(($0 &* 7919) % runner.scoredVocab) }
+    }
+    print("  腕: " + chunks.map { "チャンク \($0)" }.joined(separator: " / "))
     print("")
-    // エキスパートの取得は pread で、キャッシュに無ければ 1.69 MiB を 1 個読む。
-    // 総時間だけを見ていると、GPU が遅いのか I/O が遅いのかが分からない —
-    // `docs/qwen35moe/21-PHASE4-PREFILL.md` §5 の説明の付いていない行
-    // (2048 トークン / チャンク 512 だけ 2・3 回目が遅い) がまさにそれで、
-    // 内訳の 3 列はその区別のために出す。
-    print("  回  prefill (ms)  1 トークン    GPU (ms)   取得 (ms)   ホスト (ms)"
-          + "  ヒット率   エキスパート  footprint (GB)")
+    print("  回  チャンク    パス数  prefill (ms)  1 パス (ms)   GPU (ms)   取得 (ms)"
+          + "  ホスト (ms)  ヒット率   エキスパート")
+
+    // **捨てる 1 本。**エキスパートキャッシュが冷たいままだと、最初に回った腕が
+    // 32 スロットぶんの写像を 1 人で払う (煙試験では ホスト 130 ms/パス 対 7.6)。
+    // 温めは腕の外でやる。
+    runner.reset()
+    runner.resetProfile()
+    model.telemetry.reset()
+    _ = try runner.prefill(tokens: prompt, chunkWidth: chunks[0])
+    print("  (温めに 1 本流して捨てた)")
+    print("")
+
+    var samples: [Int: [(total: Double, gpu: Double, fetch: Double, host: Double)]] = [:]
     for iteration in 0..<iterations {
-        if iteration > 0, cooldownSeconds > 0 { Thread.sleep(forTimeInterval: cooldownSeconds) }
-        runner.reset()
-        runner.resetProfile()
-        model.telemetry.reset()
-        let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-        _ = try runner.prefill(tokens: prompt, chunkWidth: chunk)
-        let ms = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6
-        let counters = model.telemetry.snapshot().prefill
-        let fetchMs = Double(counters.fetchNanos) / 1e6
-        let gpuMs = runner.gpuSeconds * 1e3
-        let footprint = Double(ProcessMemoryFootprint.current().physFootprintBytes) / 1e9
-        print(String(format: "  %2d %13.0f %11.2f %11.0f %11.0f %12.0f %9.1f%% %13d %15.2f",
-                     iteration + 1, ms, ms / Double(tokens), gpuMs, fetchMs,
-                     ms - gpuMs - fetchMs,
-                     100.0 * counters.hitRate, counters.experts, footprint))
+        // 腕の順も回ごとに入れ替える。交互にしても「always A then B」だと
+        // A が毎回 B の直後の熱を、B が毎回 A の温めを受け取る。
+        let order = iteration % 2 == 0 ? chunks : chunks.reversed()
+        for chunk in order {
+            if cooldownSeconds > 0 { Thread.sleep(forTimeInterval: cooldownSeconds) }
+            runner.reset()
+            runner.resetProfile()
+            model.telemetry.reset()
+            let started = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+            _ = try runner.prefill(tokens: prompt, chunkWidth: chunk)
+            let ms = Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - started) / 1e6
+            let counters = model.telemetry.snapshot().prefill
+            let fetchMs = Double(counters.fetchNanos) / 1e6
+            let gpuMs = runner.gpuSeconds * 1e3
+            let passes = (prompt.count + chunk - 1) / chunk
+            samples[chunk, default: []].append((ms, gpuMs, fetchMs, ms - gpuMs - fetchMs))
+            print(String(format: "  %2d %9d %9d %13.0f %12.3f %10.0f %11.0f %12.0f %9.1f%% %13d",
+                         iteration + 1, chunk, passes, ms, ms / Double(passes), gpuMs, fetchMs,
+                         ms - gpuMs - fetchMs, 100.0 * counters.hitRate, counters.experts))
+        }
+    }
+
+    func median(_ values: [Double]) -> Double {
+        let sorted = values.sorted()
+        return sorted[sorted.count / 2]
+    }
+
+    print("")
+    print("## 中央値 — 1 パスあたり (ms)")
+    print("  チャンク    パス数    prefill      GPU      取得    ホスト")
+    var base: (total: Double, gpu: Double, fetch: Double, host: Double)?
+    var perPass: [Int: (total: Double, gpu: Double, fetch: Double, host: Double)] = [:]
+    for chunk in chunks {
+        guard let arm = samples[chunk], !arm.isEmpty else { continue }
+        let passes = Double((prompt.count + chunk - 1) / chunk)
+        let value = (total: median(arm.map(\.total)) / passes,
+                     gpu: median(arm.map(\.gpu)) / passes,
+                     fetch: median(arm.map(\.fetch)) / passes,
+                     host: median(arm.map(\.host)) / passes)
+        perPass[chunk] = value
+        if base == nil { base = value }
+        print(String(format: "  %8d %9.0f %10.3f %8.3f %9.3f %9.3f",
+                     chunk, passes, value.total, value.gpu, value.fetch, value.host))
+    }
+    if let base, chunks.count > 1 {
+        print("")
+        print("  チャンク 1 に対する比 (1 パスあたり)")
+        print("  チャンク    prefill      GPU      取得    ホスト")
+        for chunk in chunks.dropFirst() {
+            guard let value = perPass[chunk] else { continue }
+            print(String(format: "  %8d %10.3f %8.3f %9.3f %9.3f", chunk,
+                         value.total / base.total, value.gpu / base.gpu,
+                         value.fetch / base.fetch, value.host / base.host))
+        }
+        print("")
+        print("  比較対象: エキスパート和集合は幅 2 で 1.554 倍 (隣接) / 1.585 倍 (棄却込み)、")
+        print("  ミスで数えると 1.93〜1.98 倍 (`33-MTP-ACCEPTANCE.md` §3-4 / §3-5)")
     }
     print("")
-    print("  1 回目はエキスパートキャッシュが冷たい。**解釈は書かない** (n=\(iterations))")
+    print("  この経路は直列で "
+          + "(`QwenPrefill.swift`)、decode の重ね (`27-PHASE6-THROUGHPUT.md`) は入らない —")
+    print("  **絶対値は運用値ではない。読むのは腕どうしの比だけ。**")
     return true
 }
