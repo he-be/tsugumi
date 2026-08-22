@@ -56,7 +56,7 @@ func runQwenResumeCheck(modelPath: String,
     /// One whole prompt, one request.
     func cold(_ tokens: [Int32], new: Int) throws -> QwenGreedyRun {
         runner.reset()
-        return try runner.runGreedyCompletion(promptTokens: tokens,
+        return try runner.runCompletion(promptTokens: tokens,
                                               maxNewTokens: new,
                                               chunkWidth: 512)
     }
@@ -69,12 +69,12 @@ func runQwenResumeCheck(modelPath: String,
     /// boundary and nothing else.
     func resumed(_ tokens: [Int32], head: Int, new: Int) throws -> QwenGreedyRun {
         runner.reset()
-        let first = try runner.runGreedyCompletion(
+        let first = try runner.runCompletion(
             promptTokens: Array(tokens.prefix(head)), maxNewTokens: 1, chunkWidth: 512)
         guard first.kvPosition == head else {
             throw QwenResumeError.noMetalDevice   // reported by the case below
         }
-        return try runner.runGreedyCompletion(promptTokens: Array(tokens.dropFirst(head)),
+        return try runner.runCompletion(promptTokens: Array(tokens.dropFirst(head)),
                                               maxNewTokens: new,
                                               chunkWidth: 512,
                                               cachedPromptTokens: head)
@@ -104,9 +104,9 @@ func runQwenResumeCheck(modelPath: String,
     // — if it did not, the continuation would be ignoring its own history.
     let strayHead = prompt.count / 2
     runner.reset()
-    let firstHalf = try runner.runGreedyCompletion(
+    let firstHalf = try runner.runCompletion(
         promptTokens: Array(prompt.prefix(strayHead)), maxNewTokens: 1, chunkWidth: 512)
-    let stray = try runner.runGreedyCompletion(
+    let stray = try runner.runCompletion(
         promptTokens: Array(prompt.suffix(from: strayHead).reversed()),
         maxNewTokens: wanted, chunkWidth: 512,
         cachedPromptTokens: firstHalf.kvPosition)
@@ -120,7 +120,7 @@ func runQwenResumeCheck(modelPath: String,
     do {
         try runner.attachMTPHead()
         runner.reset()
-        let mtp = try runner.runGreedyCompletionMTP(promptTokens: prompt,
+        let mtp = try runner.runCompletionMTP(promptTokens: prompt,
                                                    maxNewTokens: wanted,
                                                    chunkWidth: 512)
         let total = prompt.count + mtp.newTokens
@@ -130,9 +130,9 @@ func runQwenResumeCheck(modelPath: String,
             detail: "kv=\(mtp.kvPosition), prompt+生成=\(total)"))
 
         runner.reset()
-        let mtpFirst = try runner.runGreedyCompletionMTP(
+        let mtpFirst = try runner.runCompletionMTP(
             promptTokens: Array(prompt.prefix(4)), maxNewTokens: 1, chunkWidth: 512)
-        let mtpSplit = try runner.runGreedyCompletionMTP(
+        let mtpSplit = try runner.runCompletionMTP(
             promptTokens: Array(prompt.dropFirst(4)), maxNewTokens: wanted,
             chunkWidth: 512, cachedPromptTokens: mtpFirst.kvPosition)
         cases.append(ResumeCase(
@@ -140,6 +140,149 @@ func runQwenResumeCheck(modelPath: String,
             passed: mtpSplit.tokens == mtp.tokens,
             detail: "\(mtpSplit.tokens.count)/\(mtp.tokens.count) tokens, "
                 + "cached=\(mtpSplit.cachedPromptTokens)"))
+        // ---- サンプリング (docs/qwen35moe/42-SAMPLING.md) ------------------
+        //
+        // 実機で見られるのは分布そのものではない (1 本の走りは 1 標本しか
+        // 出さない)。ここで採点するのは**結線**である: 種を固定したら再現
+        // するか、種を変えたら変わるか、MTP を挟んでも同じ性質が保たれるか。
+        // 分布の正しさは `QwenSamplerCheck.swift` が合成分布で採っている。
+        let sampling = GenerationConfig(maxNewTokens: wanted,
+                                        temperature: 0.6,
+                                        topK: 20,
+                                        topP: 0.95,
+                                        seed: 0x0117_0001)
+        runner.reset()
+        let sampled = try runner.runCompletion(promptTokens: prompt,
+                                               maxNewTokens: wanted,
+                                               chunkWidth: 512,
+                                               sampling: sampling)
+        runner.reset()
+        let sampledAgain = try runner.runCompletion(promptTokens: prompt,
+                                                    maxNewTokens: wanted,
+                                                    chunkWidth: 512,
+                                                    sampling: sampling)
+        cases.append(ResumeCase(
+            name: "サンプリングは種を固定すれば再現する",
+            passed: sampled.tokens == sampledAgain.tokens,
+            detail: "\(sampled.tokens.prefix(4)) 対 \(sampledAgain.tokens.prefix(4))"))
+
+        // 「黙って greedy ではない」ことは**公式値では採点できない**。
+        // この fixture でモデルが自信を持っている位置では top_p=0.95 の
+        // nucleus が 1 本になり、温度 0.6 の draw も必ず argmax を返す —
+        // 実際、公式値の 12 トークンは greedy と一致した (下の detail)。
+        // それは正しい挙動であって、結線の証拠にはならない。
+        // 証拠になるのは**必ず確率が割れる設定**の方である。
+        var stochastic = sampling
+        stochastic.temperature = 1.5
+        stochastic.topP = 1.0
+        stochastic.topK = 20
+        runner.reset()
+        let hot = try runner.runCompletion(promptTokens: prompt,
+                                           maxNewTokens: wanted,
+                                           chunkWidth: 512,
+                                           sampling: stochastic)
+        var hotOther = stochastic
+        hotOther.seed = 0x0117_0002
+        runner.reset()
+        let hotOtherRun = try runner.runCompletion(promptTokens: prompt,
+                                                   maxNewTokens: wanted,
+                                                   chunkWidth: 512,
+                                                   sampling: hotOther)
+        runner.reset()
+        let greedyRun = try runner.runCompletion(promptTokens: prompt,
+                                                 maxNewTokens: wanted,
+                                                 chunkWidth: 512)
+        // 実機の分布そのものを見る。1 本の走りは 1 標本しか出さないので、
+        // 「列が変わらなかった」だけでは結線の当否を決められない。
+        runner.reset()
+        let officialProbe = try runner.probeDistribution(promptTokens: prompt,
+                                                         sampling: sampling)
+        runner.reset()
+        let hotProbe = try runner.probeDistribution(promptTokens: prompt,
+                                                    sampling: stochastic)
+        func show(_ c: QwenCategorical) -> String {
+            zip(c.ids, c.weights).prefix(3)
+                .map { String(format: "%d:%.3f", $0.0, $0.1) }
+                .joined(separator: " ")
+        }
+        print("  分布  公式値 \(officialProbe.ids.count) 本 [\(show(officialProbe))]  "
+            + "温度 1.5 \(hotProbe.ids.count) 本 [\(show(hotProbe))]")
+        cases.append(ResumeCase(
+            name: "実機の logits から分布が立つ (温度 1.5 で 2 本以上)",
+            passed: hotProbe.ids.count >= 2
+                && abs(hotProbe.weights.reduce(0, +) - 1) < 1e-4,
+            detail: "\(hotProbe.ids.count) 本、和 "
+                + String(format: "%.5f", hotProbe.weights.reduce(0, +))))
+        // **決定力のある案。**「種を変えたら列が変わる」は、この機体のこの
+        // fixture では採点にならない — 温度 1.5 でも先頭が 0.986 を持つので、
+        // 2 つの種が両方とも argmax を引くのは普通に起きる (それは正しい)。
+        // 代わりに採点するのは「ループが出したトークンは、分布と種から
+        // **予言できる**か」である。予言が当たるなら、draw は分布の CDF を
+        // 歩いている。当たらないなら、どこかで別の値が使われている。
+        let predicted = hotProbe.draw(
+            u: QwenSampler.uniform(config: stochastic, position: 0, stream: 0))
+        runner.reset()
+        let oneToken = try runner.runCompletion(promptTokens: prompt,
+                                                maxNewTokens: 1,
+                                                chunkWidth: 512,
+                                                sampling: stochastic)
+        cases.append(ResumeCase(
+            name: "ループが出したトークンは分布と種から予言できる",
+            passed: oneToken.tokens.first == predicted,
+            detail: "予言 \(predicted) / 実際 \(oneToken.tokens.first.map(String.init) ?? "なし")"))
+
+        // 種が結果を動かすことは、確率が本当に割れる温度で見る。
+        var flat = stochastic
+        flat.temperature = 8.0
+        runner.reset()
+        let flatA = try runner.runCompletion(promptTokens: prompt, maxNewTokens: wanted,
+                                             chunkWidth: 512, sampling: flat)
+        var flatOther = flat
+        flatOther.seed = 0x0117_0003
+        runner.reset()
+        let flatB = try runner.runCompletion(promptTokens: prompt, maxNewTokens: wanted,
+                                             chunkWidth: 512, sampling: flatOther)
+        cases.append(ResumeCase(
+            name: "温度 8 なら種で列が変わる",
+            passed: flatA.tokens != flatB.tokens,
+            detail: "seed1 \(flatA.tokens.prefix(3)) / seed3 \(flatB.tokens.prefix(3))"))
+        _ = hot; _ = hotOtherRun
+        cases.append(ResumeCase(
+            name: "公式値 (0.6/0.95/20) の列は greedy と一致してよい",
+            passed: true,
+            detail: sampled.tokens == greedyRun.tokens
+                ? "この fixture では一致した — nucleus が 1 本の位置が続く"
+                : "この fixture では分かれた \(sampled.tokens.prefix(3)) / \(greedyRun.tokens.prefix(3))"))
+
+        runner.reset()
+        let mtpSampled = try runner.runCompletionMTP(promptTokens: prompt,
+                                                     maxNewTokens: wanted,
+                                                     chunkWidth: 512,
+                                                     sampling: sampling)
+        runner.reset()
+        let mtpSampledAgain = try runner.runCompletionMTP(promptTokens: prompt,
+                                                          maxNewTokens: wanted,
+                                                          chunkWidth: 512,
+                                                          sampling: sampling)
+        cases.append(ResumeCase(
+            name: "幅 2 のサンプリングも種を固定すれば再現する",
+            passed: mtpSampled.tokens == mtpSampledAgain.tokens,
+            detail: "\(mtpSampled.tokens.prefix(4)) 対 \(mtpSampledAgain.tokens.prefix(4))"))
+        let mtpTotal = prompt.count + mtpSampled.newTokens
+        cases.append(ResumeCase(
+            name: "サンプリング下でも位置は prompt+生成 か その 1 つ手前",
+            passed: mtpSampled.kvPosition == mtpTotal || mtpSampled.kvPosition == mtpTotal - 1,
+            detail: "kv=\(mtpSampled.kvPosition), prompt+生成=\(mtpTotal)"))
+
+        // **サンプリング下の中立性はトークン列では採点できない。**greedy の
+        // 中立性 (強制棄却の対照と列が完全一致) が成り立つのは、両方の腕が
+        // 同じ argmax を出すからである。サンプリングでは、受理された腕は
+        // draft ストリームから引き、棄却された腕は残差から引く — 同じ**分布**
+        // だが同じ**列**ではない。しかも T 行カーネルと decode カーネルは
+        // 加算順が違うので (`36-MTP-DECODE.md`)、強制棄却の腕を非投機と
+        // 突き合わせても最後の一致は保証されない。
+        // 分布の一致は `QwenSamplerCheck.swift` が合成分布で採っている
+        // (全変動距離 0.0008、負例 0.5)。ここで採点できるのは結線だけである。
     } catch {
         print("  SKIP  MTP cases — no sidecar at \(QwenMTPSidecar.defaultDirectory)")
         print("")

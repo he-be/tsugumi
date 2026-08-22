@@ -483,7 +483,110 @@ func runQwenHeadCheck(context: MetalContext) throws -> [CaseResult] {
                                    rel: agreement(flipped, onlyRow),
                                    floor: 1,
                                    detail: "逆順で選ばれたのは \(flipped)"))
+
+    // ---- 6. logit を書き出す版 (サンプリングの土台) --------------------------
+    //
+    // `docs/qwen35moe/42-SAMPLING.md` §2-1。要件 S1 (公式推奨サンプラを実際に
+    // 使う) には分布が要る。`_multi` が捨てていた内積を同じパスで FP16 に
+    // 書き出すのがこのカーネルで、**argmax は今までどおり出す** —
+    // 評価経路 (S4) と投機の強制棄却の対照が argmax のままだからである。
+    //
+    // 2 行目は 1 行目の 0.5 倍にしてある。z = Σ w·x は x について線形なので
+    // 参照は「1 行目の半分」— 行の独立を、別の参照を作らずに採点できる
+    // (2 の冪なので FP16 でも刻みが動かない)。行のオフセットを取り違えた
+    // カーネルはここで落ちる。
+    let logitsRun = try runLogitsHeadOnGPU(context, chain, inputs, shape,
+                                           vocab: shape.scored,
+                                           normed: got.normed)
+    let row0 = logitsRun.logits[0].map { Double($0) }
+    let row1 = logitsRun.logits[1].map { Double($0) }
+    results.append(result("qwen_lm_head_logits_int8 の logit \(shape.scored) 行 (参照との一致)",
+                          groupSize: shape.groupSize,
+                          rel: headRelative(row0, truth.logits),
+                          tolerance: 4e-3,
+                          detail: "書き出しは FP16 なのでその刻みが下限"))
+    results.append(result("qwen_lm_head_logits_int8 == dequant_int8_gemv_simd",
+                          groupSize: shape.groupSize,
+                          rel: headRelative(row0, got.logits.map { Double($0) }),
+                          tolerance: 1e-6,
+                          detail: "同じ hidden・同じ表・同じ FP16 の刻み"))
+    results.append(result("qwen_lm_head_logits_int8 の argmax == 融合ヘッド",
+                          groupSize: shape.groupSize,
+                          rel: agreement(logitsRun.tokens[0], got.token),
+                          tolerance: 0,
+                          detail: "logits \(logitsRun.tokens[0]) / 融合 \(got.token)"))
+    let hostArgmax = row0.enumerated().max(by: { $0.element < $1.element })?.offset ?? -1
+    results.append(result("qwen_lm_head_logits_int8 書き出した logit の argmax も同じ",
+                          groupSize: shape.groupSize,
+                          rel: agreement(hostArgmax, got.token),
+                          tolerance: 0,
+                          detail: "ホストで畳むと \(hostArgmax)"))
+    results.append(result("qwen_lm_head_logits_int8 2 行目は独立 (x の 0.5 倍)",
+                          groupSize: shape.groupSize,
+                          rel: headRelative(row1, row0.map { $0 * 0.5 }),
+                          tolerance: 4e-3,
+                          detail: "z は x について線形。行を取り違えたら落ちる"))
+    // 検出力: 1 行目の参照をわざと壊したものに当てる。上の 4e-3 が「何とでも
+    // 一致する緩さ」ではないことの証拠 (`PLAN_VISION.md` §6-3)。
+    let wrongStride = headReference(inputs, shape, rows: shape.scored,
+                                    as: Double.self, variant: .nibbleRowStride)
+    results.append(detectionResult("qwen_lm_head_logits_int8 検出力 (行の刻みが N/2)",
+                                   groupSize: shape.groupSize,
+                                   rel: headRelative(row0, wrongStride.logits),
+                                   floor: 1e-2))
+    results.append(detectionResult("qwen_lm_head_logits_int8 検出力 (2 行目に 1 行目を書く)",
+                                   groupSize: shape.groupSize,
+                                   rel: headRelative(row1, row0),
+                                   floor: 1e-2,
+                                   detail: "0.5 倍でない行が来たら気付く"))
     return results
+}
+
+/// `logits` を書き出す版を走らせる。前段の RMSNorm は呼ばない (このカーネルは
+/// 正規化済みの行を取る) ので、`normed` — 素の chain が書いた正規化済みの行 —
+/// をそのまま 1 行目に、その 0.5 倍を 2 行目に置く。
+private func runLogitsHeadOnGPU(_ context: MetalContext,
+                                _ chain: QwenLMHeadChainInt8,
+                                _ inputs: HeadInputs,
+                                _ shape: HeadShape,
+                                vocab: Int,
+                                normed: [Float16]) throws
+    -> (logits: [[Float16]], tokens: [Int]) {
+    let device = context.device
+    let rows = 2
+    var stacked = normed
+    stacked.append(contentsOf: normed.map { Float16(Float($0) * 0.5) })
+    let hidden = headBuffer(device, stacked)
+    let weights = headBuffer(device, inputs.quantized)
+    let scales = headBuffer(device, inputs.scales.bits)
+    let biases = headBuffer(device, inputs.biases.bits)
+    let tokens = device.makeBuffer(length: rows * MemoryLayout<UInt32>.size,
+                                   options: .storageModeShared)!
+    let logits = device.makeBuffer(length: rows * vocab * MemoryLayout<Float16>.size,
+                                   options: .storageModeShared)!
+    guard let commandBuffer = context.queue.makeCommandBuffer() else {
+        throw QwenCheckError.noCommandBuffer
+    }
+    guard chain.encodeLogitsDecodeRows(commandBuffer: commandBuffer,
+                                       hiddenNormed: hidden,
+                                       weights: weights,
+                                       scales: scales,
+                                       biases: biases,
+                                       outTokens: tokens,
+                                       logits: logits,
+                                       rows: rows,
+                                       d: UInt32(shape.d),
+                                       vocab: UInt32(vocab)) else {
+        throw QwenCheckError.encodeRefused("qwen_lm_head_logits_int8_rows_chunk_multi")
+    }
+    commandBuffer.commit()
+    commandBuffer.waitUntilCompleted()
+    if let error = commandBuffer.error {
+        throw QwenCheckError.dispatchFailed("\(error)")
+    }
+    let flat = headRead(logits, count: rows * vocab, as: Float16.self)
+    let ids = headRead(tokens, count: rows, as: UInt32.self).map { Int($0) }
+    return ((0..<rows).map { Array(flat[$0 * vocab..<($0 + 1) * vocab]) }, ids)
 }
 
 /// 実物の語彙で 1 トークンぶんを測る。508 MB の表を 1 回読むのがこの経路の全部

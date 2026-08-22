@@ -9,7 +9,9 @@ import Metal
 /// One threadgroup, single online-softmax pass (Milakov & Gimelshein). FP16
 /// storage in and out, FP32 accumulation. The softcap value lives in the
 /// kernel signature instead of being hardcoded so that downstream callers
-/// (and tests) can disable it by passing a very large number.
+/// (and tests) can disable it: `softcap <= 0` passes the logit through
+/// unchanged, which is what a family without a softcap needs (Qwen 3.5-MoE,
+/// `docs/qwen35moe/42-SAMPLING.md` §2-1).
 final class LogitSoftcapSoftmax {
     private let pso: MTLComputePipelineState
 
@@ -19,15 +21,21 @@ final class LogitSoftcapSoftmax {
 
     /// Encodes the kernel onto `commandBuffer`. `logits` and `probs` are FP16
     /// buffers of length `v`. Gemma 4 uses `softcap=30.0`.
+    /// `softcap <= 0` means the family has no softcap and the logits pass
+    /// through unchanged — Qwen 3.5-MoE (`docs/qwen35moe/42-SAMPLING.md` §2-1).
+    /// The offsets let one call name a row of a `[rows, v]` buffer, which is
+    /// what the width-2 verify pass hands it.
     func encode(commandBuffer: MTLCommandBuffer,
                        logits: MTLBuffer,
+                       logitsOffset: Int = 0,
                        probs: MTLBuffer,
+                       probsOffset: Int = 0,
                        v: UInt32,
                        softcap: Float = 30.0) {
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(pso)
-        enc.setBuffer(logits, offset: 0, index: 0)
-        enc.setBuffer(probs,  offset: 0, index: 1)
+        enc.setBuffer(logits, offset: logitsOffset, index: 0)
+        enc.setBuffer(probs,  offset: probsOffset, index: 1)
         var vVar       = v
         var softcapVar = softcap
         enc.setBytes(&vVar,       length: MemoryLayout<UInt32>.size, index: 2)

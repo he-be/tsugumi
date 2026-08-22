@@ -193,10 +193,22 @@ func runQwen(args: Args,
                                       seed: args.seed,
                                       stopStrings: args.stops,
                                       extraStopTokens: [])
-        guard config.isPureGreedy else {
-            return qwenErrored(stderr, "this family decodes greedily only for now "
-                               + "(the runner uses the fused head); pass "
-                               + "--temperature 0 --repetition-penalty 1", 2)
+        // The CLI is the evaluation path (`docs/qwen35moe/42-SAMPLING.md` S4),
+        // and evaluation needs **both** arms: greedy for the reference-match
+        // checks and the acceptance measurements, sampled for measuring what
+        // the server actually runs.
+        //
+        // **The default is not greedy** — `--temperature` defaults to 1.0 and
+        // `--top-k` to 64, this file's shared defaults with Gemma. Until now a
+        // bare `--qwen` run exited 2 saying so; now it samples. Every existing
+        // measurement passes `--temperature 0` explicitly (that was the only
+        // way to get past the old guard), so nothing that ran before changes
+        // its arm — but a *new* measurement has to name its arm rather than
+        // rely on the default.
+        guard config.repetitionPenalty == 1 else {
+            return qwenErrored(stderr, "this family's sampler has no repetition "
+                               + "penalty (42-SAMPLING.md §3); pass "
+                               + "--repetition-penalty 1", 2)
         }
         if !args.stops.isEmpty {
             stderr.write(Data(("warning: --stop strings are not applied on this "
@@ -340,22 +352,29 @@ func runQwen(args: Args,
                 constraint?.setSuppressed(decoder.isInsideReasoning)
                 emit(events)
         }
+        // Nil is greedy. A non-greedy config is passed through as it was asked
+        // for — the CLI does **not** force the official three the way the
+        // server does (S1 is about what a client gets served; measuring an
+        // arm the server does not run is exactly what this path is for).
+        let sampling: GenerationConfig? = config.isPureGreedy ? nil : config
         let run = args.qwenMTP != nil
-            ? try runner.runGreedyCompletionMTP(
+            ? try runner.runCompletionMTP(
                 promptTokens: promptIds,
                 maxNewTokens: maxNew,
                 chunkWidth: runtime.prefillChunkTokens,
                 stopTokens: tokenizer.stopTokenIDs,
                 constraint: constraint,
+                sampling: sampling,
                 onPrefill: onPrefillProfile,
                 onToken: onTokenEmit,
                 onStats: { speculative = $0 })
-            : try runner.runGreedyCompletion(
+            : try runner.runCompletion(
                 promptTokens: promptIds,
                 maxNewTokens: maxNew,
                 chunkWidth: runtime.prefillChunkTokens,
                 stopTokens: tokenizer.stopTokenIDs,
                 constraint: constraint,
+                sampling: sampling,
                 onPrefill: onPrefillProfile,
                 onToken: onTokenEmit)
         let generated = run.tokens

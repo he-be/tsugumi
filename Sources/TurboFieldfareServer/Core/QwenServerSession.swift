@@ -21,8 +21,8 @@ import TurboFieldfare
 /// | --- | --- | --- |
 /// | images | Phase 9 | 400 `unsupported_image` |
 /// | speculative decoding wider than one draft | the head drafts one token and the verify pass carries two rows (`docs/qwen35moe/36-MTP-DECODE.md`) | `--draft-block-size 2` is the only width accepted; 3...8 are refused at startup |
-/// | prompt cache | a recurrent state cannot be rewound ([03](../../../docs/qwen35moe/03-DESIGN.md) §5) | every request computes the whole prompt; `cached_tokens` is 0 |
-/// | sampling | the fused head writes no logits ([19](../../../docs/qwen35moe/19-LM-HEAD-INT8.md)) | greedy, with the sampler the client asked for named in `approximations` (R3) |
+/// | prompt cache | a recurrent state cannot be rewound ([03](../../../docs/qwen35moe/03-DESIGN.md) §5) | only an exact continuation is reused ([41](../../../docs/qwen35moe/41-PROMPT-CACHE.md)); a diverging prompt is recomputed whole |
+/// | sampling | S1: only the official recommended settings may be used ([42](../../../docs/qwen35moe/42-SAMPLING.md)) | temperature 0.6 / top_p 0.95 / top_k 20, **whatever the request asked for**, with the override named in `approximations` |
 public actor QwenServerSession: ServerInferenceBackend {
     private let context: MetalContext
     private let model: Model
@@ -394,25 +394,33 @@ public actor QwenServerSession: ServerInferenceBackend {
                     }
                     handle(events)
             }
+            // S1: the official sampler, always, whatever the request asked
+            // for — `plan.sampling` is where the override already happened and
+            // `plan.approximations` is where it is recorded
+            // (`docs/qwen35moe/42-SAMPLING.md` §3). S2: which loop runs is
+            // still decided by the server's flag alone, never by the request
+            // or by the sampler.
             if speculative {
-                run = try runner.runGreedyCompletionMTP(
+                run = try runner.runCompletionMTP(
                     promptTokens: promptSuffix,
                     maxNewTokens: maxNewTokens,
                     chunkWidth: prefillChunkTokens,
                     stopTokens: tokenizer.stopTokenIDs,
                     constraint: constraint,
                     cachedPromptTokens: reused,
+                    sampling: plan.sampling,
                     shouldStop: { shouldStop },
                     onToken: onToken,
                     onStats: { speculativeStats = $0 })
             } else {
-                run = try runner.runGreedyCompletion(
+                run = try runner.runCompletion(
                     promptTokens: promptSuffix,
                     maxNewTokens: maxNewTokens,
                     chunkWidth: prefillChunkTokens,
                     stopTokens: tokenizer.stopTokenIDs,
                     constraint: constraint,
                     cachedPromptTokens: reused,
+                    sampling: plan.sampling,
                     shouldStop: { shouldStop },
                     onToken: onToken)
             }

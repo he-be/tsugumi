@@ -40,6 +40,10 @@ struct QwenGenerationPlanTests {
     }
 
     private static func plan(_ parts: String...) throws -> QwenGenerationPlan {
+        try plan(parts)
+    }
+
+    private static func plan(_ parts: [String]) throws -> QwenGenerationPlan {
         let request = try ChatRequestParser.parse(body(parts))
         return QwenGenerationPlan(request: request, markers: markers)
     }
@@ -90,21 +94,47 @@ struct QwenGenerationPlanTests {
         #expect(try Self.plan(#""tool_choice":"auto""#).grammar == nil)
     }
 
-    // MARK: - Sampling (SPEC §12 R3, this family's own line)
+    // MARK: - Sampling (`docs/qwen35moe/42-SAMPLING.md` §0 S1, §3)
 
-    @Test("the default request is served greedily, and says so")
-    func default_request_records_the_greedy_approximation() throws {
-        // REQ-temp: a client that never mentioned `temperature` still asks for
-        // 1.0, so the note fires on the everyday request. That is the point —
-        // the alternative is a 400 on every default client.
-        let plan = try Self.plan()
-        #expect(plan.approximations == ["sampling/greedy-only: temperature=1.0 ignored"])
+    @Test("whatever the request asks for, the run uses the official three")
+    func every_request_runs_the_official_sampler() throws {
+        for body in [[], [#""temperature":0"#], [#""temperature":0.7"#],
+                     [#""top_k":100"#], [#""temperature":1.4"#, #""top_p":0.5"#]] {
+            let plan = try Self.plan(body)
+            #expect(plan.sampling.temperature == 0.6)
+            #expect(plan.sampling.topP == 0.95)
+            #expect(plan.sampling.topK == 20)
+            #expect(plan.sampling.repetitionPenalty == 1)
+        }
     }
 
-    @Test("temperature 0 with no penalty is greedy, so nothing is approximated")
-    func pure_greedy_request_records_nothing() throws {
-        let plan = try Self.plan(#""temperature":0"#)
+    @Test("the default request is overridden, and says so")
+    func default_request_records_the_override() throws {
+        // REQ-temp: a client that never mentioned `temperature` still asks for
+        // 1.0, so the note fires on the everyday request. S1 says the run uses
+        // 0.6 anyway; what it must not do is use 1.0 **or** go quiet about it.
+        let plan = try Self.plan()
+        #expect(plan.approximations
+            == ["sampling/official-override: temperature=1.0→0.6 "
+                + "top_k=none→20 top_p=none→0.95"])
+    }
+
+    @Test("a request that already asks for the official three overrides nothing")
+    func official_request_records_nothing() throws {
+        let plan = try Self.plan(#""temperature":0.6"#, #""top_p":0.95"#, #""top_k":20"#)
         #expect(plan.approximations.isEmpty)
+        #expect(plan.sampling.temperature == 0.6)
+    }
+
+    @Test("temperature 0 is overridden too — evaluation is the CLI, not the server")
+    func greedy_request_is_overridden() throws {
+        // S4 keeps a greedy path for reference-match checks and acceptance
+        // measurement, and keeps it **in the CLI**. A request cannot ask the
+        // server for greedy text, so `temperature: 0` is an override like any
+        // other rather than a way in.
+        let plan = try Self.plan(#""temperature":0"#)
+        #expect(plan.sampling.temperature == 0.6)
+        #expect(plan.approximations.first?.contains("temperature=0.0→0.6") == true)
     }
 
     @Test("every sampler the client named is in the one note")
@@ -113,16 +143,18 @@ struct QwenGenerationPlanTests {
                                  #""repeat_penalty":1.1"#)
         let note = try #require(plan.approximations.first)
         #expect(plan.approximations.count == 1)
-        #expect(note.hasPrefix("sampling/greedy-only:"))
-        #expect(note.contains("temperature=0.7"))
-        #expect(note.contains("top_p=0.9"))
-        #expect(note.contains("repeat_penalty=1.1"))
+        #expect(note.hasPrefix("sampling/official-override:"))
+        #expect(note.contains("temperature=0.7→0.6"))
+        #expect(note.contains("top_p=0.9→0.95"))
+        #expect(note.contains("repeat_penalty=1.1→1"))
     }
 
-    @Test("a greedy request that declares tools still carries only the tool tags")
-    func greedy_tool_request_has_no_sampling_note() throws {
-        let plan = try Self.plan(Self.declaredTools, #""temperature":0"#)
+    @Test("a tool request carries the tool tags and the override note")
+    func tool_request_keeps_both_notes() throws {
+        let plan = try Self.plan(Self.declaredTools, #""temperature":0.6"#,
+                                 #""top_p":0.95"#, #""top_k":20"#)
         #expect(!plan.approximations.contains { $0.hasPrefix("sampling/") })
+        #expect(plan.sampling.topK == 20)
     }
 
     // MARK: - GEN-3 / GEN-12

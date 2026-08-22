@@ -26,8 +26,16 @@ print(' '.join(a[r % len(a):] + a[:r % len(a)]))" "$ARMS" "$rep")
     for arm in ${=arms}; do
       envs=""
       flag=""
+      # 既定は採点用の greedy。`*sample` の腕だけが公式推奨サンプラで走る
+      # (`docs/qwen35moe/42-SAMPLING.md` S1)。同じ種を渡すので、腕の中では
+      # 再現する。
+      samp="--temperature 0"
       case $arm in
         mtp)   flag="--qwen-mtp" ;;
+        # 42 §4 段取り 6: サーバーが実際に走らせる腕。
+        mtpsample)  flag="--qwen-mtp"
+                    samp="--temperature 0.6 --top-k 20 --top-p 0.95 --seed 42" ;;
+        basesample) samp="--temperature 0.6 --top-k 20 --top-p 0.95 --seed 42" ;;
         mtpqb) flag="--qwen-mtp"; envs="TF_QWEN_MTP_ROWS_ATTN=0" ;;
         # `39-VERIFY-PREFETCH.md`: the residency-set commit off the calling
         # thread (both loops), and the verify pass's cross-layer read-ahead.
@@ -43,11 +51,11 @@ print(' '.join(a[r % len(a):] + a[:r % len(a)]))" "$ARMS" "$rep")
       esac
       echo "### $task rep$rep $arm"
       env ${=envs} $CLI --model $MODEL --messages-file bench/qwen35/$task.json \
-           --temperature 0 --repetition-penalty 1 --thinking off \
+           ${=samp} --repetition-penalty 1 --thinking off \
            --max-new $MAXNEW ${=flag} \
            --dump-tokens $OUT/$task.$arm.$rep.json 2>&1 \
         | grep -E "^\[" | tee $OUT/$task.$arm.$rep.footer
-      sleep 10
+      sleep ${COOLDOWN:-10}
     done
   done
 done

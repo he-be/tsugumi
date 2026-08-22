@@ -279,6 +279,126 @@ public final class QwenForwardRunner {
     /// `[maxHiddenRows]` UInt32 — one argmax per verified row.
     var verifyTokensBuffer: MTLBuffer?
 
+    // MARK: - Sampling (`docs/qwen35moe/42-SAMPLING.md`)
+
+    /// Non-nil for the length of a run that samples. Nil is greedy, which is
+    /// what evaluation keeps (S4) — the reference-match checks and the
+    /// acceptance measurements all compare token streams, and a sampled stream
+    /// is not comparable.
+    ///
+    /// Set by `runCompletion` / `runCompletionMTP` around their loop rather
+    /// than by the caller: everything that reads it lives inside one call.
+    var samplingConfig: GenerationConfig?
+
+    /// `[samplingRows, scoredVocab]` FP16, allocated on the first sampled run.
+    /// Row 0 is decode's own row and the verify pass's row 0, row 1 is the
+    /// verify pass's speculative row, and row 2 is the draft's.
+    var samplingLogits: MTLBuffer?
+    private var samplerCache: QwenSampler?
+
+    /// Rows the sampling scratch holds; see `samplingLogits`.
+    static let samplingRows = 3
+    /// Which row of the sampling scratch a distribution lives in.
+    enum SamplingRow: Int {
+        case target = 0
+        case speculative = 1
+        case draft = 2
+    }
+    /// Which use of the seeded generator a draw belongs to. Four uses share a
+    /// position and must not share a number (`42-SAMPLING.md` §2-2).
+    enum SamplingStream: UInt64 {
+        /// The draw the emitted token comes from. **The non-speculative loop,
+        /// the accepted pass's second row, and the force-reject control all use
+        /// this one**, which is what makes the control's token stream equal to
+        /// the non-speculative one at the same seed.
+        case target = 0
+        /// The draft's own draw from `q`.
+        case draft = 1
+        /// The accept test `u <= p(d)/q(d)`.
+        case accept = 2
+        /// The redraw from the normalized residual `(p - q)+`.
+        case residual = 3
+        /// The redraw after a constraint refused the first draw.
+        case masked = 4
+    }
+
+    /// The host sampler, built on first use so a greedy run never allocates the
+    /// 1.4 MB of probability scratch.
+    func sampler() throws -> QwenSampler {
+        if let samplerCache { return samplerCache }
+        let made = try QwenSampler(context: ctx,
+                                   vocab: scoredVocab,
+                                   maxRows: Self.samplingRows)
+        samplerCache = made
+        return made
+    }
+
+    /// The logits scratch, same story.
+    func samplingLogitsBuffer() throws -> MTLBuffer {
+        if let samplingLogits { return samplingLogits }
+        guard let made = ctx.device.makeBuffer(
+                  length: Self.samplingRows * scoredVocab * MemoryLayout<Float16>.size,
+                  options: .storageModeShared) else { throw MetalError.noDevice }
+        made.label = "qwen.samplingLogits"
+        samplingLogits = made
+        return made
+    }
+
+    /// Byte offset of one row of `samplingLogits`.
+    func samplingLogitsOffset(_ row: SamplingRow) -> Int {
+        row.rawValue * scoredVocab * MemoryLayout<Float16>.size
+    }
+
+    /// One draw from the distribution sitting in `row`, with GEN-7 applied the
+    /// way `Sampler` applies it: draw first, probe, and only on a refusal pay
+    /// for the whole-vocabulary mask and draw again from the masked
+    /// distribution. Drawing from the unmasked distribution and redrawing from
+    /// the masked one on refusal *is* a draw from the masked distribution —
+    /// the two branches partition the same event space.
+    ///
+    /// Returns the token and the distribution it came from. The distribution is
+    /// what the speculative loop needs: `p(d)` in the accept test has to be the
+    /// probability of the same distribution the draft was drawn against, mask
+    /// and all.
+    func sampledDraw(row: SamplingRow,
+                     position: Int,
+                     gate: ConstraintGate?,
+                     stream: SamplingStream = .target,
+                     forceMask: Bool = false) throws -> (token: Int32, distribution: QwenCategorical) {
+        guard let config = samplingConfig else {
+            preconditionFailure("sampledDraw without a sampling config")
+        }
+        let sampler = try sampler()
+        if let gate, forceMask {
+            let masked = try sampler.categorical(row: row.rawValue, config: config, gate: gate)
+            guard !masked.isEmpty else {
+                throw GenerationConstraintError.noAllowedToken(position: position)
+            }
+            return (masked.draw(u: QwenSampler.uniform(config: config, position: position,
+                                                       stream: stream.rawValue)),
+                    masked)
+        }
+        let plain = try sampler.categorical(row: row.rawValue, config: config, gate: nil)
+        guard !plain.isEmpty else {
+            throw GenerationConstraintError.noAllowedToken(position: position)
+        }
+        let drawn = plain.draw(u: QwenSampler.uniform(config: config, position: position,
+                                                      stream: stream.rawValue))
+        guard let gate, !gate.allows(drawn) else { return (drawn, plain) }
+        constraintRescores += 1
+        let masked = try sampler.categorical(row: row.rawValue, config: config, gate: gate)
+        guard !masked.isEmpty else {
+            throw GenerationConstraintError.noAllowedToken(position: position)
+        }
+        let redrawn = masked.draw(u: QwenSampler.uniform(config: config, position: position,
+                                                         stream: SamplingStream.masked.rawValue))
+        guard gate.allows(redrawn) else {
+            throw GenerationConstraintError.maskedDrawRejected(position: position,
+                                                              tokenID: redrawn)
+        }
+        return (redrawn, masked)
+    }
+
     /// GPU time, as the driver reports it, summed over every command buffer
     /// this runner has waited on since `resetProfile`.
     ///
@@ -1136,6 +1256,11 @@ public final class QwenForwardRunner {
 
         let lm = try model.qwenLMHead
         let finalNorm = model.finalNorm
+        // A sampled run needs the distribution, so the head writes the logits
+        // and the softmax rides along on the same command buffer — no second
+        // round trip for the 496 KB (`docs/qwen35moe/42-SAMPLING.md` §2-1).
+        let sampledLogits = samplingConfig == nil ? nil : try samplingLogitsBuffer()
+        let sampler = samplingConfig == nil ? nil : try sampler()
         try stage(.head) {
         try runSync("head") { cb in
             self.head.encodeGreedyDecode(commandBuffer: cb,
@@ -1146,9 +1271,17 @@ public final class QwenForwardRunner {
                                          scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
                                          biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
                                          outToken: self.greedyToken,
+                                         logits: sampledLogits,
+                                         logitsOffset: self.samplingLogitsOffset(.target),
                                          d: D,
                                          vocab: UInt32(self.scoredVocab),
                                          rmsEps: self.rmsEps)
+            if let sampler, let sampledLogits {
+                sampler.encodeProbabilities(commandBuffer: cb,
+                                            logits: sampledLogits,
+                                            logitsOffset: self.samplingLogitsOffset(.target),
+                                            rows: 1)
+            }
         }
         }
         return Int32(bitPattern: greedyToken.contents().load(as: UInt32.self))

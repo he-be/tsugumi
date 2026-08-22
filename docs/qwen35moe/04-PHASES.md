@@ -406,7 +406,8 @@ prefill attention / block router / per-pair MoE の加算順が残っている
    `tool_choice: required` の前置きに 1 件、ユーザー判断が残った (#26)
 23. ~~CLI の `--tools`~~ → **完了。実物が呼び出しを書いた** ([25](25-CLI-TOOLS.md))。
    融合ヘッドのまま文法をかけるために **マスクつきの再畳み込み**を足した
-   (`qwen_lm_head_greedy_int8_rows_chunk_masked`)。`--qwen` は **63 本**、
+   (`qwen_lm_head_greedy_int8_rows_chunk_masked`)。`--qwen` は **80 本**
+   (2026-08-22 に +17: logit を書くヘッドとサンプラ、[42](42-SAMPLING.md))、
    実物に当てる `--qwen-constrain` が **9 本**、`swift test` は **1,338 件**。
    **Phase 5 の箇条書きはこれで全部片づいた**
 

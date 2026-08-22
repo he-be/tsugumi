@@ -6,7 +6,7 @@ import Metal
 ///
 /// Canonical home is here (the sampler is the primary consumer); `Generator`
 /// reuses the same type rather than redeclaring it.
-public struct GenerationConfig: Sendable {
+public struct GenerationConfig: Sendable, Equatable {
     public var maxNewTokens: Int = 256
     public var temperature: Float = 1.0
     public var topK: Int? = nil            // nil = no truncation

@@ -117,7 +117,7 @@ func runQwenConstrainCheck(modelPath: String,
                      tokens: Int? = nil) throws -> (produced: [Int32], rescores: Int) {
         runner.reset()
         runner.resetProfile()
-        let run = try runner.runGreedyCompletionMTP(
+        let run = try runner.runCompletionMTP(
             promptTokens: fixture.prompt,
             maxNewTokens: tokens ?? wanted,
             chunkWidth: 512,

@@ -255,7 +255,7 @@ extension QwenForwardRunner {
                                         stopTokens: Set<Int32> = [],
                                         constraint: (any GenerationConstraint)? = nil,
                                         onToken: ((Int, Int32) throws -> Void)? = nil) throws -> [Int32] {
-        try runGreedyCompletion(promptTokens: promptTokens,
+        try runCompletion(promptTokens: promptTokens,
                                 maxNewTokens: maxNewTokens,
                                 chunkWidth: chunkWidth,
                                 stopTokens: stopTokens,
@@ -283,17 +283,45 @@ extension QwenForwardRunner {
     /// suffix and names what it kept in `cachedPromptTokens` — the loop reads
     /// `kv.position` for everything else, so continuing is not a second code
     /// path here (`docs/qwen35moe/41-PROMPT-CACHE.md` §2).
-    public func runGreedyCompletion(
+    /// The distribution the **first generated token** would be drawn from, and
+    /// nothing else: prefill the prompt, read the head's logits, truncate.
+    ///
+    /// A diagnostic rather than a step in any loop. One sampled run is one
+    /// sample and says nothing on its own about whether the sampler is live —
+    /// a confident model draws its argmax at 0.6 every time, which is correct
+    /// behaviour and indistinguishable from a broken sampler by eye. This is
+    /// how the numbers behind that get looked at (`42-SAMPLING.md`).
+    ///
+    /// Leaves the runner's state holding the prompt, exactly as `prefill` does.
+    public func probeDistribution(promptTokens: [Int32],
+                                  sampling: GenerationConfig,
+                                  chunkWidth: Int = 512) throws -> QwenCategorical {
+        samplingConfig = sampling
+        defer { samplingConfig = nil }
+        _ = try prefill(tokens: promptTokens, chunkWidth: chunkWidth)
+        return try sampler().categorical(row: SamplingRow.target.rawValue,
+                                         config: sampling)
+    }
+
+    /// `sampling` nil decodes greedily, which is what evaluation keeps
+    /// (`docs/qwen35moe/42-SAMPLING.md` S4). Non-nil draws every token from the
+    /// truncated distribution that config names, including the one the prompt
+    /// produced — the first generated token is as much part of the sampled
+    /// sequence as the rest.
+    public func runCompletion(
         promptTokens: [Int32],
         maxNewTokens: Int,
         chunkWidth: Int = 512,
         stopTokens: Set<Int32> = [],
         constraint: (any GenerationConstraint)? = nil,
         cachedPromptTokens: Int = 0,
+        sampling: GenerationConfig? = nil,
         shouldStop: () -> Bool = { false },
         onPrefill: ((Int, Double) -> Void)? = nil,
         onToken: ((Int, Int32) throws -> Void)? = nil
     ) throws -> QwenGreedyRun {
+        samplingConfig = sampling
+        defer { samplingConfig = nil }
         precondition(!promptTokens.isEmpty, "the prompt must have at least one token")
         precondition(cachedPromptTokens == kv.position,
                      "a resumed run must name the state it is continuing "
@@ -321,7 +349,12 @@ extension QwenForwardRunner {
         let prefillSeconds = Self.seconds(since: startedAt)
         onPrefill?(promptTokens.count, prefillSeconds)
         let decodeStart = DispatchTime.now()
-        var next = try constrained(rawToken, gate: gate, position: 0)
+        // The prompt's last head pass wrote the logits too when sampling, so
+        // the first token is drawn from the same row the greedy path took its
+        // argmax from.
+        var next = sampling == nil
+            ? try constrained(rawToken, gate: gate, position: 0)
+            : try sampledDraw(row: .target, position: 0, gate: gate).token
         var produced: [Int32] = []
         var reason: StopReason = .maxTokens
         var timeToFirstToken: Double = 0
@@ -337,8 +370,10 @@ extension QwenForwardRunner {
             // dropped: one step is forty layers of command buffers that are
             // waited on, and nothing inside them is interruptible.
             try Task.checkCancellation()
-            next = try constrained(try step(token: next, emitToken: true),
-                                   gate: gate, position: index + 1)
+            let raw = try step(token: next, emitToken: true)
+            next = sampling == nil
+                ? try constrained(raw, gate: gate, position: index + 1)
+                : try sampledDraw(row: .target, position: index + 1, gate: gate).token
         }
         return QwenGreedyRun(tokens: produced,
                              promptTokens: promptTokens.count,
@@ -422,6 +457,13 @@ extension QwenForwardRunner {
         let lm = try model.qwenLMHead
         let finalNorm = model.finalNorm
         let T = tokens.count
+        // Under a sampling run the last chunk's row is the one the first
+        // generated token is drawn from, so it writes the logits like decode's
+        // own step does (`docs/qwen35moe/42-SAMPLING.md` §2-1). Earlier chunks
+        // pass through here too — they cost the same 496 KB write and their
+        // distribution is simply never read.
+        let sampledLogits = samplingConfig == nil ? nil : try samplingLogitsBuffer()
+        let sampler = samplingConfig == nil ? nil : try sampler()
         try runSync("prefill head") { cb in
             self.head.encodeGreedyDecode(
                 commandBuffer: cb,
@@ -432,9 +474,17 @@ extension QwenForwardRunner {
                 scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
                 biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
                 outToken: s.greedyToken,
+                logits: sampledLogits,
+                logitsOffset: self.samplingLogitsOffset(.target),
                 d: UInt32(self.hiddenSize),
                 vocab: UInt32(self.scoredVocab),
                 rmsEps: self.rmsEps)
+            if let sampler, let sampledLogits {
+                sampler.encodeProbabilities(commandBuffer: cb,
+                                            logits: sampledLogits,
+                                            logitsOffset: self.samplingLogitsOffset(.target),
+                                            rows: 1)
+            }
         }
         return Int32(bitPattern: s.greedyToken.contents().load(as: UInt32.self))
     }

@@ -40,6 +40,14 @@ constant constexpr float kSampleTopMaxK     = 256.0f;  // cap for top-k mask sca
 // ----------------------------------------------------------------------------
 
 inline float softcap_value(float z, float softcap) {
+    // A cap of zero or less means the family has no softcap and the logit
+    // passes through unchanged. Qwen 3.5-MoE is that family
+    // (`docs/qwen35moe/03-DESIGN.md` §2: "logit softcap — Qwen には無い"), and
+    // applying Gemma's 30*tanh(z/30) to it would not be a small error: the cap
+    // flattens everything above ~60 into the same value, which is exactly the
+    // region a confident model draws from. The host mirror of this function
+    // (`Sampler.softcapped`) already spells the same rule.
+    if (!(softcap > 0.0f)) { return z; }
     // tanh saturates well before |z/softcap|=10, so values like +1e3 collapse
     // cleanly to softcap=30 without exp overflow downstream.
     return softcap * precise::tanh(z / softcap);

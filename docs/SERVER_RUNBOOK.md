@@ -330,7 +330,7 @@ python3 Scripts/demo/serve.py     # http://127.0.0.1:8799/
 | MTP ヘッドの在処 | `~/LLM/ornith-mtp-head/` の **480 MB sidecar** (`.gturbo` の中ではない)。`TF_QWEN_MTP_HEAD` で差し替える。**無ければ起動しない** |
 | 画像 | **400 `unsupported_image`。**Phase 9 で、`/props` の `modalities.vision` も false を返す |
 | prompt cache | **ある。ただし「厳密な延長」だけ** ([docs/qwen35moe/41](qwen35moe/41-PROMPT-CACHE.md))。再帰状態は巻き戻せないので**部分再利用が無い** — 新しいプロンプトが前回の続きでなければ `cached=0` になる (Gemma のような最長共通接頭辞ではない)。ミスの理由は stderr の `prompt cache miss diverged_at=… held=…` が名指す |
-| サンプラ | 受理して無視 (常に greedy)。完了行の `approx="sampling/greedy-only: …"` がそれを言う |
+| サンプラ | **公式推奨の 0.6 / 0.95 / 20 で必ず走る** ([docs/qwen35moe/42](qwen35moe/42-SAMPLING.md))。要求が別の値を送っても**上書きして実行**し、完了行に `approx="sampling/official-override: temperature=1.0→0.6 …"` と出る。公式値どおり送った要求には何も出ない。`repeat_penalty` と `seed` は使わない (これも上書きとして名前が出る) |
 
 ### コンテキスト長 — 64K までは無料、128K は decode が半分になる (**実測(手元)**)
 
@@ -380,6 +380,24 @@ pi 側は `~/.pi/agent/models.json` に provider を 1 つ足してある
 ```bash
 pi --provider local-turbofieldfare-ornith --model ornith-1.5-35b-a3b
 ```
+
+**MTP はサンプリング下でも切れない** (要件 S2)。受理規則は
+`u ≤ p(d)/q(d)`、棄却時は残差 `(p−q)+` からの再抽出で、**出力分布は
+サンプラそのものと一致する** (42 §2-2)。受理率はほとんど落ちない
+(**実測(手元)**、192 トークン、interleaved A/B 3 反復の中央値):
+
+| タスク | 腕 | P1 (受理率) | a (トークン/パス) | tok/s |
+| --- | --- | ---: | ---: | ---: |
+| a1-agent-edit | greedy | 89.1% | 1.901 | 18.89 |
+| a1-agent-edit | 公式サンプラ | 84.6% | 1.846 | 16.46 |
+| t2-code | greedy | 81.1% | 1.811 | 17.74 |
+| t2-code | 公式サンプラ | 82.9% | 1.829 | 19.34 |
+
+**tok/s の符号は 2 本のタスクで逆になっている**ので、この n では速度差の向きを
+言えない — 2 つの腕は**違うトークンを生成する**ので、同じ仕事ではないためである
+(エキスパートのヒット率も 49.9% 対 51.7% と違う)。言えるのは**受理率がほぼ動かない**
+ことだけで、これは温度 0.6 / top_p 0.95 の分布が十分に尖っていて
+`p(d)/q(d)` が 1 に近いため。
 
 完了行に MTP の効きと prompt cache の当たりが出る:
 

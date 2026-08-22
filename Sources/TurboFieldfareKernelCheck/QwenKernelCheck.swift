@@ -829,6 +829,9 @@ func runQwenKernelCheck(tokens: Int) throws -> [CaseResult] {
     // ---- 9. INT8 の QMM (QwenQMMCheck.swift) --------------------------------
     results.append(contentsOf: try runQwenQMMCheck(context: context))
 
+    // ---- 10. サンプラ (QwenSamplerCheck.swift) -------------------------------
+    results.append(contentsOf: try runQwenSamplerCheck(context: context))
+
     return results
 }
 

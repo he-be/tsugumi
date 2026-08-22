@@ -27,36 +27,67 @@ struct QwenGenerationPlan: Equatable, Sendable {
     /// GEN-2 / DEV-16, and this family's own §12 entries. Three tags appear,
     /// in this order, because they degrade independently: `tools/` is what the
     /// declaration lost on the way into the prompt, `grammar/` is what the
-    /// GBNF could not constrain, and `sampling/` is what this family cannot do
-    /// at all yet.
+    /// GBNF could not constrain, and `sampling/` is what the request asked for
+    /// and the official settings overrode (S1).
     let approximations: [String]
     /// The request shape an error message may name, in the vocabulary of the
     /// request rather than of the conversation. **Never prompt text.**
     let shape: String
+    /// The sampler the run uses — always the official three (S1), whatever the
+    /// request asked for. See `officialSampling`.
+    let sampling: GenerationConfig
 
     var isConstrained: Bool { grammar != nil }
 
-    /// SPEC §12 DEV-5's rule, applied to a whole sampler rather than to one
-    /// field: this family's head writes no logits, so there is nothing to
-    /// shape a distribution out of and every draw is the argmax
-    /// (`docs/qwen35moe/19-LM-HEAD-INT8.md`). The request is **accepted and
-    /// the sampler ignored** (R3), which is what the reference does with every
-    /// sampler it has not implemented — refusing instead would fail the
-    /// default request, whose `temperature` is 1.0 because the client never
-    /// mentioned it (REQ-temp).
+    /// The official recommended sampler for `Ornith-1.5-35B-A3B`, and the only
+    /// one this server runs (`docs/qwen35moe/42-SAMPLING.md` §0 S1).
+    static let officialTemperature: Float = 0.6
+    static let officialTopP: Float = 0.95
+    static let officialTopK = 20
+
+    /// The sampler the run will actually use, and the list of what it
+    /// overrode.
     ///
-    /// Named here rather than swallowed: a client that asked for `temperature:
-    /// 0.7` and got greedy text has a right to see that in the log.
-    static func samplingApproximations(_ config: GenerationConfig) -> [String] {
-        guard !config.isPureGreedy else { return [] }
-        var asked: [String] = []
-        if config.temperature != 0 { asked.append("temperature=\(config.temperature)") }
-        if let topK = config.topK { asked.append("top_k=\(topK)") }
-        if let topP = config.topP { asked.append("top_p=\(topP)") }
-        if config.repetitionPenalty != 1 {
-            asked.append("repeat_penalty=\(config.repetitionPenalty)")
+    /// **The values are not negotiable and the override is not silent.** S1
+    /// says only the official settings may be used; the decision on a request
+    /// that asks for something else is to *override and record*, not to refuse
+    /// (2026-08-22). So `temperature`, `top_p` and `top_k` are set to the
+    /// official three whatever arrived, and the completion line names every
+    /// field whose requested value differed.
+    ///
+    /// This replaces the `greedy-only: … ignored` note, which said the request
+    /// was accepted and thrown away — the state
+    /// `docs/qwen35moe/42-SAMPLING.md` §1 exists to end. Two things are still
+    /// dropped rather than honoured, and both are named: `repeat_penalty`,
+    /// which is not part of the official recommendation and which this
+    /// family's sampler does not implement, and `seed`, which the server does
+    /// not take from a request.
+    static func officialSampling(
+        _ requested: GenerationConfig
+    ) -> (config: GenerationConfig, approximations: [String]) {
+        var config = requested
+        var overridden: [String] = []
+        if requested.temperature != officialTemperature {
+            overridden.append("temperature=\(requested.temperature)→\(officialTemperature)")
         }
-        return ["greedy-only: " + asked.joined(separator: " ") + " ignored"]
+        if requested.topK != officialTopK {
+            let asked = requested.topK.map { "\($0)" } ?? "none"
+            overridden.append("top_k=\(asked)→\(officialTopK)")
+        }
+        if requested.topP != officialTopP {
+            let asked = requested.topP.map { "\($0)" } ?? "none"
+            overridden.append("top_p=\(asked)→\(officialTopP)")
+        }
+        if requested.repetitionPenalty != 1 {
+            overridden.append("repeat_penalty=\(requested.repetitionPenalty)→1")
+        }
+        config.temperature = officialTemperature
+        config.topK = officialTopK
+        config.topP = officialTopP
+        config.repetitionPenalty = 1
+        config.seed = nil
+        guard !overridden.isEmpty else { return (config, []) }
+        return (config, ["official-override: " + overridden.joined(separator: " ")])
     }
 
     init(request: ValidatedChatRequest, markers: QwenToolCallMarkers) {
@@ -73,11 +104,12 @@ struct QwenGenerationPlan: Equatable, Sendable {
         self.grammar = constraint?.grammar
         self.isLazy = constraint?.isLazy ?? false
         self.trigger = constraint?.trigger
+        let sampling = Self.officialSampling(request.generationConfig)
+        self.sampling = sampling.config
         self.approximations =
             request.toolSchemaSimplifications.map { "tools/" + $0 }
             + (constraint?.approximations ?? []).map { "grammar/" + $0 }
-            + Self.samplingApproximations(request.generationConfig)
-                .map { "sampling/" + $0 }
+            + sampling.approximations.map { "sampling/" + $0 }
         self.shape = Self.shape(request)
     }
 

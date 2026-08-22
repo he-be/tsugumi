@@ -231,7 +231,14 @@ final class QwenMTPDrafter {
     /// skipped a position, and all that position owes the cache is its `(k, v)`
     /// — the depth-1 chain never reads its output (`33` §2-4 is about depth 2
     /// and beyond, which width 2 does not use).
-    func draft(baseNormed: MTLBuffer, rows: [Row]) throws -> Int32 {
+    /// `logits` non-nil also writes the draft's vocabulary-wide logits there,
+    /// which is what speculative *sampling* needs: the accept test compares the
+    /// target's `p(d)` against the draft's `q(d)`, and `q` cannot be recovered
+    /// from an argmax (`docs/qwen35moe/42-SAMPLING.md` §2-2). The returned id
+    /// is still the argmax; under sampling the caller draws from `q` instead of
+    /// using it.
+    func draft(baseNormed: MTLBuffer, rows: [Row],
+               logits: (buffer: MTLBuffer, offset: Int)? = nil) throws -> Int32 {
         precondition(!rows.isEmpty, "the head needs at least one row")
         guard cachedRows + rows.count <= maxContext else {
             throw QwenMTPSidecar.SidecarError.geometry(
@@ -343,15 +350,29 @@ final class QwenMTPDrafter {
                             weight: finalNorm.buffer, weightOffset: Int(finalNorm.offset),
                             out: normed, d: D, eps: rmsEps)
             let lm = try model.qwenLMHead
-            head.encodeGreedyDecodeRows(commandBuffer: tail,
-                                        hiddenNormed: normed,
-                                        weights: lm.buffer, weightsOffset: Int(lm.offset),
-                                        scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
-                                        biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
-                                        outTokens: draftToken,
-                                        rows: 1,
-                                        d: D,
-                                        vocab: UInt32(scoredVocab))
+            if let logits {
+                head.encodeLogitsDecodeRows(commandBuffer: tail,
+                                            hiddenNormed: normed,
+                                            weights: lm.buffer, weightsOffset: Int(lm.offset),
+                                            scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
+                                            biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
+                                            outTokens: draftToken,
+                                            logits: logits.buffer,
+                                            logitsOffset: logits.offset,
+                                            rows: 1,
+                                            d: D,
+                                            vocab: UInt32(scoredVocab))
+            } else {
+                head.encodeGreedyDecodeRows(commandBuffer: tail,
+                                            hiddenNormed: normed,
+                                            weights: lm.buffer, weightsOffset: Int(lm.offset),
+                                            scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
+                                            biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
+                                            outTokens: draftToken,
+                                            rows: 1,
+                                            d: D,
+                                            vocab: UInt32(scoredVocab))
+            }
             profile.tailGPU += try wait(tail, "mtp moe and head")
             profile.tailWall += Self.seconds(since: tailStart)
             cachedRows += 1

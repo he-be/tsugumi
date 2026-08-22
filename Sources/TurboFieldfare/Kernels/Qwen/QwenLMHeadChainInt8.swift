@@ -37,6 +37,7 @@ public final class QwenLMHeadChainInt8 {
     private let rms: RMSNorm
     private let rowGreedy: MTLComputePipelineState
     private let rowGreedyMulti: MTLComputePipelineState
+    private let rowLogitsMulti: MTLComputePipelineState
     private let rowMasked: MTLComputePipelineState
     private let rowReduce: MTLComputePipelineState
     private let xNormedBuffer: MTLBuffer
@@ -68,6 +69,7 @@ public final class QwenLMHeadChainInt8 {
         }
         self.rowGreedy = try pipeline("qwen_lm_head_greedy_int8_rows_chunk_raw")
         self.rowGreedyMulti = try pipeline("qwen_lm_head_greedy_int8_rows_chunk_raw_multi")
+        self.rowLogitsMulti = try pipeline("qwen_lm_head_logits_int8_rows_chunk_multi")
         self.rowMasked = try pipeline("qwen_lm_head_greedy_int8_rows_chunk_masked")
         self.rowReduce = try pipeline("qwen_lm_head_greedy_int8_rows_reduce")
 
@@ -207,6 +209,11 @@ public final class QwenLMHeadChainInt8 {
     /// live for two rows at once — several rows may be encoded onto the same
     /// command buffer.
     @discardableResult
+    /// `logits` non-nil writes the vocabulary-wide FP16 logits as well, for the
+    /// sampled decode path (`docs/qwen35moe/42-SAMPLING.md` §2-1). The token id
+    /// is produced either way and is the same id in both cases: the multi-row
+    /// kernel at `R = 1` runs the same row function in the same order as the
+    /// one-row kernel, which is what the head check's first case asserts.
     public func encodeGreedyDecode(commandBuffer: MTLCommandBuffer,
                                    hidden: MTLBuffer, hiddenOffset: Int = 0,
                                    normWeight: MTLBuffer, normOffset: Int = 0,
@@ -214,6 +221,7 @@ public final class QwenLMHeadChainInt8 {
                                    scales: MTLBuffer, scalesOffset: Int = 0,
                                    biases: MTLBuffer, biasesOffset: Int = 0,
                                    outToken: MTLBuffer, outTokenOffset: Int = 0,
+                                   logits: MTLBuffer? = nil, logitsOffset: Int = 0,
                                    d: UInt32,
                                    vocab: UInt32,
                                    rmsEps: Float) -> Bool {
@@ -224,6 +232,12 @@ public final class QwenLMHeadChainInt8 {
               d % 64 == 0,
               hiddenOffset >= 0,
               outTokenOffset >= 0, outTokenOffset % 4 == 0 else { return false }
+        if let logits {
+            guard logitsOffset >= 0,
+                  logitsOffset % MemoryLayout<Float16>.size == 0,
+                  logits.length - logitsOffset
+                      >= Int(vocab) * MemoryLayout<Float16>.size else { return false }
+        }
 
         let rowGroups = rowGroupCount(vocab: Int(vocab))
         rms.encodeBF16W(commandBuffer: commandBuffer,
@@ -232,7 +246,7 @@ public final class QwenLMHeadChainInt8 {
                         out: xNormedBuffer, d: d, eps: rmsEps)
 
         guard let head = commandBuffer.makeComputeCommandEncoder() else { return false }
-        head.setComputePipelineState(rowGreedy)
+        head.setComputePipelineState(logits == nil ? rowGreedy : rowLogitsMulti)
         head.setBuffer(xNormedBuffer, offset: 0, index: 0)
         head.setBuffer(weights, offset: weightsOffset, index: 1)
         head.setBuffer(scales, offset: scalesOffset, index: 2)
@@ -242,6 +256,11 @@ public final class QwenLMHeadChainInt8 {
         var vocabValue = vocab
         head.setBytes(&dValue, length: MemoryLayout<UInt32>.size, index: 5)
         head.setBytes(&vocabValue, length: MemoryLayout<UInt32>.size, index: 6)
+        if let logits {
+            var rowValue: UInt32 = 1
+            head.setBytes(&rowValue, length: MemoryLayout<UInt32>.size, index: 7)
+            head.setBuffer(logits, offset: logitsOffset, index: 8)
+        }
         head.dispatchThreadgroups(
             MTLSize(width: rowGroups, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: 32 * Self.rowsPerThreadgroup,
@@ -306,6 +325,78 @@ public final class QwenLMHeadChainInt8 {
 
         // One reduce per hidden row. Each reads its own slice of `summaries`,
         // which the multi-row kernel wrote as [row][threadgroup].
+        for row in 0..<rows {
+            encodeReduce(commandBuffer: commandBuffer,
+                         rowGroups: rowGroups,
+                         summariesOffset: row * rowGroups
+                             * Self.rowSummaryStride * MemoryLayout<Float>.size,
+                         outToken: outTokens,
+                         outTokenOffset: outTokensOffset + row * MemoryLayout<UInt32>.size)
+        }
+        return true
+    }
+
+    /// `rows` already-normalized hidden rows in, and both the token ids **and**
+    /// the vocabulary-wide logits out — still one pass over the 508 MB table.
+    ///
+    /// This is what sampling needs (`docs/qwen35moe/42-SAMPLING.md` §2-1, S1).
+    /// `encodeGreedyDecodeRows` computes the same dot products and keeps only
+    /// the argmax; here they are also written to `logits` as FP16
+    /// `[rows, vocab]`, which is what `Sampler` takes. The extra cost is the
+    /// **write** — 496 KB a row against the 540 MB the pass already reads, or
+    /// 0.09% — not a second head.
+    ///
+    /// The token ids are still produced, and are the same ids the greedy path
+    /// would produce: the speculative loop's force-reject control and the
+    /// evaluation paths (S4) both stay on argmax, and `argmax(logits) ==
+    /// outTokens[row]` is what the first check asserts.
+    ///
+    /// `logits` must hold `rows * vocab` FP16 and be `.storageModeShared` if
+    /// the host is going to read it (the sampler's repetition-penalty and
+    /// constraint-mask passes both edit it in place).
+    @discardableResult
+    public func encodeLogitsDecodeRows(commandBuffer: MTLCommandBuffer,
+                                       hiddenNormed: MTLBuffer,
+                                       hiddenNormedOffset: Int = 0,
+                                       weights: MTLBuffer, weightsOffset: Int = 0,
+                                       scales: MTLBuffer, scalesOffset: Int = 0,
+                                       biases: MTLBuffer, biasesOffset: Int = 0,
+                                       outTokens: MTLBuffer, outTokensOffset: Int = 0,
+                                       logits: MTLBuffer, logitsOffset: Int = 0,
+                                       rows: Int,
+                                       d: UInt32,
+                                       vocab: UInt32) -> Bool {
+        guard rows > 0, rows <= Self.maxHiddenRows,
+              d > 0, vocab > 0,
+              Int(d) <= maxD, Int(vocab) <= maxVocab,
+              Int(d) % affineGroupSize == 0, d % 64 == 0,
+              outTokensOffset >= 0, outTokensOffset % 4 == 0,
+              logitsOffset >= 0,
+              logitsOffset % MemoryLayout<Float16>.size == 0,
+              logits.length - logitsOffset
+                  >= rows * Int(vocab) * MemoryLayout<Float16>.size else { return false }
+
+        let rowGroups = rowGroupCount(vocab: Int(vocab))
+        guard let head = commandBuffer.makeComputeCommandEncoder() else { return false }
+        head.setComputePipelineState(rowLogitsMulti)
+        head.setBuffer(hiddenNormed, offset: hiddenNormedOffset, index: 0)
+        head.setBuffer(weights, offset: weightsOffset, index: 1)
+        head.setBuffer(scales, offset: scalesOffset, index: 2)
+        head.setBuffer(biases, offset: biasesOffset, index: 3)
+        head.setBuffer(summariesBuffer, offset: 0, index: 4)
+        var dValue = d
+        var vocabValue = vocab
+        var rowValue = UInt32(rows)
+        head.setBytes(&dValue, length: MemoryLayout<UInt32>.size, index: 5)
+        head.setBytes(&vocabValue, length: MemoryLayout<UInt32>.size, index: 6)
+        head.setBytes(&rowValue, length: MemoryLayout<UInt32>.size, index: 7)
+        head.setBuffer(logits, offset: logitsOffset, index: 8)
+        head.dispatchThreadgroups(
+            MTLSize(width: rowGroups, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 32 * Self.rowsPerThreadgroup,
+                                           height: 1, depth: 1))
+        head.endEncoding()
+
         for row in 0..<rows {
             encodeReduce(commandBuffer: commandBuffer,
                          rowGroups: rowGroups,
