@@ -247,6 +247,13 @@ PASS  routed experts on the per-pair path, chunk 8 (3 chunks) — the same 41 to
 
 ## 7. 残る未確認と、次の一手
 
+> **後日 (同日) の追記 — #1 と #2 は [39](39-RESIDENCY-COMMIT.md) で片付いた。**
+> #1 の `io` の正体は `MTLResidencySet.commit()` で、**背景の直列キューに
+> 投げるだけ**で検証パスの `io` は 36.5 → 8.3 ms/パスになった (素の decode も
+> MTP も 4 腕すべて勝ち)。#2 の `draft` 6.0 ms は**89% が GPU** で、
+> コマンドバッファを融合しても上限 0.64 ms/パス — 削れる無駄ではなかった。
+> #3 の t2 / t3 は 39 でも t2 が ×1.011 止まりで、まだ残っている。
+
 1. **`io` (エキスパート取得) が最大の項になった。**t2 の素の decode で
    19.48 ms/tok = 壁時計の 36%、その中身は residency set の commit
    (`commit=18.28ms/tok`)。MTP に固有の話ではなく Phase 6 の続きだが、

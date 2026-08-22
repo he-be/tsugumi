@@ -29,6 +29,17 @@ print(' '.join(a[r % len(a):] + a[:r % len(a)]))" "$ARMS" "$rep")
       case $arm in
         mtp)   flag="--qwen-mtp" ;;
         mtpqb) flag="--qwen-mtp"; envs="TF_QWEN_MTP_ROWS_ATTN=0" ;;
+        # `39-VERIFY-PREFETCH.md`: the residency-set commit off the calling
+        # thread (both loops), and the verify pass's cross-layer read-ahead.
+        mtpasync)  flag="--qwen-mtp"; envs="TF_EXPERT_MMAP_RESIDENCY_ASYNC=1" ;;
+        baseasync) envs="TF_EXPERT_MMAP_RESIDENCY_ASYNC=1" ;;
+        # `27-PHASE6-THROUGHPUT.md` §9-2 ②: no residency set at all. The control
+        # that says whether committing in the background buys anything over not
+        # committing — `useResource` keeps both arms correct.
+        basenores) envs="TF_EXPERT_MMAP_RESIDENCY=0" ;;
+        mtpnores)  flag="--qwen-mtp"; envs="TF_EXPERT_MMAP_RESIDENCY=0" ;;
+        mtppf)     flag="--qwen-mtp"; envs="TF_QWEN_MTP_PREFETCH=4" ;;
+        mtppfasync) flag="--qwen-mtp"; envs="TF_EXPERT_MMAP_RESIDENCY_ASYNC=1 TF_QWEN_MTP_PREFETCH=4" ;;
       esac
       echo "### $task rep$rep $arm"
       env ${=envs} $CLI --model $MODEL --messages-file bench/qwen35/$task.json \

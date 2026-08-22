@@ -81,6 +81,11 @@ final class QwenPrefillContext {
     let routedOut: MTLBuffer       // [T, D] FP16
     let routerIndices: MTLBuffer   // [T, topK] UInt32
     let routerWeights: MTLBuffer   // [T, topK] FP16
+    /// The **next** layer's router, run over this layer's `normed` — the
+    /// cross-layer read-ahead's guess (`docs/qwen35moe/39-RESIDENCY-COMMIT.md`).
+    /// Written only when the verify pass asks for it; 24 KB at width 512.
+    let previewIndices: MTLBuffer  // [T, topK] UInt32
+    let previewWeights: MTLBuffer  // [T, topK] FP16
     let routePartials: MTLBuffer   // [T*topK, D] FP16
     let gateUpAct: MTLBuffer       // [3, max(microbatch, gemmBatchRows), F] FP16
     let downScratch: MTLBuffer     // [microbatch, D] FP16
@@ -183,6 +188,9 @@ final class QwenPrefillContext {
         self.routedOut = try buffer(width * d, label: "routedOut")
         self.routerIndices = try buffer(width * topK, MemoryLayout<UInt32>.size, label: "routerIndices")
         self.routerWeights = try buffer(width * topK, label: "routerWeights")
+        self.previewIndices = try buffer(width * topK, MemoryLayout<UInt32>.size,
+                                         label: "previewIndices")
+        self.previewWeights = try buffer(width * topK, label: "previewWeights")
         self.routePartials = try buffer(width * topK * d, label: "routePartials")
         self.gateUpAct = try buffer(3 * actRows * f, label: "gateUpAct")
         self.downScratch = try buffer(rows * d, label: "downScratch")
@@ -417,6 +425,17 @@ extension QwenForwardRunner {
         model.telemetry.beginPhase(.prefill, step: start)
         if fault == .forgetRecurrentState { state.reset() }
 
+        // The cross-layer read-ahead, when the verify pass asked for it. It is
+        // per call rather than per runner: a chunk that throws must not leave a
+        // read in flight against the next one's slots.
+        let prefetching = chunkExpertPrefetch
+            && QwenForwardRunner.verifyPrefetchTopN > 0
+            && model.usesMappedExperts
+            && QwenForwardRunner.pipelineEnabled
+        var chunkPrefetch: (layer: Int, handle: RoutedExpertFetchHandle)?
+        var chunkPredicted: [Int]?
+        defer { if let pending = chunkPrefetch { _ = try? pending.handle.wait() } }
+
         let ids = s.tokenIDs.contents().bindMemory(to: UInt32.self, capacity: T)
         for (index, token) in tokens.enumerated() { ids[index] = UInt32(bitPattern: token) }
 
@@ -458,6 +477,13 @@ extension QwenForwardRunner {
                                   weightOffset: Int(w.postAttnNorm.offset),
                                   out: s.normed, t: UInt32(T), d: D, eps: rmsEps)
                 encodePrefillRouter(cb, tokens: T, w: w.moe, scratch: s)
+                // The next layer's router over *this* layer's `normed`, in the
+                // same command buffer — the guess costs no extra join
+                // (`27-PHASE6-THROUGHPUT.md` §9-4).
+                if prefetching, L + 1 < cfg.numLayers {
+                    encodePrefillRouter(cb, tokens: T, w: layers[L + 1].moe, scratch: s,
+                                        indices: s.previewIndices, weights: s.previewWeights)
+                }
                 // This join also drains the previous layer's committed tail, so
                 // its wall clock is "everything the GPU still owed" — the same
                 // shape decode's own pre-router join has.
@@ -470,6 +496,39 @@ extension QwenForwardRunner {
             // command buffer, as it is in decode.
             let routes = try stage(.routeReadback) {
                 try readPrefillRoutes(tokens: T, scratch: s)
+            }
+            let nextGuess = prefetching && L + 1 < cfg.numLayers
+                ? readChunkPreviewExperts(tokens: T, scratch: s)
+                : nil
+            // A guess for *this* layer has to have landed before this layer
+            // plans, or the plan can hand out the slot the read is filling.
+            if let started = chunkPrefetch, started.layer == L {
+                try stage(.expertIO) {
+                    let began = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+                    _ = try? started.handle.wait()
+                    notePrefetchWait(nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - began)
+                    chunkPrefetch = nil
+                }
+            }
+            if let predicted = chunkPredicted {
+                let actual = routes.tiles.indices.flatMap {
+                    (try? PrefillStreamedTileBinding.expertIDs(forTile: $0, routes: routes)) ?? []
+                }
+                notePreview(predicted: predicted, actual: actual, missed: [])
+            }
+            chunkPredicted = nextGuess
+            // The next layer's read goes out before this layer waits on its
+            // own, so its bytes — and, on the mapped arm, its residency
+            // commit — move while this layer's MoE is encoded and run.
+            // A refusal costs nothing: that layer will fetch in its turn.
+            if let guess = nextGuess, chunkPrefetch == nil, !guess.isEmpty {
+                if let speculative = try model.planSpeculativeRoutedExperts(layer: L + 1,
+                                                                            experts: guess) {
+                    notePrefetchIssued(reads: speculative.misses.count)
+                    chunkPrefetch = (L + 1, try model.startRoutedExpertFetch(plan: speculative))
+                } else {
+                    notePrefetchDeclined()
+                }
             }
 
             try stage(.sharedExpert) {
@@ -805,7 +864,11 @@ extension QwenForwardRunner {
     private func encodePrefillRouter(_ cb: MTLCommandBuffer,
                                      tokens T: Int,
                                      w: MoEWeights,
-                                     scratch s: QwenPrefillContext) {
+                                     scratch s: QwenPrefillContext,
+                                     indices: MTLBuffer? = nil,
+                                     weights: MTLBuffer? = nil) {
+        let outIndices = indices ?? s.routerIndices
+        let outWeights = weights ?? s.routerWeights
         // Both scale buffers are the multiplicative identity: this family has
         // neither Gemma's `router.scale` nor its per-expert weight scale, and
         // the remaining `logits -> top-k -> renormalize` is identical to the
@@ -818,8 +881,8 @@ extension QwenForwardRunner {
                                            hidden: s.normed,
                                            effectiveScale: unitFeatureScale,
                                            perExpertScale: unitExpertScale,
-                                           outIndices: s.routerIndices,
-                                           outWeights: s.routerWeights,
+                                           outIndices: outIndices,
+                                           outWeights: outWeights,
                                            queryCount: UInt32(T),
                                            numExperts: UInt32(cfg.numExperts),
                                            d: UInt32(hiddenSize),
@@ -836,14 +899,41 @@ extension QwenForwardRunner {
                                        hidden: s.normed,
                                        effectiveScale: unitFeatureScale,
                                        perExpertScale: unitExpertScale,
-                                       outIndices: s.routerIndices,
-                                       outWeights: s.routerWeights,
+                                       outIndices: outIndices,
+                                       outWeights: outWeights,
                                        queryCount: UInt32(T),
                                        numExperts: UInt32(cfg.numExperts),
                                        d: UInt32(hiddenSize),
                                        topK: UInt32(cfg.topKExperts),
                                        hiddenStrideElements: UInt32(hiddenSize))
         }
+    }
+
+    /// The next layer's predicted experts, strongest first, as one list for the
+    /// whole chunk.
+    ///
+    /// A verify pass fetches the **union** of its rows' picks, so the guess is
+    /// the union of the rows' predictions — interleaved by rank rather than
+    /// concatenated per row, because the read-ahead is truncated at
+    /// `verifyPrefetchTopN` per row and rank 1 of row 1 is a better bet than
+    /// rank 4 of row 0 (`27-PHASE6-THROUGHPUT.md` §9-4: rank 1 is used 98.6% of
+    /// the time, rank 8 44%).
+    private func readChunkPreviewExperts(tokens T: Int,
+                                         scratch s: QwenPrefillContext) -> [Int] {
+        let topK = cfg.topKExperts
+        let depth = min(QwenForwardRunner.verifyPrefetchTopN, topK)
+        let ptr = s.previewIndices.contents().bindMemory(to: UInt32.self,
+                                                         capacity: T * topK)
+        var seen = Set<Int>()
+        var out: [Int] = []
+        out.reserveCapacity(T * depth)
+        for rank in 0..<depth {
+            for row in 0..<T {
+                let expert = min(Int(ptr[row * topK + rank]), cfg.numExperts - 1)
+                if seen.insert(expert).inserted { out.append(expert) }
+            }
+        }
+        return out
     }
 
     private func readPrefillRoutes(tokens T: Int,

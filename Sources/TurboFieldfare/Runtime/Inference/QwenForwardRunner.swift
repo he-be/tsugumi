@@ -405,6 +405,49 @@ public final class QwenForwardRunner {
         gpuCommandBuffers = 0
         constraintRescores = 0
         stageProfile = QwenStageProfile()
+        mtpDrafter?.resetProfile()
+    }
+
+    /// Run the cross-layer expert read-ahead inside `runChunkLayers`, the way
+    /// the decode loop already runs it (`27-PHASE6-THROUGHPUT.md` §9-5).
+    ///
+    /// Set by the speculative loop around its verify pass and cleared after, so
+    /// the **prompt's** prefill is untouched: there the tiles already read one
+    /// ahead inside a layer, and a chunk of 512 rows routes to most of the
+    /// layer anyway. The verify pass has one tile a layer and nothing to
+    /// overlap the residency commit with, which is what makes `io` the largest
+    /// term in its budget (`38-MTP-VERIFY-PATH.md` §7-1).
+    var chunkExpertPrefetch = false
+
+    /// How many predicted experts the verify pass's read-ahead asks for, per
+    /// layer. `0` = off, which is the default until the A/B says otherwise.
+    ///
+    /// Separate from `TF_QWEN_EXPERT_PREFETCH` (the decode loop's) because the
+    /// two paths have different lead times and different unions to cover: a
+    /// verify pass fetches the union of two rows' top-8, so the guess is the
+    /// union of two rows' predicted top-N.
+    public static let verifyPrefetchTopN: Int = {
+        guard let raw = ProcessInfo.processInfo.environment["TF_QWEN_MTP_PREFETCH"],
+              let value = Int(raw), value > 0 else { return 0 }
+        return value
+    }()
+
+    /// The read-ahead counters, writable from the chunk path (a different file,
+    /// so the `private(set)` setter is not visible there).
+    func notePrefetchIssued(reads: Int) { expertPrefetch.noteIssued(reads: reads) }
+    func notePrefetchDeclined() { expertPrefetch.noteDeclined() }
+    func notePrefetchWait(nanos: UInt64) { expertPrefetch.noteWait(nanos: nanos) }
+    func notePreview(predicted: [Int], actual: [Int], missed: [Int]) {
+        routerPreview.score(predicted: predicted, actual: actual, missed: missed)
+    }
+
+    /// GPU seconds a command buffer this runner did not commit itself should be
+    /// charged to — the MTP head runs its own (`QwenMTPDrafter`), so without
+    /// this the `draft` stage reports wall clock and no GPU at all
+    /// (`docs/qwen35moe/38-MTP-VERIFY-PATH.md` §7-2).
+    func noteStageGPU(_ stage: QwenStage, _ seconds: Double) {
+        guard Self.stageProfileEnabled else { return }
+        stageProfile.addGPU(stage, seconds)
     }
 
     /// Which kernels a prefill chunk's routed experts run on.

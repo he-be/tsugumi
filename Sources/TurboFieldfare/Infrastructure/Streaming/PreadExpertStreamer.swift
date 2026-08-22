@@ -389,20 +389,29 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         // D の経路: 読むものが無い。ミスがすることは「residency set に足す」
         // だけで、それは帳簿を更新したあとに 1 回だけ出す (49 §9)。
         if let mmap {
-            mmap.syncResidency {
+            // 帳簿は**同期で**進める: プランはスロットを予約済みで、次のプランは
+            // ここが書いた `slotExpert` を見る。set の更新だけが遅らせられる。
+            let snapshot: @Sendable () -> Set<Int> = { [self] in
                 cacheLock.lock()
                 defer { cacheLock.unlock() }
-                for index in plan.misses {
-                    let slot = plan.assignedSlots[index]
-                    let expert = plan.experts[index]
-                    releaseSlotLocked(slot)
-                    slotExpert[slot] = expert
-                    if expert >= 0, expert < expertResidency.count {
-                        expertResidency[expert] += 1
-                        expertSlotHint[expert] = slot
-                    }
-                }
                 return Set(slotExpert.filter { $0 >= 0 })
+            }
+            cacheLock.lock()
+            for index in plan.misses {
+                let slot = plan.assignedSlots[index]
+                let expert = plan.experts[index]
+                releaseSlotLocked(slot)
+                slotExpert[slot] = expert
+                if expert >= 0, expert < expertResidency.count {
+                    expertResidency[expert] += 1
+                    expertSlotHint[expert] = slot
+                }
+            }
+            cacheLock.unlock()
+            if MmapExpertMapping.residencyAsync {
+                mmap.syncResidencyAsync(desiredSnapshot: snapshot)
+            } else {
+                mmap.syncResidency(desiredSnapshot: snapshot)
             }
             return expertCachePlanBuffers(plan)
         }

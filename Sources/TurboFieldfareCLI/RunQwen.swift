@@ -459,6 +459,21 @@ func runQwen(args: Args,
                 footer += " verify=\(perPass(spec.verifySeconds))ms"
                 footer += " snapshot=\(perPass(spec.snapshotSeconds))ms"
                 footer += " tok=\(String(format: "%.3f", spec.acceptanceLength))]\n"
+                // Inside `draft`: the head's own three regions and the GPU time
+                // in them. The head commits its own command buffers, so this is
+                // the only place that number appears
+                // (`docs/qwen35moe/38-MTP-VERIFY-PATH.md` §7-2).
+                if spec.draftRows > 0 {
+                    footer += "[mtp/draft gpu=\(perPass(spec.draftGPUSeconds))ms"
+                    footer += " catchup=\(perPass(spec.draftCatchUpSeconds))ms"
+                    footer += "/\(perPass(spec.draftCatchUpGPUSeconds))ms"
+                    footer += " preRouter=\(perPass(spec.draftPreRouterSeconds))ms"
+                    footer += "/\(perPass(spec.draftPreRouterGPUSeconds))ms"
+                    footer += " tail=\(perPass(spec.draftTailSeconds))ms"
+                    footer += "/\(perPass(spec.draftTailGPUSeconds))ms"
+                    footer += " rows=\(String(format: "%.2f", Double(spec.draftRows) / Double(spec.passes)))"
+                    footer += " cb=\(String(format: "%.2f", Double(spec.draftBuffers) / Double(spec.passes)))]\n"
+                }
             }
             // Where the wall clock went stage by stage, on whichever loop ran
             // (`TF_QWEN_STAGE_PROFILE=1`). The prompt's chunks and the decode

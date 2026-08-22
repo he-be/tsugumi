@@ -86,6 +86,24 @@ public final class MmapExpertMapping: @unchecked Sendable {
         return value
     }()
 
+    /// `commit()` を**呼び出しスレッドから外す**か。既定 off。
+    ///
+    /// mmap の腕では `executeExpertCachePlan` は**バイトを 1 つも読まない** —
+    /// 返すのはマッピングへの view で、residency set の更新は
+    /// 「フォールトをカーネルの外に出す」ための先回りでしかない
+    /// (`docs/mtp/49-D-P5-RESIDENCY-SET.md` §2)。常駐の保証そのものは
+    /// `useResource` が出しているので、**commit を待つ理由は 1 つも無い**。
+    ///
+    /// それでも既定が同期なのは、非同期にすると「まだ commit されていない
+    /// ページをカーネルが踏む」窓が開くからである。窓の中のフォールトは
+    /// カーネル内で払う — `TF_EXPERT_MMAP_RESIDENCY=0` の腕と同じ費用で、
+    /// `docs/qwen35moe/27-PHASE6-THROUGHPUT.md` §9-2 はそれが**引き分け**だと
+    /// 測っている。違うのは**この腕では commit も走る**ことで、先回りが
+    /// 間に合ったページのぶんだけ得をする。どちらが勝つかは実測
+    /// (`docs/qwen35moe/39-RESIDENCY-COMMIT.md`)。
+    public static let residencyAsync =
+        ProcessInfo.processInfo.environment["TF_EXPERT_MMAP_RESIDENCY_ASYNC"] == "1"
+
     /// **set から落とさない上限** (エキスパート/層)。0 = 落とす (従来どおり
     /// スロットキャッシュの中身をそのまま映す)。
     ///
@@ -121,6 +139,9 @@ public final class MmapExpertMapping: @unchecked Sendable {
     /// `commitEvery` 用。この層で何回 set を編集したか。
     private var edits = 0
     private let lock = NSLock()
+    /// `syncResidencyAsync` の行き先。層ごとに 1 本。
+    private let residencyQueue = DispatchQueue(label: "tf.expert.residency",
+                                               qos: .userInitiated)
 
     init(layout: StreamLayout, device: MTLDevice, fileDescriptor: Int32) throws {
         let pageSize = Int(getpagesize())
@@ -197,6 +218,15 @@ public final class MmapExpertMapping: @unchecked Sendable {
     /// 古い sync が落としうる (prefill はタイルごとに並列で fetch する)。
     /// `useResource` が残っているので落ちても壊れはしないが、測っている費用が
     /// 順序に依存してしまう。
+    /// `syncResidency` を専用の直列キューに投げて、呼び出し側は待たない。
+    ///
+    /// 直列なのは `syncResidency` の中の `lock` と同じ理由 — スナップショットを
+    /// 撮る順と set に当てる順が入れ替わってはいけない — に加えて、層ごとに
+    /// スレッドを増やさないためである。
+    func syncResidencyAsync(desiredSnapshot: @escaping @Sendable () -> Set<Int>) {
+        residencyQueue.async { [self] in syncResidency(desiredSnapshot: desiredSnapshot) }
+    }
+
     func syncResidency(desiredSnapshot: () -> Set<Int>) {
         lock.lock()
         defer { lock.unlock() }

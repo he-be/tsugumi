@@ -34,5 +34,13 @@ for arm in ${=ARMS}; do
     width2)       run width2       "" "--qwen-mtp" ;;
     width1qblock) run width1qblock "TF_QWEN_MTP_NO_DRAFT=1 TF_QWEN_MTP_ROWS_ATTN=0" "--qwen-mtp" ;;
     width2qblock) run width2qblock "TF_QWEN_MTP_ROWS_ATTN=0" "--qwen-mtp" ;;
+    # `39-VERIFY-PREFETCH.md`: the residency-set commit off the calling thread,
+    # and the arm that drops it altogether (the control that says whether the
+    # background commit is buying anything, `27-PHASE6-THROUGHPUT.md` §9-2 ②).
+    baseasync)    run baseasync    "TF_EXPERT_MMAP_RESIDENCY_ASYNC=1" "" ;;
+    width2async)  run width2async  "TF_EXPERT_MMAP_RESIDENCY_ASYNC=1" "--qwen-mtp" ;;
+    basenores)    run basenores    "TF_EXPERT_MMAP_RESIDENCY=0" "" ;;
+    width2nores)  run width2nores  "TF_EXPERT_MMAP_RESIDENCY=0" "--qwen-mtp" ;;
+    width2pf)     run width2pf     "TF_QWEN_MTP_PREFETCH=4" "--qwen-mtp" ;;
   esac
 done

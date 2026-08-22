@@ -39,6 +39,22 @@ public struct QwenSpeculativeStats: Sendable {
     public var draftSeconds: Double = 0
     /// Seconds inside the verify pass, snapshot and restore included.
     public var verifySeconds: Double = 0
+    /// How the drafter's own seconds split, and the GPU time inside them
+    /// (`QwenMTPDrafter.DraftProfile`). `38-MTP-VERIFY-PATH.md` §7-2 left this
+    /// stage unmetered; the three regions are the head's own structure — the
+    /// catch-up rows, the last row's first command buffer (embed through the
+    /// router, joined for the readback) and its tail (MoE and the 508 MB head).
+    public var draftGPUSeconds: Double = 0
+    public var draftCatchUpSeconds: Double = 0
+    public var draftPreRouterSeconds: Double = 0
+    public var draftTailSeconds: Double = 0
+    public var draftCatchUpGPUSeconds: Double = 0
+    public var draftPreRouterGPUSeconds: Double = 0
+    public var draftTailGPUSeconds: Double = 0
+    public var draftRows = 0
+    public var draftCatchUpRows = 0
+    public var draftBuffers = 0
+
     /// Seconds spent moving the recurrent state around a rejected row.
     ///
     /// **Zero by construction, and printed anyway.** The speculative row writes
@@ -228,9 +244,11 @@ extension QwenForwardRunner {
                     hiddenOffset: hiddenRow * rowBytes,
                     token: pending,
                     position: lastPosition)]
+                let gpuBefore = drafter.gpuSeconds
                 draft = try stage(.draft) {
                     try drafter.draft(baseNormed: normed, rows: rows)
                 }
+                noteStageGPU(.draft, drafter.gpuSeconds - gpuBefore)
             }
             // The control feeds the body a token the head did not pick, so row
             // 1 is certain to be rejected. Any token that is not row 0's argmax
@@ -246,6 +264,10 @@ extension QwenForwardRunner {
             prefillRoutedPath = Self.verifyRoutedPath
             compactChunkCommandBuffers = !Self.wideCommandBuffers
             chunkRowsAttention = Self.rowsAttention
+            // The cross-layer read-ahead, for the verify pass only: the prompt
+            // reads one tile ahead inside a layer already, and a verify pass
+            // has exactly one tile a layer (`39-RESIDENCY-COMMIT.md`).
+            chunkExpertPrefetch = true
             // Row 1 is the guess: its recurrent state goes to the shadow so
             // that rejecting it is doing nothing at all.
             // Width 1 needs no shadow: there is no speculative row to discard.
@@ -255,6 +277,7 @@ extension QwenForwardRunner {
             speculativeLastRow = false
             compactChunkCommandBuffers = false
             chunkRowsAttention = false
+            chunkExpertPrefetch = false
             prefillRoutedPath = savedPath
             let lm = try model.qwenLMHead
             let finalNorm = model.finalNorm
@@ -314,6 +337,17 @@ extension QwenForwardRunner {
             }
         }
 
+        let dp = drafter.profile
+        stats.draftGPUSeconds = dp.totalGPU
+        stats.draftCatchUpSeconds = dp.catchUpWall
+        stats.draftPreRouterSeconds = dp.preRouterWall
+        stats.draftTailSeconds = dp.tailWall
+        stats.draftCatchUpGPUSeconds = dp.catchUpGPU
+        stats.draftPreRouterGPUSeconds = dp.preRouterGPU
+        stats.draftTailGPUSeconds = dp.tailGPU
+        stats.draftRows = dp.rows
+        stats.draftCatchUpRows = dp.catchUpRows
+        stats.draftBuffers = drafter.commandBuffers
         onStats?(stats)
         return QwenGreedyRun(tokens: produced,
                              promptTokens: promptTokens.count,

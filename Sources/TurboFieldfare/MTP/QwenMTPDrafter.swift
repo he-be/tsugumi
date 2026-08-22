@@ -94,6 +94,26 @@ final class QwenMTPDrafter {
     /// GPU time this head has spent, on the same clock the runner keeps.
     private(set) var gpuSeconds: Double = 0
     private(set) var commandBuffers = 0
+    /// Where a draft's wall clock goes (`docs/qwen35moe/39-...`).
+    ///
+    /// `38-MTP-VERIFY-PATH.md` §7-2 left this stage as the one with no meter:
+    /// 6.0 ms a pass, GPU time uncounted because the head runs its own command
+    /// buffers rather than the runner's. The cut is the head's own structure —
+    /// the catch-up rows that only owe the cache a `(k, v)`, the first buffer of
+    /// the last row (embed through the router, joined because the host has to
+    /// name the eight experts), and the tail (the MoE and the 508 MB head).
+    private(set) var profile = DraftProfile()
+
+    struct DraftProfile: Sendable {
+        var passes = 0
+        var rows = 0
+        var catchUpRows = 0
+        /// Wall and GPU per region, seconds.
+        var catchUpWall: Double = 0, catchUpGPU: Double = 0
+        var preRouterWall: Double = 0, preRouterGPU: Double = 0
+        var tailWall: Double = 0, tailGPU: Double = 0
+        var totalGPU: Double { catchUpGPU + preRouterGPU + tailGPU }
+    }
 
     init(sidecar: QwenMTPSidecar,
          context: MetalContext,
@@ -196,6 +216,11 @@ final class QwenMTPDrafter {
     func resetProfile() {
         gpuSeconds = 0
         commandBuffers = 0
+        profile = DraftProfile()
+    }
+
+    private static func seconds(since start: UInt64) -> Double {
+        Double(clock_gettime_nsec_np(CLOCK_UPTIME_RAW) &- start) / 1e9
     }
 
     /// Run the head over `rows` and return the token it predicts after the last
@@ -221,9 +246,12 @@ final class QwenMTPDrafter {
         let finalNorm = try sidecar.view("final_norm")
         let D = UInt32(hiddenSize)
         let embedding = model.embedding
+        profile.passes += 1
+        profile.rows += rows.count
         for (index, row) in rows.enumerated() {
             let last = index == rows.count - 1
             let slot = cachedRows
+            let rowStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
 
             let cb = try commandBuffer()
             // `fc` eats [embedding ; hidden]; the two halves are normalized
@@ -255,7 +283,9 @@ final class QwenMTPDrafter {
                             out: normed, d: D, eps: rmsEps)
             try encodeQKV(cb, slot: slot, position: row.position + 1)
             if !last {
-                try wait(cb, "mtp catch-up row")
+                profile.catchUpGPU += try wait(cb, "mtp catch-up row")
+                profile.catchUpWall += Self.seconds(since: rowStart)
+                profile.catchUpRows += 1
                 cachedRows += 1
                 continue
             }
@@ -298,8 +328,10 @@ final class QwenMTPDrafter {
             // can be named, exactly as it does in the body's decode loop — but
             // here nothing is fetched, so the readback is the only reason this
             // is two command buffers rather than one.
-            try wait(cb, "mtp attention and router")
+            profile.preRouterGPU += try wait(cb, "mtp attention and router")
+            profile.preRouterWall += Self.seconds(since: rowStart)
 
+            let tailStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
             let experts = readRoutedExperts()
             let tail = try commandBuffer()
             tail.useResidencySet(sidecar.residencySet)
@@ -320,7 +352,8 @@ final class QwenMTPDrafter {
                                         rows: 1,
                                         d: D,
                                         vocab: UInt32(scoredVocab))
-            try wait(tail, "mtp moe and head")
+            profile.tailGPU += try wait(tail, "mtp moe and head")
+            profile.tailWall += Self.seconds(since: tailStart)
             cachedRows += 1
         }
         return Int32(bitPattern: draftToken.contents().load(as: UInt32.self))
@@ -438,13 +471,18 @@ final class QwenMTPDrafter {
         return cb
     }
 
-    private func wait(_ cb: MTLCommandBuffer, _ label: String) throws {
+    /// Commit, join, and hand back this buffer's GPU seconds so the caller can
+    /// put them in the right bucket of `profile`.
+    @discardableResult
+    private func wait(_ cb: MTLCommandBuffer, _ label: String) throws -> Double {
         cb.commit()
         cb.waitUntilCompleted()
         if let error = cb.error {
             throw QwenForwardRunner.QwenRunnerError.commandBufferFailed("\(label): \(error)")
         }
-        gpuSeconds += cb.gpuEndTime - cb.gpuStartTime
+        let gpu = cb.gpuEndTime - cb.gpuStartTime
+        gpuSeconds += gpu
         commandBuffers += 1
+        return gpu
     }
 }
