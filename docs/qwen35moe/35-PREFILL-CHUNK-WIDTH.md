@@ -103,6 +103,16 @@ PASS  routed experts on the per-pair path, chunk 8 (3 chunks) — the same 41 to
 [21](21-PHASE4-PREFILL.md) の結論そのものは動かない。**動くのは「確かめた」の
 中身**で、Phase 4 の出口条件は**今日はじめて本当に満たされた**。
 
+### 3-1. 検査
+
+| 何 | 結果 |
+| --- | --- |
+| `--qwen-prefill` (既定 `512,8`、負例 5 本つき) | **全 PASS。**`chunk 8 (3 chunks)` が**初めて本物** |
+| `swift test --no-parallel` | **1,350 件緑** (206 suite、119 秒) |
+
+`QwenPrefill.swift` の変更は 3 行 (幅を要求どおりに取る) で、scratch の
+使い回しも `prefillChunk` も触っていない。
+
 ---
 
 ## 4. 影響しないもの

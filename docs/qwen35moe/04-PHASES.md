@@ -442,7 +442,11 @@ a = 2.344 (平均)。**運用幅は k=2 (ドラフト 1 本)** — 検証費用�
 **プロンプトを T 行の経路に通すのは `--qwen-prefill <path>`**
 ([21](21-PHASE4-PREFILL.md); `--qwen-prefill-chunks`)。時間は `--qwen-prefill-bench`
 (`--qwen-prefill-bench-moe per-pair|tiled` / `--qwen-prefill-bench-cooldown <秒>`、
-[24](24-PREFILL-MOE-PATH.md))。
+[24](24-PREFILL-MOE-PATH.md))。**幅を腕にして交互に測るのは
+`--qwen-prefill-bench-chunk 1,2`、本物のトークン列を食わせるのは
+`--qwen-prefill-bench-token-file <--dump-tokens の出力>`**
+([33 §3-7](33-MTP-ACCEPTANCE.md))。腕ごとに**エキスパート要求数**が出るので、
+両腕で同じ値なら幅が効いていない ([35](35-PREFILL-CHUNK-WIDTH.md))。
 **ツール呼び出しを実物の語彙で見るのは `--qwen-tools <path>`**
 ([23](23-PHASE5-TOOLS.md); fixture 不要)。
 **制約つき貪欲の棄却経路を実物に当てるのは `--qwen-constrain <path>`**
