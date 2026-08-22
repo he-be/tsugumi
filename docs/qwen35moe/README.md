@@ -279,6 +279,7 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 26 | [30-MTP-HEAD-GRAFT.md](30-MTP-HEAD-GRAFT.md) | **実測。**同梱 MTP ヘッドが乱数初期化であることの検算 (上流 bf16 / oQ4e 42 本 / 256 エキスパートの CV)、zero-centered gamma の規約、差し替え候補の選別と**形式適合 19 本 → 42 本**、分割順・norm の +1・量子化の代償の実測、**差し替えの実行と検算** (§6)、mlx-lm#1740 の読み方と pre/post-norm の未確認 |
 | 27 | [31-PREFETCH-CHEAPER.md](31-PREFETCH-CHEAPER.md) | **実測(手元)。**28 の在庫を回した結果 — 計器 (`declined=0`、wait 1.1 ms/tok) で d=2 とリトライが落ち、N>8 は名指しが +23 ポイント積むのに写像が陰に入りきらず負け、**preview の select を出さない**手が全 26 ペアで +2.4〜3.1%。#29 の数字。**適応スキップも机上で否定した** (§7: 層別 miss 分布に崖が無い、preview は 39 本/tok) |
 | 29 | [33-MTP-ACCEPTANCE.md](33-MTP-ACCEPTANCE.md) | **実測(手元) + 導出。**Phase 7 の M0 — 受理率 P1 と受理長 a をタスク別に、実トレースから引いた検証幅ごとのエキスパート和集合とその 2 度の訂正 (§3-4 / §3-5)、**幅 2 の 1 パス費用の実測 (1.27〜1.30 倍) と取り分 +15〜29%** (§3-7、**取り分は [36](36-MTP-DECODE.md) が実測で置き換えた** — 比は正しく、掛ける先が違った)、**GDN の snapshot/restore はコピー 0 回にできる** (§3-6)、参照器とランタイムの 192 トークン一致率 |
+| 37 | [42-FREETOKEN-IDEAS.md](42-FREETOKEN-IDEAS.md) | **検討 (公表値のみ)。**CUDA 向け edge-native MoE serving エンジン FreeToken (arXiv:2608.16157) の機構在庫と写し先 — **意味的境界の anchor checkpoint** ([41](41-PROMPT-CACHE.md) の全ミス 2 種への設計済みの答え、会話内は再帰状態の写真 ≈ 62 MiB だけで済む形)、global expert cache のオフライン判定 ([31 §7](31-PREFETCH-CHEAPER.md) の「崖が無い」が逆風)、KV ↔ スロットの弾力予算、cold expert の CPU fixup (#31 (c) の変種)、写さないもの 4 つ |
 | 36 | [41-PROMPT-CACHE.md](41-PROMPT-CACHE.md) | **実測(手元)。**その場保持の 1 エントリ・全部か無かの prompt cache — 規則と純粋型、34 の式が外れていた 1 点 (**受理して終わった投機パスは最後のトークンも食っている**)、MTP ヘッドのキャッシュという 34 が挙げていなかった穴、**再レンダの継ぎ目は実測ではずれない**、取り分 (TTFT 10.33 → 0.72 秒)、続きと再計算が分岐する話、`--qwen-resume` 7 本 |
 | 35 | [40-MTP-GRAMMAR.md](40-MTP-GRAMMAR.md) | **実測(手元)。**文法つきの MTP (再畳み込みに**行を渡す**だけで済んだ話、2 行への当て方と順序、受理判定を制約後の引きと比べる理由) と、サーバーの `--draft-block-size 2` (幅は 2 だけ・sidecar は起動時・`max_tokens` の 1 位置)、3 腕のトークン一致 55/55 と 63/63、実タスクの A/B (decode ×1.14)、`--qwen-constrain` の 6 本追加、**prompt cache が無いことがエージェントで一番効く**という残り |
 | 34 | [39-RESIDENCY-COMMIT.md](39-RESIDENCY-COMMIT.md) | **実測(手元)。**[38 §7](38-MTP-VERIFY-PATH.md) の残り 2 件を測って手を 2 本試した — ドラフタの 6.0 ms は**89% が GPU** (融合の上限は 0.64 ms/パス)、層またぎ先読みは**負け** (予測 router が幅 2 で +8.3 ms/パス、commit の通貨は回数)。採ったのは **`syncResidency` を背景の直列キューへ**投げる 1 手で、`io` 36.5 → 8.3 ms/パス、**4 タスク 4 腕すべて勝ち** (素の decode ×1.047〜1.124、MTP ×1.039〜1.083)。**set を捨てる腕は ×0.975〜0.986** と 27 §9-2 を再現するので、機序は「先回りが無駄」ではなく「スレッドが違う」。語彙切り詰めは id 分布で**着手前に潰した** |
@@ -321,6 +322,7 @@ PLAN.md / PLAN_QAT.md / PLAN_VISION.md と同じ **実測** / **導出** / **未
   [#990](https://github.com/ml-explore/mlx-lm/pull/990)
 - 兄弟ランタイム: `~/LLM/NVMAI` (Apache-2.0) — 同じ Ornith 1.5 35B-A3B の
   Swift/Metal ランタイム。移植候補の選定は [32](32-NVMAI-ADOPT.md)
+- FreeToken: [`FlashML-org/FreeToken`](https://github.com/FlashML-org/FreeToken) / [arXiv:2608.16157](https://arxiv.org/abs/2608.16157) — CUDA 向け edge-native MoE serving。機構の在庫と写し先は [42](42-FREETOKEN-IDEAS.md) (ソース未読・公表値のみ)
 - 量子化ツール: [`jundot/omlx`](https://github.com/jundot/omlx) (Apache-2.0) —
   `docs/oQ_Quantization.md` / `omlx/oq.py` / `omlx/custom_kernels/qwen35_prefill/gdn.py`
 - `transformers` `models/qwen3_5_moe/modeling_qwen3_5_moe.py`
