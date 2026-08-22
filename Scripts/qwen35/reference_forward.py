@@ -254,9 +254,12 @@ class ReferenceModel:
         return out
 
     def _full_attention(self, x: np.ndarray, layer: int, state: State,
-                        dump: dict | None) -> np.ndarray:
+                        dump: dict | None, prefix: str | None = None,
+                        positions: np.ndarray | None = None) -> np.ndarray:
+        """`prefix` / `positions` は MTP ヘッドが同じ算式を借りるための口
+        (`mtp_acceptance.py`)。既定は本体の層で、値は 1 つも変わらない。"""
         cfg = self.cfg
-        p = f"{LM}model.layers.{layer}.self_attn"
+        p = prefix if prefix is not None else f"{LM}model.layers.{layer}.self_attn"
         T = x.shape[0]
         hd = cfg.head_dim
 
@@ -269,7 +272,8 @@ class ReferenceModel:
         q = rms_norm(q, self._vector(f"{p}.q_norm.weight"), cfg.rms_norm_eps)
         k = rms_norm(k, self._vector(f"{p}.k_norm.weight"), cfg.rms_norm_eps)
 
-        positions = np.arange(state.offset, state.offset + T)
+        if positions is None:
+            positions = np.arange(state.offset, state.offset + T)
         q = self._rope(q, positions)
         k = self._rope(k, positions)
 
@@ -293,9 +297,10 @@ class ReferenceModel:
             dump[f"layer{layer}.attn_out"] = o.copy()
         return self._dense(o.reshape(T, cfg.num_heads * hd), f"{p}.o_proj")
 
-    def _moe(self, x: np.ndarray, layer: int, dump: dict | None) -> np.ndarray:
+    def _moe(self, x: np.ndarray, layer, dump: dict | None,
+             prefix: str | None = None) -> np.ndarray:
         cfg = self.cfg
-        p = f"{LM}model.layers.{layer}.mlp"
+        p = prefix if prefix is not None else f"{LM}model.layers.{layer}.mlp"
         T = x.shape[0]
 
         logits = self._dense(x, f"{p}.gate")
@@ -330,7 +335,12 @@ class ReferenceModel:
     # forward ----------------------------------------------------------------
 
     def forward(self, tokens: np.ndarray, state: State,
-                dump: dict | None = None, logits_for: str = "last") -> np.ndarray:
+                dump: dict | None = None, logits_for: str = "last",
+                return_hidden: bool = False):
+        """`return_hidden` を立てると logits ではなく hidden を返す:
+        `{"pre": model.norm の前, "post": 後}`。MTP に渡す `h_t` が
+        pre か post かは未決着なので**両方**要る
+        (docs/qwen35moe/03-DESIGN.md §6-4 / 30 §4-3)。"""
         cfg = self.cfg
         x = self.deq.matrix(f"{LM}model.embed_tokens", rows=tokens)
         if dump is not None:
@@ -352,9 +362,12 @@ class ReferenceModel:
                 self._cache.clear()
         state.offset += tokens.shape[0]
 
+        pre_norm = x
         x = rms_norm(x, self._vector(f"{LM}model.norm.weight"), cfg.rms_norm_eps)
         if dump is not None:
             dump["final_hidden"] = x.copy()
+        if return_hidden:
+            return {"pre": pre_norm, "post": x}
         rows = x if logits_for == "all" else x[-1:]
         return self._lm_head(rows)
 
@@ -367,6 +380,22 @@ class ReferenceModel:
             w = self.deq.matrix(prefix, rows=rows)
             out[:, start:start + rows.shape[0]] = x @ w.T
         return out
+
+    def lm_head_argmax(self, x: np.ndarray, chunk: int = 16384) -> np.ndarray:
+        """`_lm_head` と同じ計算で **argmax だけ**返す。行 × 248,320 を
+        1 枚に持つと 600 行で 596 MB になるので、語彙を区切って畳む。"""
+        prefix = f"{LM}lm_head"
+        best = np.full(x.shape[0], -1, np.int64)
+        best_val = np.full(x.shape[0], -np.inf, np.float32)
+        for start in range(0, self.cfg.vocab_size, chunk):
+            rows = np.arange(start, min(start + chunk, self.cfg.vocab_size))
+            part = x @ self.deq.matrix(prefix, rows=rows).T
+            local = np.argmax(part, axis=-1)
+            val = part[np.arange(part.shape[0]), local]
+            take = val > best_val
+            best_val = np.where(take, val, best_val)
+            best = np.where(take, local + start, best)
+        return best
 
     def generate(self, tokens: list[int], max_new: int, eos: set[int],
                  verbose: bool = True) -> list[int]:

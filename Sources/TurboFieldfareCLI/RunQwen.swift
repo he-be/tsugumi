@@ -339,6 +339,15 @@ func runQwen(args: Args,
                 emit(events)
             })
         let generated = run.tokens
+        // The ids, not the text. Re-tokenizing what was printed does not
+        // recover them: BPE can re-segment the same bytes, and the MTP
+        // acceptance measurement teacher-forces on exactly this sequence
+        // (`docs/qwen35moe/33-MTP-ACCEPTANCE.md` §1).
+        if let path = args.dumpTokens {
+            let payload = "{\"prompt\":[\(promptIds.map(String.init).joined(separator: ","))],"
+                + "\"generated\":[\(generated.map(String.init).joined(separator: ","))]}\n"
+            try Data(payload.utf8).write(to: URL(fileURLWithPath: path))
+        }
         let tail = detokenizer.flush()
         if let decoder {
             emit(try decoder.consumeTail(tail))

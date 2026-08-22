@@ -73,7 +73,7 @@ import TurboFieldfare
             "--seed", "--stop", "--quiet", "--expert-cache-slots",
             "--expert-cache-policy", "--prefill", "--prefill-chunk-tokens",
             "--rdadvise", "--verification", "--thinking", "--draft-block-size",
-            "--dump-expert-trace", "--tools", "--tool-choice",
+            "--dump-expert-trace", "--dump-tokens", "--tools", "--tool-choice",
             "--parallel-tool-calls", "--help",
         ]
         let words = Args.usage.split { $0.isWhitespace || $0 == "(" || $0 == ")" }

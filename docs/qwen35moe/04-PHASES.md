@@ -231,14 +231,20 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 **先読みとの合流と着手前の机上ゲート (union 分布・受理長の CPU 測定) は
 [29](29-MTP-PREFETCH-OUTLOOK.md)** — 特に受理長 a はまだ 1 つも測っておらず、
 期待値のすべてを握る ([29 §1-3](29-MTP-PREFETCH-OUTLOOK.md))。
+**判定線が 1 本増えた** ([32 §1-4](32-NVMAI-ADOPT.md)、実測(NVMAI)): sparse MoE では幅 2 の検証パスがエキスパートの**和集合**で 1.585 倍になり、**受理率 p > 約 0.585** を切ると decode 高速化としての取り分が無い。`mtp_acceptance.py` はこの線に対して読む。draft へ渡す hidden が **pre-final-norm** であることも同じ文書が決着させた ([32 §1-1](32-NVMAI-ADOPT.md))。
 
-**先に 1 段増えた: 同梱 MTP ヘッドの差し替え** ([30](30-MTP-HEAD-GRAFT.md))。
-上流の `mtp.*` は乱数初期化のままで、**出荷ヘッドで a を測っても意味が無い**。
-候補 `shisa-ai/…-MTP-ONLY` の形式適合は取れており (19 本 → `oQ4e-g64` の 42 本、
-[30 §3](30-MTP-HEAD-GRAFT.md))、**カーネルは 1 本も要らない**。
-本体 hidden を pre-norm で渡すか post-norm かも未決着で、外部の A/B では
-受理率が 5 ポイント動く ([30 §4-3](30-MTP-HEAD-GRAFT.md)) —
-[29 §3-4](29-MTP-PREFETCH-OUTLOOK.md) の CPU 測定は両方で引く。
+**先に 1 段増えていた MTP ヘッドの差し替えは済んだ**
+([30 §6](30-MTP-HEAD-GRAFT.md))。上流の `mtp.*` は乱数初期化のままで
+**出荷ヘッドで a を測っても意味が無い**ので、`shisa-ai/…-MTP-ONLY` の 19 本を
+`oQ4e-g64` の 42 本に写した `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-shisa-baked` を作った
+(**カーネルは 1 本も書いていない**。expert 間 std の CV 0.69% → 9.46%、
+`expertStride` と参照バイトは不変)。**以降 MTP はこれだけを使う。**
+**そのヘッドで受理長も測った** ([33](33-MTP-ACCEPTANCE.md)): P1 = 78.70% /
+a = 2.344 (平均)。**運用幅は k=2 (ドラフト 1 本)** — 検証費用がエキスパートの
+和集合で伸びるので (幅 2 で 1.554 倍、幅 4 で 2.430 倍)、k=4 は利得より費用が勝つ
+([33 §3-2](33-MTP-ACCEPTANCE.md))。取り分の机上は **+8.5〜11.5%** で、
+**符号を握るのはパスあたりの固定費** (未測定)。pre/post-norm は深さ 1 では
+区別がつかないので、運用点では論点にならない。
 
 **出口:** `RESULTS_MTP.md` と同じ様式で tok/s / TTFT / peak の 3 点。
 **受入は「非投機と greedy でバイト一致」** (Gemma 側の D5 不変条件と同じ)。
@@ -409,6 +415,7 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 | # | やること | 要るもの |
 | --- | --- | --- |
 | 29 | **層をまたぐ先読みを既定にするか** ([27 §9](27-PHASE6-THROUGHPUT.md))。**[31](31-PREFETCH-CHEAPER.md) で安くなった** — preview の select を出さない広い経路 (`TF_QWEN_EXPERT_PREFETCH=8 TF_QWEN_PREVIEW_WIDE=1`) で **+8.4% (56 tok) / +11.2% (60 tok) / +22.3% (48 tok) / +10.5% (498 tok) / +15.8% (2,698 tok)**、出力もヒット率もメモリも n8 と同一。**N は 8 のまま** (9〜16 位は当たるが写像が陰に入りきらない、[31 §2](31-PREFETCH-CHEAPER.md))、**d=2 とリトライは計器で落ちた** ([31 §1](31-PREFETCH-CHEAPER.md))。残る対価は予測 GEMV だけ | ユーザー判断 |
+| 31 | **NVMAI からの移植** ([32](32-NVMAI-ADOPT.md))。順の提案は [32 §7](32-NVMAI-ADOPT.md): (a) `mtp_acceptance.py` を p=0.585 の判定線で回す (カーネル 0 本で Phase 7 の生死)、(b) snapshot-restore 型 prompt cache (多ターン TTFT)、(c) decode の hit-fixup ([27 §9](27-PHASE6-THROUGHPUT.md) の写像待ちに常駐分を重ねる)、(d) 測定は interleaved A/B を既定に | ユーザー判断 |
 | 28 | **候補追加の可否 2 件** (どちらも既定は変えない): `allowedExpertCacheSlots` に 48、`allowedPrefillChunkTokens` に 4096。48 の押しは弱い ([27 §6-2](27-PHASE6-THROUGHPUT.md))、4096 は prefill が素直に伸びる見込み ([27 §6-3](27-PHASE6-THROUGHPUT.md)) | ユーザー判断 |
 | 16 | ~~**線形注意 30 層の締め方の判断**~~ → **2026-08-22 のユーザー判断で保留。**周辺まで数えると 159.4 ms で Phase 4 の出口条件を外れ、再帰カーネル単体は 125.7 ms で [05 §2](05-RISKS.md) #2 の内側 ([17 §4-2](17-PHASE2-KERNELS.md))。**放置してよい理由が 1 つ増えた**: prefill 全体の GPU 時間はチャンク 2048 で 5,036 ms ([24 §3](24-PREFILL-MOE-PATH.md)) なので、**159.4 ms はその約 3%** (別々に測った 2 つの比なので **導出**)。どちらの定義で締めても prefill 全体はほとんど動かない — chunkwise 形の FLOP 2 倍を払う理由はこの比率では出てこない | 保留 |
 | 26 | **`tool_choice: required` の前置きの締め方の判断** ([26 §6-1](26-PHASE8-SERVER.md))。案 A は前置きを `responseFormatGrammar` と同じ `(!</think>* </think> [ \t\n]{0,20})?` に揃える (thinking off なら 1 手目から呼び出しが強制される) が、チェックポイント自身のシステムプロンプトと食い違い、既存の検査 2 本が落ちる。案 B は現状維持 | ユーザー判断 |

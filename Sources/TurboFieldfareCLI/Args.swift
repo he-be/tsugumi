@@ -31,6 +31,11 @@ public struct Args: Equatable, Sendable {
     /// speculation, 2...8 runs one bonus token plus `bs - 1` drafted ones.
     public var draftBlockSize: Int
     public var dumpExpertTrace: String?
+    /// Ornith only: write the run's prompt and generated token ids to a JSON
+    /// file. The MTP acceptance measurement teacher-forces the reference on
+    /// exactly the ids the runtime drew, so re-tokenizing the printed text
+    /// cannot stand in for them (`docs/qwen35moe/33-MTP-ACCEPTANCE.md`).
+    public var dumpTokens: String?
     /// A JSON file of OpenAI-shaped function declarations. Ornith only
     /// (`docs/qwen35moe/25-CLI-TOOLS.md`); the Gemma arm refuses it rather than
     /// ignoring it.
@@ -63,6 +68,7 @@ public struct Args: Equatable, Sendable {
                 thinking: Bool = false,
                 draftBlockSize: Int = 0,
                 dumpExpertTrace: String? = nil,
+                dumpTokens: String? = nil,
                 toolsFile: String? = nil,
                 toolChoice: CLIToolChoice = .auto,
                 parallelToolCalls: Bool = true) {
@@ -89,6 +95,7 @@ public struct Args: Equatable, Sendable {
         self.thinking = thinking
         self.draftBlockSize = draftBlockSize
         self.dumpExpertTrace = dumpExpertTrace
+        self.dumpTokens = dumpTokens
         self.toolsFile = toolsFile
         self.toolChoice = toolChoice
         self.parallelToolCalls = parallelToolCalls
@@ -202,6 +209,8 @@ extension Args {
                                  the ones the target itself drew, so speculation
                                  moves the wall clock and not the text.
       --dump-expert-trace <path> Write every routed-expert request to a TSV trace.
+      --dump-tokens <path>       Ornith only: write {"prompt":[…],"generated":[…]}
+                                 token ids as JSON.
       --tools <path>             JSON array of function declarations, in the
                                  OpenAI shape ([{"type":"function","function":
                                  {"name":…,"description":…,"parameters":…}}] —
@@ -270,6 +279,7 @@ extension Args {
         var thinking = false
         var draftBlockSize = 0
         var dumpExpertTrace: String?
+        var dumpTokens: String?
         var toolsFile: String?
         var toolChoice = CLIToolChoice.auto
         var parallelToolCalls = true
@@ -400,6 +410,8 @@ extension Args {
                 }
             case "--dump-expert-trace":
                 dumpExpertTrace = try takeValue(argv, &index, flag: flag)
+            case "--dump-tokens":
+                dumpTokens = try takeValue(argv, &index, flag: flag)
             case "--tools":
                 toolsFile = try takeValue(argv, &index, flag: flag)
             case "--tool-choice":
@@ -472,6 +484,7 @@ extension Args {
                              thinking: thinking,
                              draftBlockSize: draftBlockSize,
                              dumpExpertTrace: dumpExpertTrace,
+                             dumpTokens: dumpTokens,
                              toolsFile: toolsFile,
                              toolChoice: toolChoice,
                              parallelToolCalls: parallelToolCalls)

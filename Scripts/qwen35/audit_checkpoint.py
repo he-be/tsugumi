@@ -203,6 +203,15 @@ def bake_factors(ckpt: Checkpoint) -> dict[str, float]:
     return {name: factor for name in manifest["tensors"]}
 
 
+def grafted_names(ckpt: Checkpoint) -> set[str]:
+    """`graft_mtp_head.py` が差し替えたテンソル。**上流とは比べない** —
+    供給側が別リポジトリなので、上流との差は食い違いではない。"""
+    path = ckpt.root / "mtp_graft_manifest.json"
+    if not path.exists():
+        return set()
+    return set(json.loads(path.read_text())["tensors"])
+
+
 def audit_norms(ckpt: Checkpoint, bf16: Checkpoint | None, report: dict) -> None:
     print("## norm 規約 (`1+w` が焼かれているか)")
     header = f"  {'family':26s} {'本':>3s} {'mean':>9s} {'min':>9s} {'max':>9s}"
@@ -211,8 +220,11 @@ def audit_norms(ckpt: Checkpoint, bf16: Checkpoint | None, report: dict) -> None
     print(header)
     out = {}
     baked = bake_factors(ckpt)
+    grafted = grafted_names(ckpt)
     if baked:
         print(f"  ({len(baked)} 本は bake_manifest.json の係数で割り戻して照合する)")
+    if grafted:
+        print(f"  ({len(grafted)} 本は差し替え済み — 上流ではなく供給側が正なので照合しない)")
     for family, pattern in NORM_FAMILIES.items():
         names = sorted(n for n in ckpt.tensors if re.match(pattern, n))
         if not names:
@@ -222,6 +234,7 @@ def audit_norms(ckpt: Checkpoint, bf16: Checkpoint | None, report: dict) -> None
         row = {
             "tensors": len(names),
             "baked": sum(1 for n in names if n in baked),
+            "grafted": sum(1 for n in names if n in grafted),
             "mean": float(means.mean()),
             "min": float(min(float(v.min()) for v in values)),
             "max": float(max(float(v.max()) for v in values)),
@@ -231,6 +244,8 @@ def audit_norms(ckpt: Checkpoint, bf16: Checkpoint | None, report: dict) -> None
         if bf16:
             diffs = []
             for name, val in zip(names, values):
+                if name in grafted:
+                    continue
                 other = upstream_name(name)
                 if other not in bf16:
                     continue
@@ -245,6 +260,9 @@ def audit_norms(ckpt: Checkpoint, bf16: Checkpoint | None, report: dict) -> None
                     verdict += "*"
                 row.update(compared=len(diffs), mean_delta=delta, verdict=verdict)
                 line += f" {len(diffs):3d} {delta:10.6f} {verdict:>8s}"
+            elif row["grafted"] == len(names):
+                row.update(compared=0, verdict="差替")
+                line += f" {0:3d} {'-':>10s} {'差替':>8s}"
             else:
                 line += f" {0:3d} {'-':>10s} {'照合なし':>8s}"
         print(line)

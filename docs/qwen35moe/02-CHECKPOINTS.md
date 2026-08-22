@@ -10,7 +10,7 @@
 | | **公式 MLX-4bit** (+ 打ち直し) | **oQ4e-g64** ([11](11-OQ4E-G64-REBUILD.md)) |
 | --- | --- | --- |
 | 実効サイズ | 19.51 GB (打ち直し込みで約 19.87 GB) | **21.86 GB** |
-| MTP | **無い。**oQ4e から移植が要る | **器は入っている** (42 本、`switch_mlp` 積み済み 503 MB)。ただし**中身は乱数初期化**で、どちらの候補でも外部ヘッドの差し替えが要る ([30](30-MTP-HEAD-GRAFT.md)) |
+| MTP | **無い。**oQ4e から移植が要る | **器は入っている** (42 本、`switch_mlp` 積み済み 503 MB)。中身は乱数初期化だったが、**外部ヘッドで差し替え済み** ([30 §6](30-MTP-HEAD-GRAFT.md)) |
 | vision | **無い。**oQ4e から移植が要る | **入っている** (333 本 bf16 893 MB) |
 | routed expert の校正 | **素の RTN** | **imatrix つき** (`oqe_code_multilingual` 128×512) |
 | `in_proj_a`/`b` | 4-bit → **8-bit 打ち直しを決定済み** ([10 §5](10-MLX4BIT-AUDIT.md)) | **8-bit g64** (打ち直し後) |
@@ -41,6 +41,8 @@
 | `~/LLM/Ornith-1.5-35B-A3B-oQ4e-mtp` | oQ4e。**MTP 42 本 + vision 333 本つき**、imatrix つき。非互換 248 本あり | 21.61 GB | 取得・検証済み ([11 §1](11-OQ4E-G64-REBUILD.md)) |
 | `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64` | 上の非互換 248 本を 8-bit g64 で打ち直したもの。**非互換 0 本** | 21.86 GB | 作成済み ([11 §2](11-OQ4E-G64-REBUILD.md))。**推論は 1 度も通していない** |
 | `~/LLM/Ornith-1.5-35B-A3B-bf16-partial` | 上流 bf16 の部分抽出 (HTTP range)。**518 本 3.50 GB**。打ち直し対象 248 本の bf16 原本は 248/248 揃っている | 3.50 GB | [10 §6](10-MLX4BIT-AUDIT.md) / [11 §2](11-OQ4E-G64-REBUILD.md) |
+| `~/LLM/Ornith-1.5-35B-A3B-MTP-ONLY` | `shisa-ai` の学習済み MTP ヘッド。**19 本 BF16** | 1.69 GB | 取得済み ([30 §6](30-MTP-HEAD-GRAFT.md)) |
+| `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-shisa-baked` | **MTP を読むならこれ。**`oQ4e-g64` の MTP 42 本を上の学習済みヘッドで差し替え、`q_norm × 1/16` を焼いたもの。MTP 以外はハードリンクで同一実体 | 21.86 GB (実体 +503 MB) | 作成済み ([30 §6](30-MTP-HEAD-GRAFT.md)) |
 
 ## 3. なぜ変換器を書かずに済んだか (経緯の要約)
 
@@ -176,7 +178,7 @@ routed expert だけは予算計画側の経路が base (`group_size 64`) を保
 | 攻めすぎ箇所の打ち直し (in_proj_a/b, shared expert, embed/lm_head) | **bf16 部分抽出 3.50 GB** | **取得済み** |
 | カーネル検証の参照 | 4-bit を脱量子化して fp32 で回す | 手元で足りる |
 | Vision (Phase 9) | `oQ4e-mtp` の `vision_tower.*` (bf16 893 MB) | **取得済み** |
-| MTP (Phase 7) | ~~`oQ4e-mtp` の `language_model.mtp.*` (503 MB)~~ → **中身が乱数初期化なので使えない** ([30](30-MTP-HEAD-GRAFT.md))。差し替え候補 `shisa-ai/…-MTP-ONLY` (19 本 BF16、1.689 GB) | 器は取得済み / **ヘッドは未取得** |
+| MTP (Phase 7) | ~~`oQ4e-mtp` の `language_model.mtp.*` (503 MB)~~ → 中身が乱数初期化なので使えない。`shisa-ai/…-MTP-ONLY` (19 本 BF16、1.689 GB) に**差し替え済み** ([30 §6](30-MTP-HEAD-GRAFT.md)) | **取得・差し替え済み** |
 | imatrix の効きの対照 | `oQ4e-mtp` | **取得済み** |
 | **oQ / GPTQ を自分で回す (案「oQ を自分で回す」)** | **bf16 全体** | **これだけが 71.9 GB を要求する** |
 

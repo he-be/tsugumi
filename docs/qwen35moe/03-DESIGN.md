@@ -392,4 +392,6 @@ logits = lm_head(mtp.norm(h_mtp))     # lm_head は本体と共用
 スイッチとして持ち、当方で符号を測る** ([30 §4-3](30-MTP-HEAD-GRAFT.md))。
 
 **なお、この器に入れる重みは上流の同梱ヘッドではない。**上流の `mtp.*` は
-乱数初期化のままで、差し替えが要る ([30](30-MTP-HEAD-GRAFT.md))。算式と形は変わらない。
+乱数初期化のままなので、`shisa-ai/…-MTP-ONLY` に**差し替え済み**
+(`~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-shisa-baked`、[30 §6](30-MTP-HEAD-GRAFT.md))。
+**算式と形は変わらない** — 42 本の名前・形・ビット幅・`expertStride` は 1 つも動いていない。
