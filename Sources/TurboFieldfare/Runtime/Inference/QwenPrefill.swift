@@ -421,57 +421,68 @@ extension QwenForwardRunner {
         for (index, token) in tokens.enumerated() { ids[index] = UInt32(bitPattern: token) }
 
         let embedding = model.embedding
-        try runSync("prefill embed") { cb in
-            self.embed.encodeBlock(commandBuffer: cb,
-                                   table: embedding.buffer, tableOffset: Int(embedding.offset),
-                                   scales: embedding.buffer,
-                                   scalesOffset: Int(embedding.scaleOffset),
-                                   biases: embedding.buffer,
-                                   biasesOffset: Int(embedding.biasOffset),
-                                   out: s.hidden,
-                                   tokens: s.tokenIDs,
-                                   d: D,
-                                   seqLen: T)
+        try stage(.embed) {
+            try runSync("prefill embed") { cb in
+                self.embed.encodeBlock(commandBuffer: cb,
+                                       table: embedding.buffer, tableOffset: Int(embedding.offset),
+                                       scales: embedding.buffer,
+                                       scalesOffset: Int(embedding.scaleOffset),
+                                       biases: embedding.buffer,
+                                       biasesOffset: Int(embedding.biasOffset),
+                                       out: s.hidden,
+                                       tokens: s.tokenIDs,
+                                       d: D,
+                                       seqLen: T)
+            }
         }
 
         for L in 0..<cfg.numLayers {
             let w = layers[L]
-            let cb = try commandBuffer()
-            s.rms.encodeBF16W(commandBuffer: cb,
-                              x: s.hidden,
-                              weight: w.inputNorm.buffer, weightOffset: Int(w.inputNorm.offset),
-                              out: s.normed, t: UInt32(T), d: D, eps: rmsEps)
-            if let linear = w.linear {
-                encodePrefillRecurrent(cb, layer: L, tokens: T, w: linear, scratch: s)
-            } else if let full = w.full {
-                encodePrefillAttention(cb, layer: L, tokens: T, start: start,
-                                       w: full, scratch: s)
+            try stage(.preRouter) {
+                let cb = try commandBuffer()
+                s.rms.encodeBF16W(commandBuffer: cb,
+                                  x: s.hidden,
+                                  weight: w.inputNorm.buffer, weightOffset: Int(w.inputNorm.offset),
+                                  out: s.normed, t: UInt32(T), d: D, eps: rmsEps)
+                if let linear = w.linear {
+                    encodePrefillRecurrent(cb, layer: L, tokens: T, w: linear, scratch: s)
+                } else if let full = w.full {
+                    encodePrefillAttention(cb, layer: L, tokens: T, start: start,
+                                           w: full, scratch: s)
+                }
+                qwen.encodeResidualAdd(commandBuffer: cb, hidden: s.hidden, y: s.branchOut,
+                                       count: T * hiddenSize)
+                s.rms.encodeBF16W(commandBuffer: cb,
+                                  x: s.hidden,
+                                  weight: w.postAttnNorm.buffer,
+                                  weightOffset: Int(w.postAttnNorm.offset),
+                                  out: s.normed, t: UInt32(T), d: D, eps: rmsEps)
+                encodePrefillRouter(cb, tokens: T, w: w.moe, scratch: s)
+                // This join also drains the previous layer's committed tail, so
+                // its wall clock is "everything the GPU still owed" — the same
+                // shape decode's own pre-router join has.
+                try wait(cb, "prefill layer \(L) pre-router")
             }
-            qwen.encodeResidualAdd(commandBuffer: cb, hidden: s.hidden, y: s.branchOut,
-                                   count: T * hiddenSize)
-            s.rms.encodeBF16W(commandBuffer: cb,
-                              x: s.hidden,
-                              weight: w.postAttnNorm.buffer,
-                              weightOffset: Int(w.postAttnNorm.offset),
-                              out: s.normed, t: UInt32(T), d: D, eps: rmsEps)
-            encodePrefillRouter(cb, tokens: T, w: w.moe, scratch: s)
-            try wait(cb, "prefill layer \(L) pre-router")
 
             // The routes cannot be grouped before the router has run, and the
             // experts of a tile cannot be fetched before the grouping names
             // them. This readback is the reason a layer is more than one
             // command buffer, as it is in decode.
-            let routes = try readPrefillRoutes(tokens: T, scratch: s)
+            let routes = try stage(.routeReadback) {
+                try readPrefillRoutes(tokens: T, scratch: s)
+            }
 
-            let shared = try commandBuffer()
-            encodePrefillSharedExpert(shared, tokens: T, w: w.moe, scratch: s)
-            // Committed, not joined: the branch that does not depend on which
-            // experts the router picked runs on the GPU while the first tile's
-            // experts are read (Phase 6, `27-PHASE6-THROUGHPUT.md`).
-            if QwenForwardRunner.pipelineEnabled {
-                commitDeferred(shared, "prefill layer \(L) shared expert")
-            } else {
-                try wait(shared, "prefill layer \(L) shared expert")
+            try stage(.sharedExpert) {
+                let shared = try commandBuffer()
+                encodePrefillSharedExpert(shared, tokens: T, w: w.moe, scratch: s)
+                // Committed, not joined: the branch that does not depend on which
+                // experts the router picked runs on the GPU while the first tile's
+                // experts are read (Phase 6, `27-PHASE6-THROUGHPUT.md`).
+                if QwenForwardRunner.pipelineEnabled {
+                    commitDeferred(shared, "prefill layer \(L) shared expert")
+                } else {
+                    try wait(shared, "prefill layer \(L) shared expert")
+                }
             }
 
             let residuals: (MTLCommandBuffer) -> Void = { cb in
@@ -485,18 +496,20 @@ extension QwenForwardRunner {
                                            tail: compactChunkCommandBuffers ? residuals : nil)
             if compactChunkCommandBuffers { continue }
 
-            let tail = try commandBuffer()
-            residuals(tail)
-            // The next layer's pre-router buffer is the join.
-            if QwenForwardRunner.pipelineEnabled {
-                commitDeferred(tail, "prefill layer \(L) residual")
-            } else {
-                try wait(tail, "prefill layer \(L) residual")
+            try stage(.reduceTail) {
+                let tail = try commandBuffer()
+                residuals(tail)
+                // The next layer's pre-router buffer is the join.
+                if QwenForwardRunner.pipelineEnabled {
+                    commitDeferred(tail, "prefill layer \(L) residual")
+                } else {
+                    try wait(tail, "prefill layer \(L) residual")
+                }
             }
         }
         // The head reads the last row of `hidden`, and a chunk that emits
         // nothing still has to have landed before the next one is encoded.
-        try drainDeferred()
+        try stage(.drain) { try drainDeferred() }
 
         kv.advance(by: T)
     }
@@ -737,12 +750,48 @@ extension QwenForwardRunner {
             qTokenStrideElements: UInt32(fault == .uncompactedQuery ? 2 * fullWidth : fullWidth),
             oTokenStrideElements: UInt32(fullWidth),
             scale: 1.0)
-        s.attention.encodeCausal(commandBuffer: cb,
-                                 q: fault == .uncompactedQuery ? s.wide : s.qCompact,
-                                 k: kRange.buffer, kOffset: 0,
-                                 v: vRange.buffer, vOffset: 0,
-                                 out: s.attnOut,
-                                 params: params)
+        // Two kernels for the same sum, chosen by how many rows there are.
+        // The rows path needs the compacted query (its stride is
+        // `numQHeads * headDim`), so the uncompacted-query fault keeps the
+        // query-blocked kernel — that negative control exists to be caught by
+        // the prefill check, and it has to stay on the path it was written for.
+        if chunkRowsAttention && T <= Attention.maxRows && fault != .uncompactedQuery {
+            // **One dispatch per row, not one for the block.**
+            // `Attention.rowsGeometry` cuts the KV range into chunks over
+            // `[0, startPosition + rows)`, so a block's cut — and with it the
+            // order the log-sum-exp merge adds the chunks in — depends on where
+            // the block starts. A token that comes out as row 1 of a pass and
+            // the same token as row 0 of the next would then be summed
+            // differently, and the speculative loop would stop being neutral:
+            // the force-reject control lost its token-for-token match with the
+            // production arm at 95/96 (`38-MTP-VERIFY-PATH.md` §4). Asking for
+            // one row at a time makes the geometry a function of that row's own
+            // position and nothing else, which restores the match exactly. It
+            // costs a second walk of the KV range — 2.5 ms a pass at 2,700
+            // positions against the shared walk, out of a 30 ms saving.
+            let rowStride = cfg.numHeads * headDim * MemoryLayout<Float16>.size
+            for row in 0..<T {
+                attention.encodeRows(commandBuffer: cb,
+                                     q: s.qCompact, qOffset: row * rowStride,
+                                     k: kRange.buffer, kOffset: 0,
+                                     v: vRange.buffer, vOffset: 0,
+                                     out: s.attnOut, outOffset: row * rowStride,
+                                     headDim: UInt32(headDim),
+                                     numQHeads: UInt32(cfg.numHeads),
+                                     numKVHeads: UInt32(kvHeads),
+                                     rows: 1,
+                                     startPosition: start + row,
+                                     window: 0,
+                                     scale: 1.0)
+            }
+        } else {
+            s.attention.encodeCausal(commandBuffer: cb,
+                                     q: fault == .uncompactedQuery ? s.wide : s.qCompact,
+                                     k: kRange.buffer, kOffset: 0,
+                                     v: vRange.buffer, vOffset: 0,
+                                     out: s.attnOut,
+                                     params: params)
+        }
         qwen.encodeAttnOutputGate(commandBuffer: cb,
                                   o: s.attnOut, qGate: s.wide,
                                   seqLen: T,
@@ -879,7 +928,9 @@ extension QwenForwardRunner {
                                             scratch s: QwenPrefillContext,
                                             tail: ((MTLCommandBuffer) -> Void)? = nil) throws {
         let device = ctx.device
-        let metadata = try s.routedMoE.makeStreamedMetadataBuffers(device: device, routes: routes)
+        let metadata = try stage(.routedExperts) {
+            try s.routedMoE.makeStreamedMetadataBuffers(device: device, routes: routes)
+        }
         let offsets = model.routedExpertOffsets(layer: L)
 
         // Tile *i*'s bytes are read while tile *i-1* is on the GPU. The reads
@@ -910,16 +961,18 @@ extension QwenForwardRunner {
             .filter { $0.element.pairCount > 0 }
             .map(\.offset)
         func startTile(_ index: Int) throws -> InflightTile {
-            let expertIDs = try PrefillStreamedTileBinding.expertIDs(forTile: index,
-                                                                     routes: routes)
-            guard let plan = try model.planRoutedExperts(layer: L, experts: expertIDs) else {
-                throw QwenRunnerError.commandBufferFailed(
-                    "prefill layer \(L) tile \(index): could not plan \(expertIDs.count) experts")
+            try stage(.expertPlan) {
+                let expertIDs = try PrefillStreamedTileBinding.expertIDs(forTile: index,
+                                                                         routes: routes)
+                guard let plan = try model.planRoutedExperts(layer: L, experts: expertIDs) else {
+                    throw QwenRunnerError.commandBufferFailed(
+                        "prefill layer \(L) tile \(index): could not plan \(expertIDs.count) experts")
+                }
+                return InflightTile(index: index,
+                                    expertIDs: expertIDs,
+                                    plan: plan,
+                                    handle: try model.startRoutedExpertFetch(plan: plan))
             }
-            return InflightTile(index: index,
-                                expertIDs: expertIDs,
-                                plan: plan,
-                                handle: try model.startRoutedExpertFetch(plan: plan))
         }
         /// The read-ahead. `avoiding` is the tile still on the GPU, and the
         /// planner may refuse: with 16 slots one tile already fills the layer's
@@ -928,16 +981,18 @@ extension QwenForwardRunner {
         /// is reading, which on the mapped arm means dropping their residency
         /// mid-kernel. The caller falls back to reading it in its turn.
         func startTileAhead(_ index: Int, avoiding: Set<Int>) throws -> InflightTile? {
-            let expertIDs = try PrefillStreamedTileBinding.expertIDs(forTile: index,
-                                                                     routes: routes)
-            guard let plan = try model.planRoutedExpertsIfPossible(layer: L,
-                                                                   experts: expertIDs,
-                                                                   avoidingSlots: avoiding)
-            else { return nil }
-            return InflightTile(index: index,
-                                expertIDs: expertIDs,
-                                plan: plan,
-                                handle: try model.startRoutedExpertFetch(plan: plan))
+            try stage(.expertPlan) {
+                let expertIDs = try PrefillStreamedTileBinding.expertIDs(forTile: index,
+                                                                         routes: routes)
+                guard let plan = try model.planRoutedExpertsIfPossible(layer: L,
+                                                                       experts: expertIDs,
+                                                                       avoidingSlots: avoiding)
+                else { return nil }
+                return InflightTile(index: index,
+                                    expertIDs: expertIDs,
+                                    plan: plan,
+                                    handle: try model.startRoutedExpertFetch(plan: plan))
+            }
         }
         var inflight: InflightTile? = nil
         var lastTile: MTLCommandBuffer? = nil
@@ -955,15 +1010,19 @@ extension QwenForwardRunner {
             }
             let tile = routes.tiles[index]
             let expertIDs = current.expertIDs
-            let views = try current.handle.wait()
+            let views = try stage(.expertIO) { try current.handle.wait() }
             inflight = pipelined && position + 1 < active.count
                 ? try startTileAhead(active[position + 1],
                                      avoiding: Set(current.plan.assignedSlots))
                 : nil
-            let binding = try PrefillStreamedTileBinding(expertIDs: expertIDs, views: views)
-            let argumentBuffer = try s.routedMoE.streamedArgumentBuffer(device: device,
-                                                                        index: index,
-                                                                        binding: binding)
+            let binding = try stage(.routedExperts) {
+                try PrefillStreamedTileBinding(expertIDs: expertIDs, views: views)
+            }
+            let argumentBuffer = try stage(.routedExperts) {
+                try s.routedMoE.streamedArgumentBuffer(device: device,
+                                                       index: index,
+                                                       binding: binding)
+            }
             let params = PrefillGroupedRoutedMoEStreamedParams(
                 pairStart: tile.pairStart,
                 pairCount: tile.pairCount,
@@ -974,10 +1033,11 @@ extension QwenForwardRunner {
                 binding: binding,
                 offsets: offsets)
 
-            let cb = try commandBuffer()
+            let cb = try stage(.routedExperts) { try commandBuffer() }
             if let set = model.routedExpertResidencySet(layer: L) {
                 cb.useResidencySet(set)
             }
+            try stage(.routedExperts) {
             switch prefillRoutedPath {
             case .perPair:
                 _ = s.routedMoE.encodeStreamedBatched(commandBuffer: cb,
@@ -1028,6 +1088,7 @@ extension QwenForwardRunner {
             } else {
                 try wait(cb, "prefill layer \(L) tile \(index)")
             }
+            }
         }
 
         // Every pair of every tile has written its row, so the token-major sum
@@ -1038,6 +1099,7 @@ extension QwenForwardRunner {
         // commit order, so an earlier tile is finished before this one starts —
         // the same guarantee `commitDeferred` already relies on.
         if let lastTile, compactChunkCommandBuffers {
+            try stage(.reduceTail) {
             s.moeReduce.encodeReduceTokenMajor(commandBuffer: lastTile,
                                                routePartials: s.routePartials,
                                                routeWeights: s.routerWeights,
@@ -1051,8 +1113,10 @@ extension QwenForwardRunner {
             } else {
                 try wait(lastTile, "prefill layer \(L) routed tail")
             }
+            }
             return
         }
+        try stage(.reduceTail) {
         let reduce = try commandBuffer()
         s.moeReduce.encodeReduceTokenMajor(commandBuffer: reduce,
                                            routePartials: s.routePartials,
@@ -1066,6 +1130,7 @@ extension QwenForwardRunner {
             commitDeferred(reduce, "prefill layer \(L) routed reduce")
         } else {
             try wait(reduce, "prefill layer \(L) routed reduce")
+        }
         }
     }
 

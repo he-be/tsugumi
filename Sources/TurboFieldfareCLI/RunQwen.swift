@@ -319,9 +319,11 @@ func runQwen(args: Args,
         // still greedy, so the tokens must come out the same as without it
         // (`docs/qwen35moe/36-MTP-DECODE.md` §3).
         if let head = args.qwenMTP { try runner.attachMTPHead(directory: head) }
+        var prefillStages = QwenStageProfile()
         let onPrefillProfile: (Int, Double) -> Void = { _, _ in
             prefillGPUSeconds = runner.gpuSeconds
             prefillCommandBuffers = runner.gpuCommandBuffers
+            prefillStages = runner.stageProfile
         }
         let onTokenEmit: (Int, Int32) throws -> Void = { _, id in
                 let delta = detokenizer.push(id)
@@ -457,6 +459,23 @@ func runQwen(args: Args,
                 footer += " verify=\(perPass(spec.verifySeconds))ms"
                 footer += " snapshot=\(perPass(spec.snapshotSeconds))ms"
                 footer += " tok=\(String(format: "%.3f", spec.acceptanceLength))]\n"
+            }
+            // Where the wall clock went stage by stage, on whichever loop ran
+            // (`TF_QWEN_STAGE_PROFILE=1`). The prompt's chunks and the decode
+            // loop share the accumulators, so decode's share is the difference
+            // against the snapshot taken at the phase boundary — the same
+            // subtraction `gpu=` already does. The unit is a verify pass when
+            // the MTP loop ran and a token otherwise, because that is the thing
+            // the two paths' stages are comparable per
+            // (`docs/qwen35moe/38-MTP-VERIFY-PATH.md`).
+            if QwenForwardRunner.stageProfileEnabled {
+                let decodeStages = runner.stageProfile.subtracting(prefillStages)
+                footer += "[stage phase=prefill unit=tok]\n"
+                footer += prefillStages.report(units: promptIds.count)
+                let units = speculative.map(\.passes) ?? generated.count
+                footer += "[stage phase=decode unit="
+                footer += "\(speculative == nil ? "tok" : "pass")]\n"
+                footer += decodeStages.report(units: units)
             }
             // What the mapped arm spends inside that `io` number: the residency
             // set churn is host work on the fetch thread, and the rest is the

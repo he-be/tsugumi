@@ -250,6 +250,25 @@ public final class QwenForwardRunner {
     /// Off for every prompt chunk, which is why prefill's numbers do not move.
     var speculativeLastRow = false
 
+    /// Run the ten full-attention layers on the split-KV **rows** kernel
+    /// (`Attention.encodeRows`) instead of the prompt's query-blocked one.
+    ///
+    /// The prompt's kernel parallelises over queries: at head_dim 512 it puts
+    /// 16 queries in a threadgroup and dispatches
+    /// `ceil(T / 16) x numQHeads` of them, so a verify pass of one or two rows
+    /// gets **16 threadgroups walking the whole KV cache** no matter how long
+    /// the context is. Measured against plain decode over the same 2,640 extra
+    /// positions: decode's attention grows 5.0 ms/token, the chunk path's
+    /// grows 26.0 ms for the same single row
+    /// (`docs/qwen35moe/38-MTP-VERIFY-PATH.md` §2). The rows kernel splits the
+    /// KV range into up to 16 chunks and gives each its own threadgroup, which
+    /// is the shape decode already uses — and it was written for exactly this
+    /// (a speculative block's rows, `docs/mtp/24-M5.5-RESULTS.md` §7-1).
+    ///
+    /// Off for the prompt: there T is 512 or 2048 and the query-blocked kernel
+    /// is the right one. Set only around the verify pass.
+    var chunkRowsAttention = false
+
     /// The MTP head, once `attachMTPHead` has loaded the sidecar. Nil in every
     /// run that does not speculate, and the whole path costs nothing then.
     var mtpDrafter: QwenMTPDrafter?
@@ -272,8 +291,39 @@ public final class QwenForwardRunner {
     public private(set) var gpuSeconds: Double = 0
     public private(set) var gpuCommandBuffers: Int = 0
     /// Committed and not yet joined (`commitDeferred`). Never more than a
-    /// layer's worth: the next `wait` drains it.
-    private var deferredCommandBuffers: [MTLCommandBuffer] = []
+    /// layer's worth: the next `wait` drains it. The stage is the one that was
+    /// current when the buffer was committed, so a deferred buffer's GPU time
+    /// lands on the stage that encoded it rather than on the one that happened
+    /// to join it.
+    private var deferredCommandBuffers: [(cb: MTLCommandBuffer, stage: QwenStage)] = []
+
+    /// Per-stage wall and GPU seconds (`QwenStageProfile`). Only filled when
+    /// `TF_QWEN_STAGE_PROFILE=1`.
+    public private(set) var stageProfile = QwenStageProfile()
+    /// The stage any command buffer committed right now belongs to.
+    var currentStage: QwenStage = .other
+    public static let stageProfileEnabled =
+        ProcessInfo.processInfo.environment["TF_QWEN_STAGE_PROFILE"] == "1"
+
+    /// Time `body` and attribute it — and every command buffer it commits — to
+    /// `stage`. A no-op region when the profile is off.
+    ///
+    /// Regions must not nest: the outer one would count the inner one's wall
+    /// clock twice. The two paths bracket sibling regions only.
+    @inline(__always)
+    func stage<R>(_ stage: QwenStage, _ body: () throws -> R) rethrows -> R {
+        guard Self.stageProfileEnabled else { return try body() }
+        let previous = currentStage
+        currentStage = stage
+        let start = DispatchTime.now()
+        defer {
+            let elapsed = Double(DispatchTime.now().uptimeNanoseconds
+                                 &- start.uptimeNanoseconds) / 1e9
+            stageProfile.addWall(stage, elapsed)
+            currentStage = previous
+        }
+        return try body()
+    }
 
     /// Whether a layer may leave work committed but unjoined, and start its
     /// expert read before the branch that does not depend on it is encoded.
@@ -354,6 +404,7 @@ public final class QwenForwardRunner {
         gpuSeconds = 0
         gpuCommandBuffers = 0
         constraintRescores = 0
+        stageProfile = QwenStageProfile()
     }
 
     /// Which kernels a prefill chunk's routed experts run on.
@@ -837,6 +888,7 @@ public final class QwenForwardRunner {
         let D = UInt32(hiddenSize)
         let embedding = model.embedding
 
+        try stage(.embed) {
         try runSync("embed") { cb in
             self.embed.encode(commandBuffer: cb,
                               table: embedding.buffer, tableOffset: Int(embedding.offset),
@@ -846,9 +898,11 @@ public final class QwenForwardRunner {
                               tokenId: UInt32(bitPattern: token),
                               d: D)
         }
+        }
 
         for L in 0..<cfg.numLayers {
             let w = layers[L]
+            try stage(.preRouter) {
             let cb = try commandBuffer()
             rms.encodeBF16W(commandBuffer: cb,
                             x: hidden,
@@ -908,11 +962,12 @@ public final class QwenForwardRunner {
                 }
             }
             try wait(cb, "layer \(L) pre-router")
+            }
 
             // The routed-expert blobs cannot be chosen before the router has
             // run, and cannot be read without leaving the GPU. This readback is
             // the reason a layer is two command buffers rather than one.
-            let experts = readRoutedExperts()
+            let experts = stage(.routeReadback) { readRoutedExperts() }
             let predicted = predictedExperts
             var nextGuess: [Int]?
             if Self.routerPreviewEnabled {
@@ -928,12 +983,16 @@ public final class QwenForwardRunner {
             // layers ahead would only cost hit rate
             // (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-3).
             if let started = prefetch, started.layer == L {
-                let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-                _ = try? started.handle.wait()
-                expertPrefetch.noteWait(nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
-                prefetch = nil
+                try stage(.expertIO) {
+                    let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+                    _ = try? started.handle.wait()
+                    expertPrefetch.noteWait(nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+                    prefetch = nil
+                }
             }
-            guard let plan = try model.planRoutedExperts(layer: L, experts: experts) else {
+            guard let plan = try stage(.expertPlan, {
+                try model.planRoutedExperts(layer: L, experts: experts)
+            }) else {
                 throw QwenRunnerError.commandBufferFailed(
                     "layer \(L): the expert streamer could not plan \(experts.count) experts")
             }
@@ -965,16 +1024,19 @@ public final class QwenForwardRunner {
             // shared branch is committed while it is still in flight: it is the
             // one piece of this layer's MoE that does not depend on which
             // experts the router picked (`docs/qwen35moe/27-PHASE6-THROUGHPUT.md`).
-            let handle = try model.startRoutedExpertFetch(plan: plan)
-            let shared = try commandBuffer()
-            encodeSharedExpert(shared, w: w.moe)
-            if Self.pipelineEnabled {
-                commitDeferred(shared, "layer \(L) shared")
-            } else {
-                try wait(shared, "layer \(L) shared")
+            let handle = try stage(.expertPlan) { try model.startRoutedExpertFetch(plan: plan) }
+            try stage(.sharedExpert) {
+                let shared = try commandBuffer()
+                encodeSharedExpert(shared, w: w.moe)
+                if Self.pipelineEnabled {
+                    commitDeferred(shared, "layer \(L) shared")
+                } else {
+                    try wait(shared, "layer \(L) shared")
+                }
             }
-            let blobs = try handle.wait()
+            let blobs = try stage(.expertIO) { try handle.wait() }
 
+            try stage(.routedExperts) {
             let tail = try commandBuffer()
             if let set = model.routedExpertResidencySet(layer: L) {
                 tail.useResidencySet(set)
@@ -991,6 +1053,7 @@ public final class QwenForwardRunner {
             } else {
                 try wait(tail, "layer \(L) moe")
             }
+            }
         }
         // A read still in flight at the end of a token would be writing into a
         // slot the next token is free to re-plan.
@@ -999,13 +1062,14 @@ public final class QwenForwardRunner {
             prefetch = nil
         }
         // The head reads `hidden`, so the layers have to have landed.
-        try drainDeferred()
+        try stage(.drain) { try drainDeferred() }
 
         kv.advance()
         guard emitToken else { return 0 }
 
         let lm = try model.qwenLMHead
         let finalNorm = model.finalNorm
+        try stage(.head) {
         try runSync("head") { cb in
             self.head.encodeGreedyDecode(commandBuffer: cb,
                                          hidden: self.hidden,
@@ -1018,6 +1082,7 @@ public final class QwenForwardRunner {
                                          d: D,
                                          vocab: UInt32(self.scoredVocab),
                                          rmsEps: self.rmsEps)
+        }
         }
         return Int32(bitPattern: greedyToken.contents().load(as: UInt32.self))
     }
@@ -1341,6 +1406,9 @@ public final class QwenForwardRunner {
         try drainDeferred()
         gpuSeconds += cb.gpuEndTime - cb.gpuStartTime
         gpuCommandBuffers += 1
+        if Self.stageProfileEnabled {
+            stageProfile.addGPU(currentStage, cb.gpuEndTime - cb.gpuStartTime)
+        }
     }
 
     /// Commit without blocking. The next `wait` is the join.
@@ -1353,18 +1421,21 @@ public final class QwenForwardRunner {
     func commitDeferred(_ cb: MTLCommandBuffer, _ label: String) {
         cb.label = label
         cb.commit()
-        deferredCommandBuffers.append(cb)
+        deferredCommandBuffers.append((cb, currentStage))
     }
 
     func drainDeferred() throws {
         guard !deferredCommandBuffers.isEmpty else { return }
-        for cb in deferredCommandBuffers {
+        for (cb, stage) in deferredCommandBuffers {
             cb.waitUntilCompleted()
             if let error = cb.error {
                 throw QwenRunnerError.commandBufferFailed("\(cb.label ?? "deferred"): \(error)")
             }
             gpuSeconds += cb.gpuEndTime - cb.gpuStartTime
             gpuCommandBuffers += 1
+            if Self.stageProfileEnabled {
+                stageProfile.addGPU(stage, cb.gpuEndTime - cb.gpuStartTime)
+            }
         }
         deferredCommandBuffers.removeAll(keepingCapacity: true)
     }

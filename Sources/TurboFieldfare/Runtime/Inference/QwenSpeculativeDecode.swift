@@ -147,6 +147,14 @@ extension QwenForwardRunner {
     public static let wideCommandBuffers =
         ProcessInfo.processInfo.environment["TF_QWEN_MTP_WIDE_CB"] == "1"
 
+    /// Run the verify pass's full-attention layers on the split-KV rows kernel
+    /// (`QwenForwardRunner.chunkRowsAttention`). **On by default**; the control
+    /// arm puts the query-blocked prompt kernel back, which is the arm
+    /// `36-MTP-DECODE.md` measured and the one the long-context loss came from
+    /// (`38-MTP-VERIFY-PATH.md` §3).
+    public static let rowsAttention =
+        ProcessInfo.processInfo.environment["TF_QWEN_MTP_ROWS_ATTN"] != "0"
+
     /// The same contract as `runGreedyCompletion`, with the MTP head in the
     /// loop. The token stream is identical; the wall clock is not.
     public func runGreedyCompletionMTP(
@@ -220,7 +228,9 @@ extension QwenForwardRunner {
                     hiddenOffset: hiddenRow * rowBytes,
                     token: pending,
                     position: lastPosition)]
-                draft = try drafter.draft(baseNormed: normed, rows: rows)
+                draft = try stage(.draft) {
+                    try drafter.draft(baseNormed: normed, rows: rows)
+                }
             }
             // The control feeds the body a token the head did not pick, so row
             // 1 is certain to be rejected. Any token that is not row 0's argmax
@@ -235,6 +245,7 @@ extension QwenForwardRunner {
             let savedPath = prefillRoutedPath
             prefillRoutedPath = Self.verifyRoutedPath
             compactChunkCommandBuffers = !Self.wideCommandBuffers
+            chunkRowsAttention = Self.rowsAttention
             // Row 1 is the guess: its recurrent state goes to the shadow so
             // that rejecting it is doing nothing at all.
             // Width 1 needs no shadow: there is no speculative row to discard.
@@ -243,9 +254,11 @@ extension QwenForwardRunner {
                                scratch: verify)
             speculativeLastRow = false
             compactChunkCommandBuffers = false
+            chunkRowsAttention = false
             prefillRoutedPath = savedPath
             let lm = try model.qwenLMHead
             let finalNorm = model.finalNorm
+            try stage(.head) {
             try runSync("mtp verify head") { cb in
                 verify.rms.encodeBF16W(commandBuffer: cb,
                                        x: verify.hidden,
@@ -264,6 +277,7 @@ extension QwenForwardRunner {
                     rows: Self.noDraft ? 1 : 2,
                     d: UInt32(D),
                     vocab: UInt32(self.scoredVocab))
+            }
             }
             let ids = rowTokens.contents().bindMemory(to: UInt32.self, capacity: 2)
             let y0 = Int32(bitPattern: ids[0])
