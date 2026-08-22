@@ -100,6 +100,17 @@ join を次の join まで遅らせ、**shared 分岐を routed の読みに重�
 動かない)。Gemma で同じ機構が負けた ([docs/mtp/30](../mtp/30-M8-B-PREFETCH.md)) のは
 **待ちがデバイス帯域の床だった**からで、ここでは床が違う。**既定は off、
 入れるかはユーザー判断** ([04](04-PHASES.md) 次の一手 #29)。
+**Phase 7 の前提が 1 つ崩れた** ([30](30-MTP-HEAD-GRAFT.md)): 上流 discussion #10 の
+指摘を手元のウェイトで検算したところ、**同梱の MTP ヘッドは乱数初期化のまま**だった —
+上流 bf16 の `mtp.*` は形も役割も違う全テンソルが std ≈ 0.0200・尖度 ≈ 3.00 の
+純ガウスで、**256 エキスパートの std のばらつきが CV 0.69%** (学習済みの本体は
+4.07〜14.07%)。量子化の副作用ではない (上流 raw bf16 と逆量子化値が小数第 5 位まで一致)。
+**[29 §0 #7](29-MTP-PREFETCH-OUTLOOK.md) が「一番大きい未知」と書いた受理長 a は、
+測る前に向きが出た** — 出荷ヘッドのままでは Phase 7 の取り分は無い。差し替え候補
+`shisa-ai/…-MTP-ONLY` (19 本 BF16、1.689 GB) の**形式適合は取れており**、
+`oQ4e-g64` の 42 本にちょうど 1:1 で乗る (融合 `gate_up_proj` の分割順は相関 0.995 で
+実測、norm は zero-centered なので +1、4bit の往復誤差 0.093 は本体の学習済み
+expert と同じ)。**まだ 1 バイトも変換していない。**
 **残るのは vision (Phase 9)** ([04](04-PHASES.md))。
 **Gemma の既定 69 本と `swift test` の 1,350 件は緑のまま。**
 
@@ -124,7 +135,7 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 9 | 二番目に大きい性能リスク | **prefill の GEMM 占有率が半減する。**チャンク 2048 でエキスパート 1 個あたり平均 128 行 → 64 行。64 行ブロックがちょうど 1 個しか埋まらない ([05 §1-2](05-RISKS.md))。**測った** ([24 §3-1](24-PREFILL-MOE-PATH.md)): 費用は実在する (タイル版の GPU 時間だけがチャンク幅で 6.6 → 5.0 秒と動く) が、**一番埋まらないチャンク 512 でもタイル版が 22% 速い** |
 | 10 | 一番大きい正しさリスク | **partial RoPE のペアの取り方が Gemma と違う。**本ランタイムは `(i, HD/2+i)` を回し周波数の分母に `HD` を使う。Qwen は `(i, 32+i)` を回し分母は `rotary_dim=64`。**既存カーネルを流用すると静かに間違う** ([03 §2-2](03-DESIGN.md)) |
 | 11 | ただで貰えるもの | (a) `attention_prefill_causal_qblock_d256` は head_dim だけで選ばれるので**そのまま当たる** (b) RMSNorm は Qwen も `1+w` 規約なので既存カーネルのまま (c) 文脈長は 10 層ぶんしか KV が要らず、線形層の状態は**文脈長に依らず 62.8 MiB 固定** ([01 §3-4](01-MODEL.md)) |
-| 12 | MTP | **本モデルは MTP ヘッドを同梱している** (`mtp.*`、1 層、805M のエキスパートつき)。**専用ドラフターを別リポジトリから取ってくる必要が無い。**実物 (一式 503 MB、うちエキスパート 453 MB) は oQ4e(-g64) に入っており、**全 256 エキスパートを常駐にできる** = ドラフトの I/O がゼロになる ([03 §6](03-DESIGN.md)) |
+| 12 | MTP | **同梱ヘッドは乱数初期化で、使えない** ([30](30-MTP-HEAD-GRAFT.md))。上流 bf16 の `mtp.*` は全テンソルが std ≈ 0.0200・尖度 ≈ 3.00 の純ガウスで、256 エキスパートが統計的に見分けられない。**「専用ドラフターを別リポジトリから取ってくる必要が無い」は崩れた** — 差し替え候補は `shisa-ai/…-MTP-ONLY` (19 本 BF16) で、**形式は `oQ4e-g64` の 42 本にちょうど 1:1 で乗る** ([30 §3](30-MTP-HEAD-GRAFT.md))。器の側 (1 層、`mtp.*` 一式 503 MB、うちエキスパート 453 MB、**全 256 エキスパート常駐でドラフトの I/O がゼロ**) は [03 §6](03-DESIGN.md) のまま変わらない |
 | 13 | サーバーへの波及 | **prompt cache と投機デコードの前提が壊れる。**再帰状態は「途中を捨てる」「巻き戻す」ができない。**片づいた** ([26](26-PHASE8-SERVER.md)): prompt cache は**持たない**ことにし (`cache_n` は常に 0)、投機は起動時に断る。**SPEC は書き換えていない** — 家族ごとの差は既存の語彙 (R3 / DEV-16 / EP-4) で表現できた |
 | 14 | Vision | 後回しでよい。**tower の形は Gemma と偶然ほぼ同じ** (1152 / 27 層 / 16 head / 4304) だが、**位置符号化とマージが別物**。カーネルは書き直し ([04 §11](04-PHASES.md))。bf16 の tower 実物 (893 MB) は oQ4e に入っている |
 
@@ -158,6 +169,9 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 22 | [26-PHASE8-SERVER.md](26-PHASE8-SERVER.md) | **実測(手元)。**`QwenServerSession` と `QwenGenerationPlan`、生成ループを 1 本にした話、できないこと 4 つ (画像 / 投機 / prompt cache / サンプラ)、実物が HTTP で答えた 13 件、`tool_choice: required` が前置きで回る件 |
 | 23 | [27-PHASE6-THROUGHPUT.md](27-PHASE6-THROUGHPUT.md) | **実測(手元)。**実タスク 4 本の prefill と生成、直列だった 2 か所 (遅延 join / 読みの重ね)、A/B の数字、スロット・チャンク・read advice・腕のスイープ、机上のヒット率カーブ、**残った取得の解剖 (ページ写像) と層をまたぐ先読み** (§9) |
 | 24 | [28-PREFETCH-IDEAS.md](28-PREFETCH-IDEAS.md) | **検討 (実測なし)。**先読みの符号が Gemma と Ornith で反転した機序 (待ちの「通貨」)、Gemma で死んだ手の復活判定、N>8 / d=2 / 予測の固定費の攻め手と実験手順。#29 の判断材料 |
+| 25 | [29-MTP-PREFETCH-OUTLOOK.md](29-MTP-PREFETCH-OUTLOOK.md) | **検討 (実測なし)。**28 の在庫の Phase 7 (MTP) 下での再判定 (写像の固定費が受理長で割れる / スロット判定の反転 / partial プランの昇格)、MTP でしか出ない手 (ドラフトの陰・token id 事前分布・受理長の CPU 先行測定)、28 §3-6 の「エージェント経路では効かない」の訂正 |
+| 26 | [30-MTP-HEAD-GRAFT.md](30-MTP-HEAD-GRAFT.md) | **実測。**同梱 MTP ヘッドが乱数初期化であることの検算 (上流 bf16 / oQ4e 42 本 / 256 エキスパートの CV)、zero-centered gamma の規約、差し替え候補の選別と**形式適合 19 本 → 42 本**、分割順・norm の +1・量子化の代償の実測、mlx-lm#1740 の読み方と pre/post-norm の未確認 |
+| 27 | [31-PREFETCH-CHEAPER.md](31-PREFETCH-CHEAPER.md) | **実測(手元)。**28 の在庫を回した結果 — 計器 (`declined=0`、wait 1.1 ms/tok) で d=2 とリトライが落ち、N>8 は名指しが +23 ポイント積むのに写像が陰に入りきらず負け、**preview の select を出さない**手が全 26 ペアで +2.4〜3.1%。#29 の数字 |
 
 ## 表記
 
@@ -184,6 +198,12 @@ PLAN.md / PLAN_QAT.md / PLAN_VISION.md と同じ **実測** / **導出** / **未
 - 上流 (bf16): [`ornith-ai/Ornith-1.5-35B-A3B`](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B)
 - 公式 MLX 4-bit: [`ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit`](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B-MLX-4bit)
 - oQ 4-bit (MTP / vision つき): [`scottlowry/Ornith-1.5-35B-A3B-oQ4e-mtp`](https://huggingface.co/scottlowry/Ornith-1.5-35B-A3B-oQ4e-mtp)
+- MTP ヘッド差し替え候補 ([30](30-MTP-HEAD-GRAFT.md)):
+  [`shisa-ai/Ornith-1.5-35B-A3B-MTP-ONLY`](https://huggingface.co/shisa-ai/Ornith-1.5-35B-A3B-MTP-ONLY) (本命) /
+  [`Qwen/Qwen3.6-35B-A3B`](https://huggingface.co/Qwen/Qwen3.6-35B-A3B) (ドナー)。
+  元の指摘は [discussion #10](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B/discussions/10)
+- MTP の配線の参考実装 (未マージ): [mlx-lm#1740](https://github.com/ml-explore/mlx-lm/pull/1740) /
+  [#990](https://github.com/ml-explore/mlx-lm/pull/990)
 - 量子化ツール: [`jundot/omlx`](https://github.com/jundot/omlx) (Apache-2.0) —
   `docs/oQ_Quantization.md` / `omlx/oq.py` / `omlx/custom_kernels/qwen35_prefill/gdn.py`
 - `transformers` `models/qwen3_5_moe/modeling_qwen3_5_moe.py`

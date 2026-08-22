@@ -199,7 +199,7 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 | 2 運用点の候補 | **材料が出た** ([27 §6-2](27-PHASE6-THROUGHPUT.md))。ただし **mmap の腕ではヒット率が壁時計の代理にならない** — 12.7 ポイントの差が tok/s では 4.8% にしかならないので、48 スロットの押しは弱い。**既定は変えていない** |
 | 3 チャンク幅 | **済み。既定の 2048 が最良** (2,378 トークンで 14.53 / 10.57 / **8.63** 秒)。4096 の候補追加はユーザー判断 ([27 §6-3](27-PHASE6-THROUGHPUT.md)) |
 | 4 `RDAdvice` の調律 | **不要だった。**4 通りが振れの中で、**既定の mmap の腕は `F_RDADVISE` を出さない** ([27 §6-3](27-PHASE6-THROUGHPUT.md)) |
-| 5 `RouterPreviewProbe` の 256-way | **済み** ([27 §9-4](27-PHASE6-THROUGHPUT.md))。**miss の 64.5% を 1 層前に名指せる** (Gemma の 128-way が 70%)。投げると **+1.9〜13.2%** で、**既定は off** — 入れるかはユーザー判断 (#29) |
+| 5 `RouterPreviewProbe` の 256-way | **済み** ([27 §9-4](27-PHASE6-THROUGHPUT.md))。**miss の 64.5% を 1 層前に名指せる** (Gemma の 128-way が 70%)。投げると **+1.9〜13.2%**、select を出さない経路なら **+8.4〜22.3%** ([31 §4](31-PREFETCH-CHEAPER.md))。**既定は off** — 入れるかはユーザー判断 (#29) |
 | 6 oQ を自分で回す案 | 手つかず |
 
 `bench.sh` の作法をそのまま踏襲する。**クールダウンは飾りではない** —
@@ -228,6 +228,17 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 ## Phase 7 — MTP
 
 [03 §6](03-DESIGN.md)。全エキスパート常駐 + 行ごと状態書き出し。
+**先読みとの合流と着手前の机上ゲート (union 分布・受理長の CPU 測定) は
+[29](29-MTP-PREFETCH-OUTLOOK.md)** — 特に受理長 a はまだ 1 つも測っておらず、
+期待値のすべてを握る ([29 §1-3](29-MTP-PREFETCH-OUTLOOK.md))。
+
+**先に 1 段増えた: 同梱 MTP ヘッドの差し替え** ([30](30-MTP-HEAD-GRAFT.md))。
+上流の `mtp.*` は乱数初期化のままで、**出荷ヘッドで a を測っても意味が無い**。
+候補 `shisa-ai/…-MTP-ONLY` の形式適合は取れており (19 本 → `oQ4e-g64` の 42 本、
+[30 §3](30-MTP-HEAD-GRAFT.md))、**カーネルは 1 本も要らない**。
+本体 hidden を pre-norm で渡すか post-norm かも未決着で、外部の A/B では
+受理率が 5 ポイント動く ([30 §4-3](30-MTP-HEAD-GRAFT.md)) —
+[29 §3-4](29-MTP-PREFETCH-OUTLOOK.md) の CPU 測定は両方で引く。
 
 **出口:** `RESULTS_MTP.md` と同じ様式で tok/s / TTFT / peak の 3 点。
 **受入は「非投機と greedy でバイト一致」** (Gemma 側の D5 不変条件と同じ)。
@@ -380,6 +391,12 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
    (落とさない / set を使わない / commit を間引く) は**どれも引き分け**だった
    ([27 §9-2](27-PHASE6-THROUGHPUT.md))
 
+30. ~~先読みの固定費と N の実験 (#29 の材料)~~ → **完了。select を出さない経路が全 26 ペアで
+   +2.4〜3.1%** ([31](31-PREFETCH-CHEAPER.md))。計器 (`declined` / wait) で
+   **d=2 と半減リトライは落ちた**。**N>8 は負ける** — 名指しは +23 ポイント
+   積むのに、増えた写像が陰 (層あたり GPU 0.7 ms) に入りきらない。
+   router 融合カーネルは引き分けで既定 off。**既定は変えていない** (#29)
+
 25. ~~Phase 6 の 1 本目 (実タスクの prefill と生成)~~ → **完了。生成 +31〜41%、
    prefill −25〜45%** ([27](27-PHASE6-THROUGHPUT.md))。速くしたのは**待ちを外した**
    ことだけで、カーネルは 1 本も書いていない: 遅延 join (1 トークンの join が
@@ -391,7 +408,7 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 
 | # | やること | 要るもの |
 | --- | --- | --- |
-| 29 | **層をまたぐ先読みを既定にするか** ([27 §9](27-PHASE6-THROUGHPUT.md))。`TF_QWEN_EXPERT_PREFETCH=8` で **+1.9% (56 tok) / +7.6% (498 tok) / +13.2% (2,698 tok)**、出力もメモリも動かない。対価は予測 GEMV の **GPU +1.2〜1.8 ms/tok** で、短いプロンプトではそれが利得の大半を食う。**機序の分析と攻め手の在庫は [28](28-PREFETCH-IDEAS.md)** (N>8 は GPU 側の限界費用ゼロ / d=2 は計器が先 / 固定費はディスパッチ本数の側) — 実験は別コンテキストで [28 §5](28-PREFETCH-IDEAS.md) の順に | ユーザー判断 |
+| 29 | **層をまたぐ先読みを既定にするか** ([27 §9](27-PHASE6-THROUGHPUT.md))。**[31](31-PREFETCH-CHEAPER.md) で安くなった** — preview の select を出さない広い経路 (`TF_QWEN_EXPERT_PREFETCH=8 TF_QWEN_PREVIEW_WIDE=1`) で **+8.4% (56 tok) / +11.2% (60 tok) / +22.3% (48 tok) / +10.5% (498 tok) / +15.8% (2,698 tok)**、出力もヒット率もメモリも n8 と同一。**N は 8 のまま** (9〜16 位は当たるが写像が陰に入りきらない、[31 §2](31-PREFETCH-CHEAPER.md))、**d=2 とリトライは計器で落ちた** ([31 §1](31-PREFETCH-CHEAPER.md))。残る対価は予測 GEMV だけ | ユーザー判断 |
 | 28 | **候補追加の可否 2 件** (どちらも既定は変えない): `allowedExpertCacheSlots` に 48、`allowedPrefillChunkTokens` に 4096。48 の押しは弱い ([27 §6-2](27-PHASE6-THROUGHPUT.md))、4096 は prefill が素直に伸びる見込み ([27 §6-3](27-PHASE6-THROUGHPUT.md)) | ユーザー判断 |
 | 16 | ~~**線形注意 30 層の締め方の判断**~~ → **2026-08-22 のユーザー判断で保留。**周辺まで数えると 159.4 ms で Phase 4 の出口条件を外れ、再帰カーネル単体は 125.7 ms で [05 §2](05-RISKS.md) #2 の内側 ([17 §4-2](17-PHASE2-KERNELS.md))。**放置してよい理由が 1 つ増えた**: prefill 全体の GPU 時間はチャンク 2048 で 5,036 ms ([24 §3](24-PREFILL-MOE-PATH.md)) なので、**159.4 ms はその約 3%** (別々に測った 2 つの比なので **導出**)。どちらの定義で締めても prefill 全体はほとんど動かない — chunkwise 形の FLOP 2 倍を払う理由はこの比率では出てこない | 保留 |
 | 26 | **`tool_choice: required` の前置きの締め方の判断** ([26 §6-1](26-PHASE8-SERVER.md))。案 A は前置きを `responseFormatGrammar` と同じ `(!</think>* </think> [ \t\n]{0,20})?` に揃える (thinking off なら 1 手目から呼び出しが強制される) が、チェックポイント自身のシステムプロンプトと食い違い、既存の検査 2 本が落ちる。案 B は現状維持 | ユーザー判断 |
@@ -404,7 +421,8 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 (どちらもモデルもチェックポイントも要らない)。時間は `--gdn-bench` / `--qwen-bench`。
 **実物の速度は `bench/qwen35.sh`** ([27](27-PHASE6-THROUGHPUT.md);
 `tasksab` / `pipeline` / `slots` / `chunk` / `rdadvise` / `arm` / `trace` /
-`summarize`。結果は `bench/qwen35-results.tsv`)。
+`summarize` / `prefetch` / `prefetchw` / `prefetchn`。結果は
+`bench/qwen35-results.tsv`、先読みの footer の証拠は `bench/qwen35-prefetch/`)。
 **repack 済みの実物を開くのは `--qwen-open <path>`** ([18](18-MIXED-BITS.md))、
 **実物を走らせて参照と突き合わせるのは `--qwen-decode <path>`** ([20](20-PHASE3-DECODE.md);
 `--qwen-decode-fixture` / `--qwen-decode-new` / `--qwen-decode-fault-tokens`)、

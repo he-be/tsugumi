@@ -203,6 +203,10 @@ public final class QwenForwardRunner {
     /// `normed`, read back at the join layer L already pays for.
     private let previewIndices: MTLBuffer
     private let previewWeights: MTLBuffer
+    /// The wide preview's output: every expert's logit, ranked on the host
+    /// (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-1). Allocated only on that
+    /// path; the k=8 path leaves it nil and is byte-for-byte the old one.
+    private let previewLogits: MTLBuffer?
     /// What the previous layer predicted this layer would ask for.
     private var predictedExperts: [Int]?
     /// A read started for the *next* layer from that prediction. Waited at the
@@ -211,6 +215,9 @@ public final class QwenForwardRunner {
     /// the read is writing.
     private var prefetch: (layer: Int, handle: RoutedExpertFetchHandle)?
     public private(set) var routerPreview = RouterPreviewStats()
+    /// What the read-ahead itself did — issued, refused, and how long the layer
+    /// had to wait for its own guess. Measurement only.
+    public private(set) var expertPrefetch = ExpertPrefetchStats()
     private let moeActs: MTLBuffer       // [topK * F] FP16
     private let greedyToken: MTLBuffer   // [1] UInt32
     /// The T-row scratch, allocated on the first `prefill` call and reused
@@ -258,6 +265,9 @@ public final class QwenForwardRunner {
     /// Gemma's 128-way router that was 70% (`docs/mtp/29-M8-B-PROBE.md`).
     public static let routerPreviewEnabled: Bool =
         ProcessInfo.processInfo.environment["TF_QWEN_ROUTER_PREVIEW"] == "1"
+        || routerPreviewFused
+        || ProcessInfo.processInfo.environment["TF_QWEN_PREVIEW_TOPN"] != nil
+        || ProcessInfo.processInfo.environment["TF_QWEN_PREVIEW_WIDE"] == "1"
         || expertPrefetchTopN > 0
 
     /// How many of the preview's guesses to actually read ahead. 0 = off.
@@ -273,11 +283,40 @@ public final class QwenForwardRunner {
         return value
     }()
 
+    /// How many ranks the preview produces. The select kernel can only ever
+    /// give eight (`MoE.maxStreamedExperts`), so anything above that is the
+    /// wide path: the GEMV's logits are ranked on the host instead
+    /// (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-1). Reading beyond rank 8 is
+    /// what prices N > 8 — the GPU already computed those logits.
+    public static let routerPreviewTopN: Int = {
+        if let raw = ProcessInfo.processInfo.environment["TF_QWEN_PREVIEW_TOPN"],
+           let value = Int(raw), value > 0 {
+            return value
+        }
+        return max(MoE.maxStreamedExperts, expertPrefetchTopN)
+    }()
+
+    /// Whether the preview takes the host-ranked path. Forced on by
+    /// `TF_QWEN_PREVIEW_WIDE=1` even at eight ranks, which is how the two paths
+    /// are checked against each other: same run, same prompt, the preview
+    /// columns have to come out identical.
+    /// Whether this layer's router and the next layer's preview share one GEMV
+    /// dispatch (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-4 (b)). Needs the
+    /// wide path, since the fused kernel writes logits and no top-k.
+    public static let routerPreviewFused: Bool =
+        ProcessInfo.processInfo.environment["TF_QWEN_PREVIEW_FUSE"] == "1"
+
+    public static let routerPreviewWide: Bool =
+        routerPreviewTopN > MoE.maxStreamedExperts
+        || ProcessInfo.processInfo.environment["TF_QWEN_PREVIEW_WIDE"] == "1"
+        || routerPreviewFused
+
     public static let pipelineEnabled: Bool =
         ProcessInfo.processInfo.environment["TF_QWEN_PIPELINE"] != "0"
 
     public func resetPreview() {
         routerPreview = RouterPreviewStats()
+        expertPrefetch = ExpertPrefetchStats()
         predictedExperts = nil
     }
 
@@ -576,6 +615,9 @@ public final class QwenForwardRunner {
                                          "routerPreviewIndices")
         self.previewWeights = try buffer(cfg.topKExperts, MemoryLayout<Float16>.size,
                                          "routerPreviewWeights")
+        self.previewLogits = Self.routerPreviewWide && Self.routerPreviewEnabled
+            ? try buffer(cfg.numExperts, MemoryLayout<Float>.size, "routerPreviewLogits")
+            : nil
         self.moeActs = try buffer(cfg.topKExperts * cfg.moeIntermediateSize,
                                   MemoryLayout<Float16>.size, "moeActs")
         self.greedyToken = try buffer(1, MemoryLayout<UInt32>.size, "greedyToken")
@@ -795,10 +837,46 @@ public final class QwenForwardRunner {
                             weight: w.postAttnNorm.buffer,
                             weightOffset: Int(w.postAttnNorm.offset),
                             out: normed, d: D, eps: rmsEps)
-            encodeRouter(cb, w: w.moe)
-            if Self.routerPreviewEnabled, L + 1 < cfg.numLayers {
-                encodeRouter(cb, w: layers[L + 1].moe,
-                             indices: previewIndices, weights: previewWeights)
+            var routerEncoded = false
+            if Self.routerPreviewFused, let previewLogits,
+               moe.routerWeightBits == 16, L + 1 < cfg.numLayers {
+                // One dispatch for both routers: the preview reads the same
+                // `normed` this layer's router does
+                // (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-4 (b)).
+                routerEncoded = moe.encodeRouterGemma4BF16Paired(
+                    commandBuffer: cb,
+                    weights: w.moe.router.buffer,
+                    weightsOffset: Int(w.moe.router.offset),
+                    previewWeights: layers[L + 1].moe.router.buffer,
+                    previewWeightsOffset: Int(layers[L + 1].moe.router.offset),
+                    hidden: normed,
+                    effectiveScale: unitFeatureScale,
+                    perExpertScale: unitExpertScale,
+                    outIndices: outIndices, outWeights: outWeights,
+                    previewLogits: previewLogits,
+                    numExperts: UInt32(cfg.numExperts),
+                    d: UInt32(hiddenSize))
+            }
+            if !routerEncoded {
+                encodeRouter(cb, w: w.moe)
+                if Self.routerPreviewEnabled, L + 1 < cfg.numLayers {
+                    let next = layers[L + 1].moe
+                    if let previewLogits {
+                        // The wide path: the logits, ranked on the host, with no
+                        // select dispatch behind them (§3-1).
+                        moe.encodeRouterLogitsBF16(commandBuffer: cb,
+                                                   weights: next.router.buffer,
+                                                   weightsOffset: Int(next.router.offset),
+                                                   hidden: normed,
+                                                   effectiveScale: unitFeatureScale,
+                                                   outLogits: previewLogits,
+                                                   numExperts: UInt32(cfg.numExperts),
+                                                   d: UInt32(hiddenSize))
+                    } else {
+                        encodeRouter(cb, w: next,
+                                     indices: previewIndices, weights: previewWeights)
+                    }
+                }
             }
             try wait(cb, "layer \(L) pre-router")
 
@@ -814,8 +892,16 @@ public final class QwenForwardRunner {
             }
             // The guess for *this* layer has to have landed before its own plan
             // is made, or the plan can hand out the slot the read is filling.
+            //
+            // The wait is timed because "is the read-ahead early enough?" has no
+            // other answer in this loop: a wait of ~0 means the lead time (one
+            // layer's MoE on the GPU) already covers the read, and going two
+            // layers ahead would only cost hit rate
+            // (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-3).
             if let started = prefetch, started.layer == L {
+                let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                 _ = try? started.handle.wait()
+                expertPrefetch.noteWait(nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
                 prefetch = nil
             }
             guard let plan = try model.planRoutedExperts(layer: L, experts: experts) else {
@@ -833,10 +919,18 @@ public final class QwenForwardRunner {
             // nothing: the layer will fetch normally when it arrives.
             if Self.expertPrefetchTopN > 0, prefetch == nil,
                let guess = nextGuess.map({ Array($0.prefix(Self.expertPrefetchTopN)) }),
-               !guess.isEmpty,
-               let speculative = try model.planSpeculativeRoutedExperts(layer: L + 1,
-                                                                        experts: guess) {
-                prefetch = (L + 1, try model.startRoutedExpertFetch(plan: speculative))
+               !guess.isEmpty {
+                // A refusal is all-or-nothing (`PreadExpertStreamer.swift`
+                // `makeExpertCachePlan`), so it takes rank 1 down with the rest;
+                // counting them is what says whether that matters here
+                // (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-2).
+                if let speculative = try model.planSpeculativeRoutedExperts(layer: L + 1,
+                                                                            experts: guess) {
+                    expertPrefetch.noteIssued(reads: speculative.misses.count)
+                    prefetch = (L + 1, try model.startRoutedExpertFetch(plan: speculative))
+                } else {
+                    expertPrefetch.noteDeclined()
+                }
             }
             // The read starts before the shared branch is encoded, and the
             // shared branch is committed while it is still in flight: it is the
@@ -1058,8 +1152,45 @@ public final class QwenForwardRunner {
     }
 
     private func readPreviewExperts() -> [Int] {
+        if let previewLogits {
+            return Self.rankLogits(previewLogits,
+                                   count: cfg.numExperts,
+                                   topN: min(Self.routerPreviewTopN, cfg.numExperts))
+        }
         let ptr = previewIndices.contents().bindMemory(to: UInt32.self, capacity: cfg.topKExperts)
         return (0..<cfg.topKExperts).map { min(Int(ptr[$0]), cfg.numExperts - 1) }
+    }
+
+    /// The select kernel's ranking, on the host and to any depth.
+    ///
+    /// The order has to be the kernel's, not merely *a* correct order: the k=8
+    /// path is still the default and the two are compared run against run, so
+    /// ties break the same way (`router_topk_select_k8_body` keeps the expert
+    /// it saw first, i.e. the lower index). Insertion into an N-slot array, one
+    /// pass, with the same early-out on the last slot's score.
+    static func rankLogits(_ logits: MTLBuffer, count: Int, topN: Int) -> [Int] {
+        let ptr = logits.contents().bindMemory(to: Float.self, capacity: count)
+        var topIndex = [Int](repeating: 0, count: topN)
+        var topScore = [Float](repeating: -.infinity, count: topN)
+        for e in 0..<count {
+            let s = ptr[e]
+            if s <= topScore[topN - 1] { continue }
+            var pos = topN
+            for i in 0..<topN where s > topScore[i] || (s == topScore[i] && e < topIndex[i]) {
+                pos = i
+                break
+            }
+            if pos >= topN { continue }
+            var i = topN - 1
+            while i > pos {
+                topIndex[i] = topIndex[i - 1]
+                topScore[i] = topScore[i - 1]
+                i -= 1
+            }
+            topIndex[pos] = e
+            topScore[pos] = s
+        }
+        return topIndex
     }
 
     private func readRoutedExperts() -> [Int] {
@@ -1261,5 +1392,54 @@ public struct RouterPreviewStats: Sendable {
                 rankMissed[rank] += 1
             }
         }
+    }
+}
+
+/// What the cross-layer read-ahead did, as opposed to what the preview
+/// predicted (`RouterPreviewStats`).
+///
+/// Three questions, none of which the hit-rate columns can answer
+/// (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-2 / §3-3):
+///  * `waitNanos` — was the read still in flight when the layer arrived? A wait
+///    of ~0 means the lead time is already enough and going deeper (d=2) buys
+///    nothing but a worse guess.
+///  * `declined` — how often the speculative plan was refused outright. The
+///    refusal is all-or-nothing, so it drops rank 1 together with the tail, and
+///    it gets likelier as N grows.
+///  * `reads` — pages the guess actually asked for. A guess that names resident
+///    experts issues no read at all.
+public struct ExpertPrefetchStats: Sendable {
+    /// Speculative plans that were made and started.
+    public private(set) var issuedPlans = 0
+    /// Σ misses in those plans — the experts the read-ahead actually moved.
+    public private(set) var reads = 0
+    /// Speculative plans the streamer refused (no placeable victim set).
+    public private(set) var declined = 0
+    /// Waits on a guess that had not landed when its layer arrived.
+    public private(set) var waits = 0
+    /// Σ nanoseconds spent in those waits.
+    public private(set) var waitNanos: UInt64 = 0
+    /// Waits that took longer than 100 µs — a mean of a few tens of µs can be
+    /// either "every read had landed" or "one in twenty blocked for half a
+    /// millisecond", and only the second is an argument for reading further
+    /// ahead (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-3).
+    public private(set) var slowWaits = 0
+    /// The longest single wait.
+    public private(set) var maxWaitNanos: UInt64 = 0
+
+    public mutating func noteIssued(reads count: Int) {
+        issuedPlans += 1
+        reads += count
+    }
+
+    public mutating func noteDeclined() {
+        declined += 1
+    }
+
+    public mutating func noteWait(nanos: UInt64) {
+        waits += 1
+        waitNanos += nanos
+        if nanos > 100_000 { slowWaits += 1 }
+        maxWaitNanos = max(maxWaitNanos, nanos)
     }
 }

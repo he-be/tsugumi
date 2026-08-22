@@ -8,6 +8,8 @@
 #   ./bench/qwen35.sh rdadvise  off/default/bounded/adaptive
 #   ./bench/qwen35.sh pipeline  直列 (TF_QWEN_PIPELINE=0) vs 重ね (既定)
 #   ./bench/qwen35.sh prefetch  層をまたぐ先読み off vs top-8
+#   ./bench/qwen35.sh prefetchn N を振る off/8/8w/12/16 (8w は select を出さない広い経路)
+#   ./bench/qwen35.sh prefetchw off/8/8w/8f (select 40 本と router 融合の差)
 #   ./bench/qwen35.sh arm       mmap (既定) vs 私有スロット (TF_EXPERT_MMAP=0)
 #   ./bench/qwen35.sh tasks     実タスク 4 本 (bench/qwen35/t*.json) を運用点で
 #   ./bench/qwen35.sh tasksab   その 4 本を直列 vs 重ねで交互に
@@ -167,6 +169,24 @@ cmd_prefetch() { preflight; sweep prefetch "$MSGS" \
                  "off|$BASE" \
                  "n8|env:TF_QWEN_EXPERT_PREFETCH=8 $BASE"; }
 
+# N を 8 より上げる腕。select カーネルは k=8 で固定なので、9 位以降は GEMV の
+# logit を CPU が並べて取る (docs/qwen35moe/28-PREFETCH-IDEAS.md §3-1)。
+# n8w は N=8 のままその広い経路を通る腕で、select ディスパッチ 40 本/tok が
+# 落ちるぶんだけが n8 との差になる (§3-4 (a))。
+# select を出さない広い経路だけを見る 3 腕 (§3-4 (a) の差)。
+cmd_prefetchw() { preflight; sweep prefetchw "$MSGS" \
+                 "off|$BASE" \
+                 "n8|env:TF_QWEN_EXPERT_PREFETCH=8 $BASE" \
+                 "n8w|env:TF_QWEN_EXPERT_PREFETCH=8 env:TF_QWEN_PREVIEW_WIDE=1 $BASE" \
+                 "n8f|env:TF_QWEN_EXPERT_PREFETCH=8 env:TF_QWEN_PREVIEW_FUSE=1 $BASE"; }
+
+cmd_prefetchn() { preflight; sweep prefetchn "$MSGS" \
+                 "off|$BASE" \
+                 "n8|env:TF_QWEN_EXPERT_PREFETCH=8 $BASE" \
+                 "n8w|env:TF_QWEN_EXPERT_PREFETCH=8 env:TF_QWEN_PREVIEW_WIDE=1 $BASE" \
+                 "n12|env:TF_QWEN_EXPERT_PREFETCH=12 $BASE" \
+                 "n16|env:TF_QWEN_EXPERT_PREFETCH=16 $BASE"; }
+
 cmd_policy() { preflight; sweep policy "$MSGS" \
                  "lfu|$BASE" \
                  "lru|--expert-cache-slots 32 --expert-cache-policy lru --prefill on --prefill-chunk-tokens 2048 --rdadvise off"; }
@@ -253,6 +273,8 @@ case "${1:-}" in
   arm)       cmd_arm ;;
   pipeline)  cmd_pipeline ;;
   prefetch)  cmd_prefetch ;;
+  prefetchn) cmd_prefetchn ;;
+  prefetchw) cmd_prefetchw ;;
   prompts)   cmd_prompts ;;
   tasks)     cmd_tasks ;;
   tasksab)   cmd_tasksab ;;

@@ -382,4 +382,14 @@ logits = lm_head(mtp.norm(h_mtp))     # lm_head は本体と共用
 `sharedSlidingKVLayer` / `sharedFullKVLayer` を必須にしている (実測 = ソース)。
 **Qwen の draft セクションは別スキーマにする** (`draftFamily` で分岐)。
 配線の第三者資料として `Shiftedx/…-mtplx` の `mtp_contract` が読める
-([02 §8](02-CHECKPOINTS.md))。
+([02 §8](02-CHECKPOINTS.md))。**mlx-lm#1740 の `MTPModule` も同じ concat 順
+(embedding, hidden) を書いている** ([30 §4-2](30-MTP-HEAD-GRAFT.md))。
+
+**未決着が 1 つある: 上の `h_t` は本体の正規化前か後か。**mlx-lm#1740 は
+**pre-norm** (`model.norm` を通す前) を渡すが、下流の同一成果物 A/B は
+**post_norm 80.30% / pre_norm 75.24%** で、`Shiftedx` の `mtp_contract` も
+`base_hidden_variant: post_norm`。**受理率 5 ポイントの分岐なので、定数ではなく
+スイッチとして持ち、当方で符号を測る** ([30 §4-3](30-MTP-HEAD-GRAFT.md))。
+
+**なお、この器に入れる重みは上流の同梱ヘッドではない。**上流の `mtp.*` は
+乱数初期化のままで、差し替えが要る ([30](30-MTP-HEAD-GRAFT.md))。算式と形は変わらない。

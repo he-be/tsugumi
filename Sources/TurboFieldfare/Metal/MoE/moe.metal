@@ -244,6 +244,40 @@ kernel void router_gemv_gemma4_bf16_r4(
                                  num_experts, D, 4, tg_idx, sg_idx, lane);
 }
 
+// Two routers over the same activation in one dispatch.
+//
+// Decode's read-ahead runs layer L+1's router over layer L's `normed`
+// alongside L's own router, which is two GEMV dispatches over the *same*
+// hidden vector (docs/qwen35moe/28-PREFETCH-IDEAS.md §3-4 (b)). The rows are
+// independent, so one grid of 2 * NE rows does both: the low half is this
+// layer's router, the high half the preview's, and each still owns a simdgroup
+// so the reduction order — and the choice on a near-tie — is the one the
+// single-router kernel produces.
+kernel void router_gemv_gemma4_bf16_pair_r4(
+    device const bfloat* W [[buffer(0)]],
+    device const half* hidden [[buffer(1)]],
+    device const bfloat* effective_scale [[buffer(2)]],
+    device float* out_logits [[buffer(3)]],
+    constant uint& num_experts [[buffer(4)]],
+    constant uint& D [[buffer(5)]],
+    device const bfloat* W_preview [[buffer(6)]],
+    device float* out_preview [[buffer(7)]],
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint sg_idx [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    const uint NE = router_fc_num_experts(num_experts);
+    const uint row = tg_idx * 4u + sg_idx;
+    if (row >= 2u * NE) return;
+    const bool preview = row >= NE;
+    router_gemv_gemma4_bf16_body(preview ? W_preview : W,
+                                 hidden, effective_scale,
+                                 preview ? out_preview : out_logits,
+                                 num_experts, D,
+                                 4, (row - (preview ? NE : 0u)) / 4u,
+                                 (row - (preview ? NE : 0u)) % 4u, lane);
+}
+
 static inline void router_topk_select_k8_body(
     device const float* logits,
     device const bfloat* per_expert_scale,

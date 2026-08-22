@@ -433,13 +433,35 @@ func runQwen(args: Args,
                     d > 0 ? String(format: "%.1f", Double(n) / Double(d) * 100) : "-"
                 }
                 footer += "[preview pairs=\(preview.comparisons)"
-                footer += " overlap=\(pct(preview.overlap, preview.comparisons * 8))%"
+                // The denominator is how many ranks the preview produced, which
+                // is eight on the select-kernel path and whatever
+                // `TF_QWEN_PREVIEW_TOPN` asked for on the wide one.
+                footer += " ranks=\(preview.rankUsed.count)"
+                footer += " overlap=\(pct(preview.overlap, preview.comparisons * max(preview.rankUsed.count, 1)))%"
                 footer += " missCovered=\(pct(preview.missedCovered, preview.missed))%"
                 footer += " (\(preview.missedCovered)/\(preview.missed))"
                 footer += " rankUsed=" + preview.rankUsed
                     .map { pct($0, preview.comparisons) }.joined(separator: "/")
                 footer += " rankMiss=" + preview.rankMissed
                     .map { pct($0, preview.comparisons) }.joined(separator: "/")
+                footer += "]\n"
+            }
+            // The read-ahead's own three numbers: was the guess refused, did it
+            // move anything, and had it landed when the layer arrived
+            // (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-2 / §3-3).
+            let prefetch = runner.expertPrefetch
+            if prefetch.issuedPlans + prefetch.declined > 0 {
+                footer += "[prefetch issued=\(prefetch.issuedPlans)"
+                footer += " declined=\(prefetch.declined)"
+                footer += " reads=\(prefetch.reads)"
+                footer += " waits=\(prefetch.waits)"
+                footer += " slow=\(prefetch.slowWaits)"
+                footer += " max=\(String(format: "%.2f", Double(prefetch.maxWaitNanos) / 1e6))ms"
+                let waitMs = Double(prefetch.waitNanos) / 1e6
+                footer += " wait=\(String(format: "%.1f", waitMs))ms"
+                if !generated.isEmpty {
+                    footer += " (\(String(format: "%.3f", waitMs / Double(generated.count)))ms/tok)"
+                }
                 footer += "]\n"
             }
             stderr.write(Data(footer.utf8))
