@@ -899,6 +899,55 @@ public final class QwenForwardRunner {
     /// Position the next token will occupy.
     public var position: Int { kv.position }
 
+    // MARK: - Checkpoints (SPEC CACHE-8)
+
+    /// What the runner needs to be put back at `position`.
+    ///
+    /// **Only the recurrent half is copied.** The K/V of the ten full-attention
+    /// layers is append-only and linear (`KVCacheManager.capacity`: full layers
+    /// stay linear, only ring-enabled SWA layers alias), so rows `[0, position)`
+    /// are still exactly what they were — moving the cursor back is the whole
+    /// operation, and the rows past it are overwritten by the prefill that
+    /// follows. The recurrent thirty are the half that has no subtraction
+    /// (`KVCacheManager.maximumSafeRewind`'s header names this as the snapshot
+    /// it was waiting for).
+    public struct Checkpoint: Sendable {
+        public let position: Int
+        fileprivate let recurrent: Data
+
+        public var bytes: Int { recurrent.count }
+    }
+
+    /// One checkpoint's cost, for the budget that decides how many are kept.
+    public var checkpointBytes: Int { state.checkpointBytes }
+
+    /// Copy the state as it stands. Safe to call between a prefill and the
+    /// draw that follows it: the prefill's last chunk has been read back, so
+    /// nothing is in flight over these buffers.
+    public func captureCheckpoint() -> Checkpoint {
+        Checkpoint(position: kv.position, recurrent: state.captureState())
+    }
+
+    /// Put the runner back where the checkpoint was taken.
+    ///
+    /// Returns false without touching anything if the checkpoint cannot apply,
+    /// so the caller can fall back to a full re-prefill rather than continue
+    /// from a state whose position nothing can name.
+    @discardableResult
+    public func restore(_ checkpoint: Checkpoint) -> Bool {
+        guard checkpoint.position >= 0,
+              checkpoint.position <= kv.position,
+              state.restoreState(checkpoint.recurrent) else { return false }
+        kv.rewind(to: checkpoint.position)
+        // The drafter's cache is keyed by slot with absolute positions, so its
+        // rows at and past the restore point describe a continuation that is
+        // being thrown away. Speculation is verified, so keeping them could
+        // only cost acceptance — but silently, which is exactly the failure
+        // `reset()`'s header warns about.
+        mtpDrafter?.reset()
+        return true
+    }
+
     /// Runs `tokens` through the model one at a time and returns the greedy
     /// continuation of `maxNewTokens` tokens.
     ///

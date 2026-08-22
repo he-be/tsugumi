@@ -100,11 +100,15 @@ public enum QwenToolCallGrammar {
         withPreamble: Bool,
         markers: QwenToolCallMarkers
     ) -> JSONSchemaGrammarResult {
-        // Non-string values are JSON, which is what `tojson` writes, so the
-        // ordinary JSON dialect expands them exactly. It permits whitespace the
-        // template would not write; `docs/qwen35moe/23-PHASE5-TOOLS.md` says
-        // why that is registered rather than closed here.
-        JSONSchemaGrammar.build(dialect: .json) { builder in
+        // GEN-8. A non-string value is written by the redraw as
+        // `JSONValue.encoded()` — compact, no whitespace anywhere — so the
+        // grammar spells that and only that. The ordinary `.json` dialect
+        // permits whitespace the redraw never writes, and a model that used it
+        // produced a turn that could not be described back: measured on
+        // 2026-08-22, four `edit` calls in a row (pi session `01a02a00-…`).
+        // Key order inside a free-form value is still not spellable in GBNF and
+        // stays registered as §12 DEV-15.
+        JSONSchemaGrammar.build(dialect: .qwenToolArguments) { builder in
             var alternatives: [String] = []
             for tool in tools {
                 let blocks = parameterBlocks(&builder, tool: tool)

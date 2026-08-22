@@ -306,7 +306,7 @@ public struct QwenTokenizer: @unchecked Sendable {
                         "type": "function",
                         "function": [
                             "name": call.name,
-                            "arguments": try call.arguments.jinjaSendableValue(),
+                            "arguments": try call.arguments.jinjaToolArgumentsValue(),
                         ] as [String: any Sendable],
                     ] as [String: any Sendable]
                 }

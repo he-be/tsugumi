@@ -109,7 +109,8 @@ do {
             integrityPolicy: arguments.verification,
             draftBlockSize: arguments.draftBlockSize,
             reasoningBudget: arguments.reasoningBudget,
-            reasoningFormat: arguments.reasoningFormat)
+            reasoningFormat: arguments.reasoningFormat,
+            contextCheckpoints: arguments.contextCheckpoints)
     } else {
         try await ServerModelSession.load(
             modelDirectory: modelURL,

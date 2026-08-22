@@ -32,6 +32,11 @@ public actor QwenServerSession: ServerInferenceBackend {
     private let maxContext: Int
     /// Whether `--draft-block-size 2` put the MTP head in the decode loop.
     private let speculative: Bool
+    /// FLAG-8. How many checkpoints the session may hold at once.
+    private let contextCheckpoints: Int
+    /// CACHE-8. The copies themselves, ascending by position. The cache holds
+    /// the positions; this holds what the positions mean.
+    private var checkpoints: [QwenForwardRunner.Checkpoint] = []
     /// SPEC §7, the only shape this family can hold: the token ids the runner's
     /// state has **already consumed**, so that a prompt beginning with them can
     /// start where they end (`docs/qwen35moe/41-PROMPT-CACHE.md`).
@@ -57,7 +62,8 @@ public actor QwenServerSession: ServerInferenceBackend {
                             draftBlockSize: Int = 0,
                             mtpHeadDirectory: String = QwenMTPSidecar.defaultDirectory,
                             reasoningBudget: Int = -1,
-                            reasoningFormat: ReasoningFormat = .auto) async throws -> QwenServerSession {
+                            reasoningFormat: ReasoningFormat = .auto,
+                            contextCheckpoints: Int = 2) async throws -> QwenServerSession {
         try validateFlags(draftBlockSize: draftBlockSize)
         let tokenizer = try await QwenTokenizer.load(forModelDirectory: modelDirectory)
         let context = try MetalContext()
@@ -86,7 +92,8 @@ public actor QwenServerSession: ServerInferenceBackend {
                                  maxContext: maxContext,
                                  speculative: draftBlockSize != 0,
                                  reasoningBudget: reasoningBudget,
-                                 reasoningFormat: reasoningFormat)
+                                 reasoningFormat: reasoningFormat,
+                                 contextCheckpoints: contextCheckpoints)
     }
 
     /// The flags this family cannot honour, refused before anything is loaded.
@@ -126,7 +133,8 @@ public actor QwenServerSession: ServerInferenceBackend {
                  maxContext: Int,
                  speculative: Bool,
                  reasoningBudget: Int,
-                 reasoningFormat: ReasoningFormat) {
+                 reasoningFormat: ReasoningFormat,
+                 contextCheckpoints: Int = 2) {
         self.context = context
         self.model = model
         self.tokenizer = tokenizer
@@ -134,6 +142,7 @@ public actor QwenServerSession: ServerInferenceBackend {
         self.prefillChunkTokens = prefillChunkTokens
         self.maxContext = maxContext
         self.speculative = speculative
+        self.contextCheckpoints = max(0, contextCheckpoints)
         self.reasoningBudget = reasoningBudget
         self.reasoningFormat = reasoningFormat
         self.grammarVocabulary = GrammarVocabulary.shared(for: tokenizer)
@@ -166,6 +175,34 @@ public actor QwenServerSession: ServerInferenceBackend {
 
     public func prepare(_ request: ValidatedChatRequest) async throws -> ServerPreparedRequest {
         ServerPreparedRequest(request: request, promptIDs: try renderPrompt(request), vision: nil)
+    }
+
+    // MARK: - Checkpoints (CACHE-8)
+
+    /// Take the checkpoint the prompt's end always gets.
+    ///
+    /// The reference forces one at the last user message and near the prompt's
+    /// end whatever the spacing (`server-context.cpp:3529`), and the reason is
+    /// this family's reason too: **everything after that point is the assistant
+    /// turn the client will describe back to us**, and describing it back is
+    /// where the two token sequences stop agreeing. A checkpoint there turns
+    /// "the conversation is gone" into "the last turn is re-prefilled".
+    private func captureAtPromptEnd() {
+        guard contextCheckpoints > 0 else { return }
+        let position = runner.position
+        guard position > 0,
+              !checkpoints.contains(where: { $0.position == position }) else { return }
+        checkpoints.append(runner.captureCheckpoint())
+        checkpoints.sort { $0.position < $1.position }
+        while checkpoints.count > contextCheckpoints { checkpoints.removeFirst() }
+        promptCache.keepCheckpoints(checkpoints.map(\.position))
+    }
+
+    /// A restore makes every checkpoint past the restore point describe a
+    /// continuation that no longer exists.
+    private func dropCheckpoints(after position: Int) {
+        checkpoints.removeAll { $0.position > position }
+        promptCache.keepCheckpoints(checkpoints.map(\.position))
     }
 
     // MARK: - Generation
@@ -240,14 +277,36 @@ public actor QwenServerSession: ServerInferenceBackend {
         //
         // Decided **after** the `max_tokens: 0` exit above so a prefill-only
         // request neither reads nor disturbs the state.
-        let reused: Int
+        var reused: Int
         switch promptCache.match(promptIDs, cachePrompt: request.cachePrompt) {
         case .hit(let cached):
             reused = cached
+            // CACHE-8. The live state is already at `tokens.count`; any earlier
+            // reuse point is one of the checkpoints and has to be put back
+            // before prefill continues from it. A restore that will not apply
+            // falls back to a full re-prefill rather than continuing from a
+            // state whose position nothing can name.
+            if cached != runner.position {
+                if let checkpoint = checkpoints.last(where: { $0.position == cached }),
+                   runner.restore(checkpoint) {
+                    ServerLog.promptCache("restored checkpoint at=\(cached) "
+                        + "held=\(promptCache.tokens.count) "
+                        + "reprefill=\(promptIDs.count - cached)")
+                    dropCheckpoints(after: cached)
+                } else {
+                    ServerLog.promptCache("checkpoint at=\(cached) unusable, "
+                        + "re-prefilling \(promptIDs.count)")
+                    reused = 0
+                    runner.reset()
+                    promptCache.invalidate()
+                    checkpoints.removeAll()
+                }
+            }
         case .miss(let divergedAt):
             if let divergedAt {
                 ServerLog.promptCache("miss diverged_at=\(divergedAt) "
-                    + "held=\(promptCache.tokens.count)")
+                    + "held=\(promptCache.tokens.count) "
+                    + "checkpoints=\(promptCache.checkpoints)")
             }
             // The memset costs about 11 ms against a prefill floor of 1.3 s
             // (`34-PROMPT-CACHE-ESTIMATE.md` §4-2), and it is what makes a
@@ -255,6 +314,7 @@ public actor QwenServerSession: ServerInferenceBackend {
             reused = 0
             runner.reset()
             promptCache.invalidate()
+            checkpoints.removeAll()
         }
         let promptSuffix = Array(promptIDs[reused...])
 
@@ -410,6 +470,7 @@ public actor QwenServerSession: ServerInferenceBackend {
                     cachedPromptTokens: reused,
                     sampling: plan.sampling,
                     shouldStop: { shouldStop },
+                    onPrefill: { _, _ in self.captureAtPromptEnd() },
                     onToken: onToken,
                     onStats: { speculativeStats = $0 })
             } else {
@@ -422,6 +483,7 @@ public actor QwenServerSession: ServerInferenceBackend {
                     cachedPromptTokens: reused,
                     sampling: plan.sampling,
                     shouldStop: { shouldStop },
+                    onPrefill: { _, _ in self.captureAtPromptEnd() },
                     onToken: onToken)
             }
             // CACHE-6's bookkeeping. What the state holds is always a *prefix*

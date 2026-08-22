@@ -68,6 +68,10 @@ public struct ServerArguments: Equatable, Sendable {
     public let rdadvisePolicy: RDAdvicePolicyMode
     public let verification: ModelIntegrityPolicy
     public let draftBlockSize: Int
+    /// CACHE-8 / FLAG-8. `--ctx-checkpoints N`: how many restorable copies of
+    /// the recurrent state to keep. `0` disables checkpoints, which puts this
+    /// family back on "a byte of drift costs the whole conversation".
+    public let contextCheckpoints: Int
     public let imagePolicy: ServerImagePolicy
     /// RSN-1 / FLAG-1. `--reasoning-budget N`: `-1` is unlimited and the
     /// default, `0` closes the thought channel, `N > 0` caps it.
@@ -116,6 +120,9 @@ public struct ServerArguments: Equatable, Sendable {
                                  cannot keep resident is rejected at load with
                                  the arithmetic.
       --queue-limit <count>      Maximum queued requests (default 4).
+      --ctx-checkpoints <n>      Restorable copies of the recurrent state to keep
+                                 (default 2, 0 disables). One costs 61.4 MiB and
+                                 does not grow with the context (SPEC CACHE-8).
       --expert-cache-slots <n>   Expert-cache slots (default 32). Any count is
                                  accepted and rounded down to one this machine was
                                  measured at: 8, 16, 24, or 32.
@@ -289,6 +296,11 @@ public struct ServerArguments: Equatable, Sendable {
         var rdadvisePolicy = RDAdvicePolicyMode.off
         var verification = ModelIntegrityPolicy.fullSha256
         var draftBlockSize = 0
+        // DEV-23: the reference keeps 32. One checkpoint here is the whole
+        // recurrent state (61.4 MiB, and it does not grow with the context),
+        // so 32 is not a number this machine can hold. Two covers the shape
+        // that was measured — this turn's prompt end and the one before it.
+        var contextCheckpoints = 2
         var imageTokens = ServerImagePolicy.default.maxSoftTokens
         var maxImages = ServerImagePolicy.default.maxImagesPerRequest
         var maxImageBytes = ServerImagePolicy.default.maxImageBytes
@@ -414,6 +426,12 @@ public struct ServerArguments: Equatable, Sendable {
                         "--draft-block-size must be 0 or 2...\(SpeculativeBlock.maxTokens)")
                 }
                 draftBlockSize = parsed
+            case "--ctx-checkpoints", "-ctxcp":
+                guard let parsed = Int(value), parsed >= 0 else {
+                    throw ServerArgumentError.invalid(
+                        "--ctx-checkpoints must be 0 or more")
+                }
+                contextCheckpoints = parsed
             case "--image-tokens":
                 guard let parsed = Int(value),
                       VisionPreprocessorConfig.supportedSoftTokens.contains(parsed) else {
@@ -502,6 +520,7 @@ public struct ServerArguments: Equatable, Sendable {
                                rdadvisePolicy: rdadvisePolicy,
                                verification: verification,
                                draftBlockSize: draftBlockSize,
+                               contextCheckpoints: contextCheckpoints,
                                imagePolicy: ServerImagePolicy(
                                    maxSoftTokens: imageTokens,
                                    maxImagesPerRequest: maxImages,

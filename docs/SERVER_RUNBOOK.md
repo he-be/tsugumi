@@ -316,7 +316,7 @@ python3 Scripts/demo/serve.py     # http://127.0.0.1:8799/
   --model scratch/ornith-oq4e-g64.gturbo \
   --model-id ornith-1.5-35b-a3b \
   --port 8092 \
-  --ctx-size 32768 \
+  --ctx-size 65536 \
   --expert-cache-slots 32 \
   --verification trusted-install \
   --draft-block-size 2 \

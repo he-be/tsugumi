@@ -112,6 +112,46 @@ public final class RecurrentStateManager {
 
     public func holdsState(layer: Int) -> Bool { slotOfLayer[layer] >= 0 }
 
+    // MARK: - Checkpoints (SPEC CACHE-8)
+
+    /// Bytes one checkpoint of this state costs.
+    ///
+    /// **It does not depend on the context length.** The recurrent state is what
+    /// every token folds into, so a checkpoint taken at token 30000 is the same
+    /// size as one taken at token 8 — which is what makes CACHE-8 affordable on
+    /// this machine at all.
+    public var checkpointBytes: Int { stateBuffer.length + convBuffer.length }
+
+    /// A copy of the state as it stands. The buffers are `storageModeShared`,
+    /// so this is a memcpy; the caller must not have GPU work in flight over
+    /// them (the server captures right after a prefill has been read back).
+    public func captureState() -> Data {
+        var data = Data(count: checkpointBytes)
+        let stateLength = stateBuffer.length
+        data.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            memcpy(base, stateBuffer.contents(), stateLength)
+            memcpy(base + stateLength, convBuffer.contents(), convBuffer.length)
+        }
+        return data
+    }
+
+    /// Put a captured state back. Refuses a payload that is not this manager's
+    /// shape rather than writing a partial state — a half-restored recurrence
+    /// produces a continuation that is wrong without being detectably wrong.
+    @discardableResult
+    public func restoreState(_ data: Data) -> Bool {
+        guard data.count == checkpointBytes else { return false }
+        let stateLength = stateBuffer.length
+        let convLength = convBuffer.length
+        data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            memcpy(stateBuffer.contents(), base, stateLength)
+            memcpy(convBuffer.contents(), base + stateLength, convLength)
+        }
+        return true
+    }
+
     /// Byte offset of `layer`'s recurrent state inside `stateBuffer`.
     public func stateOffset(layer: Int) -> Int {
         let slot = slotOfLayer[layer]

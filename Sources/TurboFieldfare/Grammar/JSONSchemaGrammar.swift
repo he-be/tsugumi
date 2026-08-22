@@ -23,6 +23,13 @@ public enum JSONSchemaGrammarDialect: Sendable, Equatable {
     /// オブジェクトのキーは裸 (`[A-Za-z0-9_\-.$]+`)、文字列値は JSON 形式
     /// `"…"` と学習形式 `<|"|>…<|"|>` のどちらでもよい。
     case gemmaToolArguments
+    /// Ornith の tool call が **文字列でない引数** を書くときの方言。
+    /// 綴りは JSON そのものだが、**空白を一切入れない** — テンプレートが
+    /// 描き直すのは `JSONValue.encoded()` の詰めた綴りだけなので、空白を
+    /// 許すと **GEN-8 / INV-1** が破れる (書けば描き直しと必ずずれる)。
+    /// キーの順序までは文法で縛れない (GBNF に文字列の比較が無い) ので、
+    /// そこは §12 **DEV-15** の登録どおり残る。
+    case qwenToolArguments
 }
 
 /// 変換の結果。`approximations` は GEN-2 で近似に落とした箇所の記録で、
@@ -121,7 +128,7 @@ extension JSONSchemaGrammarDialect {
     var seedRules: [String: String] {
         switch self {
         case .json: return ["space": #"| " " | "\n"{1,2} [ \t]{0,20}"#]
-        case .gemmaToolArguments: return [:]
+        case .gemmaToolArguments, .qwenToolArguments: return [:]
         }
     }
 
@@ -129,7 +136,7 @@ extension JSONSchemaGrammarDialect {
     /// `char` (エスケープ形を許す) ではなく専用の `text-char` を使う。
     var stringCharacterRule: String {
         switch self {
-        case .json: return "char"
+        case .json, .qwenToolArguments: return "char"
         case .gemmaToolArguments: return "text-char"
         }
     }
@@ -142,7 +149,7 @@ extension JSONSchemaGrammarDialect {
     /// 飲み込むことはない。
     func quoted(_ body: String) -> String {
         switch self {
-        case .json:
+        case .json, .qwenToolArguments:
             return #""\"" "# + body + #" "\"""#
         case .gemmaToolArguments:
             return #""<|\"|>" "# + body + #" "<|\"|>""#
@@ -189,6 +196,19 @@ extension JSONSchemaGrammarDialect {
                 #""[" space ( value ("," space value)* )? space "]""#, ["value"])
             table["object"] = .init(
                 #""{" space ( string ":" space value ("," space string ":" space value)* )? space "}""#,
+                ["string", "value"])
+        case .qwenToolArguments:
+            // The `.json` table with every `space` taken out: `JSONValue.
+            // encoded()` writes no whitespace, and GEN-8 says the grammar may
+            // only spell what the redraw writes.
+            table["string"] = .init(quoted("char*"), ["char"])
+            table["value"] = .init(
+                "object | array | string | number | boolean | null",
+                ["object", "array", "string", "number", "boolean", "null"])
+            table["array"] = .init(
+                #""[" ( value ("," value)* )? "]""#, ["value"])
+            table["object"] = .init(
+                #""{" ( string ":" value ("," string ":" value)* )? "}""#,
                 ["string", "value"])
         case .gemmaToolArguments:
             // GEN-9: 文字列の本体は `"` と `\` を含まない任意の文字。テンプレ
@@ -478,7 +498,7 @@ struct JSONSchemaGrammarConverter {
     /// `.gemmaToolArguments` は文字列だけ 2 形式の選択に開く。
     mutating func constantRule(_ value: JSONValue) -> String {
         switch dialect {
-        case .json:
+        case .json, .qwenToolArguments:
             return Self.formatLiteral(Self.jsonDump(value))
         case .gemmaToolArguments:
             return gemmaConstantRule(value)
@@ -775,7 +795,7 @@ struct JSONSchemaGrammarConverter {
     /// もう一度逃がす (二重の逃がし)、`.gemmaToolArguments` は裸。
     private mutating func keyLiteral(_ propertyName: String) -> String {
         switch dialect {
-        case .json:
+        case .json, .qwenToolArguments:
             return Self.formatLiteral(Self.dumpString(propertyName))
         case .gemmaToolArguments:
             let representable = !propertyName.isEmpty && propertyName.utf8.allSatisfy { byte in

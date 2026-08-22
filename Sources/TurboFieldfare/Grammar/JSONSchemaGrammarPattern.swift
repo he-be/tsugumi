@@ -51,8 +51,10 @@ extension JSONSchemaGrammarConverter {
                 // GEN-9: gemma 方言では `"` と `\` は文字列本体に置けない。
                 let rule: String
                 switch (dialect, dotall) {
-                case (.json, true): rule = #"[\U00000000-\U0010FFFF]"#
-                case (.json, false): rule = #"[^\x0A\x0D]"#
+                case (.json, true), (.qwenToolArguments, true):
+                    rule = #"[\U00000000-\U0010FFFF]"#
+                case (.json, false), (.qwenToolArguments, false):
+                    rule = #"[^\x0A\x0D]"#
                 case (.gemmaToolArguments, true): rule = #"[^"\\]"#
                 case (.gemmaToolArguments, false): rule = #"[^"\\\x0A\x0D]"#
                 }

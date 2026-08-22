@@ -205,6 +205,31 @@ struct QwenChatGrammarBuilderTests {
                                Self.callSpelledAsText(Self.weatherBody)))
     }
 
+    /// GEN-8 for the values the redraw *spells* rather than copies. A non-string
+    /// parameter is written by `JSONValue.encoded()`, which puts no whitespace
+    /// anywhere, so the grammar must not leave the model the spaced form the
+    /// checkpoint was trained on — writing it would produce a turn that cannot
+    /// be described back (measured: pi session `01a02a00-…`, 2026-08-22).
+    @Test("a non-string value may only be written in the redraw's compact spelling")
+    func non_string_values_are_compact() throws {
+        let tool = GFTokenizer.FunctionDefinition(
+            name: "note",
+            description: "note",
+            parameters: .object([
+                "type": .string("object"),
+                "properties": .object(["items": .object(["type": .string("array")])]),
+                "required": .array([.string("items")]),
+            ]))
+        let constraint = try #require(Self.constraint(tools: [tool]))
+        let compact = Self.body("note", Self.parameter("items", #"["a","b"]"#))
+        #expect(try Self.walk(constraint.grammar, Self.call(compact)))
+        for spaced in [#"["a", "b"]"#, #"[ "a","b"]"#, #"["a","b" ]"#] {
+            let body = Self.body("note", Self.parameter("items", spaced))
+            #expect(try !Self.walk(constraint.grammar, Self.call(body)),
+                    "the grammar left \(spaced), which the redraw does not write")
+        }
+    }
+
     @Test("parameters go in ascending key order")
     func parameters_are_ordered_by_key() throws {
         let constraint = try #require(Self.constraint(tools: [Self.weather]))
