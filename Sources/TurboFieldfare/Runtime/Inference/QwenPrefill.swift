@@ -425,7 +425,14 @@ extension QwenForwardRunner {
 
             let shared = try commandBuffer()
             encodePrefillSharedExpert(shared, tokens: T, w: w.moe, scratch: s)
-            try wait(shared, "prefill layer \(L) shared expert")
+            // Committed, not joined: the branch that does not depend on which
+            // experts the router picked runs on the GPU while the first tile's
+            // experts are read (Phase 6, `27-PHASE6-THROUGHPUT.md`).
+            if QwenForwardRunner.pipelineEnabled {
+                commitDeferred(shared, "prefill layer \(L) shared expert")
+            } else {
+                try wait(shared, "prefill layer \(L) shared expert")
+            }
 
             try encodePrefillRoutedExperts(layer: L, tokens: T, routes: routes, scratch: s)
 
@@ -434,8 +441,16 @@ extension QwenForwardRunner {
                                    count: T * hiddenSize)
             qwen.encodeResidualAdd(commandBuffer: tail, hidden: s.hidden, y: s.routedOut,
                                    count: T * hiddenSize)
-            try wait(tail, "prefill layer \(L) residual")
+            // The next layer's pre-router buffer is the join.
+            if QwenForwardRunner.pipelineEnabled {
+                commitDeferred(tail, "prefill layer \(L) residual")
+            } else {
+                try wait(tail, "prefill layer \(L) residual")
+            }
         }
+        // The head reads the last row of `hidden`, and a chunk that emits
+        // nothing still has to have landed before the next one is encoded.
+        try drainDeferred()
 
         kv.advance(by: T)
         guard emitToken else { return 0 }
@@ -726,14 +741,83 @@ extension QwenForwardRunner {
         let metadata = try s.routedMoE.makeStreamedMetadataBuffers(device: device, routes: routes)
         let offsets = model.routedExpertOffsets(layer: L)
 
-        for (index, tile) in routes.tiles.enumerated() where tile.pairCount > 0 {
+        // Tile *i*'s bytes are read while tile *i-1* is on the GPU. The reads
+        // are the larger half of a chunk's wall clock and they have nothing to
+        // do with the GPU, so the only thing that made them serial was asking
+        // for them one at a time (Phase 6).
+        //
+        // **Only on the mapped arm.** There a tile's blobs are views into the
+        // layer file's mapping, so a read that is planned while an earlier
+        // tile's command buffer is still running cannot land on top of it. On
+        // the private-slot arm (`TF_EXPERT_MMAP=0`) it could: the planner would
+        // have to be told to avoid every slot every unjoined buffer is reading,
+        // and at 16 slots and 16 experts to a tile there is no such plan. That
+        // arm keeps the serial loop — it is the measurement arm, not the
+        // default (`docs/qwen35moe/27-PHASE6-THROUGHPUT.md`).
+        // Asked of the model, not of the layer: a layer file is opened on its
+        // first read, so asking whether *this* layer has a residency set says
+        // "no" for every layer of the first chunk — which is the chunk that
+        // matters.
+        let pipelined = model.usesMappedExperts && QwenForwardRunner.pipelineEnabled
+        struct InflightTile {
+            let index: Int
+            let expertIDs: [Int]
+            let plan: RoutedExpertFetchPlan
+            let handle: RoutedExpertFetchHandle
+        }
+        let active = routes.tiles.enumerated()
+            .filter { $0.element.pairCount > 0 }
+            .map(\.offset)
+        func startTile(_ index: Int) throws -> InflightTile {
             let expertIDs = try PrefillStreamedTileBinding.expertIDs(forTile: index,
                                                                      routes: routes)
             guard let plan = try model.planRoutedExperts(layer: L, experts: expertIDs) else {
                 throw QwenRunnerError.commandBufferFailed(
                     "prefill layer \(L) tile \(index): could not plan \(expertIDs.count) experts")
             }
-            let views = try model.startRoutedExpertFetch(plan: plan).wait()
+            return InflightTile(index: index,
+                                expertIDs: expertIDs,
+                                plan: plan,
+                                handle: try model.startRoutedExpertFetch(plan: plan))
+        }
+        /// The read-ahead. `avoiding` is the tile still on the GPU, and the
+        /// planner may refuse: with 16 slots one tile already fills the layer's
+        /// cache, and there is no plan that keeps off it. Refusing is the right
+        /// answer there — the read-ahead would have to evict the bytes the GPU
+        /// is reading, which on the mapped arm means dropping their residency
+        /// mid-kernel. The caller falls back to reading it in its turn.
+        func startTileAhead(_ index: Int, avoiding: Set<Int>) throws -> InflightTile? {
+            let expertIDs = try PrefillStreamedTileBinding.expertIDs(forTile: index,
+                                                                     routes: routes)
+            guard let plan = try model.planRoutedExpertsIfPossible(layer: L,
+                                                                   experts: expertIDs,
+                                                                   avoidingSlots: avoiding)
+            else { return nil }
+            return InflightTile(index: index,
+                                expertIDs: expertIDs,
+                                plan: plan,
+                                handle: try model.startRoutedExpertFetch(plan: plan))
+        }
+        var inflight: InflightTile? = nil
+        for (position, index) in active.enumerated() {
+            let current: InflightTile
+            if let started = inflight, started.index == index {
+                current = started
+            } else {
+                // Nothing was read ahead for this tile — either this is the
+                // first one, or the arm does not pipeline. Whatever is still
+                // running has to be joined first on the serial arm, because the
+                // read about to be planned may take its slots.
+                if !pipelined { try drainDeferred() }
+                current = try startTile(index)
+            }
+            let tile = routes.tiles[index]
+            let expertIDs = current.expertIDs
+            let views = try current.handle.wait()
+            inflight = pipelined && position + 1 < active.count
+                ? try startTileAhead(active[position + 1],
+                                     avoiding: Set(current.plan.assignedSlots))
+                : nil
             let binding = try PrefillStreamedTileBinding(expertIDs: expertIDs, views: views)
             let argumentBuffer = try s.routedMoE.streamedArgumentBuffer(device: device,
                                                                         index: index,
@@ -794,7 +878,11 @@ extension QwenForwardRunner {
                         + "nothing for \(groups.count) groups / \(tile.pairCount) pairs")
                 }
             }
-            try wait(cb, "prefill layer \(L) tile \(index)")
+            if pipelined {
+                commitDeferred(cb, "prefill layer \(L) tile \(index)")
+            } else {
+                try wait(cb, "prefill layer \(L) tile \(index)")
+            }
         }
 
         // Every pair of every tile has written its row, so the token-major sum
@@ -807,7 +895,11 @@ extension QwenForwardRunner {
                                            queryCount: UInt32(T),
                                            topK: UInt32(cfg.topKExperts),
                                            d: UInt32(hiddenSize))
-        try wait(reduce, "prefill layer \(L) routed reduce")
+        if pipelined {
+            commitDeferred(reduce, "prefill layer \(L) routed reduce")
+        } else {
+            try wait(reduce, "prefill layer \(L) routed reduce")
+        }
     }
 
     // MARK: - Plumbing

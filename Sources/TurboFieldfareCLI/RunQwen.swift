@@ -285,8 +285,6 @@ func runQwen(args: Args,
         var reasoningText = ""
         var answerText = ""
         var toolCalls: [ParsedToolCall] = []
-        var firstTokenAt: Date?
-        let decodeStart = Date()
 
         func emit(_ events: [StructuredAssistantEvent]) {
             for event in events {
@@ -303,28 +301,44 @@ func runQwen(args: Args,
             }
         }
 
-        let generated = try runner.generateGreedyPrefilled(
+        // The run reports its own partition of the wall clock (RSP-3), which is
+        // the one Phase 6 measures with: `decode=` here is decode only, as it is
+        // on the Gemma path, so the two families' tok/s mean the same thing.
+        //
+        // The profile is read at the phase boundary as well as at the end, so
+        // the GPU seconds can be split the same way the wall clock is. Both
+        // paths are serial, so each phase's three parts add up to its wall
+        // clock and the remainder is host time
+        // (`docs/qwen35moe/24-PREFILL-MOE-PATH.md` §4).
+        runner.resetProfile()
+        var prefillGPUSeconds = 0.0
+        var prefillCommandBuffers = 0
+        let run = try runner.runGreedyCompletion(
             promptTokens: promptIds,
             maxNewTokens: maxNew,
             chunkWidth: runtime.prefillChunkTokens,
             stopTokens: tokenizer.stopTokenIDs,
-            constraint: constraint
-        ) { _, id in
-            if firstTokenAt == nil { firstTokenAt = Date() }
-            let delta = detokenizer.push(id)
-            guard let decoder else {
-                emit(splitter!.consume(tokenID: id, delta: delta))
-                return
-            }
-            let events = try decoder.consume(tokenID: id, delta: delta)
-            // GEN-6, and the reason this is set here rather than inside the
-            // runner: the decoder owns the channel state, and the state it is
-            // left in by *this* token is the one the next draw is judged by.
-            // A lazy grammar that armed inside the thought block would
-            // constrain reasoning the model is allowed to write freely.
-            constraint?.setSuppressed(decoder.isInsideReasoning)
-            emit(events)
-        }
+            constraint: constraint,
+            onPrefill: { _, _ in
+                prefillGPUSeconds = runner.gpuSeconds
+                prefillCommandBuffers = runner.gpuCommandBuffers
+            },
+            onToken: { _, id in
+                let delta = detokenizer.push(id)
+                guard let decoder else {
+                    emit(splitter!.consume(tokenID: id, delta: delta))
+                    return
+                }
+                let events = try decoder.consume(tokenID: id, delta: delta)
+                // GEN-6, and the reason this is set here rather than inside the
+                // runner: the decoder owns the channel state, and the state it is
+                // left in by *this* token is the one the next draw is judged by.
+                // A lazy grammar that armed inside the thought block would
+                // constrain reasoning the model is allowed to write freely.
+                constraint?.setSuppressed(decoder.isInsideReasoning)
+                emit(events)
+            })
+        let generated = run.tokens
         let tail = detokenizer.flush()
         if let decoder {
             emit(try decoder.consumeTail(tail))
@@ -342,21 +356,19 @@ func runQwen(args: Args,
             stdout.write(Data(("{\"id\":\"\(call.id)\",\"name\":\"\(call.name)\","
                                + "\"arguments\":\(call.argumentsJSON)}\n").utf8))
         }
-        let decodeSeconds = Date().timeIntervalSince(decodeStart)
-
         if !args.quiet {
-            let stopped = generated.last.map { tokenizer.stopTokenIDs.contains($0) } ?? false
-            let tokensPerSecond = decodeSeconds > 0
-                ? Double(generated.count) / decodeSeconds : 0
-            let ttft = firstTokenAt.map { $0.timeIntervalSince(decodeStart) } ?? 0
+            let stopped = run.reason != StopReason.maxTokens
+            let tokensPerSecond = run.decodeSeconds > 0
+                ? Double(generated.count) / run.decodeSeconds : 0
             let memory = ProcessMemoryFootprint.current()
             let telemetry = model.telemetry.snapshot()
             var footer = "\n[stop=\(stopped ? "stopToken" : "maxNewTokens")"
             footer += " prefill=\(promptIds.count)tok new=\(generated.count)tok"
-            footer += " decode=\(String(format: "%.2f", decodeSeconds))s"
+            footer += " decode=\(String(format: "%.2f", run.decodeSeconds))s"
             footer += " tok/s=\(String(format: "%.3f", tokensPerSecond))]\n"
             footer += "[load=\(String(format: "%.3f", loadSeconds))s"
-            footer += " ttft=\(String(format: "%.3f", ttft))s"
+            footer += " prefill=\(String(format: "%.3f", run.prefillSeconds))s"
+            footer += " ttft=\(String(format: "%.3f", run.timeToFirstTokenSeconds))s"
             footer += " reasoning=\(reasoningText.count)ch answer=\(answerText.count)ch"
             if !tools.isEmpty { footer += " toolCalls=\(toolCalls.count)" }
             // What the grammar cost, in the only currency this path spends:
@@ -368,7 +380,68 @@ func runQwen(args: Args,
             footer += " \(telemetry.prefill.hits)/\(telemetry.prefill.experts)"
             footer += " | decode hit="
             footer += "\(String(format: "%.1f", telemetry.decode.hitRate * 100))%"
-            footer += " \(telemetry.decode.hits)/\(telemetry.decode.experts)]\n"
+            footer += " \(telemetry.decode.hits)/\(telemetry.decode.experts)"
+            // The expert I/O each phase waited on, and what one decode token
+            // paid for it — the currency `bench/expert_sim.py --io-ms` converts
+            // a miss count into.
+            footer += " | io prefill=\(String(format: "%.2f", Double(telemetry.prefill.fetchNanos) / 1e9))s"
+            footer += " decode=\(String(format: "%.2f", Double(telemetry.decode.fetchNanos) / 1e9))s]\n"
+            // Where each phase's wall clock went. `host` is the remainder —
+            // encode, readback, and the driver's own overhead — and on this
+            // serial path it is the cost of committing and waiting on a command
+            // buffer, which is why the count is printed next to it.
+            func split(_ name: String,
+                       wall: Double, gpu: Double, io: Double,
+                       units: Int, buffers: Int) -> String {
+                guard units > 0 else { return "" }
+                let ms = { (s: Double) in String(format: "%.2f", s * 1e3 / Double(units)) }
+                return "[\(name)/tok gpu=\(ms(gpu))ms io=\(ms(io))ms"
+                    + " host=\(ms(wall - gpu - io))ms"
+                    + " cb=\(String(format: "%.1f", Double(buffers) / Double(units)))]\n"
+            }
+            footer += split("prefill",
+                            wall: run.prefillSeconds,
+                            gpu: prefillGPUSeconds,
+                            io: Double(telemetry.prefill.fetchNanos) / 1e9,
+                            units: promptIds.count,
+                            buffers: prefillCommandBuffers)
+            footer += split("decode",
+                            wall: run.decodeSeconds,
+                            gpu: runner.gpuSeconds - prefillGPUSeconds,
+                            io: Double(telemetry.decode.fetchNanos) / 1e9,
+                            units: generated.count,
+                            buffers: runner.gpuCommandBuffers - prefillCommandBuffers)
+            // What the mapped arm spends inside that `io` number: the residency
+            // set churn is host work on the fetch thread, and the rest is the
+            // page-in the GPU would otherwise fault on.
+            let residency = MmapExpertMapping.stats
+            if residency.syncs > 0 && !generated.isEmpty {
+                let ms = Double(residency.nanos) / 1e6 / Double(generated.count)
+                footer += "[residency syncs=\(residency.syncs)"
+                footer += " added=\(residency.added) removed=\(residency.removed)"
+                let part = { (v: UInt64) in
+                    String(format: "%.2f", Double(v) / 1e6 / Double(generated.count))
+                }
+                footer += " \(String(format: "%.2f", ms))ms/tok"
+                footer += " (edit=\(part(residency.editNanos))"
+                footer += " commit=\(part(residency.commitNanos))"
+                footer += " request=\(part(residency.requestNanos)))]\n"
+            }
+            let preview = runner.routerPreview
+            if preview.comparisons > 0 {
+                let pct = { (n: Int, d: Int) in
+                    d > 0 ? String(format: "%.1f", Double(n) / Double(d) * 100) : "-"
+                }
+                footer += "[preview pairs=\(preview.comparisons)"
+                footer += " overlap=\(pct(preview.overlap, preview.comparisons * 8))%"
+                footer += " missCovered=\(pct(preview.missedCovered, preview.missed))%"
+                footer += " (\(preview.missedCovered)/\(preview.missed))"
+                footer += " rankUsed=" + preview.rankUsed
+                    .map { pct($0, preview.comparisons) }.joined(separator: "/")
+                footer += " rankMiss=" + preview.rankMissed
+                    .map { pct($0, preview.comparisons) }.joined(separator: "/")
+                footer += "]\n"
+            }
             stderr.write(Data(footer.utf8))
         }
         return RunResult(exitCode: 0)

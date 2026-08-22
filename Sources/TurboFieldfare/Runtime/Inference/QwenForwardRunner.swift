@@ -199,6 +199,18 @@ public final class QwenForwardRunner {
     private let sharedGateLogit: MTLBuffer // [1] FP16
     private let outIndices: MTLBuffer    // [topK] UInt32
     private let outWeights: MTLBuffer    // [topK] FP16
+    /// The preview probe's outputs — layer L+1's router run over layer L's
+    /// `normed`, read back at the join layer L already pays for.
+    private let previewIndices: MTLBuffer
+    private let previewWeights: MTLBuffer
+    /// What the previous layer predicted this layer would ask for.
+    private var predictedExperts: [Int]?
+    /// A read started for the *next* layer from that prediction. Waited at the
+    /// top of that layer's expert handling, before its own plan is made — a
+    /// plan made while the speculative read is in flight could hand it a slot
+    /// the read is writing.
+    private var prefetch: (layer: Int, handle: RoutedExpertFetchHandle)?
+    public private(set) var routerPreview = RouterPreviewStats()
     private let moeActs: MTLBuffer       // [topK * F] FP16
     private let greedyToken: MTLBuffer   // [1] UInt32
     /// The T-row scratch, allocated on the first `prefill` call and reused
@@ -223,6 +235,52 @@ public final class QwenForwardRunner {
     /// needs to say *which* of the three grew.
     public private(set) var gpuSeconds: Double = 0
     public private(set) var gpuCommandBuffers: Int = 0
+    /// Committed and not yet joined (`commitDeferred`). Never more than a
+    /// layer's worth: the next `wait` drains it.
+    private var deferredCommandBuffers: [MTLCommandBuffer] = []
+
+    /// Whether a layer may leave work committed but unjoined, and start its
+    /// expert read before the branch that does not depend on it is encoded.
+    ///
+    /// On by default — it is worth 1.6x on decode and 1.4x on prefill
+    /// (`docs/qwen35moe/27-PHASE6-THROUGHPUT.md`). `TF_QWEN_PIPELINE=0` puts
+    /// both paths back on the strictly serial loop Phase 3 and Phase 4 were
+    /// written with, which is what makes the two arms comparable in one
+    /// process rather than across two builds.
+    /// Measurement only: run layer L+1's router over layer L's `normed` and
+    /// score it against what layer L+1 actually asks for.
+    ///
+    /// This changes no policy — nothing is prefetched, no plan sees the guess.
+    /// It exists to price the one thing that could hide decode's remaining
+    /// page-mapping cost behind the GPU
+    /// (`docs/qwen35moe/27-PHASE6-THROUGHPUT.md` §9): a guess is only worth
+    /// making if it names the experts this layer is about to *miss*, and on
+    /// Gemma's 128-way router that was 70% (`docs/mtp/29-M8-B-PROBE.md`).
+    public static let routerPreviewEnabled: Bool =
+        ProcessInfo.processInfo.environment["TF_QWEN_ROUTER_PREVIEW"] == "1"
+        || expertPrefetchTopN > 0
+
+    /// How many of the preview's guesses to actually read ahead. 0 = off.
+    ///
+    /// The guesses are ranked, and the ranks are not equal: on this model the
+    /// first is used by the next layer 98.6% of the time and the eighth 44%
+    /// (`docs/qwen35moe/27-PHASE6-THROUGHPUT.md` §9-3). A guess that names a
+    /// resident expert costs nothing, a guess that names nothing costs one page
+    /// mapping, so where to cut is a measurement, not a principle.
+    public static let expertPrefetchTopN: Int = {
+        guard let raw = ProcessInfo.processInfo.environment["TF_QWEN_EXPERT_PREFETCH"],
+              let value = Int(raw), value > 0 else { return 0 }
+        return value
+    }()
+
+    public static let pipelineEnabled: Bool =
+        ProcessInfo.processInfo.environment["TF_QWEN_PIPELINE"] != "0"
+
+    public func resetPreview() {
+        routerPreview = RouterPreviewStats()
+        predictedExperts = nil
+    }
+
 
     public func resetProfile() {
         gpuSeconds = 0
@@ -514,6 +572,10 @@ public final class QwenForwardRunner {
         self.sharedGateLogit = try buffer(1, MemoryLayout<Float16>.size, "sharedGateLogit")
         self.outIndices = try buffer(cfg.topKExperts, MemoryLayout<UInt32>.size, "routerIndices")
         self.outWeights = try buffer(cfg.topKExperts, MemoryLayout<Float16>.size, "routerWeights")
+        self.previewIndices = try buffer(cfg.topKExperts, MemoryLayout<UInt32>.size,
+                                         "routerPreviewIndices")
+        self.previewWeights = try buffer(cfg.topKExperts, MemoryLayout<Float16>.size,
+                                         "routerPreviewWeights")
         self.moeActs = try buffer(cfg.topKExperts * cfg.moeIntermediateSize,
                                   MemoryLayout<Float16>.size, "moeActs")
         self.greedyToken = try buffer(1, MemoryLayout<UInt32>.size, "greedyToken")
@@ -734,33 +796,87 @@ public final class QwenForwardRunner {
                             weightOffset: Int(w.postAttnNorm.offset),
                             out: normed, d: D, eps: rmsEps)
             encodeRouter(cb, w: w.moe)
+            if Self.routerPreviewEnabled, L + 1 < cfg.numLayers {
+                encodeRouter(cb, w: layers[L + 1].moe,
+                             indices: previewIndices, weights: previewWeights)
+            }
             try wait(cb, "layer \(L) pre-router")
 
             // The routed-expert blobs cannot be chosen before the router has
             // run, and cannot be read without leaving the GPU. This readback is
             // the reason a layer is two command buffers rather than one.
             let experts = readRoutedExperts()
-            // The synchronous arm of the streamer: `startRoutedExpertFetch`
-            // hands back a handle whose `wait()` blocks, which is what a serial
-            // encode loop wants. The `async` sibling exists for
-            // `RealForwardRunner`, whose whole point is to have something else
-            // running while the read is in flight.
+            let predicted = predictedExperts
+            var nextGuess: [Int]?
+            if Self.routerPreviewEnabled {
+                nextGuess = L + 1 < cfg.numLayers ? readPreviewExperts() : nil
+                predictedExperts = nextGuess
+            }
+            // The guess for *this* layer has to have landed before its own plan
+            // is made, or the plan can hand out the slot the read is filling.
+            if let started = prefetch, started.layer == L {
+                _ = try? started.handle.wait()
+                prefetch = nil
+            }
             guard let plan = try model.planRoutedExperts(layer: L, experts: experts) else {
                 throw QwenRunnerError.commandBufferFailed(
                     "layer \(L): the expert streamer could not plan \(experts.count) experts")
             }
-            let blobs = try model.startRoutedExpertFetch(plan: plan).wait()
+            if let predicted {
+                routerPreview.score(predicted: predicted,
+                                    actual: experts,
+                                    missed: plan.misses.map { experts[$0] })
+            }
+            // The next layer's guess goes out here, so its bytes move while
+            // this layer's MoE is on the GPU. `planSpeculative…` refuses rather
+            // than evict what that layer used last round, and a refusal costs
+            // nothing: the layer will fetch normally when it arrives.
+            if Self.expertPrefetchTopN > 0, prefetch == nil,
+               let guess = nextGuess.map({ Array($0.prefix(Self.expertPrefetchTopN)) }),
+               !guess.isEmpty,
+               let speculative = try model.planSpeculativeRoutedExperts(layer: L + 1,
+                                                                        experts: guess) {
+                prefetch = (L + 1, try model.startRoutedExpertFetch(plan: speculative))
+            }
+            // The read starts before the shared branch is encoded, and the
+            // shared branch is committed while it is still in flight: it is the
+            // one piece of this layer's MoE that does not depend on which
+            // experts the router picked (`docs/qwen35moe/27-PHASE6-THROUGHPUT.md`).
+            let handle = try model.startRoutedExpertFetch(plan: plan)
+            let shared = try commandBuffer()
+            encodeSharedExpert(shared, w: w.moe)
+            if Self.pipelineEnabled {
+                commitDeferred(shared, "layer \(L) shared")
+            } else {
+                try wait(shared, "layer \(L) shared")
+            }
+            let blobs = try handle.wait()
 
             let tail = try commandBuffer()
             if let set = model.routedExpertResidencySet(layer: L) {
                 tail.useResidencySet(set)
             }
-            encodeSharedExpert(tail, w: w.moe)
             encodeRoutedExperts(tail, layer: L, blobs: blobs)
             qwen.encodeResidualAdd(commandBuffer: tail, hidden: hidden, y: sharedOut,
                                    count: hiddenSize)
-            try wait(tail, "layer \(L) moe")
+            // No join here. The next layer's pre-router buffer is committed
+            // behind this one and *is* joined, and nothing on the host reads
+            // this layer's output in between — so the CPU spends the wait
+            // encoding instead of blocking (Phase 6).
+            if Self.pipelineEnabled {
+                commitDeferred(tail, "layer \(L) moe")
+            } else {
+                try wait(tail, "layer \(L) moe")
+            }
         }
+        // A read still in flight at the end of a token would be writing into a
+        // slot the next token is free to re-plan.
+        if let started = prefetch {
+            _ = try? started.handle.wait()
+            prefetch = nil
+        }
+        // The head reads `hidden`, so the layers have to have landed.
+        try drainDeferred()
 
         kv.advance()
         guard emitToken else { return 0 }
@@ -902,6 +1018,16 @@ public final class QwenForwardRunner {
     // MARK: - MoE
 
     private func encodeRouter(_ cb: MTLCommandBuffer, w: MoEWeights) {
+        encodeRouter(cb, w: w, indices: outIndices, weights: outWeights)
+    }
+
+    /// The same router, writing somewhere else. The preview probe runs the
+    /// *next* layer's router over *this* layer's `normed`, so it needs its own
+    /// pair of outputs and nothing else.
+    private func encodeRouter(_ cb: MTLCommandBuffer,
+                              w: MoEWeights,
+                              indices: MTLBuffer,
+                              weights: MTLBuffer) {
         let router = w.router
         if moe.routerWeightBits == 16 {
             moe.encodeRouterGemma4BF16(commandBuffer: cb,
@@ -911,7 +1037,7 @@ public final class QwenForwardRunner {
                                        effectiveScale: unitFeatureScale,
                                        perExpertScale: unitExpertScale,
                                        perExpertScaleOffset: 0,
-                                       outIndices: outIndices, outWeights: outWeights,
+                                       outIndices: indices, outWeights: weights,
                                        numExperts: UInt32(cfg.numExperts),
                                        d: UInt32(hiddenSize),
                                        topK: UInt32(cfg.topKExperts))
@@ -924,11 +1050,16 @@ public final class QwenForwardRunner {
                                    effectiveScale: unitFeatureScale,
                                    perExpertScale: unitExpertScale,
                                    perExpertScaleOffset: 0,
-                                   outIndices: outIndices, outWeights: outWeights,
+                                   outIndices: indices, outWeights: weights,
                                    numExperts: UInt32(cfg.numExperts),
                                    d: UInt32(hiddenSize),
                                    topK: UInt32(cfg.topKExperts))
         }
+    }
+
+    private func readPreviewExperts() -> [Int] {
+        let ptr = previewIndices.contents().bindMemory(to: UInt32.self, capacity: cfg.topKExperts)
+        return (0..<cfg.topKExperts).map { min(Int(ptr[$0]), cfg.numExperts - 1) }
     }
 
     private func readRoutedExperts() -> [Int] {
@@ -1044,13 +1175,91 @@ public final class QwenForwardRunner {
         if let error = cb.error {
             throw QwenRunnerError.commandBufferFailed("\(label): \(error)")
         }
+        // Everything committed before this one has finished too — a queue runs
+        // its command buffers in commit order — so this is where their errors
+        // are noticed and their GPU time is counted.
+        try drainDeferred()
         gpuSeconds += cb.gpuEndTime - cb.gpuStartTime
         gpuCommandBuffers += 1
+    }
+
+    /// Commit without blocking. The next `wait` is the join.
+    ///
+    /// Only for work whose result nothing on the host reads before that join:
+    /// the queue orders the GPU side for us, but a buffer the host rewrites per
+    /// layer (the routed argument buffer) must not be rewritten while a
+    /// committed buffer can still read it. That holds here because the rewrite
+    /// happens after the next `wait`, which is after this buffer has run.
+    func commitDeferred(_ cb: MTLCommandBuffer, _ label: String) {
+        cb.label = label
+        cb.commit()
+        deferredCommandBuffers.append(cb)
+    }
+
+    func drainDeferred() throws {
+        guard !deferredCommandBuffers.isEmpty else { return }
+        for cb in deferredCommandBuffers {
+            cb.waitUntilCompleted()
+            if let error = cb.error {
+                throw QwenRunnerError.commandBufferFailed("\(cb.label ?? "deferred"): \(error)")
+            }
+            gpuSeconds += cb.gpuEndTime - cb.gpuStartTime
+            gpuCommandBuffers += 1
+        }
+        deferredCommandBuffers.removeAll(keepingCapacity: true)
     }
 
     func runSync(_ label: String, _ body: (MTLCommandBuffer) -> Void) throws {
         let cb = try commandBuffer()
         body(cb)
         try wait(cb, label)
+    }
+}
+
+/// What layer L's hidden state says about layer L+1's routing.
+///
+/// The question this answers is narrower than "is the router predictable": a
+/// guess only pays if it names an expert the next layer is about to **miss**,
+/// because a guess that names a resident one buys nothing and a guess that
+/// names nothing costs a page mapping
+/// (`docs/qwen35moe/27-PHASE6-THROUGHPUT.md` §9). So the ranks are scored
+/// separately — prefetching the top N is a policy, and N is chosen from
+/// `rankMissed`, not from the overlap.
+public struct RouterPreviewStats: Sendable {
+    /// (layer, token) pairs compared.
+    public private(set) var comparisons = 0
+    /// Σ |predicted ∩ actual|.
+    public private(set) var overlap = 0
+    /// Σ experts the layer actually had to fetch.
+    public private(set) var missed = 0
+    /// Σ of those the preview had named (at any rank).
+    public private(set) var missedCovered = 0
+    /// Per rank: how often the prediction at that rank was used at all…
+    public private(set) var rankUsed: [Int] = []
+    /// …and how often it was one the layer had to fetch.
+    public private(set) var rankMissed: [Int] = []
+
+    public mutating func score(predicted: [Int], actual: [Int], missed misses: [Int]) {
+        if rankUsed.count < predicted.count {
+            rankUsed = [Int](repeating: 0, count: predicted.count)
+            rankMissed = [Int](repeating: 0, count: predicted.count)
+        }
+        let actualSet = Set(actual)
+        let missSet = Set(misses)
+        comparisons += 1
+        missed += misses.count
+        var seen = Set<Int>()
+        for (rank, expert) in predicted.enumerated() {
+            // A duplicate at a later rank is not a second prefetch.
+            let fresh = seen.insert(expert).inserted
+            if actualSet.contains(expert) {
+                if fresh { overlap += 1 }
+                rankUsed[rank] += 1
+            }
+            if missSet.contains(expert) {
+                if fresh { missedCovered += 1 }
+                rankMissed[rank] += 1
+            }
+        }
     }
 }

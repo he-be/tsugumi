@@ -14,7 +14,7 @@
 | Phase 4 prefill | **一致の条件が通った** ([21](21-PHASE4-PREFILL.md))。`QwenPrefill.swift` と **INT8 の QMM**が入り、**チャンク経由でも 55 本すべてが一致** (幅 512 と 8 の 2 通り)。**routed expert のタイル版も通り、同じ 55 本を出した** ([24](24-PREFILL-MOE-PATH.md))。時間の条件は #16 と一緒 |
 | Phase 5 tokenizer/CLI | **完了** ([22](22-PHASE5-TOKENIZER.md) / [23](23-PHASE5-TOOLS.md) / [25](25-CLI-TOOLS.md))。`QwenTokenizer` (ByteLevel) と上流 jinja が入り、**CLI が日本語と英語で答える** (`--qwen-tokenizer` 223 本)。**XML 形のツール呼び出しと GBNF も入った** — `--qwen-tools` が 36 本、うち 6 本は負例。**CLI の `--tools` も入り、実物が呼び出しを書いた** ([25](25-CLI-TOOLS.md))。残るのはサーバー結線 (Phase 8) |
 | Phase 8 サーバー | **完了** ([26](26-PHASE8-SERVER.md))。`QwenServerSession` (`ServerModelSession` の兄弟) と `QwenGenerationPlan` が入り、**HTTP から実物が答える** — 日本語・ストリーミング・ツール呼び出しとその応答の往復まで。**HTTP 層は 1 行も変えていない。**prompt cache は持たない (`cache_n` は常に 0) と決めたので、`ExpertCacheBudget` に足す勘定は無かった |
-| Phase 6 以降 | 計測はこれから。エキスパート計数の phase stamp は入った ([22 §6](22-PHASE5-TOKENIZER.md))。**bench に内訳 3 列 (GPU / 取得 / ホスト) とプロセス内クールダウンが入った** ([24 §4-1](24-PREFILL-MOE-PATH.md)) |
+| Phase 6 計測 | **1 本目が済んだ** ([27](27-PHASE6-THROUGHPUT.md))。運用点の数字を実タスク 4 本で取り、**そこで見えた直列を 2 つ外した** — 生成 **+31〜41%**、prefill **−25〜45%** (短いプロンプトの TTFT 2.4 → 1.5 秒)。footer が GPU / 取得 / ホストの 3 分割を出すようになり、`bench/qwen35.sh` が家族専用の駆動になった。残るのは層をまたぐ先読み (§8) |
 
 ---
 
@@ -190,6 +190,18 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 
 ## Phase 6 — 計測と運用点
 
+**1 本目は済んだ** ([27](27-PHASE6-THROUGHPUT.md))。下の 6 項目のうち
+**1・3・4 が片づき、2 は材料が出た**:
+
+| # | 状態 |
+| --- | --- |
+| 1 トレースとヒット率カーブ | **済み** ([27 §6-1](27-PHASE6-THROUGHPUT.md))。机上の値は実機とヒット数まで一致する。lfu が lru に 3〜3.5 ポイント勝つ |
+| 2 運用点の候補 | **材料が出た** ([27 §6-2](27-PHASE6-THROUGHPUT.md))。ただし **mmap の腕ではヒット率が壁時計の代理にならない** — 12.7 ポイントの差が tok/s では 4.8% にしかならないので、48 スロットの押しは弱い。**既定は変えていない** |
+| 3 チャンク幅 | **済み。既定の 2048 が最良** (2,378 トークンで 14.53 / 10.57 / **8.63** 秒)。4096 の候補追加はユーザー判断 ([27 §6-3](27-PHASE6-THROUGHPUT.md)) |
+| 4 `RDAdvice` の調律 | **不要だった。**4 通りが振れの中で、**既定の mmap の腕は `F_RDADVISE` を出さない** ([27 §6-3](27-PHASE6-THROUGHPUT.md)) |
+| 5 `RouterPreviewProbe` の 256-way | **済み** ([27 §9-4](27-PHASE6-THROUGHPUT.md))。**miss の 64.5% を 1 層前に名指せる** (Gemma の 128-way が 70%)。投げると **+1.9〜13.2%** で、**既定は off** — 入れるかはユーザー判断 (#29) |
+| 6 oQ を自分で回す案 | 手つかず |
+
 `bench.sh` の作法をそのまま踏襲する。**クールダウンは飾りではない** —
 空けずに回すと GPU 時間が 2.6 倍になる条件が実在する
 ([24 §4-2](24-PREFILL-MOE-PATH.md))。**temp 1.0 のまま、クールダウンは 4 秒**
@@ -207,6 +219,11 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 6. (必要になったら) 案「oQ を自分で回す」([02 §3](02-CHECKPOINTS.md)) の評価もここから
 
 **注意:** 反復 3 未満のセルには解釈を書かない。数字だけ置く。
+
+**駆動は `bench/qwen35.sh`** ([27](27-PHASE6-THROUGHPUT.md))。`bench.sh` の兄弟で、
+違いは 3 つだけ (サンプリングが無い / クールダウン 4 秒 / 熱ドリフトの判定を
+こちらが持つ)。`tasksab` が実タスク 4 本の A/B、`pipeline` が m.json での同じ A/B、
+`slots` / `chunk` / `rdadvise` / `arm` が条件のスイープ、`trace` が机上のカーブ。
 
 ## Phase 7 — MTP
 
@@ -356,10 +373,26 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
    実物に当てる `--qwen-constrain` が **9 本**、`swift test` は **1,338 件**。
    **Phase 5 の箇条書きはこれで全部片づいた**
 
+27. ~~層をまたぐ先読みの的中率 (256-way)~~ → **完了。64.5% の miss を 1 層前に
+   名指せた** ([27 §9-4](27-PHASE6-THROUGHPUT.md))。ついでに「取得 15.8 ms/tok」の
+   正体も割れた: **ホスト側のページ写像 (1 トークン 9,200 ページ)** で、
+   `commit()` を消しても**カーネル内フォールトに移るだけ**。非投機的な 3 つの手
+   (落とさない / set を使わない / commit を間引く) は**どれも引き分け**だった
+   ([27 §9-2](27-PHASE6-THROUGHPUT.md))
+
+25. ~~Phase 6 の 1 本目 (実タスクの prefill と生成)~~ → **完了。生成 +31〜41%、
+   prefill −25〜45%** ([27](27-PHASE6-THROUGHPUT.md))。速くしたのは**待ちを外した**
+   ことだけで、カーネルは 1 本も書いていない: 遅延 join (1 トークンの join が
+   81 → 41)、shared 分岐を routed の読みに重ねる、prefill のタイル読み先行。
+   `TF_QWEN_PIPELINE=0` で元の直列に戻る。`--qwen-decode` / `--qwen-prefill` は
+   **両腕で全一致**、`swift test` は 1,350 件緑
+
 **次にやること:**
 
 | # | やること | 要るもの |
 | --- | --- | --- |
+| 29 | **層をまたぐ先読みを既定にするか** ([27 §9](27-PHASE6-THROUGHPUT.md))。`TF_QWEN_EXPERT_PREFETCH=8` で **+1.9% (56 tok) / +7.6% (498 tok) / +13.2% (2,698 tok)**、出力もメモリも動かない。対価は予測 GEMV の **GPU +1.2〜1.8 ms/tok** で、短いプロンプトではそれが利得の大半を食う | ユーザー判断 |
+| 28 | **候補追加の可否 2 件** (どちらも既定は変えない): `allowedExpertCacheSlots` に 48、`allowedPrefillChunkTokens` に 4096。48 の押しは弱い ([27 §6-2](27-PHASE6-THROUGHPUT.md))、4096 は prefill が素直に伸びる見込み ([27 §6-3](27-PHASE6-THROUGHPUT.md)) | ユーザー判断 |
 | 16 | ~~**線形注意 30 層の締め方の判断**~~ → **2026-08-22 のユーザー判断で保留。**周辺まで数えると 159.4 ms で Phase 4 の出口条件を外れ、再帰カーネル単体は 125.7 ms で [05 §2](05-RISKS.md) #2 の内側 ([17 §4-2](17-PHASE2-KERNELS.md))。**放置してよい理由が 1 つ増えた**: prefill 全体の GPU 時間はチャンク 2048 で 5,036 ms ([24 §3](24-PREFILL-MOE-PATH.md)) なので、**159.4 ms はその約 3%** (別々に測った 2 つの比なので **導出**)。どちらの定義で締めても prefill 全体はほとんど動かない — chunkwise 形の FLOP 2 倍を払う理由はこの比率では出てこない | 保留 |
 | 26 | **`tool_choice: required` の前置きの締め方の判断** ([26 §6-1](26-PHASE8-SERVER.md))。案 A は前置きを `responseFormatGrammar` と同じ `(!</think>* </think> [ \t\n]{0,20})?` に揃える (thinking off なら 1 手目から呼び出しが強制される) が、チェックポイント自身のシステムプロンプトと食い違い、既存の検査 2 本が落ちる。案 B は現状維持 | ユーザー判断 |
 | 8 | `in_proj_a` の実活性再測を 200 トークン級の `--dump` でやり直す ([16 §2](16-QUALITY.md))。**本線は 8-bit なので、これは本線を止めない** | CPU |
@@ -369,6 +402,9 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 `reference_forward.py` (numpy だけ)。`test_reference_forward.py` だけ torch を使う。
 カーネルの検査は `TurboFieldfareKernelCheck --gdn` と `--qwen`
 (どちらもモデルもチェックポイントも要らない)。時間は `--gdn-bench` / `--qwen-bench`。
+**実物の速度は `bench/qwen35.sh`** ([27](27-PHASE6-THROUGHPUT.md);
+`tasksab` / `pipeline` / `slots` / `chunk` / `rdadvise` / `arm` / `trace` /
+`summarize`。結果は `bench/qwen35-results.tsv`)。
 **repack 済みの実物を開くのは `--qwen-open <path>`** ([18](18-MIXED-BITS.md))、
 **実物を走らせて参照と突き合わせるのは `--qwen-decode <path>`** ([20](20-PHASE3-DECODE.md);
 `--qwen-decode-fixture` / `--qwen-decode-new` / `--qwen-decode-fault-tokens`)、
