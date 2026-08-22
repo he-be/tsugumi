@@ -30,7 +30,7 @@
 | 10 | 素の decode と同じ答えが出るか | **出ない。**投機のせいではなく (#8)、**T 行カーネルと decode カーネルの数値が違う**から。a1 は 192/192 一致、t2 は 3 本目で割れて再収束する。**「MTP を入れると答えが変わる」は運用上の事実として書いておく** (§3-3) |
 | 11 | プレフィルは動くか | **1 バイトも動かない。**MTP は decode ループだけを差し替える。t4 のプロンプト 2,698 トークンは両腕とも 16.8 s、TTFT も同じ。Phase 4 の検査 (`--qwen-prefill`) は負の対照 5 本込みで通る (§6-1) |
 | 12 | 深さ 3 の MTP ヘッドは | **プロンプト履歴を持たせていない。**33 は教師強制なので MTP の K/V が全位置埋まっていた。実機で同じにするには fc と k/v 射影の T 行プレフィルが要る。**先に代償を測った** — 平均 P1 78.40% → 76.05% (§2-2)。2 ポイントに 2 本目の prefill 経路は釣り合わない |
-| 13 | 文法 / ツール呼び出しと併用できるか | **できない。**`--qwen-mtp` と `--tools` は今のところ排他 (`SpeculativeError.constrained`)。融合ヘッドの再採点は 1 行ぶんの `normalizedHidden` を前提にしていて、2 行版はそこを埋めない。**エージェント用途では効く制約** (§7 #2) |
+| 13 | 文法 / ツール呼び出しと併用できるか | ~~**できない。**~~ **[40](40-MTP-GRAMMAR.md) で併用できるようになった** (2026-08-22)。原因は「2 行版が `normalizedHidden` を埋めない」ではなく、**再畳み込みがどの行を読むか指定できなかった**こと。`encodeMaskedRescore` に行を渡すだけで済み、新カーネルは 0 本 |
 | 14 | 次に何をすれば勝ち幅が広がるか | **残る 1.21 倍**。幅 1 を T 行経路に流すと素の decode の 1.21 倍かかる (§4-4)。内訳は GPU +2.7 ms / ホスト +11 ms で、ホスト側は層ごとの route grouping、GPU 側は prefill attention と router。ここを decode 級にすれば全タスクで勝つ側に回る (§7) |
 | 15 | 要ったもの | Metal カーネル 2 本 (`dequant_int8_gemv_rows_simd`、`qwen_lm_head_greedy_int8_rows_chunk_raw_multi`) + BF16 GEMV 1 本。Swift 3 ファイル。Python 2 本。**`.gturbo` の repack は 0 回** |
 
@@ -342,10 +342,11 @@ PASS  routed experts on the per-pair path, chunk 8 (3 chunks) — the same 41 to
 1. **出力が素の decode と変わる** (§3-3)。検証パスの行 0 を decode と
    ビット一致させるには、prefill attention / block router / per-pair MoE の
    加算順を decode 側に揃える必要がある。行 GEMV は既に一致している。
-2. **文法・ツール呼び出しと併用できない** (`SpeculativeError.constrained`)。
-   融合ヘッドの再採点 (GEN-7) は 1 行ぶんの `normalizedHidden` を前提にしていて、
-   2 行版はそこを埋めない。**エージェント用途ではこれが一番効く制約**で、
-   §5 の a2 のような「JSON だけ」を文法で縛る使い方が今は MTP と両立しない。
+2. ~~**文法・ツール呼び出しと併用できない**~~ → **[40](40-MTP-GRAMMAR.md) で
+   閉じた** (2026-08-22)。ここに書いた診断は外れていた: 2 行の
+   `normalizedHidden` は検証パスのスクラッチに**ちゃんとある**。無かったのは
+   `encodeMaskedRescore` に**どの行かを渡す口**だけで、足したのは引数 2 つ、
+   新しい Metal カーネルは 0 本である。
 3. **残る 1.21 倍** (§4-4)。ホスト側 +11 ms (層ごとの route grouping) と
    GPU +2.7 ms (prefill attention / block router)。ここが decode 級になれば
    t2 / t3 も勝ち側に回る計算になる。

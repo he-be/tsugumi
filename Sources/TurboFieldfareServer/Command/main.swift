@@ -98,9 +98,10 @@ do {
     }
 
     let backend: any ServerInferenceBackend = if isOrnith {
-        // Phase 8. No image policy and no draft block size: this backend
-        // refuses both rather than carrying a parameter it cannot honour
-        // (`QwenServerSession`).
+        // Phase 8. No image policy: this backend refuses images rather than
+        // carrying a parameter it cannot honour. `--draft-block-size` it does
+        // honour now, at the one width its head has
+        // (`QwenServerSession.validateFlags`, `docs/qwen35moe/40-MTP-GRAMMAR.md`).
         try await QwenServerSession.load(
             modelDirectory: modelURL,
             maxContext: arguments.maxContext,

@@ -226,6 +226,12 @@ grouping、GPU +2.7 ms = prefill attention + block router) と、t4 の長文脈
 
 ### B. 文法・ツール呼び出しとの併用 ([36 §7](36-MTP-DECODE.md) #2)
 
+> **2026-08-22 に完了した** ([40](40-MTP-GRAMMAR.md))。実際に要ったのは
+> 「行 index/stride 付きにして 2 行分の `normalizedHidden` を埋める」ではなく、
+> **既にある 2 行のどちらを読むかを渡す引数**だけだった。draft の提案に
+> マスクを当てる必要も無い — 提案は検証で棄却されるだけなので、
+> **文法は検証行にしか当たらない**。
+
 エージェント用途で一番効く制約。`SpeculativeError.constrained`
 (`QwenSpeculativeDecode.swift:164`) の排他を外すには、GEN-7 の融合ヘッド再採点を
 行 index/stride 付きにして 2 行分の `normalizedHidden` を埋め、draft の提案と

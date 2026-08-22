@@ -124,12 +124,21 @@ public final class QwenLMHeadChainInt8 {
     /// row `encodeGreedyDecode` normalized, and re-deriving it would be the one
     /// way for the two passes to disagree about the same token.
     ///
+    /// `hiddenNormed` names *which* normalized row to score again, and defaults
+    /// to that buffer. The speculative loop is the caller that needs the
+    /// parameter: its two rows were normalized into its own scratch by
+    /// `encodeGreedyDecodeRows`, so `xNormedBuffer` holds neither of them
+    /// (`docs/qwen35moe/40-MTP-GRAMMAR.md` §2). Passing the row the refused
+    /// token came from is the whole difference; the kernel is the same one.
+    ///
     /// `allowedBits` is one bit per token id, lowest id in the lowest bit of
     /// word 0, at least `maskWordCount(vocab:)` words long. A mask with every
     /// bit set produces the same token as `encodeGreedyDecode` did, bit for
     /// bit: both passes run the same row function in the same order.
     @discardableResult
     public func encodeMaskedRescore(commandBuffer: MTLCommandBuffer,
+                                    hiddenNormed: MTLBuffer? = nil,
+                                    hiddenNormedOffset: Int = 0,
                                     weights: MTLBuffer, weightsOffset: Int = 0,
                                     scales: MTLBuffer, scalesOffset: Int = 0,
                                     biases: MTLBuffer, biasesOffset: Int = 0,
@@ -137,10 +146,15 @@ public final class QwenLMHeadChainInt8 {
                                     outToken: MTLBuffer, outTokenOffset: Int = 0,
                                     d: UInt32,
                                     vocab: UInt32) -> Bool {
+        let hidden = hiddenNormed ?? xNormedBuffer
         guard d > 0, vocab > 0,
               Int(d) <= maxD, Int(vocab) <= maxVocab,
               Int(d) % affineGroupSize == 0,
               d % 64 == 0,
+              hiddenNormedOffset >= 0,
+              hiddenNormedOffset % MemoryLayout<Float16>.size == 0,
+              hidden.length - hiddenNormedOffset
+                  >= Int(d) * MemoryLayout<Float16>.size,
               allowedBitsOffset >= 0, allowedBitsOffset % 4 == 0,
               allowedBits.length - allowedBitsOffset
                   >= Self.maskWordCount(vocab: Int(vocab)) * MemoryLayout<UInt32>.size,
@@ -149,7 +163,7 @@ public final class QwenLMHeadChainInt8 {
         let rowGroups = rowGroupCount(vocab: Int(vocab))
         guard let head = commandBuffer.makeComputeCommandEncoder() else { return false }
         head.setComputePipelineState(rowMasked)
-        head.setBuffer(xNormedBuffer, offset: 0, index: 0)
+        head.setBuffer(hidden, offset: hiddenNormedOffset, index: 0)
         head.setBuffer(weights, offset: weightsOffset, index: 1)
         head.setBuffer(scales, offset: scalesOffset, index: 2)
         head.setBuffer(biases, offset: biasesOffset, index: 3)

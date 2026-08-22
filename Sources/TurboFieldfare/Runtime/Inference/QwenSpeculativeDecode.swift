@@ -79,16 +79,12 @@ extension QwenForwardRunner {
 
     public enum SpeculativeError: Error, CustomStringConvertible {
         case noHead
-        case constrained
 
         public var description: String {
             switch self {
             case .noHead:
                 return "speculative decoding needs an MTP head; "
                     + "build one with Scripts/qwen35/build_mtp_sidecar.py"
-            case .constrained:
-                return "speculative decoding and a grammar constraint are not "
-                    + "wired together yet; drop --tools or --qwen-mtp"
             }
         }
     }
@@ -185,7 +181,6 @@ extension QwenForwardRunner {
         onStats: ((QwenSpeculativeStats) -> Void)? = nil
     ) throws -> QwenGreedyRun {
         guard let drafter = mtpDrafter else { throw SpeculativeError.noHead }
-        guard constraint == nil else { throw SpeculativeError.constrained }
         precondition(!promptTokens.isEmpty, "the prompt must have at least one token")
         precondition(promptTokens.count + maxNewTokens + 1 <= maxContext,
                      "prompt + generation exceeds maxContext \(maxContext)")
@@ -199,6 +194,14 @@ extension QwenForwardRunner {
         let (normed, rowTokens) = try verifyBuffers()
         try state.ensureShadow(device: ctx.device)
 
+        // GEN-7 over two rows. The gate is the same object the per-token loop
+        // builds, asked the same question in the same order: a row's argmax is
+        // put to it only after every token before it has been accepted, so the
+        // constraint never sees a speculative position out of turn
+        // (`docs/qwen35moe/40-MTP-GRAMMAR.md` §2).
+        let gate = constraint.map {
+            ConstraintGate(constraint: $0, endOfGenerationTokenIDs: stopTokens)
+        }
         var stats = QwenSpeculativeStats()
         let startedAt = DispatchTime.now()
         let firstToken = try prefill(tokens: promptTokens, chunkWidth: chunkWidth)
@@ -214,7 +217,12 @@ extension QwenForwardRunner {
         var timeToFirstToken: Double = 0
 
         /// The token that has been emitted but not yet fed to the body.
-        var pending = firstToken
+        ///
+        /// The prompt's last row is still in `head.normalizedHidden` here — the
+        /// `memcpy` above copied it, it did not move it — so a refusal on the
+        /// first token rescores the default row, exactly as `runGreedyCompletion`
+        /// does.
+        var pending = try constrained(firstToken, gate: gate, position: 0)
         /// The body position whose hidden sits in row `hiddenRow` of `normed`.
         var lastPosition = kv.position - 1
         var hiddenRow = 0
@@ -225,6 +233,10 @@ extension QwenForwardRunner {
             produced.append(token)
             stats.tokens += 1
             if produced.count == 1 { timeToFirstToken = Self.seconds(since: startedAt) }
+            // Before the callback, as in `runGreedyCompletion`: the state this
+            // token leaves the constraint in is what the caller's own decoder
+            // reads (GEN-6) and what the next draw is judged by.
+            try gate?.accept(token)
             try onToken?(produced.count - 1, token)
             if stopTokens.contains(token) { reason = .endOfTurn; return false }
             if shouldStop() { reason = .stopString; return false }
@@ -303,11 +315,27 @@ extension QwenForwardRunner {
             }
             }
             let ids = rowTokens.contents().bindMemory(to: UInt32.self, capacity: 2)
-            let y0 = Int32(bitPattern: ids[0])
-            let y1 = Int32(bitPattern: ids[1])
+            let row0Draw = Int32(bitPattern: ids[0])
+            let row1Draw = Int32(bitPattern: ids[1])
             stats.passes += 1
+            // The verify clock stops here. A rescore below is a second read of
+            // the 508 MB table and belongs to the token it redraws, not to the
+            // pass — the same split `runGreedyCompletion` makes between the
+            // prompt's last head pass and the constraint that follows it.
+            stats.verifySeconds += Self.seconds(since: verifyStart)
 
-            // --- 3. accept or roll back ---------------------------------------
+            // --- 3. GEN-7, then accept or roll back ---------------------------
+            // Row 0 first, and row 1 only after row 0 has been emitted: the
+            // constraint is a sequential machine, and asking it about a
+            // position whose predecessor it has not accepted would be asking a
+            // different question than the per-token loop asks.
+            let y0 = try constrained(row0Draw, gate: gate,
+                                     position: produced.count,
+                                     hidden: (normed, 0))
+            // `draft == y0` compares against the **constrained** draw, which is
+            // the token actually emitted. A guess that matched it is a guess
+            // the body ran with the right input, whether or not the mask moved
+            // the draw (`docs/qwen35moe/40-MTP-GRAMMAR.md` §2-2).
             if !Self.noDraft && draft == y0 {
                 stats.accepted += 1
                 // Both rows stand. The skipped position still owes the head a
@@ -320,10 +348,15 @@ extension QwenForwardRunner {
                                                   position: start))
                 lastPosition = start + 1
                 hiddenRow = 1
-                pending = y1
-                stats.verifySeconds += Self.seconds(since: verifyStart)
+                pending = row1Draw
                 running = try emit(y0)
-                if running { running = try emit(y1) }
+                if running {
+                    let y1 = try constrained(row1Draw, gate: gate,
+                                             position: produced.count,
+                                             hidden: (normed, rowBytes))
+                    pending = y1
+                    running = try emit(y1)
+                }
             } else {
                 // Nothing to undo on the recurrent side: row 1's state went to
                 // the shadow and the state itself still holds row 0's. The
@@ -332,7 +365,6 @@ extension QwenForwardRunner {
                 lastPosition = start
                 hiddenRow = 0
                 pending = y0
-                stats.verifySeconds += Self.seconds(since: verifyStart)
                 running = try emit(y0)
             }
         }

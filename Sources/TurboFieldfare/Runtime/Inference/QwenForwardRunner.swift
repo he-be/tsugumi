@@ -839,21 +839,31 @@ public final class QwenForwardRunner {
     /// pass's 4.084 ms, so consulting the mask is not measurable next to the
     /// read (`docs/qwen35moe/25-CLI-TOOLS.md` §2-3) — and an accepted one costs
     /// a single `allows` call.
+    ///
+    /// `hidden` names the normalized row the refused token came from. Nil means
+    /// `head.normalizedHidden`, which is where decode's `step` and prefill's
+    /// last chunk leave theirs; the speculative loop passes one of its own two
+    /// rows instead (`docs/qwen35moe/40-MTP-GRAMMAR.md` §2).
     func constrained(_ token: Int32,
                      gate: ConstraintGate?,
-                     position: Int) throws -> Int32 {
+                     position: Int,
+                     hidden: (buffer: MTLBuffer, offset: Int)? = nil) throws -> Int32 {
         guard let gate else { return token }
         if gate.allows(token) { return token }
-        return try rescoreGreedy(gate: gate, position: position)
+        return try rescoreGreedy(gate: gate, position: position, hidden: hidden)
     }
 
     /// Score the same hidden row again over the allowed rows only.
     ///
-    /// Valid exactly while `head.normalizedHidden` still holds the row the last
-    /// head pass normalized — which is true for both producers, decode's
+    /// Valid exactly while the named buffer still holds the row the last head
+    /// pass normalized — which is true for both per-token producers, decode's
     /// `step` and prefill's last chunk, because they share this one chain
-    /// object and neither runs anything between the pass and the verdict.
-    private func rescoreGreedy(gate: ConstraintGate, position: Int) throws -> Int32 {
+    /// object and neither runs anything between the pass and the verdict, and
+    /// true for the verify pass's scratch, which nothing writes between
+    /// `encodeGreedyDecodeRows` and the verdict on its rows.
+    private func rescoreGreedy(gate: ConstraintGate,
+                               position: Int,
+                               hidden: (buffer: MTLBuffer, offset: Int)? = nil) throws -> Int32 {
         constraintRescores += 1
         let wordCount = QwenLMHeadChainInt8.maskWordCount(vocab: scoredVocab)
         let bits: MTLBuffer
@@ -894,6 +904,8 @@ public final class QwenForwardRunner {
         let lm = try model.qwenLMHead
         try runSync("masked head") { cb in
             self.head.encodeMaskedRescore(commandBuffer: cb,
+                                          hiddenNormed: hidden?.buffer,
+                                          hiddenNormedOffset: hidden?.offset ?? 0,
                                           weights: lm.buffer, weightsOffset: Int(lm.offset),
                                           scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
                                           biases: lm.buffer, biasesOffset: Int(lm.biasOffset),

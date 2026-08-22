@@ -249,6 +249,14 @@ a = 2.344 (平均)。**運用幅は k=2 (ドラフト 1 本)** — 検証費用�
 **出口:** `RESULTS_MTP.md` と同じ様式で tok/s / TTFT / peak の 3 点。
 **受入は「非投機と greedy でバイト一致」** (Gemma 側の D5 不変条件と同じ)。
 
+**2026-08-22: 実機で通し、残っていた受入条件も閉じた** ([36](36-MTP-DECODE.md) →
+[38](38-MTP-VERIFY-PATH.md) → [39](39-RESIDENCY-COMMIT.md) → [40](40-MTP-GRAMMAR.md))。
+**文法・ツール呼び出しとの併用が入り** (行を名指せる再畳み込み、新カーネル 0 本)、
+**サーバーが `--draft-block-size 2` を受ける**。バイト一致の条件は
+**投機の中立性 (強制棄却の対照と一致) では満たしているが、素の decode とは
+答えが変わる** — T 行カーネルと decode カーネルの加算順の差
+([36 §5-3](36-MTP-DECODE.md))。既定は off のまま。
+
 **回した** ([36](36-MTP-DECODE.md)、2026-08-22)。ヘッドは 503 MB の sidecar で
 GPU に載り (`.gturbo` の repack は 0 回)、幅 2 の検証パスと巻き戻しが回り、
 実タスク 5 本を 192 トークン生成した。**取り分はタスクで符号が変わる** —
@@ -424,6 +432,15 @@ prefill attention / block router / per-pair MoE の加算順が残っている
    81 → 41)、shared 分岐を routed の読みに重ねる、prefill のタイル読み先行。
    `TF_QWEN_PIPELINE=0` で元の直列に戻る。`--qwen-decode` / `--qwen-prefill` は
    **両腕で全一致**、`swift test` は 1,350 件緑
+
+32. ~~文法・ツール呼び出しと MTP の併用~~ / ~~サーバーへの投機の口~~ →
+   **完了。エージェント形のターンが投機で回る** ([40](40-MTP-GRAMMAR.md))。
+   排他の正体は**再畳み込みが読む行が固定**だったことで、
+   `encodeMaskedRescore` に `hiddenNormed` を足しただけ (**新カーネル 0 本**)。
+   3 腕が 55/55・63/63 でトークン一致 (文法が実際に効いた検体を含む)、
+   サーバーは `--draft-block-size 2`。`--qwen-constrain` は **15 本** (負例 3)、
+   `swift test` は 1,350 件緑。**残るのは prompt cache** (#31 (b)) —
+   2,935 トークンのターンで prefill 11.3 秒を**毎ターン**払う
 
 **次にやること:**
 

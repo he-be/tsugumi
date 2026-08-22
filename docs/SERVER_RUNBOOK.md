@@ -303,3 +303,63 @@ python3 Scripts/demo/serve.py     # http://127.0.0.1:8799/
   終了時にも止めない。
 - 進捗の出どころと「どれが実測でどれが推定か」は
   [Scripts/demo/README.md](../Scripts/demo/README.md) にある。
+
+## 8. Ornith (Qwen3.5-MoE) を pi につなぐ — MTP つき
+
+§1〜§7 は Gemma 4 の話である。同じサーバーの実体で
+`Ornith-1.5-35B-A3B` (`qwen3_5_moe`) も建つ ([docs/qwen35moe/26](qwen35moe/26-PHASE8-SERVER.md))。
+**家族を見分けるのはバックエンドだけ**なので、HTTP から見える形は同じ。
+違うのはフラグ 3 つと、できないこと 2 つである。
+
+```bash
+.build/release/TurboFieldfareServer \
+  --model scratch/ornith-oq4e-g64.gturbo \
+  --model-id ornith-1.5-35b-a3b \
+  --port 8092 \
+  --ctx-size 32768 \
+  --expert-cache-slots 32 \
+  --verification trusted-install \
+  --draft-block-size 2 \
+  --metrics
+→ … family=qwen3_5_moe context=32768 slots=32 expert_io=mmap mtp=2 …
+```
+
+| 違い | 中身 |
+| --- | --- |
+| `--draft-block-size` | **0 か 2 のみ。**この家族のヘッドは 1 パスに 1 本しかドラフトしないので、幅は 2 で固定である ([docs/qwen35moe/40](qwen35moe/40-MTP-GRAMMAR.md) §4)。**tools と併用できる** |
+| MTP ヘッドの在処 | `~/LLM/ornith-mtp-head/` の **480 MB sidecar** (`.gturbo` の中ではない)。`TF_QWEN_MTP_HEAD` で差し替える。**無ければ起動しない** |
+| 画像 | **400 `unsupported_image`。**Phase 9 で、`/props` の `modalities.vision` も false を返す |
+| prompt cache | **無い。**`cached=0` が常態で、それが正常である (再帰状態を巻き戻せない、[docs/qwen35moe/26](qwen35moe/26-PHASE8-SERVER.md) §4-3)。§5(b) の「`cached=0` が続くのは異常」は**この家族には当てはまらない** |
+| サンプラ | 受理して無視 (常に greedy)。完了行の `approx="sampling/greedy-only: …"` がそれを言う |
+
+pi 側は `~/.pi/agent/models.json` に provider を 1 つ足してある
+(`local-turbofieldfare-ornith` → 8092、`reasoning: true`、`input: ["text"]`):
+
+```bash
+pi --provider local-turbofieldfare-ornith --model ornith-1.5-35b-a3b
+```
+
+完了行に MTP の効きが出る:
+
+```
+completed in 21.256s prompt=2935 cached=0 completion=160 finish=length \
+  reasoning=642B mtp=2 rounds=89 accept=0.787
+```
+
+**速度の期待値** (プロンプト 2,935 トークン + tools + thinking、**実測(手元)**、
+n=2、[docs/qwen35moe/40](qwen35moe/40-MTP-GRAMMAR.md) §5):
+
+| 腕 | prefill | decode |
+| --- | ---: | ---: |
+| `--draft-block-size 0` | 10.3〜11.0 s | 13.9 / 14.3 tok/s |
+| `--draft-block-size 2` | 10.4〜11.3 s | **16.0 / 16.1 tok/s** |
+
+**ターンごとに prefill を満額払う** (prompt cache が無いため)。長い会話ほど
+TTFT が伸びる — これがこの家族をエージェントで使うときに一番効く制約で、
+MTP が返すのは decode 側の 14% だけである。
+
+- `TF_EXPERT_MMAP_RESIDENCY_ASYNC=1` を付けると素の decode も MTP も速くなる
+  ([docs/qwen35moe/39](qwen35moe/39-RESIDENCY-COMMIT.md))。**既定 off、
+  Gemma と共有の経路**なので付けるかはユーザー判断。
+- Gemma のサーバーと**同時には建てられない** (§0)。ポートを分けてあるのは
+  設定を残しておくためで、プロセスは 1 つずつ。

@@ -7,9 +7,9 @@ import TurboFieldfare
 /// `ServerModelSession`'s sibling, not a branch of it, for the reason every
 /// other Ornith type is one: nothing below the tokenizer is shared. The
 /// producer is `QwenForwardRunner` (serial, greedy, its own K/V *and* a
-/// recurrent state), the framing is the checkpoint's own ChatML template, and
-/// the speculative loop, the vision assembler and the sampler have no Ornith
-/// side yet. What **is** shared is everything above the backend: the HTTP
+/// recurrent state — and, with `--draft-block-size 2`, its own width-2 MTP
+/// loop), the framing is the checkpoint's own ChatML template, and the vision
+/// assembler and the sampler have no Ornith side yet. What **is** shared is everything above the backend: the HTTP
 /// layer, the request validator, the queue, the timings and the response
 /// shapes all speak `ServerInferenceBackend` and never ask which family
 /// answered.
@@ -20,7 +20,7 @@ import TurboFieldfare
 /// | | why | what happens |
 /// | --- | --- | --- |
 /// | images | Phase 9 | 400 `unsupported_image` |
-/// | speculative decoding | Phase 7 | refused at startup (`--draft-block-size`) |
+/// | speculative decoding wider than one draft | the head drafts one token and the verify pass carries two rows (`docs/qwen35moe/36-MTP-DECODE.md`) | `--draft-block-size 2` is the only width accepted; 3...8 are refused at startup |
 /// | prompt cache | a recurrent state cannot be rewound ([03](../../../docs/qwen35moe/03-DESIGN.md) §5) | every request computes the whole prompt; `cached_tokens` is 0 |
 /// | sampling | the fused head writes no logits ([19](../../../docs/qwen35moe/19-LM-HEAD-INT8.md)) | greedy, with the sampler the client asked for named in `approximations` (R3) |
 public actor QwenServerSession: ServerInferenceBackend {
@@ -30,6 +30,8 @@ public actor QwenServerSession: ServerInferenceBackend {
     private let runner: QwenForwardRunner
     private let prefillChunkTokens: Int
     private let maxContext: Int
+    /// Whether `--draft-block-size 2` put the MTP head in the decode loop.
+    private let speculative: Bool
     /// RSN-1 / FLAG-1, and RSN-3.
     private let reasoningBudget: Int
     private let reasoningFormat: ReasoningFormat
@@ -46,6 +48,7 @@ public actor QwenServerSession: ServerInferenceBackend {
                             runtimeConfiguration: RuntimeConfiguration,
                             integrityPolicy: ModelIntegrityPolicy = .fullSha256,
                             draftBlockSize: Int = 0,
+                            mtpHeadDirectory: String = QwenMTPSidecar.defaultDirectory,
                             reasoningBudget: Int = -1,
                             reasoningFormat: ReasoningFormat = .auto) async throws -> QwenServerSession {
         try validateFlags(draftBlockSize: draftBlockSize)
@@ -62,12 +65,19 @@ public actor QwenServerSession: ServerInferenceBackend {
         let runner = try QwenForwardRunner(model: model,
                                            context: context,
                                            maxContext: maxContext)
+        // The head is a 480 MB sidecar beside the checkpoint, not a section of
+        // the `.gturbo` (`docs/qwen35moe/30-MTP-HEAD-GRAFT.md` §6), so it is
+        // loaded here rather than by `Model.load` — and loaded at startup, so a
+        // server told to speculate without one fails to start instead of
+        // failing the first completion.
+        if draftBlockSize != 0 { try runner.attachMTPHead(directory: mtpHeadDirectory) }
         return QwenServerSession(context: context,
                                  model: model,
                                  tokenizer: tokenizer,
                                  runner: runner,
                                  prefillChunkTokens: runtime.prefillChunkTokens,
                                  maxContext: maxContext,
+                                 speculative: draftBlockSize != 0,
                                  reasoningBudget: reasoningBudget,
                                  reasoningFormat: reasoningFormat)
     }
@@ -83,11 +93,21 @@ public actor QwenServerSession: ServerInferenceBackend {
     /// drafter it does not have: a server told to speculate over a family with
     /// no speculative path is misconfigured, and finding that out on the first
     /// completion is worse than not starting.
+    ///
+    /// **Two is the only width.** Gemma's drafter proposes a block of `n`
+    /// tokens; this family's MTP head proposes exactly one and the verify pass
+    /// carries the two rows that follow from it, so a request for 4 is not a
+    /// slower version of what this backend does — it is a shape it has no
+    /// kernels for (`docs/qwen35moe/33-MTP-ACCEPTANCE.md` §3-4: the verify cost
+    /// grows with the union of the experts the rows route to, and four rows
+    /// lose on paper before any of it is written).
     public static func validateFlags(draftBlockSize: Int) throws {
-        guard draftBlockSize == 0 else {
+        guard draftBlockSize == 0 || draftBlockSize == 2 else {
             throw ServerArgumentError.invalid(
-                "--draft-block-size \(draftBlockSize) has no Ornith path yet "
-                + "(docs/qwen35moe/04-PHASES.md Phase 7); run with --draft-block-size 0")
+                "--draft-block-size \(draftBlockSize) has no Ornith path: this "
+                + "family drafts one token a pass, so the width is 2 "
+                + "(docs/qwen35moe/36-MTP-DECODE.md); run with "
+                + "--draft-block-size 2 or 0")
         }
     }
 
@@ -97,6 +117,7 @@ public actor QwenServerSession: ServerInferenceBackend {
                  runner: QwenForwardRunner,
                  prefillChunkTokens: Int,
                  maxContext: Int,
+                 speculative: Bool,
                  reasoningBudget: Int,
                  reasoningFormat: ReasoningFormat) {
         self.context = context
@@ -105,6 +126,7 @@ public actor QwenServerSession: ServerInferenceBackend {
         self.runner = runner
         self.prefillChunkTokens = prefillChunkTokens
         self.maxContext = maxContext
+        self.speculative = speculative
         self.reasoningBudget = reasoningBudget
         self.reasoningFormat = reasoningFormat
         self.grammarVocabulary = GrammarVocabulary.shared(for: tokenizer)
@@ -184,7 +206,11 @@ public actor QwenServerSession: ServerInferenceBackend {
 
         // REQ-max-tokens: -1 is everything the context has left, 0 is prefill
         // only, and every other value is still bounded by the context.
-        let contextRemaining = maxContext - promptIDs.count
+        // The speculative loop runs a row for the drafted token before it
+        // knows whether the token is real, so it asserts on one position more
+        // than it will emit. Giving it the whole context would turn a
+        // `max_tokens: -1` request into a trap.
+        let contextRemaining = maxContext - promptIDs.count - (speculative ? 1 : 0)
         let maxNewTokens = request.maximumCompletionTokens < 0
             ? contextRemaining
             : min(request.maximumCompletionTokens, contextRemaining)
@@ -299,15 +325,14 @@ public actor QwenServerSession: ServerInferenceBackend {
         }
 
         let run: QwenGreedyRun
+        var speculativeStats: QwenSpeculativeStats?
         do {
-            run = try runner.runGreedyCompletion(
-                promptTokens: promptIDs,
-                maxNewTokens: maxNewTokens,
-                chunkWidth: prefillChunkTokens,
-                stopTokens: tokenizer.stopTokenIDs,
-                constraint: constraint,
-                shouldStop: { shouldStop },
-                onToken: { index, id in
+            // One callback, two loops. The MTP loop's contract is the
+            // non-speculative one — same tokens out, same stop rule, same
+            // constraint applied in the same order (`36-MTP-DECODE.md` §3,
+            // `40-MTP-GRAMMAR.md` §2) — so the request-shaped work above and
+            // below it does not branch on which one ran.
+            let onToken: (Int, Int32) throws -> Void = { index, id in
                     let delta = detokenizer.push(id)
                     if let monitor, let timings = live?.observe(
                         .token(index: index, id: id, delta: delta), at: Date()) {
@@ -327,7 +352,27 @@ public actor QwenServerSession: ServerInferenceBackend {
                         events = splitter!.consume(tokenID: id, delta: delta)
                     }
                     handle(events)
-                })
+            }
+            if speculative {
+                run = try runner.runGreedyCompletionMTP(
+                    promptTokens: promptIDs,
+                    maxNewTokens: maxNewTokens,
+                    chunkWidth: prefillChunkTokens,
+                    stopTokens: tokenizer.stopTokenIDs,
+                    constraint: constraint,
+                    shouldStop: { shouldStop },
+                    onToken: onToken,
+                    onStats: { speculativeStats = $0 })
+            } else {
+                run = try runner.runGreedyCompletion(
+                    promptTokens: promptIDs,
+                    maxNewTokens: maxNewTokens,
+                    chunkWidth: prefillChunkTokens,
+                    stopTokens: tokenizer.stopTokenIDs,
+                    constraint: constraint,
+                    shouldStop: { shouldStop },
+                    onToken: onToken)
+            }
         } catch let error as GenerationConstraintError {
             // GEN-7 calls a no-allowed-token state an error rather than a stop,
             // so it escapes as a 500 instead of becoming a truncated answer
@@ -381,7 +426,14 @@ public actor QwenServerSession: ServerInferenceBackend {
                                completionTokens: run.newTokens,
                                totalTokens: run.promptTokens + run.newTokens,
                                cachedTokens: 0),
-            speculative: nil,
+            speculative: speculativeStats.map {
+                // RSP-3's vocabulary over this family's shape: a round is one
+                // verify pass, and each pass proposes exactly one token.
+                ServerSpeculativeSummary(blockTokens: 2,
+                                         rounds: $0.passes,
+                                         proposed: $0.passes,
+                                         accepted: $0.accepted)
+            },
             reasoningContent: reasoningContent,
             approximations: approximations,
             timings: timings)

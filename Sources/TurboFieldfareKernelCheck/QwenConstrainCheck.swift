@@ -108,6 +108,24 @@ func runQwenConstrainCheck(modelPath: String,
         return (produced, runner.constraintRescores)
     }
 
+    /// The same generation through the width-2 MTP loop
+    /// (`docs/qwen35moe/40-MTP-GRAMMAR.md`). Nil when the sidecar is not on
+    /// this machine, which is a skip and not a failure: the head is a 480 MB
+    /// artifact beside the checkpoints, not part of the install.
+    func generateMTP(_ constraint: StubSetConstraint,
+                     stopTokens: Set<Int32> = [],
+                     tokens: Int? = nil) throws -> (produced: [Int32], rescores: Int) {
+        runner.reset()
+        runner.resetProfile()
+        let run = try runner.runGreedyCompletionMTP(
+            promptTokens: fixture.prompt,
+            maxNewTokens: tokens ?? wanted,
+            chunkWidth: 512,
+            stopTokens: stopTokens,
+            constraint: constraint)
+        return (run.tokens, runner.constraintRescores)
+    }
+
     var cases: [ConstrainCase] = []
 
     // 1. A constraint that never rejects must be invisible. Same tokens as the
@@ -206,6 +224,84 @@ func runQwenConstrainCheck(modelPath: String,
         passed: mayEnd.accepted.isEmpty,
         detail: "accepted \(mayEnd.accepted)"))
 
+    // --- the same questions through the width-2 verify pass ---------------
+    //
+    // What changes with the MTP head in the loop is *where* the row being
+    // rescored lives: the two draws come out of the verify scratch, not out of
+    // `head.normalizedHidden` (`docs/qwen35moe/40-MTP-GRAMMAR.md` §2). A
+    // rescore that read the wrong row would still return a legal token — one
+    // the mask allows — so the cases that catch it are the ones that pin the
+    // answer: the transparent constraint (must reproduce the reference) and the
+    // single-allowed-row one (must produce that row at every step).
+    let headAttached: Bool
+    do {
+        try runner.attachMTPHead()
+        headAttached = true
+    } catch {
+        headAttached = false
+        print("  SKIP  MTP cases — no sidecar at \(QwenMTPSidecar.defaultDirectory)")
+        print("")
+    }
+    if headAttached {
+        let transparentMTP = StubSetConstraint()
+        let clearMTP = try generateMTP(transparentMTP)
+        cases.append(ConstrainCase(
+            name: "幅 2: 許可が全部なら参照と同じトークン",
+            passed: clearMTP.produced == reference && clearMTP.rescores == 0,
+            detail: "rescored=\(clearMTP.rescores), \(clearMTP.produced.count) tokens"))
+        cases.append(ConstrainCase(
+            name: "幅 2: accept は出たトークンを順に受け取る",
+            passed: transparentMTP.accepted == clearMTP.produced,
+            detail: "accepted \(transparentMTP.accepted.count) "
+                + "of \(clearMTP.produced.count)"))
+
+        // The rejected row is row 0 of the verify scratch. The answer must be
+        // the one the per-token loop drew from the same hidden state.
+        let withoutWinnerMTP = StubSetConstraint(allowed: everythingElse)
+        let secondMTP = try generateMTP(withoutWinnerMTP)
+        cases.append(ConstrainCase(
+            name: "幅 2: 勝者を落とすと素の decode と同じ別トークンが出る",
+            passed: secondMTP.produced == second.produced && secondMTP.rescores == 1,
+            detail: "step 0 = \(secondMTP.produced.first.map(String.init) ?? "-") "
+                + "(素の decode \(second.produced.first.map(String.init) ?? "-")), "
+                + "rescored=\(secondMTP.rescores)"))
+
+        let singleMTP = StubSetConstraint(allowed: [onlyID])
+        let pinnedMTP = try generateMTP(singleMTP, tokens: 4)
+        cases.append(ConstrainCase(
+            name: "幅 2: 許可が 1 本なら毎手それが出る",
+            passed: pinnedMTP.produced == [Int32](repeating: onlyID, count: 4),
+            detail: "produced \(pinnedMTP.produced), rescored=\(pinnedMTP.rescores)"))
+
+        // 負例, twice: an empty mask is still an error, and the probe and the
+        // mask still have to agree — both verdicts now come from a row the
+        // speculative loop chose.
+        let nothingMTP = StubSetConstraint(allowed: [])
+        var emptyThrewMTP = ""
+        do {
+            _ = try generateMTP(nothingMTP, tokens: 1)
+        } catch let error as GenerationConstraintError {
+            emptyThrewMTP = "\(error)"
+        }
+        cases.append(ConstrainCase(
+            name: "負例: 幅 2 でも許可 0 本は noAllowedToken",
+            passed: emptyThrewMTP.contains("allows no token"),
+            detail: emptyThrewMTP.isEmpty ? "落ちなかった" : emptyThrewMTP))
+
+        let inconsistentMTP = StubSetConstraint()
+        inconsistentMTP.probeOverride = false
+        var mismatchThrewMTP = ""
+        do {
+            _ = try generateMTP(inconsistentMTP, tokens: 1)
+        } catch let error as GenerationConstraintError {
+            mismatchThrewMTP = "\(error)"
+        }
+        cases.append(ConstrainCase(
+            name: "負例: 幅 2 でも単票とマスクの食い違いは落とす",
+            passed: mismatchThrewMTP.contains("rejected token"),
+            detail: mismatchThrewMTP.isEmpty ? "落ちなかった" : mismatchThrewMTP))
+    }
+
     var passed = true
     for one in cases {
         print("  \(one.passed ? "PASS" : "FAIL")  \(one.name) — \(one.detail)")
@@ -213,7 +309,7 @@ func runQwenConstrainCheck(modelPath: String,
     }
     print("")
     print(passed
-          ? "PASS  \(cases.count) cases, 1 of them a negative control"
+          ? "PASS  \(cases.count) cases, \(headAttached ? 3 : 1) of them negative controls"
           : "FAIL  \(cases.filter { !$0.passed }.count) of \(cases.count) cases")
     return passed
 }
