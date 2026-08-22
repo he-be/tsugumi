@@ -502,6 +502,23 @@ package final class MoE {
         return buffer
     }
 
+    /// Rewrite a caller-owned argument buffer.
+    ///
+    /// `makeReusedRoutedArgumentBuffer` hands out **one** buffer shared by every
+    /// caller of this `MoE`, which is right for the body's forty layers (each
+    /// rewrite happens after the previous layer's command buffer has run) and
+    /// wrong for a second consumer on the same object — the MTP head runs its
+    /// own MoE between two body passes. It gets its own buffer and rewrites it
+    /// here.
+    package func encodeRoutedArgumentBuffer(into buffer: MTLBuffer,
+                                            routedBlobs: [MTLBuffer],
+                                            topK: UInt32) {
+        validate(routedBlobs: routedBlobs, topK: topK)
+        encodeRoutedArgumentBuffer(buffer, routedBlobs: routedBlobs)
+    }
+
+    package var routedArgumentBufferLength: Int { routedArgEncoder.encodedLength }
+
     func makeReusedRoutedArgumentBuffer(routedBlobs: [MTLBuffer],
                                                topK: UInt32) -> MTLBuffer {
         validate(routedBlobs: routedBlobs, topK: topK)

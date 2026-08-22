@@ -600,6 +600,141 @@ kernel void qwen_lm_head_greedy_int8_rows_chunk_raw(
 }
 
 // ----------------------------------------------------------------------------
+// qwen_lm_head_greedy_int8_rows_chunk_raw_multi — 508 MB を 1 回読んで R 行を採点
+//
+// 幅 2 の検証パスは、確定行と投機行の**両方**の argmax が要る。1 行版を 2 回
+// 呼ぶと 508 MB の表を 2 度読むので、1 トークンぶんの頭 (4.0 ms、
+// `docs/qwen35moe/19-LM-HEAD-INT8.md`) が丸ごともう 1 回乗る — これが
+// [33 §3-8](../../../docs/qwen35moe/33-MTP-ACCEPTANCE.md) の残っていた測定 3
+// である。重みは帯域律速なので、**行を増やしても読むバイトは変わらない**:
+// 内側のループで q0/q1 を 1 度読み、R 本の x に対して積む。
+//
+// `summaries` は [R, row_groups, 2]。reduce は行ごとに offset を付けて呼ぶ
+// (`QwenLMHeadChainInt8.encodeGreedyDecodeRows`)。R = 1 のときの出力は
+// `_raw` と**ビット一致する** — 同じ順序で同じ演算を通るからで、検査の 1 本目が
+// それである。
+// ----------------------------------------------------------------------------
+
+constant constexpr uint kQwenHeadMaxRows = 4;
+
+[[kernel, max_total_threads_per_threadgroup(256)]]
+kernel void qwen_lm_head_greedy_int8_rows_chunk_raw_multi(
+    device const half*    x_normed  [[buffer(0)]],   // [R, d]
+    device const uint8_t* W         [[buffer(1)]],
+    device const bfloat*  scales    [[buffer(2)]],
+    device const bfloat*  biases    [[buffer(3)]],
+    device       float*   summaries [[buffer(4)]],   // [R, row_groups, 2]
+    constant     uint&    d         [[buffer(5)]],
+    constant     uint&    vocab     [[buffer(6)]],
+    constant     uint&    rows      [[buffer(7)]],
+    uint tg_idx        [[threadgroup_position_in_grid]],
+    uint tg_count      [[threadgroups_per_grid]],
+    uint simd_lane_id  [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint simdgroups    [[simdgroups_per_threadgroup]]
+) {
+    threadgroup float partial_v[kQwenHeadMaxRows * kQwenMaxSimdGroups];
+    threadgroup uint  partial_i[kQwenHeadMaxRows * kQwenMaxSimdGroups];
+
+    const uint R = min(rows, kQwenHeadMaxRows);
+    const uint row = tg_idx * kQwenHeadRowsPerTG + simd_group_id;
+
+    float acc[kQwenHeadMaxRows];
+    for (uint r = 0; r < kQwenHeadMaxRows; ++r) { acc[r] = 0.0f; }
+
+    if (row < vocab) {
+        const uint n_groups = d / kQwenHeadGroupSize;
+        device const uint8_t* w_row = W      + uint(row) * d;
+        device const bfloat*  s_row = scales + uint(row) * n_groups;
+        device const bfloat*  b_row = biases + uint(row) * n_groups;
+
+        const uint groups_per_step = 64u / kQwenHeadGroupSize;
+        const uint lanes_per_group = 32u / groups_per_step;
+        const uint steps = d / 64u;
+
+        for (uint st = 0; st < steps; ++st) {
+            const uint g = st * groups_per_step + simd_lane_id / lanes_per_group;
+            const float s = float(s_row[g]);
+            const float b = float(b_row[g]);
+            const uint i0 = st * 64u + simd_lane_id * 2u;
+            // ここが本題: 重みの 2 バイトは 1 度しか読まない。
+            const float q0 = float(uint(w_row[i0]));
+            const float q1 = float(uint(w_row[i0 + 1u]));
+            for (uint r = 0; r < R; ++r) {
+                device const half* x = x_normed + r * d;
+                const float x0 = float(x[i0]);
+                const float x1 = float(x[i0 + 1u]);
+                acc[r] = fma(s, q0 * x0 + q1 * x1, acc[r]);
+                acc[r] = fma(b, x0 + x1, acc[r]);
+            }
+        }
+    }
+
+    for (uint r = 0; r < R; ++r) {
+        const float z = simd_sum(acc[r]);
+        float best_v = -INFINITY;
+        uint  best_i = 0xFFFFFFFFu;
+        if (row < vocab && isfinite(z)) { best_v = z; best_i = row; }
+        if (simd_lane_id == 0) {
+            partial_v[r * kQwenMaxSimdGroups + simd_group_id] = best_v;
+            partial_i[r * kQwenMaxSimdGroups + simd_group_id] = best_i;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (simd_group_id == 0) {
+        for (uint r = 0; r < R; ++r) {
+            const bool active = simd_lane_id < simdgroups;
+            const float v = active ? partial_v[r * kQwenMaxSimdGroups + simd_lane_id]
+                                   : -INFINITY;
+            const uint idx = active ? partial_i[r * kQwenMaxSimdGroups + simd_lane_id]
+                                    : 0xFFFFFFFFu;
+            const float v_all = simd_max(v);
+            uint i_all = (v == v_all) ? idx : 0xFFFFFFFFu;
+            i_all = simd_min(i_all);
+            if (simd_lane_id == 0) {
+                device float* slot = summaries
+                    + (r * tg_count + tg_idx) * kQwenHeadRowSummaryStride;
+                slot[0] = v_all;
+                slot[1] = as_type<float>(i_all);
+            }
+        }
+    }
+}
+
+// ----------------------------------------------------------------------------
+// qwen_bf16_gemv_f16 — BF16 の重み 1 枚に対する GEMV
+//
+// MTP ヘッドの `mtp.fc` (2048x4096) だけが BF16 のまま (差し替え元の shisa が
+// BF16 で配っており、[30 §3-1](../../../docs/qwen35moe/30-MTP-HEAD-GRAFT.md) が
+// そのまま写した)。router の BF16 GEMV は FP32 の logit を書くので、そのまま
+// 次の RMSNorm に渡せない。1 出力行 = 1 SIMD group。
+// ----------------------------------------------------------------------------
+
+[[kernel, max_total_threads_per_threadgroup(256)]]
+kernel void qwen_bf16_gemv_f16(
+    device const bfloat* W    [[buffer(0)]],   // [M, K]
+    device const half*   x    [[buffer(1)]],   // [K]
+    device       half*   y    [[buffer(2)]],   // [M]
+    constant     uint&   M    [[buffer(3)]],
+    constant     uint&   K    [[buffer(4)]],
+    uint tg_idx        [[threadgroup_position_in_grid]],
+    uint simd_lane_id  [[thread_index_in_simdgroup]],
+    uint simd_group_id [[simdgroup_index_in_threadgroup]],
+    uint simdgroups    [[simdgroups_per_threadgroup]]
+) {
+    const uint m = tg_idx * simdgroups + simd_group_id;
+    if (m >= M) return;
+    device const bfloat* w = W + uint(m) * K;
+    float acc = 0.0f;
+    for (uint i = simd_lane_id; i < K; i += 32u) {
+        acc = fma(float(w[i]), float(x[i]), acc);
+    }
+    acc = simd_sum(acc);
+    if (simd_lane_id == 0) { y[m] = half(acc); }
+}
+
+// ----------------------------------------------------------------------------
 // qwen_lm_head_greedy_int8_rows_chunk_masked — 許可された行だけを採点する
 //
 // GEN-7 の棄却経路 (`docs/qwen35moe/25-CLI-TOOLS.md` §2)。融合ヘッドは語彙幅の

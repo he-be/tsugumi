@@ -36,6 +36,10 @@ public struct Args: Equatable, Sendable {
     /// exactly the ids the runtime drew, so re-tokenizing the printed text
     /// cannot stand in for them (`docs/qwen35moe/33-MTP-ACCEPTANCE.md`).
     public var dumpTokens: String?
+    /// Run the Ornith decode loop with the grafted MTP head
+    /// (`docs/qwen35moe/36-MTP-DECODE.md`). Optional value = the
+    /// sidecar directory; bare flag = the default place.
+    public var qwenMTP: String?
     /// A JSON file of OpenAI-shaped function declarations. Ornith only
     /// (`docs/qwen35moe/25-CLI-TOOLS.md`); the Gemma arm refuses it rather than
     /// ignoring it.
@@ -69,6 +73,7 @@ public struct Args: Equatable, Sendable {
                 draftBlockSize: Int = 0,
                 dumpExpertTrace: String? = nil,
                 dumpTokens: String? = nil,
+                qwenMTP: String? = nil,
                 toolsFile: String? = nil,
                 toolChoice: CLIToolChoice = .auto,
                 parallelToolCalls: Bool = true) {
@@ -96,6 +101,7 @@ public struct Args: Equatable, Sendable {
         self.draftBlockSize = draftBlockSize
         self.dumpExpertTrace = dumpExpertTrace
         self.dumpTokens = dumpTokens
+        self.qwenMTP = qwenMTP
         self.toolsFile = toolsFile
         self.toolChoice = toolChoice
         self.parallelToolCalls = parallelToolCalls
@@ -280,6 +286,7 @@ extension Args {
         var draftBlockSize = 0
         var dumpExpertTrace: String?
         var dumpTokens: String?
+        var qwenMTP: String?
         var toolsFile: String?
         var toolChoice = CLIToolChoice.auto
         var parallelToolCalls = true
@@ -412,6 +419,16 @@ extension Args {
                 dumpExpertTrace = try takeValue(argv, &index, flag: flag)
             case "--dump-tokens":
                 dumpTokens = try takeValue(argv, &index, flag: flag)
+            case "--qwen-mtp":
+                // The sidecar path is optional: the head is a 503 MB artifact
+                // that lives next to the checkpoints, and the default is where
+                // `build_mtp_sidecar.py` puts it.
+                if index + 1 < argv.count, !argv[index + 1].hasPrefix("--") {
+                    qwenMTP = try takeValue(argv, &index, flag: flag)
+                } else {
+                    qwenMTP = QwenMTPSidecar.defaultDirectory
+                    index += 1
+                }
             case "--tools":
                 toolsFile = try takeValue(argv, &index, flag: flag)
             case "--tool-choice":
@@ -485,6 +502,7 @@ extension Args {
                              draftBlockSize: draftBlockSize,
                              dumpExpertTrace: dumpExpertTrace,
                              dumpTokens: dumpTokens,
+                qwenMTP: qwenMTP,
                              toolsFile: toolsFile,
                              toolChoice: toolChoice,
                              parallelToolCalls: parallelToolCalls)

@@ -22,6 +22,11 @@ public final class QwenLMHeadChainInt8 {
 
     /// Vocabulary rows one threadgroup scores — one per SIMD group.
     public static let rowsPerThreadgroup = 8
+    /// Hidden rows one pass over the 508 MB table may score
+    /// (`qwen_lm_head_greedy_int8_rows_chunk_raw_multi`). The verify pass of a
+    /// width-2 speculative step needs two; the kernel's scratch is sized for
+    /// four so a wider width does not need a second kernel.
+    public static let maxHiddenRows = 4
     /// `[max value, token id as bits]` per threadgroup.
     static let rowSummaryStride = 2
 
@@ -31,6 +36,7 @@ public final class QwenLMHeadChainInt8 {
 
     private let rms: RMSNorm
     private let rowGreedy: MTLComputePipelineState
+    private let rowGreedyMulti: MTLComputePipelineState
     private let rowMasked: MTLComputePipelineState
     private let rowReduce: MTLComputePipelineState
     private let xNormedBuffer: MTLBuffer
@@ -61,10 +67,12 @@ public final class QwenLMHeadChainInt8 {
             return try context.device.makeComputePipelineState(function: function)
         }
         self.rowGreedy = try pipeline("qwen_lm_head_greedy_int8_rows_chunk_raw")
+        self.rowGreedyMulti = try pipeline("qwen_lm_head_greedy_int8_rows_chunk_raw_multi")
         self.rowMasked = try pipeline("qwen_lm_head_greedy_int8_rows_chunk_masked")
         self.rowReduce = try pipeline("qwen_lm_head_greedy_int8_rows_reduce")
 
         let rowGroups = (maxVocab + Self.rowsPerThreadgroup - 1) / Self.rowsPerThreadgroup
+            * Self.maxHiddenRows
         // Both staging buffers are shared rather than private so a check can
         // score the chain stage by stage. Together they are under 300 KB
         // against the 540 MB the head reads per token, so the storage mode is
@@ -165,10 +173,11 @@ public final class QwenLMHeadChainInt8 {
     /// Fold the per-threadgroup argmaxes into one token id.
     private func encodeReduce(commandBuffer: MTLCommandBuffer,
                               rowGroups: Int,
+                              summariesOffset: Int = 0,
                               outToken: MTLBuffer, outTokenOffset: Int) {
         guard let reduce = commandBuffer.makeComputeCommandEncoder() else { return }
         reduce.setComputePipelineState(rowReduce)
-        reduce.setBuffer(summariesBuffer, offset: 0, index: 0)
+        reduce.setBuffer(summariesBuffer, offset: summariesOffset, index: 0)
         reduce.setBuffer(outToken, offset: outTokenOffset, index: 1)
         var rowGroupValue = UInt32(rowGroups)
         reduce.setBytes(&rowGroupValue, length: MemoryLayout<UInt32>.size, index: 2)
@@ -227,6 +236,70 @@ public final class QwenLMHeadChainInt8 {
 
         encodeReduce(commandBuffer: commandBuffer, rowGroups: rowGroups,
                      outToken: outToken, outTokenOffset: outTokenOffset)
+        return true
+    }
+
+    /// `rows` already-normalized hidden rows in, `rows` token ids out — with
+    /// **one** pass over the 508 MB table.
+    ///
+    /// This is the width-2 verify pass's head
+    /// (`docs/qwen35moe/33-MTP-ACCEPTANCE.md` §3-8 measurement 3). Two calls to
+    /// `encodeGreedyDecode` would read the table twice and cost a second 4.0 ms
+    /// (`19-LM-HEAD-INT8.md`); the weights are bandwidth-bound and independent
+    /// of how many activations are projected against them, so the second row is
+    /// arithmetic on bytes that are already in registers.
+    ///
+    /// **The normalization is the caller's.** Decode's `encodeGreedyDecode`
+    /// folds it in because it has exactly one row to normalize; here the rows
+    /// come out of a T-row chunk that has its own multi-row RMSNorm, and
+    /// re-deriving them would be the one way for the two to disagree.
+    @discardableResult
+    public func encodeGreedyDecodeRows(commandBuffer: MTLCommandBuffer,
+                                       hiddenNormed: MTLBuffer,
+                                       hiddenNormedOffset: Int = 0,
+                                       weights: MTLBuffer, weightsOffset: Int = 0,
+                                       scales: MTLBuffer, scalesOffset: Int = 0,
+                                       biases: MTLBuffer, biasesOffset: Int = 0,
+                                       outTokens: MTLBuffer, outTokensOffset: Int = 0,
+                                       rows: Int,
+                                       d: UInt32,
+                                       vocab: UInt32) -> Bool {
+        guard rows > 0, rows <= Self.maxHiddenRows,
+              d > 0, vocab > 0,
+              Int(d) <= maxD, Int(vocab) <= maxVocab,
+              Int(d) % affineGroupSize == 0, d % 64 == 0,
+              outTokensOffset >= 0, outTokensOffset % 4 == 0 else { return false }
+
+        let rowGroups = rowGroupCount(vocab: Int(vocab))
+        guard let head = commandBuffer.makeComputeCommandEncoder() else { return false }
+        head.setComputePipelineState(rowGreedyMulti)
+        head.setBuffer(hiddenNormed, offset: hiddenNormedOffset, index: 0)
+        head.setBuffer(weights, offset: weightsOffset, index: 1)
+        head.setBuffer(scales, offset: scalesOffset, index: 2)
+        head.setBuffer(biases, offset: biasesOffset, index: 3)
+        head.setBuffer(summariesBuffer, offset: 0, index: 4)
+        var dValue = d
+        var vocabValue = vocab
+        var rowValue = UInt32(rows)
+        head.setBytes(&dValue, length: MemoryLayout<UInt32>.size, index: 5)
+        head.setBytes(&vocabValue, length: MemoryLayout<UInt32>.size, index: 6)
+        head.setBytes(&rowValue, length: MemoryLayout<UInt32>.size, index: 7)
+        head.dispatchThreadgroups(
+            MTLSize(width: rowGroups, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 32 * Self.rowsPerThreadgroup,
+                                           height: 1, depth: 1))
+        head.endEncoding()
+
+        // One reduce per hidden row. Each reads its own slice of `summaries`,
+        // which the multi-row kernel wrote as [row][threadgroup].
+        for row in 0..<rows {
+            encodeReduce(commandBuffer: commandBuffer,
+                         rowGroups: rowGroups,
+                         summariesOffset: row * rowGroups
+                             * Self.rowSummaryStride * MemoryLayout<Float>.size,
+                         outToken: outTokens,
+                         outTokenOffset: outTokensOffset + row * MemoryLayout<UInt32>.size)
+        }
         return true
     }
 }

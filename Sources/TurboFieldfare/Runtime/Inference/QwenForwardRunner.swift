@@ -144,9 +144,11 @@ public final class QwenForwardRunner {
     let state: RecurrentStateManager
 
     let embed: QwenEmbedLookupInt8
-    private let rms: RMSNorm
-    private let int4: DequantInt4GEMV
-    private let int8: DequantInt8GEMV
+    // `rms` and `int8` are not private: the MTP head runs the same two kernels
+    // over its own 42 tensors (`QwenMTPDrafter`).
+    let rms: RMSNorm
+    let int4: DequantInt4GEMV
+    let int8: DequantInt8GEMV
     let qwen: QwenKernels
     let delta: GatedDeltaNet
     let attention: Attention
@@ -230,6 +232,33 @@ public final class QwenForwardRunner {
     let unitExpertScale: MTLBuffer   // [numExperts] BF16 = 1
 
     var prefillScratch: QwenPrefillContext?
+
+    /// Fold a layer's routed tile, its reduce and the residual adds into one
+    /// command buffer instead of three.
+    ///
+    /// Off for the prompt, where a chunk has many tiles and the extra buffers
+    /// are what lets tile *i*'s bytes move while tile *i-1* is on the GPU
+    /// (`27-PHASE6-THROUGHPUT.md`). On for a two-row verify pass, where there is
+    /// exactly one tile and the split buys nothing: measured at 202 command
+    /// buffers a pass against decode's 114, and the difference **is** the gap
+    /// between the chunk path and the decode path
+    /// (`36-MTP-DECODE.md` §4-2).
+    var compactChunkCommandBuffers = false
+
+    /// Whether the chunk being encoded ends in a **speculative** row whose
+    /// recurrent state must stay discardable (`QwenSpeculativeDecode.swift`).
+    /// Off for every prompt chunk, which is why prefill's numbers do not move.
+    var speculativeLastRow = false
+
+    /// The MTP head, once `attachMTPHead` has loaded the sidecar. Nil in every
+    /// run that does not speculate, and the whole path costs nothing then.
+    var mtpDrafter: QwenMTPDrafter?
+    /// `[maxHiddenRows, D]` FP16 — the verify pass's rows after `model.norm`.
+    /// Both the head and the drafter read it, which is why it outlives the
+    /// chunk (`QwenSpeculativeDecode.swift`).
+    var verifyNormedBuffer: MTLBuffer?
+    /// `[maxHiddenRows]` UInt32 — one argmax per verified row.
+    var verifyTokensBuffer: MTLBuffer?
 
     /// GPU time, as the driver reports it, summed over every command buffer
     /// this runner has waited on since `resetProfile`.

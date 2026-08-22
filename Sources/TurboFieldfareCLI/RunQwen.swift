@@ -313,17 +313,17 @@ func runQwen(args: Args,
         runner.resetProfile()
         var prefillGPUSeconds = 0.0
         var prefillCommandBuffers = 0
-        let run = try runner.runGreedyCompletion(
-            promptTokens: promptIds,
-            maxNewTokens: maxNew,
-            chunkWidth: runtime.prefillChunkTokens,
-            stopTokens: tokenizer.stopTokenIDs,
-            constraint: constraint,
-            onPrefill: { _, _ in
-                prefillGPUSeconds = runner.gpuSeconds
-                prefillCommandBuffers = runner.gpuCommandBuffers
-            },
-            onToken: { _, id in
+        var speculative: QwenSpeculativeStats?
+        // `--qwen-mtp` swaps the decode loop, not the prompt or the framing:
+        // the prompt still goes through the T-row prefill and the answer is
+        // still greedy, so the tokens must come out the same as without it
+        // (`docs/qwen35moe/36-MTP-DECODE.md` §3).
+        if let head = args.qwenMTP { try runner.attachMTPHead(directory: head) }
+        let onPrefillProfile: (Int, Double) -> Void = { _, _ in
+            prefillGPUSeconds = runner.gpuSeconds
+            prefillCommandBuffers = runner.gpuCommandBuffers
+        }
+        let onTokenEmit: (Int, Int32) throws -> Void = { _, id in
                 let delta = detokenizer.push(id)
                 guard let decoder else {
                     emit(splitter!.consume(tokenID: id, delta: delta))
@@ -337,7 +337,25 @@ func runQwen(args: Args,
                 // constrain reasoning the model is allowed to write freely.
                 constraint?.setSuppressed(decoder.isInsideReasoning)
                 emit(events)
-            })
+        }
+        let run = args.qwenMTP != nil
+            ? try runner.runGreedyCompletionMTP(
+                promptTokens: promptIds,
+                maxNewTokens: maxNew,
+                chunkWidth: runtime.prefillChunkTokens,
+                stopTokens: tokenizer.stopTokenIDs,
+                constraint: constraint,
+                onPrefill: onPrefillProfile,
+                onToken: onTokenEmit,
+                onStats: { speculative = $0 })
+            : try runner.runGreedyCompletion(
+                promptTokens: promptIds,
+                maxNewTokens: maxNew,
+                chunkWidth: runtime.prefillChunkTokens,
+                stopTokens: tokenizer.stopTokenIDs,
+                constraint: constraint,
+                onPrefill: onPrefillProfile,
+                onToken: onTokenEmit)
         let generated = run.tokens
         // The ids, not the text. Re-tokenizing what was printed does not
         // recover them: BPE can re-segment the same bytes, and the MTP
@@ -383,6 +401,14 @@ func runQwen(args: Args,
             // What the grammar cost, in the only currency this path spends:
             // one extra pass over the 508 MB head per refused token.
             if constraint != nil { footer += " rescored=\(runner.constraintRescores)" }
+            // What the head bought and what it cost, in the two numbers that
+            // decide it: how often the draft was right, and how many tokens one
+            // verify pass produced (`docs/qwen35moe/36-MTP-DECODE.md` §4).
+            if let spec = speculative {
+                footer += " mtpP1=\(String(format: "%.1f", spec.acceptanceRate * 100))%"
+                footer += " a=\(String(format: "%.3f", spec.acceptanceLength))"
+                footer += " passes=\(spec.passes)"
+            }
             footer += " peak=\(String(format: "%.2f", Double(memory.peakPhysFootprintBytes) / 1e9))GB]\n"
             footer += "[expert prefill hit="
             footer += "\(String(format: "%.1f", telemetry.prefill.hitRate * 100))%"
@@ -420,6 +446,18 @@ func runQwen(args: Args,
                             io: Double(telemetry.decode.fetchNanos) / 1e9,
                             units: generated.count,
                             buffers: runner.gpuCommandBuffers - prefillCommandBuffers)
+            // Where a speculative step's wall clock goes. The three parts add
+            // up to `decode` because the loop is serial: draft, then verify
+            // (the snapshot is inside it), then the host's own bookkeeping.
+            if let spec = speculative, spec.passes > 0 {
+                let perPass = { (s: Double) in
+                    String(format: "%.2f", s * 1e3 / Double(spec.passes))
+                }
+                footer += "[mtp/pass draft=\(perPass(spec.draftSeconds))ms"
+                footer += " verify=\(perPass(spec.verifySeconds))ms"
+                footer += " snapshot=\(perPass(spec.snapshotSeconds))ms"
+                footer += " tok=\(String(format: "%.3f", spec.acceptanceLength))]\n"
+            }
             // What the mapped arm spends inside that `io` number: the residency
             // set churn is host work on the fetch thread, and the rest is the
             // page-in the GPU would otherwise fault on.

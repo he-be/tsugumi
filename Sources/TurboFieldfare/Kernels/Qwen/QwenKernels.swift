@@ -85,6 +85,7 @@ public final class QwenKernels {
         case residualAdd     = "qwen_residual_add"
         case moeSharedGateLogitBlock = "qwen_moe_shared_gate_logit_block"
         case queryCompact    = "qwen_query_compact"
+        case bf16GEMV        = "qwen_bf16_gemv_f16"
     }
 
     private var pipelines: [Function: MTLComputePipelineState] = [:]
@@ -451,5 +452,37 @@ public final class QwenKernels {
         encoder.dispatchThreadgroups(
             MTLSize(width: (count + width - 1) / width, height: 1, depth: 1),
             threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))
+    }
+
+    /// `y = W x` with a BF16 weight matrix, FP16 in and out.
+    ///
+    /// One tensor in this repository needs it: the MTP head's `mtp.fc`
+    /// (2048x4096), which the donor ships as BF16 and the graft copied through
+    /// unquantized (`docs/qwen35moe/30-MTP-HEAD-GRAFT.md` §3-1). The router's
+    /// BF16 GEMV cannot stand in — it writes FP32 logits for a top-k select,
+    /// and what follows `fc` is an RMSNorm that reads FP16.
+    ///
+    /// One output row per SIMD group; the 16 MB of weights is read once.
+    @discardableResult
+    public func encodeBF16GEMV(commandBuffer: MTLCommandBuffer,
+                               weights: MTLBuffer, weightsOffset: Int = 0,
+                               x: MTLBuffer, xOffset: Int = 0,
+                               y: MTLBuffer, yOffset: Int = 0,
+                               m: Int, k: Int) -> Bool {
+        guard m > 0, k > 0, k % 32 == 0,
+              let (encoder, _) = encoder(commandBuffer, .bf16GEMV) else { return false }
+        encoder.setBuffer(weights, offset: weightsOffset, index: 0)
+        encoder.setBuffer(x, offset: xOffset, index: 1)
+        encoder.setBuffer(y, offset: yOffset, index: 2)
+        var rows = UInt32(m)
+        var cols = UInt32(k)
+        encoder.setBytes(&rows, length: MemoryLayout<UInt32>.stride, index: 3)
+        encoder.setBytes(&cols, length: MemoryLayout<UInt32>.stride, index: 4)
+        let simdGroups = 8
+        encoder.dispatchThreadgroups(
+            MTLSize(width: (m + simdGroups - 1) / simdGroups, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 32 * simdGroups, height: 1, depth: 1))
+        encoder.endEncoding()
+        return true
     }
 }

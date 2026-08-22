@@ -352,7 +352,7 @@ extension QwenForwardRunner {
     }
 
     /// Allocates the chunk scratch on first use and reuses it after.
-    private func prefillContext(width: Int) throws -> QwenPrefillContext {
+    func prefillContext(width: Int) throws -> QwenPrefillContext {
         if let existing = prefillScratch, existing.width >= width { return existing }
         let created = try QwenPrefillContext(
             device: ctx.device,
@@ -374,6 +374,40 @@ extension QwenForwardRunner {
     private func prefillChunk(_ tokens: [Int32],
                               scratch s: QwenPrefillContext,
                               emitToken: Bool) throws -> Int32 {
+        try runChunkLayers(tokens, scratch: s)
+        guard emitToken else { return 0 }
+
+        // Only the last row is scored: the token that follows the chunk is the
+        // argmax over the last position's logits, and the 248,077-row table is
+        // 508 MB to read (`docs/qwen35moe/19-LM-HEAD-INT8.md`).
+        let lm = try model.qwenLMHead
+        let finalNorm = model.finalNorm
+        let T = tokens.count
+        try runSync("prefill head") { cb in
+            self.head.encodeGreedyDecode(
+                commandBuffer: cb,
+                hidden: s.hidden,
+                hiddenOffset: (T - 1) * self.hiddenSize * MemoryLayout<Float16>.size,
+                normWeight: finalNorm.buffer, normOffset: Int(finalNorm.offset),
+                weights: lm.buffer, weightsOffset: Int(lm.offset),
+                scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
+                biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
+                outToken: s.greedyToken,
+                d: UInt32(self.hiddenSize),
+                vocab: UInt32(self.scoredVocab),
+                rmsEps: self.rmsEps)
+        }
+        return Int32(bitPattern: s.greedyToken.contents().load(as: UInt32.self))
+    }
+
+    /// Everything a chunk does below the head: forty layers, the K/V cursor and
+    /// the recurrent state.
+    ///
+    /// Split out because the speculative verify pass runs the same T rows and
+    /// then scores **all** of them rather than the last
+    /// (`QwenSpeculativeDecode.swift`). Nothing here knows which caller it has.
+    func runChunkLayers(_ tokens: [Int32],
+                        scratch s: QwenPrefillContext) throws {
         let T = tokens.count
         let start = kv.position
         let D = UInt32(hiddenSize)
@@ -440,13 +474,19 @@ extension QwenForwardRunner {
                 try wait(shared, "prefill layer \(L) shared expert")
             }
 
-            try encodePrefillRoutedExperts(layer: L, tokens: T, routes: routes, scratch: s)
+            let residuals: (MTLCommandBuffer) -> Void = { cb in
+                self.qwen.encodeResidualAdd(commandBuffer: cb, hidden: s.hidden,
+                                            y: s.sharedOut, count: T * self.hiddenSize)
+                self.qwen.encodeResidualAdd(commandBuffer: cb, hidden: s.hidden,
+                                            y: s.routedOut, count: T * self.hiddenSize)
+            }
+            try encodePrefillRoutedExperts(layer: L, tokens: T, routes: routes,
+                                           scratch: s,
+                                           tail: compactChunkCommandBuffers ? residuals : nil)
+            if compactChunkCommandBuffers { continue }
 
             let tail = try commandBuffer()
-            qwen.encodeResidualAdd(commandBuffer: tail, hidden: s.hidden, y: s.sharedOut,
-                                   count: T * hiddenSize)
-            qwen.encodeResidualAdd(commandBuffer: tail, hidden: s.hidden, y: s.routedOut,
-                                   count: T * hiddenSize)
+            residuals(tail)
             // The next layer's pre-router buffer is the join.
             if QwenForwardRunner.pipelineEnabled {
                 commitDeferred(tail, "prefill layer \(L) residual")
@@ -459,28 +499,6 @@ extension QwenForwardRunner {
         try drainDeferred()
 
         kv.advance(by: T)
-        guard emitToken else { return 0 }
-
-        // Only the last row is scored: the token that follows the chunk is the
-        // argmax over the last position's logits, and the 248,077-row table is
-        // 508 MB to read (`docs/qwen35moe/19-LM-HEAD-INT8.md`).
-        let lm = try model.qwenLMHead
-        let finalNorm = model.finalNorm
-        try runSync("prefill head") { cb in
-            self.head.encodeGreedyDecode(
-                commandBuffer: cb,
-                hidden: s.hidden,
-                hiddenOffset: (T - 1) * self.hiddenSize * MemoryLayout<Float16>.size,
-                normWeight: finalNorm.buffer, normOffset: Int(finalNorm.offset),
-                weights: lm.buffer, weightsOffset: Int(lm.offset),
-                scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
-                biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
-                outToken: s.greedyToken,
-                d: D,
-                vocab: UInt32(self.scoredVocab),
-                rmsEps: self.rmsEps)
-        }
-        return Int32(bitPattern: s.greedyToken.contents().load(as: UInt32.self))
     }
 
     // MARK: - Layer halves
@@ -497,6 +515,10 @@ extension QwenForwardRunner {
 
         let convOffset = state.convOffset(layer: L)
         let convBytes = (QwenKernels.convKernel - 1) * qkvWidth * MemoryLayout<Float16>.size
+        if speculativeLastRow {
+            encodeSplitRecurrent(cb, layer: L, tokens: T, w: w, scratch: s)
+            return
+        }
         qwen.encodeDeltaQKVPrepare(commandBuffer: cb,
                                    qkv: s.wide,
                                    convWeight: w.conv1d.buffer,
@@ -546,6 +568,118 @@ extension QwenForwardRunner {
                                  headDim: valueHeadDim,
                                  eps: rmsEps)
         encodePrefillProjection(cb, w.outProj, x: s.oDelta, y: s.branchOut, tokens: T, scratch: s)
+    }
+
+    /// The same recurrence, with the **last row's** state written somewhere else.
+    ///
+    /// This is what makes a speculative row discardable. `qwen_delta_rule` folds
+    /// every row of a chunk into one state, and there is no subtraction that
+    /// takes the last one back out (`03-DESIGN.md` §3-4) — so the chunk is split
+    /// into `T-1` confirmed rows, which update the state in place, and the last
+    /// row, which reads that state and writes the shadow. Accepting is
+    /// `adoptShadow()`; rejecting is doing nothing.
+    ///
+    /// The cost is one extra pair of dispatches per recurrent layer and no copy
+    /// at all: `33-MTP-ACCEPTANCE.md` §3-6 measured the split at +0.14 ms a
+    /// token against +1.8 ms for blitting the 61.4 MiB aside.
+    private func encodeSplitRecurrent(_ cb: MTLCommandBuffer,
+                                      layer L: Int,
+                                      tokens T: Int,
+                                      w: LinearLayerWeights,
+                                      scratch s: QwenPrefillContext) {
+        precondition(T >= 1, "the split path needs at least one row")
+        guard let shadowState = state.shadowStateBuffer,
+              let shadowConv = state.shadowConvBuffer else {
+            preconditionFailure("the recurrent shadow was not allocated")
+        }
+        let convOffset = state.convOffset(layer: L)
+        let stateOffset = state.stateOffset(layer: L)
+        let keyWidth = numKeyHeads * keyHeadDim
+        let valueWidth = numValueHeads * valueHeadDim
+        let half = MemoryLayout<Float16>.size
+        let confirmed = T - 1
+
+        func prepare(rows: Int, from: Int,
+                     convIn: MTLBuffer, convInOffset: Int,
+                     convOut: MTLBuffer, convOutOffset: Int) {
+            qwen.encodeDeltaQKVPrepare(commandBuffer: cb,
+                                       qkv: s.wide, qkvOffset: from * qkvWidth * half,
+                                       convWeight: w.conv1d.buffer,
+                                       convWeightOffset: Int(w.conv1d.offset),
+                                       stateIn: convIn, stateInOffset: convInOffset,
+                                       stateOut: convOut, stateOutOffset: convOutOffset,
+                                       q: s.qDelta, qOffset: from * keyWidth * half,
+                                       k: s.kDelta, kOffset: from * keyWidth * half,
+                                       v: s.vDelta, vOffset: from * valueWidth * half,
+                                       seqLen: rows,
+                                       numKHeads: numKeyHeads,
+                                       numVHeads: numValueHeads,
+                                       headDim: keyHeadDim)
+        }
+        func recur(rows: Int, from: Int, out: MTLBuffer, outOffset: Int) {
+            delta.encode(commandBuffer: cb,
+                         q: s.qDelta, qOffset: from * keyWidth * half,
+                         k: s.kDelta, kOffset: from * keyWidth * half,
+                         v: s.vDelta, vOffset: from * valueWidth * half,
+                         g: s.gBuf, gOffset: from * numValueHeads * MemoryLayout<Float>.size,
+                         beta: s.betaBuf,
+                         betaOffset: from * numValueHeads * MemoryLayout<Float>.size,
+                         stateIn: state.stateBuffer, stateInOffset: stateOffset,
+                         y: s.yDelta, yOffset: from * valueWidth * half,
+                         stateOut: out, stateOutOffset: outOffset,
+                         seqLen: rows,
+                         numKHeads: numKeyHeads,
+                         numVHeads: numValueHeads,
+                         keyHeadDim: keyHeadDim,
+                         valueHeadDim: valueHeadDim)
+        }
+
+        // The confirmed rows first, in place. `encodeDeltaQKVPrepare` refuses an
+        // aliased state for more than one token block, so wider confirmed spans
+        // stage through `convStateOut` exactly as the ordinary path does.
+        if confirmed > 0 {
+            let convBytes = (QwenKernels.convKernel - 1) * qkvWidth * half
+            let aliasable = confirmed <= QwenKernels.tokensPerGroup
+            prepare(rows: confirmed, from: 0,
+                    convIn: state.convBuffer, convInOffset: convOffset,
+                    convOut: aliasable ? state.convBuffer : s.convStateOut,
+                    convOutOffset: aliasable ? convOffset : 0)
+            if !aliasable, let blit = cb.makeBlitCommandEncoder() {
+                blit.copy(from: s.convStateOut, sourceOffset: 0,
+                          to: state.convBuffer, destinationOffset: convOffset,
+                          size: convBytes)
+                blit.endEncoding()
+            }
+        }
+        // The speculative row reads the state the confirmed rows left and writes
+        // the shadow. Encoders inside one command buffer run in order.
+        prepare(rows: 1, from: confirmed,
+                convIn: state.convBuffer, convInOffset: convOffset,
+                convOut: shadowConv, convOutOffset: convOffset)
+
+        qwen.encodeDeltaGates(commandBuffer: cb,
+                              a: s.aBuf, b: s.bBuf,
+                              aLog: w.aLog.buffer, aLogOffset: Int(w.aLog.offset),
+                              dtBias: w.dtBias.buffer, dtBiasOffset: Int(w.dtBias.offset),
+                              g: s.gBuf, beta: s.betaBuf,
+                              seqLen: T, numVHeads: numValueHeads)
+
+        if confirmed > 0 {
+            recur(rows: confirmed, from: 0,
+                  out: state.stateBuffer, outOffset: stateOffset)
+        }
+        recur(rows: 1, from: confirmed, out: shadowState, outOffset: stateOffset)
+
+        qwen.encodeDeltaNormGate(commandBuffer: cb,
+                                 o: s.yDelta, z: s.zBuf,
+                                 weight: w.norm.buffer, weightOffset: Int(w.norm.offset),
+                                 out: s.oDelta,
+                                 seqLen: T,
+                                 numVHeads: numValueHeads,
+                                 headDim: valueHeadDim,
+                                 eps: rmsEps)
+        encodePrefillProjection(cb, w.outProj, x: s.oDelta, y: s.branchOut,
+                                tokens: T, scratch: s)
     }
 
     private func encodePrefillAttention(_ cb: MTLCommandBuffer,
@@ -742,7 +876,8 @@ extension QwenForwardRunner {
     private func encodePrefillRoutedExperts(layer L: Int,
                                             tokens T: Int,
                                             routes: PrefillMoEGroupedRoutes,
-                                            scratch s: QwenPrefillContext) throws {
+                                            scratch s: QwenPrefillContext,
+                                            tail: ((MTLCommandBuffer) -> Void)? = nil) throws {
         let device = ctx.device
         let metadata = try s.routedMoE.makeStreamedMetadataBuffers(device: device, routes: routes)
         let offsets = model.routedExpertOffsets(layer: L)
@@ -805,6 +940,7 @@ extension QwenForwardRunner {
                                 handle: try model.startRoutedExpertFetch(plan: plan))
         }
         var inflight: InflightTile? = nil
+        var lastTile: MTLCommandBuffer? = nil
         for (position, index) in active.enumerated() {
             let current: InflightTile
             if let started = inflight, started.index == index {
@@ -884,7 +1020,10 @@ extension QwenForwardRunner {
                         + "nothing for \(groups.count) groups / \(tile.pairCount) pairs")
                 }
             }
-            if pipelined {
+            if compactChunkCommandBuffers && position == active.count - 1 {
+                // Held back: the reduce and the residual adds go on it.
+                lastTile = cb
+            } else if pipelined {
                 commitDeferred(cb, "prefill layer \(L) tile \(index)")
             } else {
                 try wait(cb, "prefill layer \(L) tile \(index)")
@@ -893,6 +1032,27 @@ extension QwenForwardRunner {
 
         // Every pair of every tile has written its row, so the token-major sum
         // can run once for the layer.
+        //
+        // In compact mode it rides on the last tile's command buffer together
+        // with the caller's residual adds. Command buffers on one queue run in
+        // commit order, so an earlier tile is finished before this one starts —
+        // the same guarantee `commitDeferred` already relies on.
+        if let lastTile, compactChunkCommandBuffers {
+            s.moeReduce.encodeReduceTokenMajor(commandBuffer: lastTile,
+                                               routePartials: s.routePartials,
+                                               routeWeights: s.routerWeights,
+                                               h2: s.routedOut,
+                                               queryCount: UInt32(T),
+                                               topK: UInt32(cfg.topKExperts),
+                                               d: UInt32(hiddenSize))
+            tail?(lastTile)
+            if pipelined {
+                commitDeferred(lastTile, "prefill layer \(L) routed tail")
+            } else {
+                try wait(lastTile, "prefill layer \(L) routed tail")
+            }
+            return
+        }
         let reduce = try commandBuffer()
         s.moeReduce.encodeReduceTokenMajor(commandBuffer: reduce,
                                            routePartials: s.routePartials,
@@ -901,6 +1061,7 @@ extension QwenForwardRunner {
                                            queryCount: UInt32(T),
                                            topK: UInt32(cfg.topKExperts),
                                            d: UInt32(hiddenSize))
+        tail?(reduce)
         if pipelined {
             commitDeferred(reduce, "prefill layer \(L) routed reduce")
         } else {
@@ -932,6 +1093,35 @@ extension QwenForwardRunner {
                                    y: MTLBuffer, yOffset: Int = 0,
                                    t: Int, n: Int, k: Int,
                                    scratch s: QwenPrefillContext) {
+        // A verify block is one or two rows, and both QMM kernels are wrong for
+        // that width: the tiled one refuses below eight rows and the scalar one
+        // gives each output row a single thread walking K on its own, so nothing
+        // coalesces. Decode's SIMD-per-row GEMV, widened to T activations over
+        // one pass of the weights, is what these shapes want
+        // (`docs/qwen35moe/36-MTP-DECODE.md` §4-3). Bit-identical to the
+        // one-row GEMV at T=1, which is not the same numbers as the QMM path —
+        // so it is switched on only for the block, never for the prompt.
+        if compactChunkCommandBuffers,
+           t <= DequantInt8GEMV.maxRows, k % 64 == 0 {
+            if bits == 8 {
+                int8.encodeRows(commandBuffer: cb,
+                                weights: view.buffer, weightsOffset: Int(view.offset),
+                                scales: view.buffer, scalesOffset: Int(view.scaleOffset),
+                                biases: view.buffer, biasesOffset: Int(view.biasOffset),
+                                x: x, xOffset: xOffset, y: y, yOffset: yOffset,
+                                rows: t, m: UInt32(n), n: UInt32(k),
+                                xStride: UInt32(k), yStride: UInt32(n))
+            } else {
+                int4.encodeRows(commandBuffer: cb,
+                                weights: view.buffer, weightsOffset: Int(view.offset),
+                                scales: view.buffer, scalesOffset: Int(view.scaleOffset),
+                                biases: view.buffer, biasesOffset: Int(view.biasOffset),
+                                x: x, xOffset: xOffset, xStrideElements: k,
+                                y: y, yOffset: yOffset, yStrideElements: n,
+                                t: t, m: UInt32(n), n: UInt32(k))
+            }
+            return
+        }
         if bits == 8 {
             s.int8.encode(commandBuffer: cb,
                           weights: view.buffer, weightsOffset: Int(view.offset),

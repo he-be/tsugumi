@@ -42,9 +42,13 @@ public final class RecurrentStateManager {
     public let convHistory: Int
 
     /// FP32 `[Hv, Dv, Dk]` per recurrent layer.
-    public let stateBuffer: MTLBuffer
+    ///
+    /// `var`, not `let`, for one reason: `adoptShadow()` swaps it with the
+    /// speculative copy rather than blitting 61.4 MiB. Every reader binds it at
+    /// encode time, so the swap is invisible to them.
+    public private(set) var stateBuffer: MTLBuffer
     /// FP16 `[convHistory, convChannels]` per recurrent layer.
-    public let convBuffer: MTLBuffer
+    public private(set) var convBuffer: MTLBuffer
 
     public let stateBytesPerLayer: Int
     public let convBytesPerLayer: Int
@@ -132,5 +136,65 @@ public final class RecurrentStateManager {
     public func reset() {
         memset(stateBuffer.contents(), 0, stateBuffer.length)
         memset(convBuffer.contents(), 0, convBuffer.length)
+    }
+
+    // MARK: - The second copy a speculative row writes into
+
+    /// Where the **speculative** row's state goes.
+    ///
+    /// A width-2 verify pass runs two rows: row 0 is a token the body has
+    /// already committed to, row 1 is the head's guess. If the guess is wrong,
+    /// what has to survive is the state **after row 0** — which is neither the
+    /// state before the pass nor the state after it. A snapshot taken before
+    /// the pass restores too much and loses row 0
+    /// (`docs/qwen35moe/36-MTP-DECODE.md` §3-2, where exactly that produced a
+    /// degenerate loop).
+    ///
+    /// So the recurrence is split instead, and nothing is copied
+    /// (`33-MTP-ACCEPTANCE.md` §3-6): row 0 writes in place, row 1 writes here,
+    /// and acceptance is `adoptShadow()` — two pointers. `qwen_delta_rule` and
+    /// `qwen_delta_qkv_prepare` have taken `stateIn` and `stateOut` as separate
+    /// arguments since Phase 2, so no kernel changes.
+    public private(set) var shadowStateBuffer: MTLBuffer?
+    public private(set) var shadowConvBuffer: MTLBuffer?
+
+    /// Bytes the shadow costs once it exists — one more copy of the 61.4 MiB.
+    public var shadowBytes: UInt64 {
+        guard let shadowStateBuffer, let shadowConvBuffer else { return 0 }
+        return UInt64(shadowStateBuffer.length) &+ UInt64(shadowConvBuffer.length)
+    }
+
+    /// Allocate the shadow. Called once, by the first speculative step; a run
+    /// that never speculates never pays the 61.4 MiB.
+    public func ensureShadow(device: MTLDevice) throws {
+        if shadowStateBuffer != nil { return }
+        guard let state = device.makeBuffer(length: stateBuffer.length,
+                                            options: .storageModeShared),
+              let conv = device.makeBuffer(length: convBuffer.length,
+                                           options: .storageModeShared) else {
+            throw ModelError.residentBufferWrapFailed
+        }
+        state.label = "qwen.recurrentState.shadow"
+        conv.label = "qwen.convState.shadow"
+        // Zeroed for the same reason `reset()` zeroes: a shadow that is read
+        // before it is written would be read whole.
+        memset(state.contents(), 0, state.length)
+        memset(conv.contents(), 0, conv.length)
+        shadowStateBuffer = state
+        shadowConvBuffer = conv
+    }
+
+    /// The speculative row was accepted: its state becomes the state.
+    ///
+    /// A pointer swap, not a copy. What lands in the shadow is the state after
+    /// row 0, which the next pass overwrites before reading.
+    public func adoptShadow() {
+        guard let shadowStateBuffer, let shadowConvBuffer else { return }
+        let oldState = stateBuffer
+        let oldConv = convBuffer
+        stateBuffer = shadowStateBuffer
+        convBuffer = shadowConvBuffer
+        self.shadowStateBuffer = oldState
+        self.shadowConvBuffer = oldConv
     }
 }
