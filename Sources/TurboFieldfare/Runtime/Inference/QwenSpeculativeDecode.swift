@@ -175,6 +175,7 @@ extension QwenForwardRunner {
         chunkWidth: Int = 512,
         stopTokens: Set<Int32> = [],
         constraint: (any GenerationConstraint)? = nil,
+        cachedPromptTokens: Int = 0,
         shouldStop: () -> Bool = { false },
         onPrefill: ((Int, Double) -> Void)? = nil,
         onToken: ((Int, Int32) throws -> Void)? = nil,
@@ -182,7 +183,12 @@ extension QwenForwardRunner {
     ) throws -> QwenGreedyRun {
         guard let drafter = mtpDrafter else { throw SpeculativeError.noHead }
         precondition(!promptTokens.isEmpty, "the prompt must have at least one token")
-        precondition(promptTokens.count + maxNewTokens + 1 <= maxContext,
+        precondition(cachedPromptTokens == kv.position,
+                     "a resumed run must name the state it is continuing "
+                     + "(cached \(cachedPromptTokens), state \(kv.position))")
+        // One more than the non-speculative bound: a verify pass writes the
+        // drafted row before it is known to be real (`41-PROMPT-CACHE.md` §3-2).
+        precondition(kv.position + promptTokens.count + maxNewTokens + 1 <= maxContext,
                      "prompt + generation exceeds maxContext \(maxContext)")
 
         let D = hiddenSize
@@ -383,10 +389,12 @@ extension QwenForwardRunner {
         onStats?(stats)
         return QwenGreedyRun(tokens: produced,
                              promptTokens: promptTokens.count,
+                             cachedPromptTokens: cachedPromptTokens,
                              prefillSeconds: prefillSeconds,
                              decodeSeconds: Self.seconds(since: decodeStart),
                              timeToFirstTokenSeconds: timeToFirstToken,
-                             reason: reason)
+                             reason: reason,
+                             kvPosition: kv.position)
     }
 
     /// The two buffers the verify pass and the drafter share. Allocated on

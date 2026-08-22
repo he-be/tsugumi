@@ -50,6 +50,21 @@ enum ServerLog {
         write(line)
     }
 
+    /// SPEC §7 CACHE-6: why a continuation did not happen, in numbers only.
+    ///
+    /// The Ornith family reuses the state or resets it, with nothing in
+    /// between (`docs/qwen35moe/41-PROMPT-CACHE.md`), so "how far the new
+    /// prompt agreed with what the state holds" is the whole diagnosis — a
+    /// client that re-renders the last assistant turn differently shows up as a
+    /// divergence a few dozen tokens from the end. **Never prompt text.**
+    /// No request id: the backend decides this before the HTTP layer hands the
+    /// request over, and DEV-3 keeps generation serial, so the line always sits
+    /// directly above the `generating` line it belongs to. Plumbing an id down
+    /// would mean teaching the shared layer which family answered.
+    static func promptCache(_ detail: String) {
+        write("prompt cache \(detail)")
+    }
+
     static func failed(id: String,
                        phase: String,
                        status: UInt,

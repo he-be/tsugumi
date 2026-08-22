@@ -202,17 +202,22 @@ final class QwenPrefillContext {
 
 /// What one greedy completion produced, and the partition of its wall clock.
 ///
-/// The Gemma path answers this with `RawDecodeResult`, which carries a K/V
-/// snapshot and a cached-prefix count besides. Neither has a meaning here:
-/// this family's prompt cache is off because a recurrent state cannot be
-/// rewound (`docs/qwen35moe/03-DESIGN.md` §5), so every run starts at position
-/// zero and the whole prompt is computed.
+/// The Gemma path answers this with `RawDecodeResult`. The two now say the same
+/// things, in the same words (`cachedPromptTokens` / `computedPrefillTokens` /
+/// `kvPosition`), because this family **does** have a prompt cache — the
+/// "extension only" kind (`docs/qwen35moe/41-PROMPT-CACHE.md`). What it still
+/// has no meaning for is a K/V *snapshot*: a recurrent state cannot be rewound
+/// (`03-DESIGN.md` §5), so the only entry that can ever be resumed is the one
+/// living in the runner right now.
 public struct QwenGreedyRun: Sendable {
     /// The generated tokens, stop token included when one ended the run — the
     /// caller decides whether to show it, exactly as the CLI does.
     public let tokens: [Int32]
     /// SPEC §9 RSP-3 `prompt_n`: the prompt this run actually computed.
     public let promptTokens: Int
+    /// The prompt tokens the run did **not** compute because the state already
+    /// held them (RSP-3 `cache_n`). Zero for every caller that does not resume.
+    public let cachedPromptTokens: Int
     /// RSP-3 `prompt_ms`.
     public let prefillSeconds: Double
     /// RSP-3 `predicted_ms`.
@@ -220,8 +225,18 @@ public struct QwenGreedyRun: Sendable {
     /// From the start of prefill to the first generated token.
     public let timeToFirstTokenSeconds: Double
     public let reason: StopReason
+    /// `kv.position` when the run returned — how many tokens the state holds.
+    ///
+    /// The loop feeds token *t* to draw *t+1*, so the last token it emitted was
+    /// never consumed: this is `cachedPromptTokens + promptTokens + newTokens − 1`
+    /// whenever anything was generated. A caller that wants to continue has to
+    /// replay that one token, which is exactly what happens when the next
+    /// prompt contains it (`41-PROMPT-CACHE.md` §2-1).
+    public let kvPosition: Int
 
     public var newTokens: Int { tokens.count }
+    /// What the client asked to be prefilled, computed or not.
+    public var totalPromptTokens: Int { cachedPromptTokens + promptTokens }
 }
 
 extension QwenForwardRunner {
@@ -262,18 +277,32 @@ extension QwenForwardRunner {
     /// once the text of that token has reached it. A run ended that way reports
     /// `.stopString`, and the token that triggered it has already been emitted
     /// — the caller is the one holding text back, not this loop.
+    ///
+    /// `promptTokens` is what still has to be computed. When the runner was left
+    /// holding the beginning of this same prompt, the caller passes only the
+    /// suffix and names what it kept in `cachedPromptTokens` — the loop reads
+    /// `kv.position` for everything else, so continuing is not a second code
+    /// path here (`docs/qwen35moe/41-PROMPT-CACHE.md` §2).
     public func runGreedyCompletion(
         promptTokens: [Int32],
         maxNewTokens: Int,
         chunkWidth: Int = 512,
         stopTokens: Set<Int32> = [],
         constraint: (any GenerationConstraint)? = nil,
+        cachedPromptTokens: Int = 0,
         shouldStop: () -> Bool = { false },
         onPrefill: ((Int, Double) -> Void)? = nil,
         onToken: ((Int, Int32) throws -> Void)? = nil
     ) throws -> QwenGreedyRun {
         precondition(!promptTokens.isEmpty, "the prompt must have at least one token")
-        precondition(promptTokens.count + maxNewTokens <= maxContext,
+        precondition(cachedPromptTokens == kv.position,
+                     "a resumed run must name the state it is continuing "
+                     + "(cached \(cachedPromptTokens), state \(kv.position))")
+        // Position-relative, because a continuation's `promptTokens` is only the
+        // suffix. `KVCacheManager.advance` aborts rather than throws, so the
+        // bound has to be checked in the same terms it uses
+        // (`docs/qwen35moe/34-PROMPT-CACHE-ESTIMATE.md` §3-3 ③).
+        precondition(kv.position + promptTokens.count + maxNewTokens <= maxContext,
                      "prompt + generation exceeds maxContext \(maxContext)")
 
         // GEN-7 is applied to the token the prompt produces too: the first
@@ -313,10 +342,12 @@ extension QwenForwardRunner {
         }
         return QwenGreedyRun(tokens: produced,
                              promptTokens: promptTokens.count,
+                             cachedPromptTokens: cachedPromptTokens,
                              prefillSeconds: prefillSeconds,
                              decodeSeconds: Self.seconds(since: decodeStart),
                              timeToFirstTokenSeconds: timeToFirstToken,
-                             reason: reason)
+                             reason: reason,
+                             kvPosition: kv.position)
     }
 
     private static func seconds(since start: DispatchTime) -> Double {

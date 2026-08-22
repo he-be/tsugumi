@@ -32,6 +32,13 @@ public actor QwenServerSession: ServerInferenceBackend {
     private let maxContext: Int
     /// Whether `--draft-block-size 2` put the MTP head in the decode loop.
     private let speculative: Bool
+    /// SPEC §7, the only shape this family can hold: the token ids the runner's
+    /// state has **already consumed**, so that a prompt beginning with them can
+    /// start where they end (`docs/qwen35moe/41-PROMPT-CACHE.md`).
+    ///
+    /// One entry, and it is not a copy — it *is* the live K/V and recurrent
+    /// state. The rule lives in `QwenPromptCache`, which knows no runner.
+    private var promptCache = QwenPromptCache()
     /// RSN-1 / FLAG-1, and RSN-3.
     private let reasoningBudget: Int
     private let reasoningFormat: ReasoningFormat
@@ -183,12 +190,6 @@ public actor QwenServerSession: ServerInferenceBackend {
         onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
     ) async throws -> ServerCompletion {
         let request = prepared.request
-        // CACHE: there is nothing to invalidate and nothing to keep. The
-        // recurrent state of the thirty linear layers cannot be rewound or
-        // shortened (03-DESIGN §5), so a conversation is replayed from token
-        // zero every turn and the runner starts each request clean — including
-        // one that threw half way through the last.
-        runner.reset()
         let promptIDs = try prepared.promptIDs ?? renderPrompt(request)
         guard !promptIDs.isEmpty else {
             throw ServerRequestError.invalid(message: "the rendered prompt is empty",
@@ -230,6 +231,32 @@ public actor QwenServerSession: ServerInferenceBackend {
                                        predictedTokens: 0,
                                        predictedMilliseconds: 0))
         }
+
+        // CACHE-1 / CACHE-5. The state of the thirty recurrent layers cannot be
+        // rewound or shortened (`03-DESIGN.md` §5), so the one reusable shape is
+        // "this prompt begins with everything the state already holds". That
+        // makes the match a prefix test and nothing else — no snapshot, no
+        // eviction, no second entry (`41-PROMPT-CACHE.md` §2).
+        //
+        // Decided **after** the `max_tokens: 0` exit above so a prefill-only
+        // request neither reads nor disturbs the state.
+        let reused: Int
+        switch promptCache.match(promptIDs, cachePrompt: request.cachePrompt) {
+        case .hit(let cached):
+            reused = cached
+        case .miss(let divergedAt):
+            if let divergedAt {
+                ServerLog.promptCache("miss diverged_at=\(divergedAt) "
+                    + "held=\(promptCache.tokens.count)")
+            }
+            // The memset costs about 11 ms against a prefill floor of 1.3 s
+            // (`34-PROMPT-CACHE-ESTIMATE.md` §4-2), and it is what makes a
+            // request that threw half way through the last one safe.
+            reused = 0
+            runner.reset()
+            promptCache.invalidate()
+        }
+        let promptSuffix = Array(promptIDs[reused...])
 
         // SPEC §8. Only RSN-3's routing is honoured here: RSN-4 places a
         // closing tag without drawing it, and this loop has no forcer, so a
@@ -297,8 +324,8 @@ public actor QwenServerSession: ServerInferenceBackend {
         var shouldStop = false
         var live: ServerLiveTimings?
         if monitor != nil {
-            live = ServerLiveTimings(cacheTokens: 0,
-                                     promptTokens: promptIDs.count,
+            live = ServerLiveTimings(cacheTokens: reused,
+                                     promptTokens: promptSuffix.count,
                                      startedAt: Date())
         }
 
@@ -326,6 +353,20 @@ public actor QwenServerSession: ServerInferenceBackend {
 
         let run: QwenGreedyRun
         var speculativeStats: QwenSpeculativeStats?
+        // The state and `cachedTokens` are only allowed to disagree inside this
+        // `do`. Anything that leaves it by throwing — a constraint with nothing
+        // to allow, a cancelled request, a chunk that failed half way — leaves a
+        // recurrent state whose position nothing can name, and
+        // `RecurrentStateManager` has no cursor to check it against
+        // (`34-PROMPT-CACHE-ESTIMATE.md` §3-3 ②). The next request must not
+        // continue from it.
+        var completed = false
+        defer {
+            if !completed {
+                runner.reset()
+                promptCache.invalidate()
+            }
+        }
         do {
             // One callback, two loops. The MTP loop's contract is the
             // non-speculative one — same tokens out, same stop rule, same
@@ -355,24 +396,52 @@ public actor QwenServerSession: ServerInferenceBackend {
             }
             if speculative {
                 run = try runner.runGreedyCompletionMTP(
-                    promptTokens: promptIDs,
+                    promptTokens: promptSuffix,
                     maxNewTokens: maxNewTokens,
                     chunkWidth: prefillChunkTokens,
                     stopTokens: tokenizer.stopTokenIDs,
                     constraint: constraint,
+                    cachedPromptTokens: reused,
                     shouldStop: { shouldStop },
                     onToken: onToken,
                     onStats: { speculativeStats = $0 })
             } else {
                 run = try runner.runGreedyCompletion(
-                    promptTokens: promptIDs,
+                    promptTokens: promptSuffix,
                     maxNewTokens: maxNewTokens,
                     chunkWidth: prefillChunkTokens,
                     stopTokens: tokenizer.stopTokenIDs,
                     constraint: constraint,
+                    cachedPromptTokens: reused,
                     shouldStop: { shouldStop },
                     onToken: onToken)
             }
+            // CACHE-6's bookkeeping. What the state holds is always a *prefix*
+            // of "the prompt followed by everything generated" — the runner
+            // says how long it is, and this must not be re-derived from the
+            // token counts.
+            //
+            // Usually that is one token short of the whole thing: the loop
+            // feeds token *t* to draw *t+1*, so the last token it emitted was
+            // never consumed. **But not always.** When the speculative loop
+            // accepts a draft and the run then ends on row 0's token, the
+            // drafted row for that very token has already been folded into the
+            // recurrent state — the state holds *everything*, and the GDN side
+            // of it cannot be rewound to pretend otherwise
+            // (`41-PROMPT-CACHE.md` §3-2). Asserting the shorter form here cost
+            // a whole turn's cache in the first measurement.
+            if !promptCache.publish(promptIDs: promptIDs,
+                                    generated: run.tokens,
+                                    kvPosition: run.kvPosition,
+                                    cachePrompt: request.cachePrompt) {
+                // Unreachable unless the loop and the K/V cursor disagree about
+                // what was consumed. Loud, because the alternative is a
+                // silently wrong continuation next turn.
+                ServerLog.promptCache("dropped state=\(run.kvPosition) beyond "
+                    + "prompt+generated=\(promptIDs.count + run.tokens.count)")
+                runner.reset()
+            }
+            completed = true
         } catch let error as GenerationConstraintError {
             // GEN-7 calls a no-allowed-token state an error rather than a stop,
             // so it escapes as a 500 instead of becoming a truncated answer
@@ -412,7 +481,10 @@ public actor QwenServerSession: ServerInferenceBackend {
         } else {
             reason = "stop"
         }
-        let timings = ServerTimings(cacheTokens: 0,
+        // RSP-1 / RSP-3's invariant: `cache_n + prompt_n == usage.prompt_tokens`.
+        // `prompt_n` is what was computed, `cache_n` what the state already had,
+        // and `usage.prompt_tokens` the whole prompt the client sent.
+        let timings = ServerTimings(cacheTokens: run.cachedPromptTokens,
                                     promptTokens: run.promptTokens,
                                     promptMilliseconds: run.prefillSeconds * 1_000,
                                     predictedTokens: run.newTokens,
@@ -422,10 +494,10 @@ public actor QwenServerSession: ServerInferenceBackend {
             content: content,
             toolCalls: calls,
             finishReason: reason,
-            usage: OpenAIUsage(promptTokens: run.promptTokens,
+            usage: OpenAIUsage(promptTokens: run.totalPromptTokens,
                                completionTokens: run.newTokens,
-                               totalTokens: run.promptTokens + run.newTokens,
-                               cachedTokens: 0),
+                               totalTokens: run.totalPromptTokens + run.newTokens,
+                               cachedTokens: run.cachedPromptTokens),
             speculative: speculativeStats.map {
                 // RSP-3's vocabulary over this family's shape: a round is one
                 // verify pass, and each pass proposes exactly one token.

@@ -329,7 +329,7 @@ python3 Scripts/demo/serve.py     # http://127.0.0.1:8799/
 | `--draft-block-size` | **0 か 2 のみ。**この家族のヘッドは 1 パスに 1 本しかドラフトしないので、幅は 2 で固定である ([docs/qwen35moe/40](qwen35moe/40-MTP-GRAMMAR.md) §4)。**tools と併用できる** |
 | MTP ヘッドの在処 | `~/LLM/ornith-mtp-head/` の **480 MB sidecar** (`.gturbo` の中ではない)。`TF_QWEN_MTP_HEAD` で差し替える。**無ければ起動しない** |
 | 画像 | **400 `unsupported_image`。**Phase 9 で、`/props` の `modalities.vision` も false を返す |
-| prompt cache | **無い。**`cached=0` が常態で、それが正常である (再帰状態を巻き戻せない、[docs/qwen35moe/26](qwen35moe/26-PHASE8-SERVER.md) §4-3)。§5(b) の「`cached=0` が続くのは異常」は**この家族には当てはまらない** |
+| prompt cache | **ある。ただし「厳密な延長」だけ** ([docs/qwen35moe/41](qwen35moe/41-PROMPT-CACHE.md))。再帰状態は巻き戻せないので**部分再利用が無い** — 新しいプロンプトが前回の続きでなければ `cached=0` になる (Gemma のような最長共通接頭辞ではない)。ミスの理由は stderr の `prompt cache miss diverged_at=… held=…` が名指す |
 | サンプラ | 受理して無視 (常に greedy)。完了行の `approx="sampling/greedy-only: …"` がそれを言う |
 
 pi 側は `~/.pi/agent/models.json` に provider を 1 つ足してある
@@ -339,24 +339,34 @@ pi 側は `~/.pi/agent/models.json` に provider を 1 つ足してある
 pi --provider local-turbofieldfare-ornith --model ornith-1.5-35b-a3b
 ```
 
-完了行に MTP の効きが出る:
+完了行に MTP の効きと prompt cache の当たりが出る:
 
 ```
 completed in 21.256s prompt=2935 cached=0 completion=160 finish=length \
-  reasoning=642B mtp=2 rounds=89 accept=0.787
+  reasoning=642B mtp=2 rounds=89 accept=0.787      ← 会話の 1 ターン目
+completed in  8.104s prompt=3092 cached=3056 completion=120 finish=stop \
+  reasoning=331B mtp=2 rounds=63 accept=0.905      ← 続きのターン
 ```
 
-**速度の期待値** (プロンプト 2,935 トークン + tools + thinking、**実測(手元)**、
-n=2、[docs/qwen35moe/40](qwen35moe/40-MTP-GRAMMAR.md) §5):
+**2 ターン目以降で `cached=0` が続くならクライアントが履歴を書き換えている。**
+このモデルは巻き戻せないので、1 トークンでも違えば全ミスになる。よくある原因は
+3 つ: assistant の思考 (`reasoning_content`) を送り返していない、文脈を切り詰めて
+いる、system プロンプトに時刻や乱数 ID が入っている
+([docs/qwen35moe/41](qwen35moe/41-PROMPT-CACHE.md) §4-2)。pi は思考を送り返すので
+当たる。
 
-| 腕 | prefill | decode |
-| --- | ---: | ---: |
-| `--draft-block-size 0` | 10.3〜11.0 s | 13.9 / 14.3 tok/s |
-| `--draft-block-size 2` | 10.4〜11.3 s | **16.0 / 16.1 tok/s** |
+**速度の期待値** (プロンプト約 2,936 トークン + tools + thinking、**実測(手元)**、
+[docs/qwen35moe/40](qwen35moe/40-MTP-GRAMMAR.md) §5 と
+[41](qwen35moe/41-PROMPT-CACHE.md) §5-2):
 
-**ターンごとに prefill を満額払う** (prompt cache が無いため)。長い会話ほど
-TTFT が伸びる — これがこの家族をエージェントで使うときに一番効く制約で、
-MTP が返すのは decode 側の 14% だけである。
+| 腕 | 1 ターン目の TTFT | 続きのターンの TTFT | decode |
+| --- | ---: | ---: | ---: |
+| `--draft-block-size 0` | 10.3 s | **0.72 s** | 13.9〜14.3 tok/s |
+| `--draft-block-size 2` | 10.4 s | **0.78 s** | **16.0〜17.5 tok/s** |
+
+短いエージェント形の会話 (275 トークンから始まる 3 ターン) は
+prefill **3.19 → 1.14 → 0.58 秒**。**文脈を全部計算するのは会話の 1 回目だけ**で、
+続きは追加ぶんだけを計算する。
 
 - `TF_EXPERT_MMAP_RESIDENCY_ASYNC=1` を付けると素の decode も MTP も速くなる
   ([docs/qwen35moe/39](qwen35moe/39-RESIDENCY-COMMIT.md))。**既定 off、

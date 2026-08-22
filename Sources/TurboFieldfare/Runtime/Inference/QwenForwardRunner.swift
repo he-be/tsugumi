@@ -759,9 +759,21 @@ public final class QwenForwardRunner {
 
     /// Back to the start of a conversation: the K/V cursor and both recurrent
     /// tensors.
+    /// Back to position zero: the K/V cursor, the recurrent state, **and the
+    /// MTP head's own one-layer cache**.
+    ///
+    /// The head has to be in this list. Its cache is keyed by slot with
+    /// absolute RoPE positions and holds only what *generation* put there
+    /// (`QwenMTPDrafter`), so a second request that started with the first
+    /// request's rows still in it would draft against a conversation that no
+    /// longer exists. Speculation is verified, so the answer would not change —
+    /// the acceptance rate would, silently. A resumed request keeps them on
+    /// purpose: there the earlier rows belong to the same conversation and sit
+    /// at the positions they claim (`docs/qwen35moe/41-PROMPT-CACHE.md` §3-3).
     public func reset() {
         kv.reset()
         state.reset()
+        mtpDrafter?.reset()
     }
 
     /// Position the next token will occupy.

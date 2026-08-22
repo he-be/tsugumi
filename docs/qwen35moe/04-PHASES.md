@@ -442,12 +442,21 @@ prefill attention / block router / per-pair MoE の加算順が残っている
    `swift test` は 1,350 件緑。**残るのは prompt cache** (#31 (b)) —
    2,935 トークンのターンで prefill 11.3 秒を**毎ターン**払う
 
+33. ~~prompt cache~~ → **完了。エージェント経路の TTFT が 10.33 → 0.72 秒**
+   ([41](41-PROMPT-CACHE.md))。形は**その場保持の 1 エントリ・厳密な延長のみ**で、
+   追加メモリ 0 バイト・新カーネル 0 本・Gemma 0 行。
+   [34 §4-3](34-PROMPT-CACHE-ESTIMATE.md) が一番恐れた再レンダの継ぎ目は
+   **実測ではずれず**、tools + thinking + ツール応答の往復 + ストリーミングの
+   どれでも 2 ターン目以降が当たる。34 の式で 1 つ外れていたのは
+   「状態は最後の 1 トークンを食っていない」で、**幅 2 の受理で終わったパスは
+   食っている**。`--qwen-resume` 7 本 + C0 9 本、`swift test` **1,359 件**
+
 **次にやること:**
 
 | # | やること | 要るもの |
 | --- | --- | --- |
 | 29 | **層をまたぐ先読みを既定にするか** ([27 §9](27-PHASE6-THROUGHPUT.md))。**[31](31-PREFETCH-CHEAPER.md) で安くなった** — preview の select を出さない広い経路 (`TF_QWEN_EXPERT_PREFETCH=8 TF_QWEN_PREVIEW_WIDE=1`) で **+8.4% (56 tok) / +11.2% (60 tok) / +22.3% (48 tok) / +10.5% (498 tok) / +15.8% (2,698 tok)**、出力もヒット率もメモリも n8 と同一。**N は 8 のまま** (9〜16 位は当たるが写像が陰に入りきらない、[31 §2](31-PREFETCH-CHEAPER.md))、**d=2 とリトライは計器で落ちた** ([31 §1](31-PREFETCH-CHEAPER.md))。残る対価は予測 GEMV だけ | ユーザー判断 |
-| 31 | **NVMAI からの移植** ([32](32-NVMAI-ADOPT.md))。(a) ~~判定線~~ → **済んだ。**P1 78.70%、そして **[33 §3-6](33-MTP-ACCEPTANCE.md) / [§3-7](33-MTP-ACCEPTANCE.md) の実測 2 本も済んだ** — GDN の snapshot/restore は**コピー 0 回**にでき (0.28%)、幅 2 の 1 パスは **1.27〜1.30 倍**で和集合の予測より軽い。**取り分は +15〜29%**。残るのは幅 2 の頭 (測定 3)、(b) **prompt cache の机上が出た** ([34](34-PROMPT-CACHE-ESTIMATE.md): 取り分 最大 9.2 秒、追加 0 バイト、Swift 約 200 行・カーネル 0 本、最大の危険は再レンダの継ぎ目)、(c) decode の hit-fixup は未着手、(d) 測定は interleaved A/B を既定に | ユーザー判断 |
+| 31 | **NVMAI からの移植** ([32](32-NVMAI-ADOPT.md))。**(b) prompt cache は [41](41-PROMPT-CACHE.md) で入った** (その場保持・厳密な延長のみ)。残るのは (c) と、2 本目の会話を持つ形 ([41 §8](41-PROMPT-CACHE.md) #1)。(a) ~~判定線~~ → **済んだ。**P1 78.70%、そして **[33 §3-6](33-MTP-ACCEPTANCE.md) / [§3-7](33-MTP-ACCEPTANCE.md) の実測 2 本も済んだ** — GDN の snapshot/restore は**コピー 0 回**にでき (0.28%)、幅 2 の 1 パスは **1.27〜1.30 倍**で和集合の予測より軽い。**取り分は +15〜29%**。残るのは幅 2 の頭 (測定 3)、(b) **prompt cache の机上が出た** ([34](34-PROMPT-CACHE-ESTIMATE.md): 取り分 最大 9.2 秒、追加 0 バイト、Swift 約 200 行・カーネル 0 本、最大の危険は再レンダの継ぎ目)、(c) decode の hit-fixup は未着手、(d) 測定は interleaved A/B を既定に | ユーザー判断 |
 | 28 | **候補追加の可否 2 件** (どちらも既定は変えない): `allowedExpertCacheSlots` に 48、`allowedPrefillChunkTokens` に 4096。48 の押しは弱い ([27 §6-2](27-PHASE6-THROUGHPUT.md))、4096 は prefill が素直に伸びる見込み ([27 §6-3](27-PHASE6-THROUGHPUT.md)) | ユーザー判断 |
 | 16 | ~~**線形注意 30 層の締め方の判断**~~ → **2026-08-22 のユーザー判断で保留。**周辺まで数えると 159.4 ms で Phase 4 の出口条件を外れ、再帰カーネル単体は 125.7 ms で [05 §2](05-RISKS.md) #2 の内側 ([17 §4-2](17-PHASE2-KERNELS.md))。**放置してよい理由が 1 つ増えた**: prefill 全体の GPU 時間はチャンク 2048 で 5,036 ms ([24 §3](24-PREFILL-MOE-PATH.md)) なので、**159.4 ms はその約 3%** (別々に測った 2 つの比なので **導出**)。どちらの定義で締めても prefill 全体はほとんど動かない — chunkwise 形の FLOP 2 倍を払う理由はこの比率では出てこない | 保留 |
 | 26 | **`tool_choice: required` の前置きの締め方の判断** ([26 §6-1](26-PHASE8-SERVER.md))。案 A は前置きを `responseFormatGrammar` と同じ `(!</think>* </think> [ \t\n]{0,20})?` に揃える (thinking off なら 1 手目から呼び出しが強制される) が、チェックポイント自身のシステムプロンプトと食い違い、既存の検査 2 本が落ちる。案 B は現状維持 | ユーザー判断 |

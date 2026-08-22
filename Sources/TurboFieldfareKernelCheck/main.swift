@@ -1499,6 +1499,24 @@ if let index = arguments.firstIndex(where: { $0 == "--qwen-decode" || $0 == "--q
 // whole-vocabulary mask, the masked re-score of the same hidden row, and
 // `ConstraintGate`'s stop-token rule. `--qwen-constrain-new N` shortens it,
 // `--qwen-decode-slots N` changes the expert cache.
+// `--qwen-resume <model.gturbo>` splits one prompt across two requests and
+// checks the answer does not move (`docs/qwen35moe/41-PROMPT-CACHE.md`).
+if let index = arguments.firstIndex(of: "--qwen-resume"), index + 1 < arguments.count {
+    var slots = 32
+    if let i = arguments.firstIndex(of: "--qwen-decode-slots"), i + 1 < arguments.count,
+       let parsed = Int(arguments[i + 1]) {
+        slots = parsed
+    }
+    var new = 12
+    if let i = arguments.firstIndex(of: "--qwen-resume-new"), i + 1 < arguments.count,
+       let parsed = Int(arguments[i + 1]) {
+        new = parsed
+    }
+    exit(try runQwenResumeCheck(modelPath: arguments[index + 1],
+                                slotCount: slots,
+                                maxNewTokens: new) ? 0 : 1)
+}
+
 if let index = arguments.firstIndex(of: "--qwen-constrain"), index + 1 < arguments.count {
     var slots = 32
     if let i = arguments.firstIndex(of: "--qwen-decode-slots"), i + 1 < arguments.count,
