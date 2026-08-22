@@ -332,6 +332,41 @@ python3 Scripts/demo/serve.py     # http://127.0.0.1:8799/
 | prompt cache | **ある。ただし「厳密な延長」だけ** ([docs/qwen35moe/41](qwen35moe/41-PROMPT-CACHE.md))。再帰状態は巻き戻せないので**部分再利用が無い** — 新しいプロンプトが前回の続きでなければ `cached=0` になる (Gemma のような最長共通接頭辞ではない)。ミスの理由は stderr の `prompt cache miss diverged_at=… held=…` が名指す |
 | サンプラ | 受理して無視 (常に greedy)。完了行の `approx="sampling/greedy-only: …"` がそれを言う |
 
+### コンテキスト長 — 64K までは無料、128K は decode が半分になる (**実測(手元)**)
+
+Gemma の §2 は「コンテキストを伸ばしたらスロットを削る」だったが、この家族は
+**KV が 10 層ぶんしか無い** (20,480 B/token、[docs/qwen35moe/34](qwen35moe/34-PROMPT-CACHE-ESTIMATE.md) §2-1)
+ので、128K でも 32 スロットのまま**起動する**。問題は起動ではなく速度である:
+
+| `--ctx-size` | KV | Metal peak | decode (エージェント形の会話) |
+| ---: | ---: | ---: | ---: |
+| 32,768 | 0.67 GB | — | 15.3 / 15.4 / 17.1 tok/s |
+| 65,536 | 1.34 GB | 1.94 GB | 14.4 / 14.1 / 15.7 tok/s |
+| 131,072 | 2.68 GB | 3.37 GB | **6.7 / 7.0 / 7.3 tok/s** |
+
+同じ仕事をしている。CLI で同じプロンプトを 64K と 128K で流すと、**答えも
+受理率も常駐の出入りも 1 つも変わらないのに tok/s だけ 16.70 → 8.24 になる**
+(`--max-context`、a1、96 トークン)。増えているのは確保した KV だけで、
+`commit` は 24.4 → 29.0 ms/tok しか動かない — 残りはカーネルの中で待っている。
+
+**この機体の `iogpu.wired_limit_mb` は既定 8192 (= 8 GiB) で、再起動で戻る**
+([[wired-limit-for-48-slots]] と同じ話)。128K の内訳は
+常駐 2.18 + KV 2.50 + MTP 0.45 + 再帰 0.06 + scratch 0.25 + 常駐要求 2.11 =
+**約 7.6 GiB** で上限の 94%、64K は 6.3 GiB (79%) である。**崖の位置は
+その比と整合するが、機序は未確認** — 確かめるには
+
+```bash
+sudo sysctl iogpu.wired_limit_mb=14336     # 再起動で 8192 に戻る
+```
+
+を上げてから測り直す。**未測定。**
+
+したがって:
+
+- **常用は 32K か 64K。**エージェントの 1 会話はたいてい収まり、prompt cache が
+  効くので長い会話でも TTFT は伸びない
+- **128K は「入る」が「速い」ではない。**長大な文脈を 1 度読ませたいときだけ
+
 pi 側は `~/.pi/agent/models.json` に provider を 1 つ足してある
 (`local-turbofieldfare-ornith` → 8092、`reasoning: true`、`input: ["text"]`):
 
