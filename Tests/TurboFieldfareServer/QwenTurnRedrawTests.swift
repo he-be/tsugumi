@@ -3,6 +3,21 @@ import Testing
 @testable import TurboFieldfare
 @testable import TurboFieldfareServerCore
 
+/// The checkpoint's tokenizer sidecar. It ships inside the repacked
+/// `.gturbo`, which lives under `scratch/` and is not in the repository, so a
+/// checkout that has not installed Ornith has nothing to load here.
+private enum OrnithTokenizerSidecar {
+    static let folder = URL(fileURLWithPath: "scratch/ornith-oq4e-g64.gturbo")
+        .appendingPathComponent("tokenizer")
+
+    /// Whether the sidecar is installed. The claim it gates is about *this*
+    /// checkpoint's template, and no other tokenizer can stand in for it, so
+    /// the suite is skipped rather than failed when the sidecar is absent.
+    static var isInstalled: Bool {
+        FileManager.default.fileExists(atPath: folder.appendingPathComponent("tokenizer.json").path)
+    }
+}
+
 /// INV-1 for Ornith: **describing a finished turn again == generating it.**
 ///
 /// `PromptTokenInvariantTests` makes this claim for Gemma and nothing made it
@@ -14,15 +29,22 @@ import Testing
 ///
 /// These need the checkpoint's tokenizer and template and nothing else: no
 /// weights, no Metal. The claim is only ever about two strings.
-@Suite("Ornith turn redraw")
+@Suite("Ornith turn redraw",
+       .enabled(if: OrnithTokenizerSidecar.isInstalled,
+                "needs the Ornith tokenizer sidecar under scratch/"))
 struct QwenTurnRedrawTests {
-    private static let tokenizerFolder = URL(fileURLWithPath: "scratch/ornith-oq4e-g64.gturbo")
-        .appendingPathComponent("tokenizer")
+    /// One load for the whole suite. swift-testing builds a fresh instance for
+    /// every test, and this checkpoint's `tokenizer.json` is 12 MB: parsing it
+    /// once per test was nearly all of this suite's wall clock. The tokenizer
+    /// is read-only, so the tests share the one value.
+    private static let shared = Task {
+        try await QwenTokenizer.load(from: OrnithTokenizerSidecar.folder)
+    }
 
     private let tokenizer: QwenTokenizer
 
     init() async throws {
-        tokenizer = try await QwenTokenizer.load(from: Self.tokenizerFolder)
+        tokenizer = try await Self.shared.value
     }
 
     // MARK: - The two sides

@@ -1,5 +1,6 @@
 import Testing
 import Accelerate
+import Dispatch
 import Foundation
 import Metal
 @testable import TurboFieldfare
@@ -382,60 +383,67 @@ import TurboFieldfareValidationSupport
     private static func reference(_ fixture: Fixture) -> [Float] {
         var out = [Float](repeating: 0, count: fixture.chunk * fixture.qHeads * fixture.headDim)
         let qPerKV = fixture.qHeads / fixture.kvHeads
-        for t in 0..<fixture.chunk {
-            let absQ = fixture.start + t
-            let first: Int
-            if fixture.window == 0 {
-                first = 0
-            } else {
-                first = max(0, absQ + 1 - fixture.window)
-            }
-            let last = min(fixture.kvValid, absQ + 1)
-            for qh in 0..<fixture.qHeads {
-                let kvh = qh / qPerKV
-                let qBase = t * fixture.qStride + qh * fixture.headDim
-                let kvBase = kvh * fixture.headDim
-                let keyCount = last - first
-                guard keyCount > 0 else { continue }
+        out.withUnsafeMutableBufferPointer { outBuffer in
+            // One query row per iteration: each writes only its own heads, and
+            // reads nothing another row writes. The widest case here is 33
+            // queries x 16 heads over a 1024-key window, which is most of this
+            // suite's wall clock when it runs on one core.
+            nonisolated(unsafe) let output = outBuffer.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: fixture.chunk) { t in
+                let absQ = fixture.start + t
+                let first: Int
+                if fixture.window == 0 {
+                    first = 0
+                } else {
+                    first = max(0, absQ + 1 - fixture.window)
+                }
+                let last = min(fixture.kvValid, absQ + 1)
+                for qh in 0..<fixture.qHeads {
+                    let kvh = qh / qPerKV
+                    let qBase = t * fixture.qStride + qh * fixture.headDim
+                    let kvBase = kvh * fixture.headDim
+                    let keyCount = last - first
+                    guard keyCount > 0 else { continue }
 
-                // Score row: one dot product per key position.
-                var weights = [Float](repeating: 0, count: keyCount)
-                fixture.q.withUnsafeBufferPointer { pq in
-                    fixture.k.withUnsafeBufferPointer { pk in
-                        weights.withUnsafeMutableBufferPointer { pw in
-                            for i in 0..<keyCount {
-                                let kBase = (first + i) * fixture.kvStride + kvBase
-                                var dot: Float = 0
-                                vDSP_dotpr(pq.baseAddress! + qBase, 1,
-                                           pk.baseAddress! + kBase, 1,
-                                           &dot, vDSP_Length(fixture.headDim))
-                                pw[i] = dot * fixture.scale
+                    // Score row: one dot product per key position.
+                    var weights = [Float](repeating: 0, count: keyCount)
+                    fixture.q.withUnsafeBufferPointer { pq in
+                        fixture.k.withUnsafeBufferPointer { pk in
+                            weights.withUnsafeMutableBufferPointer { pw in
+                                for i in 0..<keyCount {
+                                    let kBase = (first + i) * fixture.kvStride + kvBase
+                                    var dot: Float = 0
+                                    vDSP_dotpr(pq.baseAddress! + qBase, 1,
+                                               pk.baseAddress! + kBase, 1,
+                                               &dot, vDSP_Length(fixture.headDim))
+                                    pw[i] = dot * fixture.scale
+                                }
                             }
                         }
                     }
-                }
 
-                // Softmax, shifted by the row maximum.
-                var maxScore: Float = 0
-                vDSP_maxv(weights, 1, &maxScore, vDSP_Length(keyCount))
-                var negMax = -maxScore
-                vDSP_vsadd(weights, 1, &negMax, &weights, 1, vDSP_Length(keyCount))
-                weights = vForce.exp(weights)
-                var denom: Float = 0
-                vDSP_sve(weights, 1, &denom, vDSP_Length(keyCount))
+                    // Softmax, shifted by the row maximum.
+                    var maxScore: Float = 0
+                    vDSP_maxv(weights, 1, &maxScore, vDSP_Length(keyCount))
+                    var negMax = -maxScore
+                    vDSP_vsadd(weights, 1, &negMax, &weights, 1, vDSP_Length(keyCount))
+                    weights = vForce.exp(weights)
+                    var denom: Float = 0
+                    vDSP_sve(weights, 1, &denom, vDSP_Length(keyCount))
 
-                // Output column d is the weight row dotted against V's column
-                // d, which is strided by the padded KV token stride.
-                let outBase = (t * fixture.qHeads + qh) * fixture.headDim
-                weights.withUnsafeBufferPointer { pw in
-                    fixture.v.withUnsafeBufferPointer { pv in
-                        let vColumn = pv.baseAddress! + first * fixture.kvStride + kvBase
-                        for d in 0..<fixture.headDim {
-                            var acc: Float = 0
-                            vDSP_dotpr(pw.baseAddress!, 1,
-                                       vColumn + d, vDSP_Stride(fixture.kvStride),
-                                       &acc, vDSP_Length(keyCount))
-                            out[outBase + d] = denom > 0 ? acc / denom : 0
+                    // Output column d is the weight row dotted against V's column
+                    // d, which is strided by the padded KV token stride.
+                    let outBase = (t * fixture.qHeads + qh) * fixture.headDim
+                    weights.withUnsafeBufferPointer { pw in
+                        fixture.v.withUnsafeBufferPointer { pv in
+                            let vColumn = pv.baseAddress! + first * fixture.kvStride + kvBase
+                            for d in 0..<fixture.headDim {
+                                var acc: Float = 0
+                                vDSP_dotpr(pw.baseAddress!, 1,
+                                           vColumn + d, vDSP_Stride(fixture.kvStride),
+                                           &acc, vDSP_Length(keyCount))
+                                (output + outBase + d).pointee = denom > 0 ? acc / denom : 0
+                            }
                         }
                     }
                 }
