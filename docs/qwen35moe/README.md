@@ -157,6 +157,7 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 21 | [25-CLI-TOOLS.md](25-CLI-TOOLS.md) | **実測(手元)。**マスクつきの LM head と GEN-7 の棄却経路、CLI の `--tools` / `--tool-choice`、検査 6 + 9 本 (負例 3)、実物が書いた呼び出しと「文法が効かなかった」検体 |
 | 22 | [26-PHASE8-SERVER.md](26-PHASE8-SERVER.md) | **実測(手元)。**`QwenServerSession` と `QwenGenerationPlan`、生成ループを 1 本にした話、できないこと 4 つ (画像 / 投機 / prompt cache / サンプラ)、実物が HTTP で答えた 13 件、`tool_choice: required` が前置きで回る件 |
 | 23 | [27-PHASE6-THROUGHPUT.md](27-PHASE6-THROUGHPUT.md) | **実測(手元)。**実タスク 4 本の prefill と生成、直列だった 2 か所 (遅延 join / 読みの重ね)、A/B の数字、スロット・チャンク・read advice・腕のスイープ、机上のヒット率カーブ、**残った取得の解剖 (ページ写像) と層をまたぐ先読み** (§9) |
+| 24 | [28-PREFETCH-IDEAS.md](28-PREFETCH-IDEAS.md) | **検討 (実測なし)。**先読みの符号が Gemma と Ornith で反転した機序 (待ちの「通貨」)、Gemma で死んだ手の復活判定、N>8 / d=2 / 予測の固定費の攻め手と実験手順。#29 の判断材料 |
 
 ## 表記
 
