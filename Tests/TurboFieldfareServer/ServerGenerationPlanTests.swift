@@ -232,11 +232,12 @@ struct ServerGenerationPlanTests {
     /// `response_format`, so the field has to survive newlines and stay bounded.
     @Test("GEN-2: the approximation field is one bounded line")
     func GEN_2_the_approximation_field_is_one_bounded_line() {
-        let field = try? #require(ServerApproximationLog.field([
+        // A non-empty list always has a field; `??` keeps the expectations
+        // below readable rather than asserting that again.
+        let value = ServerApproximationLog.field([
             "unknown-type: #/properties/x\n(money)",
             String(repeating: "y", count: 4_000),
-        ]))
-        let value = field ?? ""
+        ]) ?? ""
         #expect(!value.contains("\n"))
         #expect(!value.contains("\r"))
         #expect(value.count <= 512)

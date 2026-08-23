@@ -584,7 +584,7 @@ extension QwenForwardRunner {
             // A guess for *this* layer has to have landed before this layer
             // plans, or the plan can hand out the slot the read is filling.
             if let started = chunkPrefetch, started.layer == L {
-                try stage(.expertIO) {
+                stage(.expertIO) {
                     let began = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                     _ = try? started.handle.wait()
                     notePrefetchWait(nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - began)

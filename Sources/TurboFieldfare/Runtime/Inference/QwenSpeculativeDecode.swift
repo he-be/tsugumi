@@ -301,7 +301,8 @@ extension QwenForwardRunner {
                     // The mask, when there is one, is filled here and reused by
                     // `p` below: the gate accepts nothing between the two.
                     q = try sampler.categorical(row: SamplingRow.draft.rawValue,
-                                                config: config, gate: gate)
+                                                config: config, gate: gate,
+                                                position: produced.count)
                     guard !q.isEmpty else {
                         throw GenerationConstraintError.noAllowedToken(position: produced.count)
                     }
@@ -422,7 +423,8 @@ extension QwenForwardRunner {
                 // accepted nothing since (§2-3).
                 let p = try sampler.categorical(row: SamplingRow.target.rawValue,
                                                 config: config, gate: gate,
-                                                reuseMask: gate != nil)
+                                                reuseMask: gate != nil,
+                                                position: produced.count)
                 guard !p.isEmpty else {
                     throw GenerationConstraintError.noAllowedToken(position: produced.count)
                 }
@@ -488,7 +490,8 @@ extension QwenForwardRunner {
                     if let config = sampling, let sampler {
                         let pNext = try sampler.categorical(
                             row: SamplingRow.speculative.rawValue,
-                            config: config, gate: gate)
+                            config: config, gate: gate,
+                            position: produced.count)
                         guard !pNext.isEmpty else {
                             throw GenerationConstraintError.noAllowedToken(
                                 position: produced.count)

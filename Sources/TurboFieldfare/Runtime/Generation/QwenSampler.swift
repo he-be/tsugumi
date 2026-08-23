@@ -98,6 +98,11 @@ public final class QwenSampler {
     /// Reused mask storage for the constrained path, so a rejection allocates
     /// nothing after the first.
     private var allowedFlags: [Bool] = []
+    /// The logits each probs row was softmaxed from, by row. `encodeProbabilities`
+    /// is the only writer of `probsBuffer`, so this cannot name a row the probs
+    /// did not come from. It is what a masked renormalization falls back to when
+    /// the FP16 row has no allowed mass left to divide.
+    private var rowLogits: [Int: (buffer: MTLBuffer, offset: Int)] = [:]
 
     public init(context: MetalContext, vocab: Int, maxRows: Int) throws {
         self.vocab = vocab
@@ -122,6 +127,7 @@ public final class QwenSampler {
                              destinationRow: Int = 0) {
         let rowBytes = vocab * MemoryLayout<Float16>.size
         for row in 0..<rows {
+            rowLogits[destinationRow + row] = (logits, logitsOffset + row * rowBytes)
             softmax.encode(commandBuffer: commandBuffer,
                            logits: logits, logitsOffset: logitsOffset + row * rowBytes,
                            probs: probsBuffer,
@@ -151,10 +157,17 @@ public final class QwenSampler {
     /// loop needs, where `q` (the draft's distribution) and `p` (the target's
     /// at the same position) are asked in that order with nothing emitted in
     /// between (`docs/qwen35moe/42-SAMPLING.md` §2-3).
+    ///
+    /// `position` is the generation position, and is only ever used to name the
+    /// place in `GenerationConstraintError`. It is not the row: the three rows
+    /// (`target`, `speculative`, `draft`) are three distributions at one
+    /// position, and reporting a row number as a position sent one real
+    /// investigation to the wrong end of the loop.
     func categorical(row: Int,
                      config: GenerationConfig,
                      gate: ConstraintGate?,
-                     reuseMask: Bool = false) throws -> QwenCategorical {
+                     reuseMask: Bool = false,
+                     position: Int = 0) throws -> QwenCategorical {
         let base = probsBuffer.contents()
             .advanced(by: row * vocab * MemoryLayout<Float16>.size)
             .bindMemory(to: Float16.self, capacity: vocab)
@@ -163,7 +176,7 @@ public final class QwenSampler {
         // one. Kept so evaluation (S4) runs the same code path as production
         // with one parameter changed.
         if config.temperature <= 0 {
-            let best = try argmax(base, gate: gate)
+            let best = try argmax(base, row: row, gate: gate, position: position)
             return QwenCategorical(ids: [best], weights: [1])
         }
 
@@ -176,16 +189,28 @@ public final class QwenSampler {
 
         if let gate {
             if !reuseMask || allowedFlags.count != vocab { try fillAllowed(gate) }
-            try allowedFlags.withUnsafeBufferPointer { flags in
+            var allowedCount = 0
+            allowedFlags.withUnsafeBufferPointer { flags in
                 for index in 0..<vocab where flags[index] {
+                    allowedCount += 1
                     let p = Float(base[index])
                     guard p > 0 else { continue }
                     allowedMass += p
                     insert(&top, id: Int32(index), p: p, k: k)
                 }
             }
-            guard allowedMass > 0 else {
-                throw GenerationConstraintError.noAllowedToken(position: row)
+            // GEN-7's error is "the mask allows nothing", and that is this
+            // count — not the mass. The two used to be conflated.
+            guard allowedCount > 0 else {
+                throw GenerationConstraintError.noAllowedToken(position: position)
+            }
+            if allowedMass <= 0 {
+                // The mask is not empty; every allowed id simply sits under
+                // FP16's floor (2^-24) in this row's softmax, so there is
+                // nothing left to renormalize. Go back to the logits, the way
+                // the other family's `Sampler.maskedSoftmax` always does.
+                return try maskedCategoricalFromLogits(row: row, config: config, k: k,
+                                                       position: position)
             }
         } else {
             for index in 0..<vocab {
@@ -196,26 +221,33 @@ public final class QwenSampler {
             allowedMass = 1
         }
         guard !top.isEmpty else { return QwenCategorical(ids: [], weights: []) }
+        return nucleus(top, mass: allowedMass, config: config)
+    }
 
+    /// Top-p against the (masked) full-vocabulary mass, then temperature, then
+    /// normalize — the tail both renormalizations share.
+    private func nucleus(_ top: [(id: Int32, p: Float)],
+                         mass: Float,
+                         config: GenerationConfig) -> QwenCategorical {
         // Top-p against the (masked) full-vocabulary mass, inclusive of the
         // element that crosses it.
         var kept = top.count
         if let topP = config.topP, topP > 0, topP < 1 {
             var cumulative: Float = 0
             for index in 0..<top.count {
-                cumulative += top[index].p / allowedMass
+                cumulative += top[index].p / mass
                 if cumulative >= topP { kept = index + 1; break }
             }
         }
 
         // Temperature, then normalize. `p^(1/T)` is scale-invariant in the
         // mask's normalizer only up to the exponent, so the division by
-        // `allowedMass` happens first — the same order the masked softmax uses.
+        // `mass` happens first — the same order the masked softmax uses.
         let invT = 1 / config.temperature
         var weights = [Float](repeating: 0, count: kept)
         var total: Float = 0
         for index in 0..<kept {
-            let p = top[index].p / allowedMass
+            let p = top[index].p / mass
             let w = config.temperature == 1 ? p : powf(p, invT)
             weights[index] = w
             total += w
@@ -225,6 +257,48 @@ public final class QwenSampler {
         }
         return QwenCategorical(ids: (0..<kept).map { top[$0].id },
                                weights: weights.map { $0 / total })
+    }
+
+    /// The masked categorical rebuilt from this row's logits, for the one case
+    /// the FP16 probabilities cannot answer.
+    ///
+    /// Mirrors `Sampler.maskedSoftmax`: the shift is the maximum over the
+    /// **allowed** ids, so the id that set it contributes `exp(0)` and the
+    /// denominator is at least 1. Nothing can underflow, and the ordering is
+    /// the logits' own rather than a tie at zero.
+    ///
+    /// Reached only when the row left no allowed mass at all, so it changes no
+    /// draw that had any: every currently-drawable position keeps its numbers.
+    private func maskedCategoricalFromLogits(row: Int,
+                                             config: GenerationConfig,
+                                             k: Int,
+                                             position: Int) throws -> QwenCategorical {
+        guard let source = rowLogits[row] else {
+            // No `encodeProbabilities` wrote this row, so there is no logit to
+            // rank the allowed ids by. Refusing beats inventing an order.
+            throw GenerationConstraintError.noAllowedToken(position: position)
+        }
+        let logits = source.buffer.contents()
+            .advanced(by: source.offset)
+            .bindMemory(to: Float16.self, capacity: vocab)
+
+        var top: [(id: Int32, p: Float)] = []
+        top.reserveCapacity(k + 1)
+        var mass: Float = 0
+        allowedFlags.withUnsafeBufferPointer { flags in
+            var maxLogit = -Float.infinity
+            for index in 0..<vocab where flags[index] {
+                let z = Float(logits[index])
+                if z > maxLogit { maxLogit = z }
+            }
+            for index in 0..<vocab where flags[index] {
+                let p = expf(Float(logits[index]) - maxLogit)
+                mass += p
+                insert(&top, id: Int32(index), p: p, k: k)
+            }
+        }
+        guard !top.isEmpty, mass > 0 else { return QwenCategorical(ids: [], weights: []) }
+        return nucleus(top, mass: mass, config: config)
     }
 
     /// One uniform in [0, 1), from the same generator the `sample` kernel uses,
@@ -264,7 +338,9 @@ public final class QwenSampler {
     }
 
     private func argmax(_ probs: UnsafeMutablePointer<Float16>,
-                        gate: ConstraintGate?) throws -> Int32 {
+                        row: Int,
+                        gate: ConstraintGate?,
+                        position: Int) throws -> Int32 {
         var best: Float = -.infinity
         var bestID: Int32 = -1
         if let gate {
@@ -275,14 +351,47 @@ public final class QwenSampler {
                     if p > best { best = p; bestID = Int32(index) }
                 }
             }
+            guard bestID >= 0 else {
+                throw GenerationConstraintError.noAllowedToken(position: position)
+            }
+            if best <= 0 {
+                // Every allowed id underflowed FP16, so `best` is a tie at zero
+                // and `bestID` is just the lowest allowed id — an order the
+                // model never expressed. Rank them by logit instead, the same
+                // fallback the sampled path takes.
+                return try maskedArgmaxFromLogits(row: row, position: position)
+            }
         } else {
             for index in 0..<vocab {
                 let p = Float(probs[index])
                 if p > best { best = p; bestID = Int32(index) }
             }
+            guard bestID >= 0 else {
+                throw GenerationConstraintError.noAllowedToken(position: position)
+            }
+        }
+        return bestID
+    }
+
+    /// The allowed id with the largest logit, ties to the lower id — the
+    /// tie-break `insert` and the `sample` kernel's `simd_min` both use.
+    private func maskedArgmaxFromLogits(row: Int, position: Int) throws -> Int32 {
+        guard let source = rowLogits[row] else {
+            throw GenerationConstraintError.noAllowedToken(position: position)
+        }
+        let logits = source.buffer.contents()
+            .advanced(by: source.offset)
+            .bindMemory(to: Float16.self, capacity: vocab)
+        var best: Float = -.infinity
+        var bestID: Int32 = -1
+        allowedFlags.withUnsafeBufferPointer { flags in
+            for index in 0..<vocab where flags[index] {
+                let z = Float(logits[index])
+                if z > best { best = z; bestID = Int32(index) }
+            }
         }
         guard bestID >= 0 else {
-            throw GenerationConstraintError.noAllowedToken(position: 0)
+            throw GenerationConstraintError.noAllowedToken(position: position)
         }
         return bestID
     }

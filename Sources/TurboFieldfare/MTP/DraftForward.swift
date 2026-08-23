@@ -388,9 +388,9 @@ public final class DraftForward {
                         eps: eps)
         try mlp.encode(commandBuffer: cb,
                        x: normed,
-                       gate: try projection(try weights.gateProj(layer: L)),
-                       up: try projection(try weights.upProj(layer: L)),
-                       down: try projection(try weights.downProj(layer: L)),
+                       gate: projection(try weights.gateProj(layer: L)),
+                       up: projection(try weights.upProj(layer: L)),
+                       down: projection(try weights.downProj(layer: L)),
                        y: mlpOut,
                        scratchGate: mlpScratchA,
                        scratchUp: mlpScratchB,

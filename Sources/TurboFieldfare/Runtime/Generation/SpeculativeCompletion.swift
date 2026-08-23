@@ -146,7 +146,7 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
             "a constrained request needs real logits, and this producer runs the "
             + "fused greedy head; construct the runner with forceLogitsHead: true")
     }
-    guard var drafting = producer as? any SpeculativeDrafting else {
+    guard let drafting = producer as? any SpeculativeDrafting else {
         throw SpeculativeDraftError.unsupportedConfig(
             "this producer cannot draft; run with --draft-block-size 0")
     }

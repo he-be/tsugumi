@@ -455,12 +455,15 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     /// body. What it advertises is this server's own verb set — there is no
     /// DELETE — and the three headers a client of ours actually sends.
     private func writePreflight(_ context: ChannelHandlerContext) {
-        var headers = HTTPHeaders()
-        addCORSHeaders(to: &headers)
-        headers.add(name: "access-control-allow-methods", value: "GET, POST, OPTIONS")
-        headers.add(name: "access-control-allow-headers",
-                    value: "authorization, content-type, x-api-key")
-        headers.add(name: "content-length", value: "0")
+        var built = HTTPHeaders()
+        addCORSHeaders(to: &built)
+        built.add(name: "access-control-allow-methods", value: "GET, POST, OPTIONS")
+        built.add(name: "access-control-allow-headers",
+                  value: "authorization, content-type, x-api-key")
+        built.add(name: "content-length", value: "0")
+        // The write runs on the event loop, so it is handed the finished value
+        // rather than the local it was built in.
+        let headers = built
         let contextBox = SendableContext(context)
         context.eventLoop.execute {
             contextBox.value.write(self.wrapOutboundOut(.head(

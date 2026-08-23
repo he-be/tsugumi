@@ -101,15 +101,18 @@ private func mmapP5PreTouch(base: UnsafeMutableRawPointer,
                             ranges: [(offset: Int, length: Int)],
                             sink: UnsafeMutablePointer<UInt64>) {
     let pageSize = mmapProbePageSize
+    // The mapping is only read, and each iteration writes its own `sink` slot.
+    nonisolated(unsafe) let source = base
+    nonisolated(unsafe) let out = sink
     DispatchQueue.concurrentPerform(iterations: ranges.count) { index in
         let range = ranges[index]
         var acc: UInt64 = 0
         var offset = 0
         while offset < range.length {
-            acc &+= UInt64(base.load(fromByteOffset: range.offset + offset, as: UInt8.self))
+            acc &+= UInt64(source.load(fromByteOffset: range.offset + offset, as: UInt8.self))
             offset += pageSize
         }
-        sink[index] = acc
+        out[index] = acc
     }
 }
 
@@ -343,8 +346,10 @@ func runMmapP5FaultProbe(groupSize: Int, modelPath: String, rounds: Int,
             // ahead, everything at once) rather than the sum of two serials.
             var residencySet: (any MTLResidencySet)?
             let prepStart = Date()
-            var setSeconds = 0.0
-            var touchSeconds = 0.0
+            // Written on the background queues below and read only after the
+            // matching semaphore, which is the barrier between the two.
+            nonisolated(unsafe) var setSeconds = 0.0
+            nonisolated(unsafe) var touchSeconds = 0.0
             let setDone = DispatchSemaphore(value: 0)
             let touchDone = DispatchSemaphore(value: 0)
 
@@ -354,11 +359,13 @@ func runMmapP5FaultProbe(groupSize: Int, modelPath: String, rounds: Int,
                 descriptor.initialCapacity = experts
                 residencySet = try? context.device.makeResidencySet(descriptor: descriptor)
                 if let set = residencySet {
+                    nonisolated(unsafe) let residency = set
+                    nonisolated(unsafe) let buffers = named
                     DispatchQueue.global(qos: .userInitiated).async {
                         let started = Date()
-                        for buffer in named { set.addAllocation(buffer) }
-                        set.commit()
-                        set.requestResidency()
+                        for buffer in buffers { residency.addAllocation(buffer) }
+                        residency.commit()
+                        residency.requestResidency()
                         setSeconds = Date().timeIntervalSince(started)
                         setDone.signal()
                     }
@@ -370,9 +377,11 @@ func runMmapP5FaultProbe(groupSize: Int, modelPath: String, rounds: Int,
             }
 
             if arm.cpuPreTouch {
+                nonisolated(unsafe) let mapping = base
+                nonisolated(unsafe) let out = sink
                 DispatchQueue.global(qos: .userInitiated).async {
                     let started = Date()
-                    mmapP5PreTouch(base: base, ranges: adviseRanges, sink: sink)
+                    mmapP5PreTouch(base: mapping, ranges: adviseRanges, sink: out)
                     touchSeconds = Date().timeIntervalSince(started)
                     touchDone.signal()
                 }

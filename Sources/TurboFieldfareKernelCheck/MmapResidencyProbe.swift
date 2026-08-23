@@ -311,7 +311,8 @@ final class MmapPreadControl {
     func fetch(ranks: [Int]) -> Double {
         let fd = self.fd
         let stride = self.stride
-        let slots = self.slots
+        // Each iteration fills its own slot, and the buffers outlive the loop.
+        nonisolated(unsafe) let slots = self.slots
         let started = Date()
         DispatchQueue.concurrentPerform(iterations: ranks.count) { index in
             let destination = slots[index].contents()

@@ -370,7 +370,8 @@ public final class QwenForwardRunner {
         }
         let sampler = try sampler()
         if let gate, forceMask {
-            let masked = try sampler.categorical(row: row.rawValue, config: config, gate: gate)
+            let masked = try sampler.categorical(row: row.rawValue, config: config,
+                                                 gate: gate, position: position)
             guard !masked.isEmpty else {
                 throw GenerationConstraintError.noAllowedToken(position: position)
             }
@@ -378,7 +379,8 @@ public final class QwenForwardRunner {
                                                        stream: stream.rawValue)),
                     masked)
         }
-        let plain = try sampler.categorical(row: row.rawValue, config: config, gate: nil)
+        let plain = try sampler.categorical(row: row.rawValue, config: config, gate: nil,
+                                            position: position)
         guard !plain.isEmpty else {
             throw GenerationConstraintError.noAllowedToken(position: position)
         }
@@ -386,7 +388,8 @@ public final class QwenForwardRunner {
                                                       stream: stream.rawValue))
         guard let gate, !gate.allows(drawn) else { return (drawn, plain) }
         constraintRescores += 1
-        let masked = try sampler.categorical(row: row.rawValue, config: config, gate: gate)
+        let masked = try sampler.categorical(row: row.rawValue, config: config,
+                                             gate: gate, position: position)
         guard !masked.isEmpty else {
             throw GenerationConstraintError.noAllowedToken(position: position)
         }
@@ -1219,7 +1222,7 @@ public final class QwenForwardRunner {
             // layers ahead would only cost hit rate
             // (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-3).
             if let started = prefetch, started.layer == L {
-                try stage(.expertIO) {
+                stage(.expertIO) {
                     let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                     _ = try? started.handle.wait()
                     expertPrefetch.noteWait(nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
