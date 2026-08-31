@@ -61,7 +61,40 @@ public struct DecodeLoadRequest: Codable, Sendable {
     }
 }
 
+/// One completed conversation turn carried over the wire. `reasoningText`
+/// rides along on assistant turns so the service can redraw them exactly as
+/// they were generated.
+public struct DecodeChatTurn: Codable, Sendable, Equatable {
+    public var role: String
+    public var text: String
+    public var reasoningText: String?
+    public var imagePaths: [String]
+
+    public init(role: String,
+                text: String,
+                reasoningText: String? = nil,
+                imagePaths: [String] = []) {
+        self.role = role
+        self.text = text
+        self.reasoningText = reasoningText
+        self.imagePaths = imagePaths
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case role, text, reasoningText, imagePaths
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        role = try container.decode(String.self, forKey: .role)
+        text = try container.decode(String.self, forKey: .text)
+        reasoningText = try container.decodeIfPresent(String.self, forKey: .reasoningText)
+        imagePaths = try container.decodeIfPresent([String].self, forKey: .imagePaths) ?? []
+    }
+}
+
 public struct DecodeGenerationRequest: Codable, Sendable {
+    public var history: [DecodeChatTurn]
     public var prompt: String
     public var maxNewTokens: Int
     public var maxContextTokens: Int
@@ -74,13 +107,15 @@ public struct DecodeGenerationRequest: Codable, Sendable {
     public var runtimeOptions: DecodeRuntimeOptions
     public var generationID: UUID
 
-    public init(prompt: String, maxNewTokens: Int, maxContextTokens: Int,
+    public init(history: [DecodeChatTurn] = [],
+                prompt: String, maxNewTokens: Int, maxContextTokens: Int,
                 temperature: Float, topK: Int? = nil, topP: Float? = nil,
                 repetitionPenalty: Float = 1,
                 enableThinking: Bool = false,
                 imagePaths: [String] = [],
                 runtimeOptions: DecodeRuntimeOptions = DecodeRuntimeOptions(),
                 generationID: UUID = UUID()) {
+        self.history = history
         self.prompt = prompt
         self.maxNewTokens = maxNewTokens
         self.maxContextTokens = maxContextTokens
@@ -95,13 +130,14 @@ public struct DecodeGenerationRequest: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case prompt, maxNewTokens, maxContextTokens, temperature, topK, topP
+        case history, prompt, maxNewTokens, maxContextTokens, temperature, topK, topP
         case repetitionPenalty, enableThinking, imagePaths
         case runtimeOptions, generationID
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        history = try container.decodeIfPresent([DecodeChatTurn].self, forKey: .history) ?? []
         prompt = try container.decode(String.self, forKey: .prompt)
         maxNewTokens = try container.decode(Int.self, forKey: .maxNewTokens)
         maxContextTokens = try container.decode(Int.self, forKey: .maxContextTokens)

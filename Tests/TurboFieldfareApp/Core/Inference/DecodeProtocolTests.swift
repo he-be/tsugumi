@@ -31,6 +31,46 @@ import TurboFieldfareDecodeProtocol
         #expect(decoded.forceLogitsHead)
     }
 
+    @Test func generationRequestRoundTripPreservesHistory() throws {
+        let request = DecodeGenerationRequest(
+            history: [
+                DecodeChatTurn(role: "user", text: "q1",
+                               imagePaths: ["/tmp/a.png"]),
+                DecodeChatTurn(role: "assistant", text: "a1",
+                               reasoningText: "r1"),
+            ],
+            prompt: "q2",
+            maxNewTokens: 64,
+            maxContextTokens: 4096,
+            temperature: 1)
+
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.write(
+            contentsOf: DecodeFrameCodec.encode(request))
+        try pipe.fileHandleForWriting.close()
+        let decoded = try DecodeFrameCodec.read(
+            DecodeGenerationRequest.self,
+            from: pipe.fileHandleForReading)
+
+        #expect(decoded.history == request.history)
+        #expect(decoded.prompt == "q2")
+    }
+
+    @Test func generationRequestWithoutHistoryKeyDecodesAsEmpty() throws {
+        let json = """
+        {"prompt":"solo","maxNewTokens":8,"maxContextTokens":1024,
+         "temperature":1,"repetitionPenalty":1,
+         "runtimeOptions":{"expertCacheSlots":16,"expertCachePolicy":"lfu",
+          "prefillEnabled":true,"prefillChunkTokens":2048,
+          "rdadvisePolicy":"off","modelVerification":"full-sha256"},
+         "generationID":"\(UUID().uuidString)"}
+        """
+        let decoded = try JSONDecoder().decode(
+            DecodeGenerationRequest.self, from: Data(json.utf8))
+        #expect(decoded.history.isEmpty)
+        #expect(decoded.prompt == "solo")
+    }
+
     @Test func terminalEventRoundTripPreservesDiagnosticsAndMemory() throws {
         let runner = DecodeRunnerDiagnostics(
             cb1MillisecondsPerToken: 0.6,

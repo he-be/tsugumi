@@ -24,6 +24,56 @@ import Testing
         #expect(request.isPureGreedy)
     }
 
+    @Test func historyImagesOnAssistantTurnRejected() {
+        let request = AppGenerationRequest(
+            modelDirectory: existingDirectory,
+            history: [
+                AppChatTurn(role: .user, text: "look"),
+                AppChatTurn(role: .assistant, text: "seen",
+                            imagePaths: [existingDirectory.path]),
+            ],
+            prompt: "next")
+        #expect(throws: AppInferenceError.self) {
+            try request.validate(requireModelDirectory: false)
+        }
+    }
+
+    @Test func historyStartingWithAssistantTurnRejected() {
+        let request = AppGenerationRequest(
+            modelDirectory: existingDirectory,
+            history: [AppChatTurn(role: .assistant, text: "unprompted")],
+            prompt: "next")
+        #expect(throws: AppInferenceError.self) {
+            try request.validate(requireModelDirectory: false)
+        }
+    }
+
+    @Test func historyWithMissingImageFileRejected() {
+        let request = AppGenerationRequest(
+            modelDirectory: existingDirectory,
+            history: [
+                AppChatTurn(role: .user, text: "look",
+                            imagePaths: ["/nonexistent/image-\(UUID()).png"]),
+                AppChatTurn(role: .assistant, text: "seen"),
+            ],
+            prompt: "next")
+        #expect(throws: AppInferenceError.self) {
+            try request.validate(requireModelDirectory: false)
+        }
+    }
+
+    @Test func multiTurnHistoryWithReasoningValidates() throws {
+        let request = AppGenerationRequest(
+            modelDirectory: existingDirectory,
+            history: [
+                AppChatTurn(role: .user, text: "q1"),
+                AppChatTurn(role: .assistant, text: "a1",
+                            reasoningText: "thinking about q1"),
+            ],
+            prompt: "q2")
+        try request.validate(requireModelDirectory: false)
+    }
+
     @Test func emptyPromptRejected() {
         let request = AppGenerationRequest(modelDirectory: existingDirectory, prompt: "   ")
         #expect(throws: AppInferenceError.self) {

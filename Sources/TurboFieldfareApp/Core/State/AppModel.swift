@@ -13,7 +13,14 @@ public final class AppModel {
     public var modelPathText: String
     public private(set) var selectedModelKind: AppModelKind = .defaultKind
     public var promptText: String = ""
+    /// Completed turns of the current conversation, oldest first. The live
+    /// turn stays in `outputPromptText` / `outputText` until the next `run()`
+    /// folds it in, so the post-completion UI keeps working on the live
+    /// fields exactly as before.
+    public private(set) var conversationTurns: [AppChatTurn] = []
     public private(set) var outputPromptText: String = ""
+    /// Images the live turn was sent with; folded into history with it.
+    public private(set) var outputImagePaths: [String] = []
     public var outputText: String = ""
     public private(set) var outputReasoningText: String = ""
     public var runState: RunState = .idle
@@ -232,7 +239,7 @@ public final class AppModel {
     public var canCancel: Bool { isRunning && !isCancellationPending }
 
     public var hasOutputTranscript: Bool {
-        !outputPromptText.isEmpty || !outputText.isEmpty
+        !conversationTurns.isEmpty || !outputPromptText.isEmpty || !outputText.isEmpty
     }
 
     public var outputResponsePlainText: String {
@@ -240,17 +247,17 @@ public final class AppModel {
     }
 
     public var outputConversationPlainText: String {
-        let response = outputResponsePlainText
-        switch (outputPromptText.isEmpty, response.isEmpty) {
-        case (true, true):
-            return ""
-        case (false, true):
-            return "You:\n\(outputPromptText)"
-        case (true, false):
-            return "Answer:\n\(response)"
-        case (false, false):
-            return "You:\n\(outputPromptText)\n\nAnswer:\n\(response)"
+        var sections = conversationTurns.map { turn in
+            turn.role == .user ? "You:\n\(turn.text)" : "Answer:\n\(turn.text)"
         }
+        if !outputPromptText.isEmpty {
+            sections.append("You:\n\(outputPromptText)")
+        }
+        let response = outputResponsePlainText
+        if !response.isEmpty {
+            sections.append("Answer:\n\(response)")
+        }
+        return sections.joined(separator: "\n\n")
     }
 
     public var liveTokensPerSecond: Double {
@@ -756,12 +763,38 @@ public final class AppModel {
 
     public func clearOutput() {
         guard !isRunning else { return }
+        conversationTurns = []
         outputPromptText = ""
+        outputImagePaths = []
         outputText = ""
         outputReasoningText = ""
         generationTranscriptMailbox?.reset()
         diagnostics = nil
         error = nil
+    }
+
+    /// Moves the finished live turn into `conversationTurns` so the next
+    /// request resends it as history. A turn whose answer never produced
+    /// text or reasoning is dropped instead — resending a user turn with no
+    /// assistant turn after it would redraw a conversation the model never
+    /// saw.
+    private func foldCompletedTurnIntoHistory() {
+        let response = outputResponsePlainText
+        let reasoning = generationTranscriptMailbox?.completeReasoningText
+            ?? outputReasoningText
+        guard !outputPromptText.isEmpty else { return }
+        if !response.isEmpty || !reasoning.isEmpty {
+            conversationTurns.append(AppChatTurn(role: .user,
+                                                 text: outputPromptText,
+                                                 imagePaths: outputImagePaths))
+            conversationTurns.append(AppChatTurn(role: .assistant,
+                                                 text: response,
+                                                 reasoningText: reasoning))
+        }
+        outputPromptText = ""
+        outputImagePaths = []
+        outputText = ""
+        outputReasoningText = ""
     }
 
     public func attachImages(_ paths: [String]) {
@@ -779,6 +812,7 @@ public final class AppModel {
 
     public func run() {
         guard canRun else { return }
+        foldCompletedTurnIntoHistory()
         let request: AppGenerationRequest
         do {
             request = try makeRequest()
@@ -794,6 +828,7 @@ public final class AppModel {
 
         generationTranscriptMailbox?.reset()
         outputPromptText = request.prompt
+        outputImagePaths = request.imagePaths
         outputText = ""
         outputReasoningText = ""
         diagnostics = nil
@@ -855,6 +890,7 @@ public final class AppModel {
             : (topKEnabled && topPEnabled ? topP : nil)
         let request = AppGenerationRequest(
             modelDirectory: URL(fileURLWithPath: modelPathText),
+            history: conversationTurns,
             prompt: promptText,
             maxNewTokens: maxNewTokensOverride ?? maxContextTokens,
             maxContextTokens: maxContextTokens,

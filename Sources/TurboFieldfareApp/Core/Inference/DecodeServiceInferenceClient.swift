@@ -79,6 +79,14 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
                     let generationID = UUID()
                     generationTranscriptMailbox.reset()
                     let command = DecodeGenerationRequest(
+                        history: request.history.map { turn in
+                            DecodeChatTurn(
+                                role: turn.role.rawValue,
+                                text: turn.text,
+                                reasoningText: turn.reasoningText.isEmpty
+                                    ? nil : turn.reasoningText,
+                                imagePaths: turn.imagePaths)
+                        },
                         prompt: request.prompt, maxNewTokens: request.maxNewTokens,
                         maxContextTokens: request.maxContextTokens,
                         temperature: request.temperature,

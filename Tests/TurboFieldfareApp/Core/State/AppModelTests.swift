@@ -355,6 +355,99 @@ import Testing
     }
 
     @MainActor
+    @Test func secondRunFoldsCompletedTurnIntoHistory() async throws {
+        let client = MockInferenceClient(response: "first answer", tokenDelayNanos: 1)
+        client.reasoning = "because of the premise"
+        let model = readyModel(client: client)
+        model.promptText = "first prompt"
+        model.run()
+        await waitForIdle(model)
+
+        #expect(model.conversationTurns.isEmpty)
+        let firstAnswer = model.outputResponsePlainText
+        #expect(firstAnswer.contains("first answer"))
+
+        client.response = "second answer"
+        client.reasoning = nil
+        model.promptText = "second prompt"
+        model.run()
+
+        #expect(model.conversationTurns.count == 2)
+        #expect(model.conversationTurns[0]
+            == AppChatTurn(role: .user, text: "first prompt"))
+        #expect(model.conversationTurns[1]
+            == AppChatTurn(role: .assistant, text: firstAnswer,
+                           reasoningText: "because of the premise"))
+        let foldedTurns = model.conversationTurns
+        #expect(model.outputPromptText == "second prompt")
+        await waitForIdle(model)
+        let request = client.capturedRequests.last
+        #expect(request?.history == foldedTurns)
+        #expect(request?.prompt == "second prompt")
+        #expect(model.outputResponsePlainText.contains("second answer"))
+    }
+
+    @MainActor
+    @Test func failedTurnIsNotResentAsHistory() async throws {
+        let client = MockInferenceClient(response: "unused", tokenDelayNanos: 1,
+                                         failureMessage: "engine exploded")
+        let model = readyModel(client: client)
+        model.promptText = "doomed prompt"
+        model.run()
+        await waitForIdle(model)
+        #expect(model.error != nil)
+
+        client.failureMessage = nil
+        client.response = "recovered answer"
+        model.promptText = "retry prompt"
+        model.run()
+
+        #expect(model.conversationTurns.isEmpty)
+        await waitForIdle(model)
+        #expect(client.capturedRequests.last?.history.isEmpty == true)
+        #expect(model.outputResponsePlainText.contains("recovered answer"))
+    }
+
+    @MainActor
+    @Test func conversationPlainTextThreadsHistoryInOrder() async throws {
+        let client = MockInferenceClient(response: "alpha", tokenDelayNanos: 1)
+        let model = readyModel(client: client)
+        model.promptText = "one"
+        model.run()
+        await waitForIdle(model)
+
+        client.response = "beta"
+        model.promptText = "two"
+        model.run()
+        await waitForIdle(model)
+
+        let text = model.outputConversationPlainText
+        #expect(text.hasPrefix("You:\none\n\nAnswer:\nalpha"))
+        let secondTurn = text.range(of: "You:\ntwo\n\nAnswer:\nbeta")
+        #expect(secondTurn != nil)
+    }
+
+    @MainActor
+    @Test func clearOutputDropsConversationHistory() async throws {
+        let client = MockInferenceClient(response: "answer", tokenDelayNanos: 1)
+        let model = readyModel(client: client)
+        model.promptText = "one"
+        model.run()
+        await waitForIdle(model)
+        model.promptText = "two"
+        model.run()
+        await waitForIdle(model)
+        #expect(!model.conversationTurns.isEmpty)
+
+        model.clearOutput()
+
+        #expect(model.conversationTurns.isEmpty)
+        #expect(!model.hasOutputTranscript)
+        model.promptText = "three"
+        #expect(try model.makeRequest().history.isEmpty)
+    }
+
+    @MainActor
     private func readyModel(client: MockInferenceClient) -> AppModel {
         let model = AppModel(client: client)
         model.modelPathText = FileManager.default.temporaryDirectory.path

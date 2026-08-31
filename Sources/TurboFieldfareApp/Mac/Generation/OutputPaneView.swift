@@ -59,12 +59,36 @@ struct OutputPaneView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Completed turns paired for display. `conversationTurns` is appended in
+    /// user/assistant pairs by the fold, but the pairing loop tolerates a
+    /// stray order rather than trapping on it.
+    private var completedTurns: [InstructionTranscriptDocumentController.CompletedTurn] {
+        var turns: [InstructionTranscriptDocumentController.CompletedTurn] = []
+        var pendingPrompt: String?
+        for turn in model.conversationTurns {
+            switch turn.role {
+            case .user:
+                pendingPrompt = turn.text
+            case .assistant:
+                turns.append(InstructionTranscriptDocumentController.CompletedTurn(
+                    prompt: pendingPrompt ?? "", response: turn.text))
+                pendingPrompt = nil
+            }
+        }
+        if let pendingPrompt {
+            turns.append(InstructionTranscriptDocumentController.CompletedTurn(
+                prompt: pendingPrompt, response: ""))
+        }
+        return turns
+    }
+
     private var transcript: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !model.outputReasoningText.isEmpty {
                 reasoningSection
             }
             IncrementalTranscriptView(
+                history: completedTurns,
                 prompt: model.outputPromptText,
                 output: model.outputText,
                 mailbox: model.generationTranscriptMailbox,
@@ -310,6 +334,7 @@ private struct LoadingModelText: View {
 }
 
 private struct IncrementalTranscriptView: NSViewRepresentable {
+    var history: [InstructionTranscriptDocumentController.CompletedTurn] = []
     var prompt: String
     var output: String
     var mailbox: GenerationTranscriptMailbox?
@@ -321,6 +346,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         weak var scrollView: NSScrollView?
         weak var textView: NSTextView?
         var mailbox: GenerationTranscriptMailbox?
+        var history: [InstructionTranscriptDocumentController.CompletedTurn] = []
         var prompt = ""
         var isTerminal = false
         var showsPrefillPlaceholder = false
@@ -341,6 +367,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         }
 
         func synchronize(
+            history: [InstructionTranscriptDocumentController.CompletedTurn],
             prompt: String,
             output: String,
             mailbox: GenerationTranscriptMailbox?,
@@ -348,6 +375,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             showsPrefillPlaceholder: Bool
         ) {
             self.mailbox = mailbox
+            self.history = history
             self.prompt = prompt
             self.isTerminal = isTerminal
             self.showsPrefillPlaceholder = showsPrefillPlaceholder
@@ -438,6 +466,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             storage.beginEditing()
             let update = documentController.synchronize(
                 storage: storage,
+                history: history,
                 prompt: prompt,
                 response: response,
                 isTerminal: isTerminal,
@@ -502,6 +531,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         context.coordinator.attach(scrollView: scrollView, textView: textView)
         context.coordinator.synchronize(
+            history: history,
             prompt: prompt,
             output: output,
             mailbox: mailbox,

@@ -372,34 +372,59 @@ actor RealInferenceSession {
         }
     }
 
-    /// The GUI request as the sessions take it: one user turn through the
-    /// checkpoint's own chat template, the thought channel as the toggle set
-    /// it, the sampler as the UI shows it (Ornith's session pins S1's
-    /// official values whatever arrives here — the UI shows them pinned).
+    /// The GUI request as the sessions take it: the completed turns plus the
+    /// current user turn through the checkpoint's own chat template, the
+    /// thought channel as the toggle set it, the sampler as the UI shows it
+    /// (Ornith's session pins S1's official values whatever arrives here —
+    /// the UI shows them pinned). Assistant turns are redrawn with their
+    /// `reasoningContent` (SPEC MSG-5) so the redraw extends the generated
+    /// token sequence and the prompt cache stays warm across turns.
     static func validatedChatRequest(for request: AppGenerationRequest,
                                      kind: AppModelKind) throws -> ValidatedChatRequest {
-        let messages = [GFTokenizer.Message(role: .user, content: request.prompt)]
-        var vision: ValidatedVisionRequest?
-        if !request.imagePaths.isEmpty {
-            guard kind.supportsVision else {
+        var messages: [GFTokenizer.Message] = []
+        var multimodal: [GFTokenizer.MultimodalMessage] = []
+        var attachments: [ServerImageAttachment] = []
+        let policy = ServerImagePolicy.default
+
+        func append(role: GFTokenizer.Role,
+                    text: String,
+                    reasoning: String,
+                    imagePaths: [String]) throws {
+            guard imagePaths.isEmpty || kind.supportsVision else {
                 throw AppInferenceError.invalidRequest(
                     "\(kind.shortName) has no vision tower; remove the attached images.")
             }
-            let policy = ServerImagePolicy.default
-            var attachments: [ServerImageAttachment] = []
-            for (index, path) in request.imagePaths.enumerated() {
+            for path in imagePaths {
                 let data = try Data(contentsOf: URL(fileURLWithPath: path))
                 let mediaType = Self.mediaType(forPath: path)
                 let dataURL = "data:\(mediaType);base64,\(data.base64EncodedString())"
                 attachments.append(try ServerImageDecoder.attachment(
-                    fromImageURL: dataURL, policy: policy, index: index))
+                    fromImageURL: dataURL, policy: policy, index: attachments.count))
             }
-            let parts = request.imagePaths.map { _ in GFTokenizer.ContentPart.image }
-                + [GFTokenizer.ContentPart.text(request.prompt)]
-            vision = ValidatedVisionRequest(
-                messages: [GFTokenizer.MultimodalMessage(role: .user, parts: parts)],
-                images: attachments)
+            let reasoningContent = reasoning.isEmpty ? nil : reasoning
+            multimodal.append(GFTokenizer.MultimodalMessage(
+                role: role,
+                parts: imagePaths.map { _ in GFTokenizer.ContentPart.image }
+                    + [GFTokenizer.ContentPart.text(text)],
+                reasoningContent: reasoningContent))
+            messages.append(GFTokenizer.Message(
+                role: role, content: text, reasoningContent: reasoningContent))
         }
+
+        for turn in request.history {
+            try append(role: turn.role == .user ? .user : .assistant,
+                       text: turn.text,
+                       reasoning: turn.reasoningText,
+                       imagePaths: turn.imagePaths)
+        }
+        try append(role: .user,
+                   text: request.prompt,
+                   reasoning: "",
+                   imagePaths: request.imagePaths)
+
+        let vision = attachments.isEmpty
+            ? nil
+            : ValidatedVisionRequest(messages: multimodal, images: attachments)
         let config = GenerationConfig(
             maxNewTokens: max(request.maxNewTokens, 1),
             temperature: request.temperature,

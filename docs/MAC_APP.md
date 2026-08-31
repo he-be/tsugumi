@@ -22,6 +22,16 @@
 はサーバと同じコードが答える。モデルの判別は `manifest.json` の `arch.family`
 (無ければ Gemma) で、`AppModelKind` が能力と既定値を一元管理する。
 
+**マルチターン** (2026-09-01): 1 プロンプト 1 回答から、単一チャットの
+マルチターン会話にした。完了したターンは次の送信時に履歴
+(`AppModel.conversationTurns`) へ畳まれ、要求には履歴ごと載る。assistant ターンは
+`reasoning_content` 付きで描き直される (SPEC MSG-5 / INV-1) ので、**thinking の
+ON/OFF に関わらず 2 ターン目以降の prompt cache は当たる** — Gemma は LCP、
+Ornith は厳密な延長がそのまま成立する。答えが 1 文字も出ずに失敗したターンは
+履歴に残さない (モデルが見ていない会話を描かない)。会話のリセットは従来どおり
+コンテキストメニューの Clear。ターン間の履歴は `TurboFieldfareDecodeService`
+へのワイヤ (`DecodeGenerationRequest.history`) を通る。
+
 ## 2. ウェイトの供給 — 完成品の直DL
 
 ストリーミング repack は `sym` を作れず (staging の bias レンジが要る、

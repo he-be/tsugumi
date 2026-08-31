@@ -2,6 +2,11 @@ import Foundation
 
 public struct AppGenerationRequest: Equatable, Sendable {
     public var modelDirectory: URL
+    /// Completed turns preceding `prompt`, oldest first. `prompt` and
+    /// `imagePaths` stay the current user turn; history carries what earlier
+    /// turns said, including assistant reasoning, for the exact redraw the
+    /// prompt cache needs.
+    public var history: [AppChatTurn]
     public var prompt: String
     public var maxNewTokens: Int
     public var maxContextTokens: Int
@@ -19,6 +24,7 @@ public struct AppGenerationRequest: Equatable, Sendable {
     public var imagePaths: [String]
 
     public init(modelDirectory: URL,
+                history: [AppChatTurn] = [],
                 prompt: String,
                 maxNewTokens: Int = 4_096,
                 maxContextTokens: Int = 4096,
@@ -30,6 +36,7 @@ public struct AppGenerationRequest: Equatable, Sendable {
                 enableThinking: Bool = false,
                 imagePaths: [String] = []) {
         self.modelDirectory = modelDirectory
+        self.history = history
         self.prompt = prompt
         self.maxNewTokens = maxNewTokens
         self.maxContextTokens = maxContextTokens
@@ -83,6 +90,22 @@ public struct AppGenerationRequest: Equatable, Sendable {
         for path in imagePaths {
             guard fileManager.fileExists(atPath: path) else {
                 throw AppInferenceError.invalidRequest("Attached image is missing: \(path)")
+            }
+        }
+        if let first = history.first, first.role != .user {
+            throw AppInferenceError.invalidRequest("History must begin with a user turn.")
+        }
+        for turn in history {
+            guard turn.role == .user || turn.imagePaths.isEmpty else {
+                throw AppInferenceError.invalidRequest("Images may only appear in user turns.")
+            }
+            guard turn.imagePaths.count <= 4 else {
+                throw AppInferenceError.invalidRequest("At most 4 images can be attached.")
+            }
+            for path in turn.imagePaths {
+                guard fileManager.fileExists(atPath: path) else {
+                    throw AppInferenceError.invalidRequest("Attached image is missing: \(path)")
+                }
             }
         }
         try runtimeOptions.validate()

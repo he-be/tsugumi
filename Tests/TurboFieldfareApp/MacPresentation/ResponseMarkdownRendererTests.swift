@@ -104,6 +104,77 @@ import Testing
 
 @MainActor
 @Suite struct InstructionTranscriptDocumentControllerTests {
+    private typealias CompletedTurn = InstructionTranscriptDocumentController.CompletedTurn
+
+    @Test func historyRendersAboveLiveTurnInOrder() throws {
+        let controller = InstructionTranscriptDocumentController()
+        let storage = NSMutableAttributedString()
+
+        controller.synchronize(
+            storage: storage,
+            history: [CompletedTurn(prompt: "first question", response: "first reply")],
+            prompt: "second question",
+            response: "second reply",
+            isTerminal: false)
+
+        let text = storage.string
+        let firstPrompt = try #require(text.range(of: "first question"))
+        let firstReply = try #require(text.range(of: "first reply"))
+        let secondPrompt = try #require(text.range(of: "second question"))
+        let secondReply = try #require(text.range(of: "second reply"))
+        #expect(firstPrompt.lowerBound < firstReply.lowerBound)
+        #expect(firstReply.lowerBound < secondPrompt.lowerBound)
+        #expect(secondPrompt.lowerBound < secondReply.lowerBound)
+    }
+
+    @Test func streamingAppendsWithoutRebuildWhileHistoryIsUnchanged() {
+        let controller = InstructionTranscriptDocumentController()
+        let storage = NSMutableAttributedString()
+        let history = [CompletedTurn(prompt: "q1", response: "a1")]
+
+        controller.synchronize(
+            storage: storage, history: history,
+            prompt: "q2", response: "partial", isTerminal: false)
+        let update = controller.synchronize(
+            storage: storage, history: history,
+            prompt: "q2", response: "partial answer", isTerminal: false)
+
+        #expect(update.mutation == .appended)
+        #expect(storage.string.contains("partial answer"))
+        #expect(storage.string.contains("a1"))
+    }
+
+    @Test func newHistoryTurnForcesRebuild() {
+        let controller = InstructionTranscriptDocumentController()
+        let storage = NSMutableAttributedString()
+
+        controller.synchronize(
+            storage: storage, history: [],
+            prompt: "q1", response: "a1", isTerminal: true)
+        let update = controller.synchronize(
+            storage: storage,
+            history: [CompletedTurn(prompt: "q1", response: "a1")],
+            prompt: "q2", response: "", isTerminal: false)
+
+        #expect(update.mutation == .rebuilt)
+        #expect(storage.string.contains("q2"))
+    }
+
+    @Test func historyOnlyDocumentHasNoLiveAnswerLabel() {
+        let controller = InstructionTranscriptDocumentController()
+        let storage = NSMutableAttributedString()
+
+        controller.synchronize(
+            storage: storage,
+            history: [CompletedTurn(prompt: "q1", response: "a1")],
+            prompt: "", response: "", isTerminal: true)
+
+        let text = storage.string
+        #expect(text.contains("a1"))
+        let answerLabels = text.components(separatedBy: "Answer\n").count - 1
+        #expect(answerLabels == 1)
+    }
+
     @Test func appAccentMatchesProductRGB() {
         let color = TurboFieldfareMacTheme.accentNSColor
             .usingColorSpace(.sRGB)
