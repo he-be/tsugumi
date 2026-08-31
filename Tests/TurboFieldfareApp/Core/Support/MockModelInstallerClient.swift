@@ -1,5 +1,6 @@
 import Foundation
 import Synchronization
+import TurboFieldfareRepackCore
 @testable import TurboFieldfareAppCore
 
 final class MockModelInstallerClient: AppModelInstallerClient, Sendable {
@@ -105,6 +106,17 @@ final class MockModelInstallerClient: AppModelInstallerClient, Sendable {
 
     func releaseCancellationAcknowledgement() async {
         await cancellationAcknowledgementGate.open()
+    }
+
+    /// Mirrors the streaming installer's on-disk saved-download shape, which
+    /// is what the resume tests stage with `makeSavedDownload`.
+    func hasPartialInstall(outputDirectory: URL) -> Bool {
+        guard let paths = try? RemoteInstallPaths(
+            outputDirectory: outputDirectory.path) else {
+            return false
+        }
+        return FileManager.default.fileExists(atPath: paths.partialDirectory)
+            || FileManager.default.fileExists(atPath: paths.checkpointFile)
     }
 
     func discardPartialInstall(outputDirectory: URL) async throws {

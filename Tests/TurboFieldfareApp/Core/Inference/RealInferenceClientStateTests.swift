@@ -73,29 +73,45 @@ import TurboFieldfare
         #expect(RealInferenceSession.forceLogitsHead(for: request))
     }
 
-    @Test func generationConfigCarriesDocumentedSamplingPolicy() {
+    @Test func validatedChatRequestCarriesDocumentedSamplingPolicy() throws {
         let request = AppGenerationRequest(
             modelDirectory: URL(fileURLWithPath: "/tmp/model.gturbo"),
             prompt: "hello")
 
-        let config = RealInferenceSession.generationConfig(for: request)
-        #expect(config.temperature == 1.0)
-        #expect(config.topK == 64)
-        #expect(config.topP == 0.95)
-        #expect(config.repetitionPenalty == 1)
+        let validated = try RealInferenceSession.validatedChatRequest(
+            for: request, kind: .gemmaQATSym)
+        #expect(validated.generationConfig.temperature == 1.0)
+        #expect(validated.generationConfig.topK == 64)
+        #expect(validated.generationConfig.topP == 0.95)
+        #expect(validated.generationConfig.repetitionPenalty == 1)
+        #expect(validated.messages.count == 1)
+        #expect(validated.messages.first?.content == "hello")
+        #expect(!validated.enableThinking)
+        #expect(validated.vision == nil)
+        #expect(validated.cachePrompt)
     }
 
-    @Test func tokenizerDirectoryCacheReloadsOnlyWhenModelDirectoryChanges() {
-        var cache = TokenizerDirectoryCache()
-        let first = URL(fileURLWithPath: "/tmp/first.gturbo")
-        let second = URL(fileURLWithPath: "/tmp/second.gturbo")
+    @Test func validatedChatRequestCarriesThinkingToggle() throws {
+        let request = AppGenerationRequest(
+            modelDirectory: URL(fileURLWithPath: "/tmp/model.gturbo"),
+            prompt: "hello",
+            enableThinking: true)
 
-        #expect(cache.shouldReload(for: first))
-        cache.markLoaded(for: first)
-        #expect(!cache.shouldReload(for: first))
-        #expect(cache.shouldReload(for: second))
-        cache.clear()
-        #expect(cache.shouldReload(for: first))
+        let validated = try RealInferenceSession.validatedChatRequest(
+            for: request, kind: .ornith)
+        #expect(validated.enableThinking)
+    }
+
+    @Test func validatedChatRequestRefusesImagesWithoutVision() {
+        let request = AppGenerationRequest(
+            modelDirectory: URL(fileURLWithPath: "/tmp/model.gturbo"),
+            prompt: "hello",
+            imagePaths: ["/tmp/image.png"])
+
+        #expect(throws: AppInferenceError.self) {
+            _ = try RealInferenceSession.validatedChatRequest(
+                for: request, kind: .ornith)
+        }
     }
 
     @Test func generateWithoutLoadedModelFailsWithoutPartialDiagnostics() async throws {
@@ -167,19 +183,19 @@ import TurboFieldfare
         #expect(failure == .modelNotFound("/nonexistent/model.gturbo"))
     }
 
-    @Test func prefillFailureDiagnosticsMarksUnsupportedModeAndReason() {
-        let config = PrefillRuntimeConfig.production(chunkTokens: 32)
+    @Test func mtpDegradesToOffWhenNothingIsInstalled() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("no-draft-\(UUID().uuidString).gturbo")
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("{\"arch\": {}}".utf8).write(
+            to: directory.appendingPathComponent("manifest.json"))
 
-        let diagnostics = RealInferenceSession.prefillFailureDiagnostics(
-            config: config,
-            kvStorageMode: .fp16,
-            reason: "chunked prefill synthetic unsupported diagnostic")
-
-        #expect(diagnostics.requestedMode == .chunked)
-        #expect(diagnostics.executedMode == .unsupported)
-        #expect(diagnostics.chunkCompleteness == .unsupported)
-        #expect(diagnostics.kvStorageMode == .fp16)
-        #expect(diagnostics.unsupportedReason?.contains("synthetic unsupported") == true)
+        #expect(RealInferenceSession.resolvedDraftBlockSize(
+            kind: .gemmaQATSym, modelDirectory: directory, requested: true) == 0)
+        #expect(RealInferenceSession.resolvedDraftBlockSize(
+            kind: .gemmaQATSym, modelDirectory: directory, requested: false) == 0)
     }
 
     @Test func cancelWhenIdleIsNoOp() {

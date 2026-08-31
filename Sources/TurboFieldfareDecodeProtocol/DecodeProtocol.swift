@@ -7,19 +7,38 @@ public struct DecodeRuntimeOptions: Codable, Sendable, Equatable {
     public var prefillChunkTokens: Int
     public var rdadvisePolicy: String
     public var modelVerification: String
+    public var mtpEnabled: Bool
 
     public init(expertCacheSlots: Int = 16,
                 expertCachePolicy: String = "lfu",
                 prefillEnabled: Bool = true,
                 prefillChunkTokens: Int = 2048,
                 rdadvisePolicy: String = "off",
-                modelVerification: String = "full-sha256") {
+                modelVerification: String = "full-sha256",
+                mtpEnabled: Bool = true) {
         self.expertCacheSlots = expertCacheSlots
         self.expertCachePolicy = expertCachePolicy
         self.prefillEnabled = prefillEnabled
         self.prefillChunkTokens = prefillChunkTokens
         self.rdadvisePolicy = rdadvisePolicy
         self.modelVerification = modelVerification
+        self.mtpEnabled = mtpEnabled
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case expertCacheSlots, expertCachePolicy, prefillEnabled
+        case prefillChunkTokens, rdadvisePolicy, modelVerification, mtpEnabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        expertCacheSlots = try container.decode(Int.self, forKey: .expertCacheSlots)
+        expertCachePolicy = try container.decode(String.self, forKey: .expertCachePolicy)
+        prefillEnabled = try container.decode(Bool.self, forKey: .prefillEnabled)
+        prefillChunkTokens = try container.decode(Int.self, forKey: .prefillChunkTokens)
+        rdadvisePolicy = try container.decode(String.self, forKey: .rdadvisePolicy)
+        modelVerification = try container.decode(String.self, forKey: .modelVerification)
+        mtpEnabled = try container.decodeIfPresent(Bool.self, forKey: .mtpEnabled) ?? true
     }
 }
 
@@ -47,21 +66,53 @@ public struct DecodeGenerationRequest: Codable, Sendable {
     public var maxNewTokens: Int
     public var maxContextTokens: Int
     public var temperature: Float
+    public var topK: Int?
+    public var topP: Float?
     public var repetitionPenalty: Float
+    public var enableThinking: Bool
+    public var imagePaths: [String]
     public var runtimeOptions: DecodeRuntimeOptions
     public var generationID: UUID
 
     public init(prompt: String, maxNewTokens: Int, maxContextTokens: Int,
-                temperature: Float, repetitionPenalty: Float = 1,
+                temperature: Float, topK: Int? = nil, topP: Float? = nil,
+                repetitionPenalty: Float = 1,
+                enableThinking: Bool = false,
+                imagePaths: [String] = [],
                 runtimeOptions: DecodeRuntimeOptions = DecodeRuntimeOptions(),
                 generationID: UUID = UUID()) {
         self.prompt = prompt
         self.maxNewTokens = maxNewTokens
         self.maxContextTokens = maxContextTokens
         self.temperature = temperature
+        self.topK = topK
+        self.topP = topP
         self.repetitionPenalty = repetitionPenalty
+        self.enableThinking = enableThinking
+        self.imagePaths = imagePaths
         self.runtimeOptions = runtimeOptions
         self.generationID = generationID
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case prompt, maxNewTokens, maxContextTokens, temperature, topK, topP
+        case repetitionPenalty, enableThinking, imagePaths
+        case runtimeOptions, generationID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        prompt = try container.decode(String.self, forKey: .prompt)
+        maxNewTokens = try container.decode(Int.self, forKey: .maxNewTokens)
+        maxContextTokens = try container.decode(Int.self, forKey: .maxContextTokens)
+        temperature = try container.decode(Float.self, forKey: .temperature)
+        topK = try container.decodeIfPresent(Int.self, forKey: .topK)
+        topP = try container.decodeIfPresent(Float.self, forKey: .topP)
+        repetitionPenalty = try container.decode(Float.self, forKey: .repetitionPenalty)
+        enableThinking = try container.decodeIfPresent(Bool.self, forKey: .enableThinking) ?? false
+        imagePaths = try container.decodeIfPresent([String].self, forKey: .imagePaths) ?? []
+        runtimeOptions = try container.decode(DecodeRuntimeOptions.self, forKey: .runtimeOptions)
+        generationID = try container.decode(UUID.self, forKey: .generationID)
     }
 }
 
@@ -139,8 +190,17 @@ public struct DecodeServiceEvent: Codable, Sendable {
     public var generationID: UUID
     public var sequence: UInt64
     public var textDelta: String
+    /// Thought-channel text, kept apart from `textDelta` so the app can
+    /// render reasoning as reasoning. Optional for wire compatibility.
+    public var reasoningDelta: String?
     public var tokenCount: Int
     public var promptTokenCount: Int?
+    /// Prompt tokens served from the session's prompt cache.
+    public var cachedPromptTokens: Int?
+    /// Speculative-loop counters, present only when MTP actually ran.
+    public var draftBlockTokens: Int?
+    public var draftProposed: Int?
+    public var draftAccepted: Int?
     public var prefillDone: Int?
     public var prefillTotal: Int?
     public var prefillSeconds: Double?
@@ -156,7 +216,12 @@ public struct DecodeServiceEvent: Codable, Sendable {
 
     public init(kind: DecodeServiceEventKind, generationID: UUID,
                 sequence: UInt64 = 0, textDelta: String = "",
+                reasoningDelta: String? = nil,
                 tokenCount: Int = 0, promptTokenCount: Int? = nil,
+                cachedPromptTokens: Int? = nil,
+                draftBlockTokens: Int? = nil,
+                draftProposed: Int? = nil,
+                draftAccepted: Int? = nil,
                 prefillDone: Int? = nil, prefillTotal: Int? = nil,
                 prefillSeconds: Double? = nil,
                 timeToFirstTokenSeconds: Double? = nil,
@@ -169,8 +234,13 @@ public struct DecodeServiceEvent: Codable, Sendable {
         self.generationID = generationID
         self.sequence = sequence
         self.textDelta = textDelta
+        self.reasoningDelta = reasoningDelta
         self.tokenCount = tokenCount
         self.promptTokenCount = promptTokenCount
+        self.cachedPromptTokens = cachedPromptTokens
+        self.draftBlockTokens = draftBlockTokens
+        self.draftProposed = draftProposed
+        self.draftAccepted = draftAccepted
         self.prefillDone = prefillDone
         self.prefillTotal = prefillTotal
         self.prefillSeconds = prefillSeconds

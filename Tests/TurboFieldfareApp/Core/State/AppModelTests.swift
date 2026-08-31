@@ -13,7 +13,7 @@ import Testing
         #expect(request.temperature == 1.0)
         #expect(request.topK == 64)
         #expect(request.topP == 0.95)
-        #expect(request.maxNewTokens == 4_096)
+        #expect(request.maxNewTokens == 32_768)
         #expect(request.repetitionPenalty == 1)
         #expect(!request.isPureGreedy)
         #expect(request.runtimeOptions.expertCacheSlots == 32)
@@ -109,7 +109,9 @@ import Testing
     }
 
     @MainActor
-    @Test func requestTimePrefillChangeDoesNotMarkReadySessionStale() {
+    @Test func prefillChangeMarksReadySessionStale() {
+        // The family sessions bind prefill (and the MTP loop that rides on
+        // it) at load, so flipping it requires a reload.
         let model = AppModel(client: MockLifecycleInferenceClient())
         let directory = FileManager.default.temporaryDirectory
         model.modelPathText = directory.path
@@ -117,7 +119,7 @@ import Testing
 
         model.runtimeOptions.prefillEnabled = false
 
-        #expect(!model.hasStaleLoadedRuntime)
+        #expect(model.hasStaleLoadedRuntime)
     }
 
     @MainActor

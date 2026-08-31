@@ -46,6 +46,17 @@ struct ModelInstallView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+            Picker("Model", selection: Binding(
+                get: { model.selectedModelKind },
+                set: { model.selectModel($0) })) {
+                ForEach(AppModelKind.allCases) { kind in
+                    Text(kind.displayName).tag(kind)
+                }
+            }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .fixedSize()
+            .disabled(model.isInstallingModel)
         }
     }
 

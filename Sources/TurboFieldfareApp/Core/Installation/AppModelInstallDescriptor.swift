@@ -2,6 +2,7 @@ import Foundation
 import TurboFieldfareRepackCore
 
 public struct AppModelInstallDescriptor: Equatable, Sendable {
+    public let kind: AppModelKind
     public let displayName: String
     public let repoID: String
     public let revision: String
@@ -11,7 +12,8 @@ public struct AppModelInstallDescriptor: Equatable, Sendable {
     public let rangeStagingBytes: UInt64
     public let reserveBytes: UInt64
 
-    public init(displayName: String,
+    public init(kind: AppModelKind,
+                displayName: String,
                 repoID: String,
                 revision: String,
                 sourceIndexSHA256: String,
@@ -19,6 +21,7 @@ public struct AppModelInstallDescriptor: Equatable, Sendable {
                 installedBytes: UInt64,
                 rangeStagingBytes: UInt64,
                 reserveBytes: UInt64) {
+        self.kind = kind
         self.displayName = displayName
         self.repoID = repoID
         self.revision = revision
@@ -33,15 +36,24 @@ public struct AppModelInstallDescriptor: Equatable, Sendable {
         installedBytes + rangeStagingBytes + reserveBytes
     }
 
-    public static let `default` = AppModelInstallDescriptor(
-        displayName: QATAlignedModelSource.displayName,
-        repoID: QATAlignedModelSource.repoID,
-        revision: QATAlignedModelSource.revision,
-        sourceIndexSHA256: QATAlignedModelSource.sourceIndexSHA256,
-        approximateDownloadBytes: 15_819_233_792,
-        installedBytes: 15_835_181_312,
-        rangeStagingBytes: UInt64(RemoteChunkPolicy.defaultBytes),
-        reserveBytes: 1_073_741_824)
+    /// The prebuilt sources are downloaded file for file to their installed
+    /// names, so the download and the install are the same bytes and no
+    /// staging area is reserved beyond the safety floor.
+    public static func descriptor(for kind: AppModelKind) -> AppModelInstallDescriptor {
+        let source = PrebuiltModelSource.source(for: kind)
+        return AppModelInstallDescriptor(
+            kind: kind,
+            displayName: kind.displayName,
+            repoID: source.repoID,
+            revision: source.revision,
+            sourceIndexSHA256: source.sourceIndexSHA256,
+            approximateDownloadBytes: source.totalBytes,
+            installedBytes: source.totalBytes,
+            rangeStagingBytes: 0,
+            reserveBytes: 1_073_741_824)
+    }
+
+    public static let `default` = descriptor(for: .defaultKind)
 }
 
 public struct AppModelInstallRequirement: Equatable, Sendable {

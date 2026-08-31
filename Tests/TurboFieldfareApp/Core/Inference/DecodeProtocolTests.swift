@@ -91,6 +91,55 @@ import TurboFieldfareDecodeProtocol
         #expect(decoded.prefillTotal == 514)
     }
 
+    @Test func generationRequestRoundTripPreservesTwoModelFields() throws {
+        let request = DecodeGenerationRequest(
+            prompt: "hello",
+            maxNewTokens: 128,
+            maxContextTokens: 4_096,
+            temperature: 0.6,
+            topK: 20,
+            topP: 0.95,
+            enableThinking: true,
+            imagePaths: ["/tmp/a.png"],
+            runtimeOptions: DecodeRuntimeOptions(mtpEnabled: false))
+        let pipe = Pipe()
+        try pipe.fileHandleForWriting.write(
+            contentsOf: DecodeFrameCodec.encode(request))
+        try pipe.fileHandleForWriting.close()
+        let decoded = try DecodeFrameCodec.read(
+            DecodeGenerationRequest.self,
+            from: pipe.fileHandleForReading)
+
+        #expect(decoded.topK == 20)
+        #expect(decoded.topP == 0.95)
+        #expect(decoded.enableThinking)
+        #expect(decoded.imagePaths == ["/tmp/a.png"])
+        #expect(!decoded.runtimeOptions.mtpEnabled)
+    }
+
+    @Test func decoderAcceptsFramesWrittenBeforeTheTwoModelFields() throws {
+        // A frame from a build that predates topK/thinking/images/MTP must
+        // still decode, with the additions at their defaults.
+        let legacyOptions = """
+        {"expertCacheSlots": 32, "expertCachePolicy": "lfu", \
+        "prefillEnabled": true, "prefillChunkTokens": 2048, \
+        "rdadvisePolicy": "off", "modelVerification": "full-sha256"}
+        """
+        let legacyRequest = """
+        {"prompt": "hi", "maxNewTokens": 8, "maxContextTokens": 4096, \
+        "temperature": 1, "repetitionPenalty": 1, \
+        "runtimeOptions": \(legacyOptions), \
+        "generationID": "\(UUID().uuidString)"}
+        """
+        let decoded = try JSONDecoder().decode(
+            DecodeGenerationRequest.self, from: Data(legacyRequest.utf8))
+        #expect(decoded.topK == nil)
+        #expect(decoded.topP == nil)
+        #expect(!decoded.enableThinking)
+        #expect(decoded.imagePaths.isEmpty)
+        #expect(decoded.runtimeOptions.mtpEnabled)
+    }
+
     @Test func decoderAcceptsAFrameSplitAcrossSingleByteWrites() throws {
         let event = DecodeServiceEvent(
             kind: .snapshot,

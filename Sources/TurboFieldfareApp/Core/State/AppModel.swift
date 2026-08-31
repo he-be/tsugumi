@@ -11,9 +11,11 @@ public final class AppModel {
     }
 
     public var modelPathText: String
+    public private(set) var selectedModelKind: AppModelKind = .defaultKind
     public var promptText: String = ""
     public private(set) var outputPromptText: String = ""
     public var outputText: String = ""
+    public private(set) var outputReasoningText: String = ""
     public var runState: RunState = .idle
     public var runtimeOptions = AppRuntimeOptions()
     public var maxNewTokensOverride: Int?
@@ -23,6 +25,8 @@ public final class AppModel {
     public var topK: Int = 64
     public var topPEnabled: Bool = true
     public var topP: Double = 0.95
+    public var thinkingEnabled: Bool = false
+    public var attachedImagePaths: [String] = []
     public private(set) var newlineShortcut: AppNewlineShortcut = .return
     public private(set) var showPromptExamples: Bool = true
     public private(set) var sentPromptBehavior: AppSentPromptBehavior = .keep
@@ -45,7 +49,11 @@ public final class AppModel {
     public private(set) var isCancellationPending: Bool = false
 
     private let client: any AppInferenceClient
-    private let installer: any AppModelInstallerClient
+    /// Builds the installer for one model kind. The default downloads the
+    /// prebuilt install; tests inject a fixed mock through the `installer`
+    /// init parameter, which pins this to a constant.
+    private let installerProvider: (AppModelKind) -> any AppModelInstallerClient
+    private var installer: any AppModelInstallerClient
     private var runTask: Task<Void, Never>?
     private var loadTask: Task<Void, Never>?
     private var installTask: Task<Void, Never>?
@@ -64,30 +72,46 @@ public final class AppModel {
 
     public init(modelDirectory: URL? = nil,
                 client: any AppInferenceClient = RealInferenceClient(),
-                installer: any AppModelInstallerClient = RepackModelInstallerClient(),
+                installer: (any AppModelInstallerClient)? = nil,
                 memorySampler: AppMemorySampler = AppMemorySampler(),
                 settingsPersistenceEnabled: Bool = false) {
-        let directory = (modelDirectory ?? AppModelLocation.defaultURL()).standardizedFileURL
+        let kind = modelDirectory.flatMap(AppModelKind.probe(modelDirectory:))
+            ?? .defaultKind
+        let directory = (modelDirectory ?? AppModelLocation.defaultURL(for: kind))
+            .standardizedFileURL
         let installETAClock = SuspendingClock()
         let settings = settingsPersistenceEnabled
-            ? MacAppSettingsFileStore.loadOrCreate(forModelDirectory: directory)
-            : MacAppSettings()
+            ? MacAppSettingsFileStore.loadOrCreate(
+                forModelDirectory: directory,
+                defaults: MacAppSettings.defaults(for: kind))
+            : MacAppSettings.defaults(for: kind)
         self.modelPathText = directory.path
+        self.selectedModelKind = kind
         self.runtimeOptions = AppRuntimeOptions(
             expertCacheSlots: settings.expertCacheSlots,
-            prefillEnabled: settings.prefillEnabled)
+            prefillEnabled: settings.prefillEnabled,
+            mtpEnabled: settings.mtpEnabled)
         self.maxContextTokens = settings.contextTokens
         self.temperature = settings.temperature
         self.topKEnabled = settings.topKEnabled
         self.topK = settings.topK
         self.topPEnabled = settings.topPEnabled
         self.topP = settings.topP
+        self.thinkingEnabled = settings.thinkingEnabled
         self.newlineShortcut = settings.newlineShortcut
         self.showPromptExamples = settings.showPromptExamples
         self.sentPromptBehavior = settings.sentPromptBehavior
-        self.installationStatus = AppModelInstallationProbe.status(at: directory)
+        let provider: (AppModelKind) -> any AppModelInstallerClient
+        if let installer {
+            provider = { _ in installer }
+        } else {
+            provider = { PrebuiltModelInstallerClient(kind: $0) }
+        }
+        self.installerProvider = provider
+        self.installer = provider(kind)
+        self.installationStatus = AppModelInstallationProbe.status(
+            at: directory, descriptor: provider(kind).descriptor)
         self.client = client
-        self.installer = installer
         self.memorySampler = memorySampler
         self.settingsPersistenceEnabled = settingsPersistenceEnabled
         self.installETAClock = installETAClock
@@ -272,12 +296,30 @@ public final class AppModel {
         temperature != 0
     }
 
+    /// Switches to the other shipped checkpoint: its default install
+    /// location, its persisted settings, its installer.
+    public func selectModel(_ kind: AppModelKind) {
+        guard !isRunning else { return }
+        guard kind != selectedModelKind else { return }
+        setModelURL(AppModelLocation.defaultURL(for: kind), kind: kind)
+    }
+
     public func setModelURL(_ url: URL) {
+        setModelURL(url, kind: nil)
+    }
+
+    private func setModelURL(_ url: URL, kind: AppModelKind?) {
         guard !isRunning else { return }
         let path = url.standardizedFileURL.path
-        guard path != modelPathText else { return }
+        guard path != modelPathText || (kind != nil && kind != selectedModelKind) else { return }
 
         modelPathText = path
+        selectedModelKind = kind
+            ?? AppModelKind.probe(modelDirectory: url.standardizedFileURL)
+            ?? selectedModelKind
+        installer.cancel()
+        installer = installerProvider(selectedModelKind)
+        attachedImagePaths = []
         applyPersistedSettings(
             forModelDirectory: URL(fileURLWithPath: path, isDirectory: true))
         loadGeneration &+= 1
@@ -296,7 +338,8 @@ public final class AppModel {
         diagnostics = nil
         error = nil
         phase = .idle
-        installationStatus = AppModelInstallationProbe.status(at: URL(fileURLWithPath: path))
+        installationStatus = AppModelInstallationProbe.status(
+            at: URL(fileURLWithPath: path), descriptor: installer.descriptor)
         refreshInstallReadiness()
 
         if let lifecycle = client as? AppModelLifecycleClient {
@@ -461,11 +504,7 @@ public final class AppModel {
     }
 
     public var hasPartialModelDownload: Bool {
-        guard let paths = try? RemoteInstallPaths(outputDirectory: modelPathText) else {
-            return false
-        }
-        return FileManager.default.fileExists(atPath: paths.partialDirectory)
-            || FileManager.default.fileExists(atPath: paths.checkpointFile)
+        installer.hasPartialInstall(outputDirectory: URL(fileURLWithPath: modelPathText))
     }
 
     public var canDiscardModelDownload: Bool {
@@ -623,18 +662,22 @@ public final class AppModel {
     }
 
     private func applyPersistedSettings(forModelDirectory modelDirectory: URL) {
-        guard settingsPersistenceEnabled else { return }
-        let settings = MacAppSettingsFileStore.loadOrCreate(
-            forModelDirectory: modelDirectory)
+        let defaults = MacAppSettings.defaults(for: selectedModelKind)
+        let settings = settingsPersistenceEnabled
+            ? MacAppSettingsFileStore.loadOrCreate(
+                forModelDirectory: modelDirectory, defaults: defaults)
+            : defaults
         runtimeOptions = AppRuntimeOptions(
             expertCacheSlots: settings.expertCacheSlots,
-            prefillEnabled: settings.prefillEnabled)
+            prefillEnabled: settings.prefillEnabled,
+            mtpEnabled: settings.mtpEnabled)
         maxContextTokens = settings.contextTokens
         temperature = settings.temperature
         topKEnabled = settings.topKEnabled
         topK = settings.topK
         topPEnabled = settings.topPEnabled
         topP = settings.topP
+        thinkingEnabled = settings.thinkingEnabled
         newlineShortcut = settings.newlineShortcut
         showPromptExamples = settings.showPromptExamples
         sentPromptBehavior = settings.sentPromptBehavior
@@ -651,6 +694,8 @@ public final class AppModel {
             topPEnabled: topPEnabled,
             topP: topP,
             prefillEnabled: runtimeOptions.prefillEnabled,
+            mtpEnabled: runtimeOptions.mtpEnabled,
+            thinkingEnabled: thinkingEnabled,
             newlineShortcut: newlineShortcut,
             showPromptExamples: showPromptExamples,
             sentPromptBehavior: sentPromptBehavior)
@@ -713,9 +758,23 @@ public final class AppModel {
         guard !isRunning else { return }
         outputPromptText = ""
         outputText = ""
+        outputReasoningText = ""
         generationTranscriptMailbox?.reset()
         diagnostics = nil
         error = nil
+    }
+
+    public func attachImages(_ paths: [String]) {
+        guard !isRunning, selectedModelKind.supportsVision else { return }
+        var merged = attachedImagePaths
+        for path in paths where !merged.contains(path) {
+            merged.append(path)
+        }
+        attachedImagePaths = Array(merged.prefix(4))
+    }
+
+    public func removeAttachedImage(_ path: String) {
+        attachedImagePaths.removeAll { $0 == path }
     }
 
     public func run() {
@@ -736,6 +795,7 @@ public final class AppModel {
         generationTranscriptMailbox?.reset()
         outputPromptText = request.prompt
         outputText = ""
+        outputReasoningText = ""
         diagnostics = nil
         error = nil
         hasHandledTerminalEvent = false
@@ -755,6 +815,9 @@ public final class AppModel {
         if sentPromptBehavior == .clear {
             promptText = ""
         }
+        // The images are baked into the request that just left; keeping them
+        // attached would silently resend them with the next prompt.
+        attachedImagePaths = []
 
         runTask = Task.detached { [weak self, client, request] in
             guard let self else { return }
@@ -776,17 +839,32 @@ public final class AppModel {
         client.cancel()
     }
 
+    /// S1: Ornith runs the official sampler whatever the controls held; the
+    /// session would pin the values anyway, so the request carries them
+    /// directly and the UI shows them locked.
+    public var isSamplingLocked: Bool { selectedModelKind.samplingIsLocked }
+
+    public var supportsVision: Bool { selectedModelKind.supportsVision }
+
     public func makeRequest() throws -> AppGenerationRequest {
+        let kind = selectedModelKind
+        let temperature = kind.samplingIsLocked ? kind.officialTemperature : temperature
+        let topK = kind.samplingIsLocked ? kind.officialTopK : (topKEnabled ? topK : nil)
+        let topP = kind.samplingIsLocked
+            ? kind.officialTopP
+            : (topKEnabled && topPEnabled ? topP : nil)
         let request = AppGenerationRequest(
             modelDirectory: URL(fileURLWithPath: modelPathText),
             prompt: promptText,
             maxNewTokens: maxNewTokensOverride ?? maxContextTokens,
             maxContextTokens: maxContextTokens,
             temperature: Float(temperature),
-            topK: topKEnabled ? topK : nil,
-            topP: topKEnabled && topPEnabled ? Float(topP) : nil,
+            topK: topK,
+            topP: topP.map(Float.init),
             repetitionPenalty: 1.0,
-            runtimeOptions: runtimeOptions)
+            runtimeOptions: runtimeOptions,
+            enableThinking: thinkingEnabled,
+            imagePaths: kind.supportsVision ? attachedImagePaths : [])
         try request.validate(requireModelDirectory: true)
         return request
     }
@@ -808,6 +886,9 @@ public final class AppModel {
             }
             if !token.textDelta.isEmpty {
                 outputText += token.textDelta
+            }
+            if !token.reasoningDelta.isEmpty {
+                outputReasoningText += token.reasoningDelta
             }
         case .finished(let diagnostics):
             finishSuccessfully(diagnostics)
@@ -840,6 +921,7 @@ public final class AppModel {
     private func materializeServiceTranscript() {
         guard let reporter = client as? any AppInferenceTranscriptReporting else { return }
         outputText = reporter.generationTranscriptMailbox.completeText
+        outputReasoningText = reporter.generationTranscriptMailbox.completeReasoningText
     }
 
     private func finishWithError(_ appError: AppInferenceError) {

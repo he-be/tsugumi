@@ -10,7 +10,18 @@ struct RunnerDiagnosticsSection: View {
                 groupLabel("Result")
                 DiagnosticRow("Settings", diagnostics.runtimeOptions.resultSummary, multiline: true)
                 DiagnosticRow("Prompt tokens", diagnostics.promptTokenCount.map(String.init) ?? "unknown")
+                if let cached = diagnostics.cachedPromptTokens, cached > 0 {
+                    DiagnosticRow(
+                        "From prompt cache", "\(cached)",
+                        help: "Prompt tokens served from the previous run's state instead of being recomputed.")
+                }
                 DiagnosticRow("Output tokens", "\(diagnostics.generatedTokens)")
+                if let speculative = diagnostics.speculative {
+                    DiagnosticRow(
+                        "MTP acceptance",
+                        "\(speculative.accepted)/\(speculative.proposed) (\(MetricFormat.percent(speculative.acceptanceRate * 100)))",
+                        help: "Drafted tokens the model's own draw agreed with. Higher acceptance means the speculative loop saved more time.")
+                }
                 DiagnosticRow("Stop", diagnostics.stopReason.rawValue)
 
                 groupLabel("Performance")

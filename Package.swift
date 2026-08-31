@@ -60,7 +60,12 @@ let package = Package(
         ),
         .target(
             name: "TurboFieldfareAppCore",
-            dependencies: ["TurboFieldfare", "TurboFieldfareRepackCore", "TurboFieldfareDecodeProtocol"],
+            dependencies: [
+                "TurboFieldfare",
+                "TurboFieldfareRepackCore",
+                "TurboFieldfareDecodeProtocol",
+                "TurboFieldfareServerCore",
+            ],
             path: "Sources/TurboFieldfareApp/Core",
             resources: [
                 .copy("Resources/app-prompts.json"),

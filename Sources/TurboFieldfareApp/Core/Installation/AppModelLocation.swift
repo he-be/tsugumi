@@ -1,7 +1,7 @@
 import Foundation
 
 enum AppModelLocation {
-    static func defaultURL() -> URL {
+    static func defaultURL(for kind: AppModelKind = .defaultKind) -> URL {
         let fileManager = FileManager.default
         let applicationSupport = (try? fileManager.url(
             for: .applicationSupportDirectory,
@@ -9,6 +9,7 @@ enum AppModelLocation {
             appropriateFor: nil,
             create: false)) ?? fileManager.homeDirectoryForCurrentUser
         return resolve(
+            kind: kind,
             explicitURL: nil,
             executableURL: Bundle.main.executableURL,
             currentDirectoryURL: URL(fileURLWithPath: fileManager.currentDirectoryPath,
@@ -17,7 +18,8 @@ enum AppModelLocation {
             fileExists: fileManager.fileExists(atPath:))
     }
 
-    static func resolve(explicitURL: URL?,
+    static func resolve(kind: AppModelKind = .defaultKind,
+                        explicitURL: URL?,
                         executableURL: URL?,
                         currentDirectoryURL: URL,
                         applicationSupportURL: URL,
@@ -28,16 +30,16 @@ enum AppModelLocation {
         if let executableURL,
            let root = packageRoot(startingAt: executableURL.deletingLastPathComponent(),
                                   fileExists: fileExists) {
-            return root.appendingPathComponent("scratch/gemma4-qat.gturbo", isDirectory: true)
+            return root.appendingPathComponent("scratch/\(kind.directoryName)", isDirectory: true)
                 .standardizedFileURL
         }
         if let root = packageRoot(startingAt: currentDirectoryURL, fileExists: fileExists) {
-            return root.appendingPathComponent("scratch/gemma4-qat.gturbo", isDirectory: true)
+            return root.appendingPathComponent("scratch/\(kind.directoryName)", isDirectory: true)
                 .standardizedFileURL
         }
         return applicationSupportURL
             .appendingPathComponent("TurboFieldfare", isDirectory: true)
-            .appendingPathComponent("gemma4-qat.gturbo", isDirectory: true)
+            .appendingPathComponent(kind.directoryName, isDirectory: true)
             .standardizedFileURL
     }
 

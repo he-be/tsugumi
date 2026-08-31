@@ -226,6 +226,18 @@ public actor QwenServerSession: ServerInferenceBackend {
         monitor: ServerTimingsMonitor?,
         onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
     ) async throws -> ServerCompletion {
+        try await generate(prepared, monitor: monitor, onPrefill: nil, onEvent: onEvent)
+    }
+
+    /// The full generation with a prefill-progress hook. Not part of
+    /// `ServerInferenceBackend` — the HTTP layer has no use for chunk counts,
+    /// but the Mac app drives a progress bar with them.
+    public func generate(
+        _ prepared: ServerPreparedRequest,
+        monitor: ServerTimingsMonitor?,
+        onPrefill: (@Sendable (Int, Int) -> Void)?,
+        onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
+    ) async throws -> ServerCompletion {
         let request = prepared.request
         let promptIDs = try prepared.promptIDs ?? renderPrompt(request)
         guard !promptIDs.isEmpty else {
@@ -469,8 +481,16 @@ public actor QwenServerSession: ServerInferenceBackend {
                     constraint: constraint,
                     cachedPromptTokens: reused,
                     sampling: plan.sampling,
-                    shouldStop: { shouldStop },
-                    onPrefill: { _, _ in self.captureAtPromptEnd() },
+                    // `Task.isCancelled` makes an app-side cancel a cooperative
+                    // stop: the loop ends cleanly, the state stays publishable,
+                    // and the caller decides what "cancelled" means.
+                    shouldStop: { shouldStop || Task.isCancelled },
+                    // The runner reports prefill once, when it finishes; the
+                    // hook's (done, total) shape saturates in one call.
+                    onPrefill: { tokens, _ in
+                        self.captureAtPromptEnd()
+                        onPrefill?(tokens, tokens)
+                    },
                     onToken: onToken,
                     onStats: { speculativeStats = $0 })
             } else {
@@ -482,8 +502,11 @@ public actor QwenServerSession: ServerInferenceBackend {
                     constraint: constraint,
                     cachedPromptTokens: reused,
                     sampling: plan.sampling,
-                    shouldStop: { shouldStop },
-                    onPrefill: { _, _ in self.captureAtPromptEnd() },
+                    shouldStop: { shouldStop || Task.isCancelled },
+                    onPrefill: { tokens, _ in
+                        self.captureAtPromptEnd()
+                        onPrefill?(tokens, tokens)
+                    },
                     onToken: onToken)
             }
             // CACHE-6's bookkeeping. What the state holds is always a *prefix*

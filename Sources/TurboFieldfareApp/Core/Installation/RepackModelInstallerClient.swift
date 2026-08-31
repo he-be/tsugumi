@@ -124,6 +124,14 @@ public final class RepackModelInstallerClient: AppModelInstallerClient, Sendable
         }
     }
 
+    public func hasPartialInstall(outputDirectory: URL) -> Bool {
+        guard let paths = try? RemoteInstallPaths(outputDirectory: outputDirectory.path) else {
+            return false
+        }
+        return FileManager.default.fileExists(atPath: paths.partialDirectory)
+            || FileManager.default.fileExists(atPath: paths.checkpointFile)
+    }
+
     public func cancel() {
         let task = taskState.value.withLock { active -> Task<Void, Never>? in
             defer { active = nil }

@@ -102,8 +102,12 @@ import TurboFieldfareDecodeProtocol
                         maxNewTokens: request.maxNewTokens,
                         maxContextTokens: request.maxContextTokens,
                         temperature: request.temperature,
+                        topK: request.topK,
+                        topP: request.topP,
                         repetitionPenalty: request.repetitionPenalty,
-                        runtimeOptions: options)
+                        runtimeOptions: options,
+                        enableThinking: request.enableThinking,
+                        imagePaths: request.imagePaths)
                     for try await event in client.generate(generation) {
                         outbox.publish(event)
                     }
@@ -169,7 +173,8 @@ import TurboFieldfareDecodeProtocol
             prefillEnabled: options.prefillEnabled,
             prefillChunkTokens: options.prefillChunkTokens,
             rdadvisePolicy: rdadvisePolicy,
-            modelVerification: modelVerification)
+            modelVerification: modelVerification,
+            mtpEnabled: options.mtpEnabled)
         try resolved.validate()
         return resolved
     }

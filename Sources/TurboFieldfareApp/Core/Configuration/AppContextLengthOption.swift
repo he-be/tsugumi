@@ -6,6 +6,7 @@ public enum AppContextLengthOption: Int, CaseIterable, Identifiable, Sendable {
     case sixteenK = 16_384
     case thirtyTwoK = 32_768
     case sixtyFourK = 65_536
+    case oneTwentyEightK = 131_072
 
     public var id: Int { rawValue }
     public var tokens: Int { rawValue }
@@ -40,6 +41,7 @@ public enum AppContextLengthOption: Int, CaseIterable, Identifiable, Sendable {
         case .sixteenK: "16K, +250 MB"
         case .thirtyTwoK: "32K, +590 MB"
         case .sixtyFourK: "64K, +1.26 GB"
+        case .oneTwentyEightK: "128K, +2.6 GB"
         }
     }
 }

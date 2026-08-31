@@ -6,6 +6,7 @@ import SwiftUI
 struct OutputPaneView: View {
     let model: AppModel
     @State private var responseCopyFeedbackID: UUID?
+    @State private var reasoningExpanded = false
 
     var body: some View {
         Group {
@@ -59,22 +60,75 @@ struct OutputPaneView: View {
     }
 
     private var transcript: some View {
-        IncrementalTranscriptView(
-            prompt: model.outputPromptText,
-            output: model.outputText,
-            mailbox: model.generationTranscriptMailbox,
-            isTerminal: !model.isRunning,
-            showsPrefillPlaceholder: model.isRunning
-                && model.outputResponsePlainText.isEmpty)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .topTrailing) {
-                if !model.isRunning && !model.outputResponsePlainText.isEmpty {
-                    copyResponseButton
-                        .padding(8)
+        VStack(alignment: .leading, spacing: 8) {
+            if !model.outputReasoningText.isEmpty {
+                reasoningSection
+            }
+            IncrementalTranscriptView(
+                prompt: model.outputPromptText,
+                output: model.outputText,
+                mailbox: model.generationTranscriptMailbox,
+                isTerminal: !model.isRunning,
+                showsPrefillPlaceholder: model.isRunning
+                    && model.outputResponsePlainText.isEmpty
+                    && model.outputReasoningText.isEmpty)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topTrailing) {
+                    if !model.isRunning && !model.outputResponsePlainText.isEmpty {
+                        copyResponseButton
+                            .padding(8)
+                    }
+                }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
+    }
+
+    /// The thought channel, kept apart from the answer. While the model is
+    /// still thinking (no answer text yet) the tail streams live; once the
+    /// answer starts it collapses to a disclosure.
+    private var reasoningSection: some View {
+        let isThinkingLive = model.isRunning && model.outputResponsePlainText.isEmpty
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                reasoningExpanded.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "brain")
+                        .font(.caption)
+                    Text(isThinkingLive ? "Thinking…" : "Thought process")
+                        .font(.caption.weight(.medium))
+                    Image(systemName: reasoningExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if reasoningExpanded || isThinkingLive {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Text(model.outputReasoningText)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Color.clear.frame(height: 1).id("reasoning-tail")
+                    }
+                    .frame(maxHeight: isThinkingLive ? 160 : 280)
+                    .onChange(of: model.outputReasoningText) {
+                        guard isThinkingLive else { return }
+                        proxy.scrollTo("reasoning-tail", anchor: .bottom)
+                    }
+                }
+                .padding(10)
+                .background {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.6))
                 }
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
+        }
     }
 
     private var copyResponseButton: some View {

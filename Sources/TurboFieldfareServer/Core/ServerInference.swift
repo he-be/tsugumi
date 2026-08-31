@@ -667,6 +667,18 @@ public actor ServerModelSession: ServerInferenceBackend {
         monitor: ServerTimingsMonitor?,
         onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
     ) async throws -> ServerCompletion {
+        try await generate(prepared, monitor: monitor, onPrefill: nil, onEvent: onEvent)
+    }
+
+    /// The full generation with a prefill-progress hook. Not part of
+    /// `ServerInferenceBackend` — the HTTP layer has no use for chunk counts,
+    /// but the Mac app drives a progress bar with them.
+    public func generate(
+        _ prepared: ServerPreparedRequest,
+        monitor: ServerTimingsMonitor?,
+        onPrefill: (@Sendable (Int, Int) -> Void)?,
+        onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
+    ) async throws -> ServerCompletion {
         let request = prepared.request
         var completed = false
         defer {
@@ -913,8 +925,8 @@ public actor ServerModelSession: ServerInferenceBackend {
                     }
                 }
                 switch progress {
-                case .prefill:
-                    break
+                case .prefill(let done, let total):
+                    onPrefill?(done, total)
                 case .token(_, let tokenID, let delta):
                     let events = if let decoder {
                         try decoder.consume(tokenID: tokenID, delta: delta)

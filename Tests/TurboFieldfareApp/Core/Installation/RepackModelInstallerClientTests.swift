@@ -84,6 +84,7 @@ import Testing
 
     private func expectCorruptCheckpoint(destinationBytes: [UInt64]) throws {
         let descriptor = AppModelInstallDescriptor(
+            kind: .gemmaQATSym,
             displayName: "Test",
             repoID: "owner/model",
             revision: "main",

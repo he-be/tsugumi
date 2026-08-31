@@ -3,11 +3,13 @@ import Testing
 @testable import TurboFieldfareAppCore
 
 @Suite struct MacAppSettingsTests {
-    @Test func settingsFileLivesBesideModelDirectory() {
+    @Test func settingsFileLivesBesideModelDirectoryPerModel() {
+        // One file per installed model: the two checkpoints keep different
+        // samplers and thinking defaults.
         let model = URL(fileURLWithPath: "/tmp/TurboFieldfare/gemma4.gturbo",
                         isDirectory: true)
         #expect(MacAppSettingsFileStore.fileURL(forModelDirectory: model).path
-            == "/tmp/TurboFieldfare/mac-app-settings.json")
+            == "/tmp/TurboFieldfare/mac-app-settings-gemma4.gturbo.json")
     }
 
     @Test func missingFileCreatesReadableDefaults() throws {

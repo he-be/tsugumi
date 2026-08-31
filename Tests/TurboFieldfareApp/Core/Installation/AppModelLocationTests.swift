@@ -21,7 +21,7 @@ import Testing
             currentDirectoryURL: URL(fileURLWithPath: "/elsewhere"),
             applicationSupportURL: URL(fileURLWithPath: "/support"),
             fileExists: files.contains)
-        #expect(result.path == "/repo/scratch/gemma4-qat.gturbo")
+        #expect(result.path == "/repo/scratch/gemma4-qat-sym.gturbo")
     }
 
     @Test func currentDirectoryCanBePackageRoot() {
@@ -32,7 +32,7 @@ import Testing
             currentDirectoryURL: URL(fileURLWithPath: "/repo"),
             applicationSupportURL: URL(fileURLWithPath: "/support"),
             fileExists: files.contains)
-        #expect(result.path == "/repo/scratch/gemma4-qat.gturbo")
+        #expect(result.path == "/repo/scratch/gemma4-qat-sym.gturbo")
     }
 
     @Test func standaloneAppFallsBackToApplicationSupport() {
@@ -42,6 +42,6 @@ import Testing
             currentDirectoryURL: URL(fileURLWithPath: "/"),
             applicationSupportURL: URL(fileURLWithPath: "/support"),
             fileExists: { _ in false })
-        #expect(result.path == "/support/TurboFieldfare/gemma4-qat.gturbo")
+        #expect(result.path == "/support/TurboFieldfare/gemma4-qat-sym.gturbo")
     }
 }
