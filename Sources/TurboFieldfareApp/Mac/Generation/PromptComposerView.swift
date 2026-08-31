@@ -183,7 +183,7 @@ struct PromptComposerView: View {
             tipSection("For code and calculations",
                        "Provide types, dimensions, interfaces, edge cases, or a small scaffold. Compile or run the result before relying on it.")
             tipSection("Try a focused revision",
-                       "If the answer drifts, shorten the task and make the missing requirement explicit. The default temperature is 0.20 for steadier responses.")
+                       "If the answer drifts, shorten the task and make the missing requirement explicit. The sampler defaults to each model's official recommendation.")
         }
         .font(.callout)
         .frame(width: 390, alignment: .leading)
