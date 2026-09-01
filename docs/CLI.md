@@ -134,8 +134,7 @@ The gain follows how predictable the text is: about **1.4x** on code and on
 image descriptions, about **1.0x** on Japanese prose, where the drafter is
 rarely right. It needs chunked prefill and a repetition penalty of 1.0, and it
 is off unless asked for. The [local server](OPENAI_SERVER.md#speculative-decoding-mtp)
-takes the same flag. Measurements and the accepted trade-offs are in
-[`RESULTS_MTP.md`](../RESULTS_MTP.md).
+takes the same flag.
 
 Common generation options include `--max-context`, `--temperature`, `--top-k`,
 `--top-p`, `--repetition-penalty`, `--seed`, and repeatable `--stop` strings.

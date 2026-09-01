@@ -326,6 +326,6 @@ PLAN.md / PLAN_QAT.md / PLAN_VISION.md と同じ **実測** / **導出** / **未
 - 量子化ツール: [`jundot/omlx`](https://github.com/jundot/omlx) (Apache-2.0) —
   `docs/oQ_Quantization.md` / `omlx/oq.py` / `omlx/custom_kernels/qwen35_prefill/gdn.py`
 - `transformers` `models/qwen3_5_moe/modeling_qwen3_5_moe.py`
-- 本リポジトリ: [PLAN.md](../../PLAN.md) / [PLAN_QAT.md](../../PLAN_QAT.md) /
-  [PLAN_VISION.md](../../PLAN_VISION.md) / [docs/mtp/README.md](../mtp/README.md) /
+- 本リポジトリ: PLAN.md / PLAN_QAT.md /
+  PLAN_VISION.md / [docs/mtp/README.md](../mtp/README.md) /
   [docs/SYSTEM_DESIGN.md](../SYSTEM_DESIGN.md) / [docs/serving/SPEC.md](../serving/SPEC.md)

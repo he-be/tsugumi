@@ -122,8 +122,8 @@ Open an issue titled `Benchmark: <chip>, <memory>, <macOS version>` and include:
 - any output-quality problem or protocol change.
 
 Compare rows only when the case, prompt tokens, generated tokens, settings, and
-stop reason match. The [reference M5 range](BENCHMARKS.md#m5-measured-decode)
-uses controlled non-repeating continuations for stable token-for-token
+stop reason match. The reference ranges use
+controlled non-repeating continuations for stable token-for-token
 measurement, while this public protocol checks autonomous product generation.
 
 ## Community results

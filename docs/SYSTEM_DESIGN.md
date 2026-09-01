@@ -79,9 +79,7 @@ downloads only missing or damaged ranges. An advisory lock serializes
 inspection, install, resume, discard, and promotion for the target path.
 Discard is explicit.
 
-See the [command-line instructions](CLI.md) for
-installation. The [optimization journey](OPTIMIZATION_JOURNEY.md#explicit-reads-made-expert-streaming-work)
-records the current instruction-checkpoint validation.
+See the [command-line instructions](CLI.md) for installation.
 
 ## The `.moepack` directory
 
@@ -419,8 +417,7 @@ INT4 and INT8 GEMV kernels that consume the checkpoint's packed values, BF16
 scales, and BF16 biases directly. MPP prefill dequantizes one bounded weight
 tile into FP16 threadgroup memory and passes FP16 tensors to `matmul2d`. The
 routed MoE kernels fuse affine decode, GeGLU, and the weighted expert reduction.
-The relevant Apple API sources are listed under
-[Apple Metal](IMPLEMENTATION_REFERENCES.md#apple-metal).
+
 
 Packed-weight loads use the alignment guaranteed by each path. Resident INT4
 GEMVs and routed gate/up projections build each 4-byte value from two `ushort`
@@ -505,9 +502,8 @@ references lead to the supporting code and tests.
 The current runtime generates text from text and from images. The vision tower
 is optional at install time and runs in `RealForwardRunner` ahead of the prefill
 chunk loop; the whole path, its measured accuracy against the reference
-implementation, and its acceptance evidence are in
-[`PLAN_VISION.md`](../PLAN_VISION.md) and
-[`RESULTS_VISION.md`](../RESULTS_VISION.md). An image costs up to 280 prompt
+implementation, and its acceptance evidence were measured before the tower
+was adopted. An image costs up to 280 prompt
 tokens (the count follows its aspect ratio) and about 1.9 s of GPU time before
 the first token; a model installed without the tower refuses image input rather
 than ignoring it. Audio and video are refused.
@@ -534,7 +530,5 @@ default.
 ## Read next
 
 - [Local OpenAI-compatible server](OPENAI_SERVER.md)
-- [Benchmarks](BENCHMARKS.md)
-- [The experiments that shaped Tsugumi](OPTIMIZATION_JOURNEY.md)
-- [Complete experiment inventory](experiments/EXPERIMENT_INVENTORY.md)
-- [Implementation references](IMPLEMENTATION_REFERENCES.md)
+- [Command-line interface](CLI.md)
+- [Runtime controls](RUNTIME_CONTROLS.md)

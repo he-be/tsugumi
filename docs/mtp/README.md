@@ -12,7 +12,7 @@ propose-and-verify (投機デコード) を本ランタイムに入れる。
 **各文書の要約は下の索引が持つ。**40 は索引から導けないもの (決まっていること /
 落とし穴 / 食い違い / 計器の在処) だけを持ち、**測定の結論を二重に書かない。**
 (M7 = 32 スロットの運用点は [27-M7-RESULTS.md](27-M7-RESULTS.md) で完了している。)
-**受入結果は [RESULTS_MTP.md](../../RESULTS_MTP.md) (リポジトリ直下)。**
+**受入結果は RESULTS_MTP.md (リポジトリ直下)。**
 
 **M8 は提案 ([28-M8-PROPOSAL.md](28-M8-PROPOSAL.md)) と、その果実 B の前提検定
 ([29-M8-B-PROBE.md](29-M8-B-PROBE.md)) まで。**32 スロットの壁 (ブロック 82 ms の
@@ -224,4 +224,4 @@ v1 の 8 枚は失われ、[42-N3-SCORING-V2.md](42-N3-SCORING-V2.md) が v2 を
   「読むべき最新の設計」が常に 1 か所にあるようにする。訂正の履歴は git log が持つ。
 - 受入結果は最後に `RESULTS_MTP.md` (リポジトリ直下、PLAN §6 準拠) にまとめる。
   `RESULTS_QAT.md` / `RESULTS_VISION.md` と同じ場所・同じ体裁にする。
-  → **書いた ([RESULTS_MTP.md](../../RESULTS_MTP.md))。この計画はここで閉じる。**
+  → **書いた (RESULTS_MTP.md)。この計画はここで閉じる。**
