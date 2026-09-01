@@ -8,6 +8,13 @@ struct RootView: View {
 
     var body: some View {
         HStack(spacing: 0) {
+            if !model.requiresModelInstallation {
+                ChatSidebarView(model: model)
+                    .frame(width: 200)
+                    .frame(maxHeight: .infinity)
+                Divider()
+            }
+
             primaryContent
                 .frame(minWidth: 720, maxWidth: .infinity, maxHeight: .infinity)
 
@@ -91,18 +98,39 @@ struct RootView: View {
     private var conversationChrome: some View {
         VStack(spacing: 10) {
             ErrorBanner(model: model)
-            if model.promptText.isEmpty && model.showPromptExamples && !model.isRunning {
-                PromptExamplesView { preset in
-                    model.promptText = preset.prompt
+            if model.isSelectedChatReadOnly {
+                readOnlyNotice
+            } else {
+                if model.promptText.isEmpty && model.showPromptExamples && !model.isRunning {
+                    PromptExamplesView { preset in
+                        model.promptText = preset.prompt
+                    }
                 }
+                ModelActionBanner(model: model)
+                PromptComposerView(model: model)
             }
-            ModelActionBanner(model: model)
-            PromptComposerView(model: model)
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 16)
         .animation(.smooth(duration: 0.2), value: model.promptText.isEmpty)
         .animation(.smooth(duration: 0.2), value: model.showPromptExamples)
+        .animation(.smooth(duration: 0.2), value: model.isSelectedChatReadOnly)
+    }
+
+    private var readOnlyNotice: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text("Generating in another chat — this conversation is read-only until it finishes.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(12)
+        .background {
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        }
     }
 
 }

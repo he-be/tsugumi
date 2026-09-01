@@ -91,14 +91,14 @@ struct OutputPaneView: View {
                 history: completedTurns,
                 prompt: model.outputPromptText,
                 output: model.outputText,
-                mailbox: model.generationTranscriptMailbox,
-                isTerminal: !model.isRunning,
-                showsPrefillPlaceholder: model.isRunning
+                mailbox: model.selectedChatTranscriptMailbox,
+                isTerminal: !model.isSelectedChatGenerating,
+                showsPrefillPlaceholder: model.isSelectedChatGenerating
                     && model.outputResponsePlainText.isEmpty
                     && model.outputReasoningText.isEmpty)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .overlay(alignment: .topTrailing) {
-                    if !model.isRunning && !model.outputResponsePlainText.isEmpty {
+                    if !model.isSelectedChatGenerating && !model.outputResponsePlainText.isEmpty {
                         copyResponseButton
                             .padding(8)
                     }
@@ -112,7 +112,8 @@ struct OutputPaneView: View {
     /// still thinking (no answer text yet) the tail streams live; once the
     /// answer starts it collapses to a disclosure.
     private var reasoningSection: some View {
-        let isThinkingLive = model.isRunning && model.outputResponsePlainText.isEmpty
+        let isThinkingLive = model.isSelectedChatGenerating
+            && model.outputResponsePlainText.isEmpty
         return VStack(alignment: .leading, spacing: 6) {
             Button {
                 reasoningExpanded.toggle()
@@ -133,7 +134,12 @@ struct OutputPaneView: View {
             if reasoningExpanded || isThinkingLive {
                 ScrollViewReader { proxy in
                     ScrollView {
-                        Text(model.outputReasoningText)
+                        // Live: only the tail, so per-token layout cost stays
+                        // bounded however long the model thinks.
+                        Text(isThinkingLive
+                             ? ReasoningLivePresentation.liveTail(
+                                of: model.outputReasoningText)
+                             : model.outputReasoningText)
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)

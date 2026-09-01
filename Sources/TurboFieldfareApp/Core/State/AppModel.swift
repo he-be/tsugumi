@@ -12,17 +12,16 @@ public final class AppModel {
 
     public var modelPathText: String
     public private(set) var selectedModelKind: AppModelKind = .defaultKind
-    public var promptText: String = ""
-    /// Completed turns of the current conversation, oldest first. The live
-    /// turn stays in `outputPromptText` / `outputText` until the next `run()`
-    /// folds it in, so the post-completion UI keeps working on the live
-    /// fields exactly as before.
-    public private(set) var conversationTurns: [AppChatTurn] = []
-    public private(set) var outputPromptText: String = ""
-    /// Images the live turn was sent with; folded into history with it.
-    public private(set) var outputImagePaths: [String] = []
-    public var outputText: String = ""
-    public private(set) var outputReasoningText: String = ""
+    /// All conversations, oldest first. Exactly one is selected; at most
+    /// one is generating, and it need not be the selected one.
+    public private(set) var chats: [AppChatSession]
+    public private(set) var selectedChatID: UUID
+    /// The chat the running generation streams into; nil while idle.
+    private var generatingChat: AppChatSession?
+    /// The chat whose text the transcript mailbox currently holds. The
+    /// mailbox is a single client-owned channel, so reads must be gated on
+    /// this or another chat would display the generating chat's text.
+    private var mailboxOwnerChatID: UUID?
     public var runState: RunState = .idle
     public var runtimeOptions = AppRuntimeOptions()
     public var maxNewTokensOverride: Int?
@@ -33,7 +32,6 @@ public final class AppModel {
     public var topPEnabled: Bool = true
     public var topP: Double = 0.95
     public var thinkingEnabled: Bool = false
-    public var attachedImagePaths: [String] = []
     public private(set) var newlineShortcut: AppNewlineShortcut = .return
     public private(set) var showPromptExamples: Bool = true
     public private(set) var sentPromptBehavior: AppSentPromptBehavior = .keep
@@ -82,6 +80,10 @@ public final class AppModel {
                 installer: (any AppModelInstallerClient)? = nil,
                 memorySampler: AppMemorySampler = AppMemorySampler(),
                 settingsPersistenceEnabled: Bool = false) {
+        let firstChat = AppChatSession()
+        self.chats = [firstChat]
+        self.selectedChatID = firstChat.id
+        self.mailboxOwnerChatID = firstChat.id
         let kind = modelDirectory.flatMap(AppModelKind.probe(modelDirectory:))
             ?? .defaultKind
         let directory = (modelDirectory ?? AppModelLocation.defaultURL(for: kind))
@@ -127,6 +129,83 @@ public final class AppModel {
     }
 
     public var isRunning: Bool { runState == .running }
+
+    public var selectedChat: AppChatSession {
+        chats.first(where: { $0.id == selectedChatID }) ?? chats[0]
+    }
+
+    public var generatingChatID: UUID? { generatingChat?.id }
+
+    public var isSelectedChatGenerating: Bool {
+        isRunning && generatingChat === selectedChat
+    }
+
+    /// While one chat generates, every other chat is view-only: no sending,
+    /// no editing, no clearing — switching back is the way to interact.
+    public var isSelectedChatReadOnly: Bool {
+        isRunning && generatingChat !== selectedChat
+    }
+
+    // The single-conversation surface the views and tests were built on;
+    // each member now reads or writes the selected chat.
+    public var promptText: String {
+        get { selectedChat.promptText }
+        set { selectedChat.promptText = newValue }
+    }
+
+    public var conversationTurns: [AppChatTurn] { selectedChat.conversationTurns }
+
+    public var outputPromptText: String { selectedChat.outputPromptText }
+
+    public var outputImagePaths: [String] { selectedChat.outputImagePaths }
+
+    public var outputText: String {
+        get { selectedChat.outputText }
+        set { selectedChat.outputText = newValue }
+    }
+
+    public var outputReasoningText: String { selectedChat.outputReasoningText }
+
+    public var attachedImagePaths: [String] {
+        get { selectedChat.attachedImagePaths }
+        set { selectedChat.attachedImagePaths = newValue }
+    }
+
+    /// Opens a fresh conversation, reselecting an existing empty one
+    /// instead of piling up blanks.
+    public func newChat() {
+        if let existing = chats.first(where: {
+            $0.isEmpty && $0 !== generatingChat && responsePlainText(of: $0).isEmpty
+        }) {
+            selectedChatID = existing.id
+            return
+        }
+        let chat = AppChatSession()
+        chats.append(chat)
+        selectedChatID = chat.id
+    }
+
+    /// Switching is allowed while another chat generates; the newly
+    /// selected chat is then read-only (`isSelectedChatReadOnly`).
+    public func selectChat(_ id: UUID) {
+        guard chats.contains(where: { $0.id == id }) else { return }
+        selectedChatID = id
+    }
+
+    public func canDeleteChat(_ id: UUID) -> Bool {
+        generatingChat?.id != id
+    }
+
+    public func deleteChat(_ id: UUID) {
+        guard canDeleteChat(id),
+              let index = chats.firstIndex(where: { $0.id == id }) else { return }
+        chats.remove(at: index)
+        if mailboxOwnerChatID == id { mailboxOwnerChatID = nil }
+        if chats.isEmpty { chats = [AppChatSession()] }
+        if !chats.contains(where: { $0.id == selectedChatID }) {
+            selectedChatID = chats[min(index, chats.count - 1)].id
+        }
+    }
 
     public var isModelAvailable: Bool { loadState.isReady }
 
@@ -243,7 +322,15 @@ public final class AppModel {
     }
 
     public var outputResponsePlainText: String {
-        generationTranscriptMailbox?.completeText ?? outputText
+        responsePlainText(of: selectedChat)
+    }
+
+    private func responsePlainText(of chat: AppChatSession) -> String {
+        guard chat.id == mailboxOwnerChatID,
+              let mailbox = generationTranscriptMailbox else {
+            return chat.outputText
+        }
+        return mailbox.completeText
     }
 
     public var outputConversationPlainText: String {
@@ -292,6 +379,13 @@ public final class AppModel {
         (client as? any AppInferenceTranscriptReporting)?.generationTranscriptMailbox
     }
 
+    /// The live mailbox, but only when the selected chat is the one whose
+    /// text it holds; the transcript view of any other chat must not drain
+    /// another conversation's stream.
+    public var selectedChatTranscriptMailbox: GenerationTranscriptMailbox? {
+        selectedChat.id == mailboxOwnerChatID ? generationTranscriptMailbox : nil
+    }
+
     private var currentRuntimeKey: AppLoadedRuntimeKey {
         AppLoadedRuntimeKey(modelDirectory: URL(fileURLWithPath: modelPathText),
                             maxContextTokens: maxContextTokens,
@@ -326,7 +420,7 @@ public final class AppModel {
             ?? selectedModelKind
         installer.cancel()
         installer = installerProvider(selectedModelKind)
-        attachedImagePaths = []
+        for chat in chats { chat.attachedImagePaths = [] }
         applyPersistedSettings(
             forModelDirectory: URL(fileURLWithPath: path, isDirectory: true))
         loadGeneration &+= 1
@@ -763,38 +857,44 @@ public final class AppModel {
 
     public func clearOutput() {
         guard !isRunning else { return }
-        conversationTurns = []
-        outputPromptText = ""
-        outputImagePaths = []
-        outputText = ""
-        outputReasoningText = ""
-        generationTranscriptMailbox?.reset()
+        let chat = selectedChat
+        chat.conversationTurns = []
+        chat.outputPromptText = ""
+        chat.outputImagePaths = []
+        chat.outputText = ""
+        chat.outputReasoningText = ""
+        if chat.id == mailboxOwnerChatID {
+            generationTranscriptMailbox?.reset()
+            mailboxOwnerChatID = nil
+        }
         diagnostics = nil
         error = nil
     }
 
-    /// Moves the finished live turn into `conversationTurns` so the next
-    /// request resends it as history. A turn whose answer never produced
-    /// text or reasoning is dropped instead — resending a user turn with no
-    /// assistant turn after it would redraw a conversation the model never
-    /// saw.
-    private func foldCompletedTurnIntoHistory() {
-        let response = outputResponsePlainText
-        let reasoning = generationTranscriptMailbox?.completeReasoningText
-            ?? outputReasoningText
-        guard !outputPromptText.isEmpty else { return }
+    /// Moves the chat's finished live turn into its `conversationTurns` so
+    /// the next request resends it as history. A turn whose answer never
+    /// produced text or reasoning is dropped instead — resending a user
+    /// turn with no assistant turn after it would redraw a conversation the
+    /// model never saw.
+    private func foldCompletedTurnIntoHistory(of chat: AppChatSession) {
+        let response = responsePlainText(of: chat)
+        let reasoning = chat.id == mailboxOwnerChatID
+            ? (generationTranscriptMailbox?.completeReasoningText
+               ?? chat.outputReasoningText)
+            : chat.outputReasoningText
+        guard !chat.outputPromptText.isEmpty else { return }
         if !response.isEmpty || !reasoning.isEmpty {
-            conversationTurns.append(AppChatTurn(role: .user,
-                                                 text: outputPromptText,
-                                                 imagePaths: outputImagePaths))
-            conversationTurns.append(AppChatTurn(role: .assistant,
-                                                 text: response,
-                                                 reasoningText: reasoning))
+            chat.conversationTurns.append(AppChatTurn(role: .user,
+                                                      text: chat.outputPromptText,
+                                                      imagePaths: chat.outputImagePaths))
+            chat.conversationTurns.append(AppChatTurn(role: .assistant,
+                                                      text: response,
+                                                      reasoningText: reasoning))
         }
-        outputPromptText = ""
-        outputImagePaths = []
-        outputText = ""
-        outputReasoningText = ""
+        chat.outputPromptText = ""
+        chat.outputImagePaths = []
+        chat.outputText = ""
+        chat.outputReasoningText = ""
     }
 
     public func attachImages(_ paths: [String]) {
@@ -812,7 +912,8 @@ public final class AppModel {
 
     public func run() {
         guard canRun else { return }
-        foldCompletedTurnIntoHistory()
+        let chat = selectedChat
+        foldCompletedTurnIntoHistory(of: chat)
         let request: AppGenerationRequest
         do {
             request = try makeRequest()
@@ -827,10 +928,12 @@ public final class AppModel {
         persistSettings()
 
         generationTranscriptMailbox?.reset()
-        outputPromptText = request.prompt
-        outputImagePaths = request.imagePaths
-        outputText = ""
-        outputReasoningText = ""
+        mailboxOwnerChatID = chat.id
+        generatingChat = chat
+        chat.outputPromptText = request.prompt
+        chat.outputImagePaths = request.imagePaths
+        chat.outputText = ""
+        chat.outputReasoningText = ""
         diagnostics = nil
         error = nil
         hasHandledTerminalEvent = false
@@ -848,11 +951,11 @@ public final class AppModel {
         phase = .prefill
         runState = .running
         if sentPromptBehavior == .clear {
-            promptText = ""
+            chat.promptText = ""
         }
         // The images are baked into the request that just left; keeping them
         // attached would silently resend them with the next prompt.
-        attachedImagePaths = []
+        chat.attachedImagePaths = []
 
         runTask = Task.detached { [weak self, client, request] in
             guard let self else { return }
@@ -920,11 +1023,12 @@ public final class AppModel {
             } else {
                 liveMemoryBytes = memorySampler.sample()
             }
+            let chat = generatingChat ?? selectedChat
             if !token.textDelta.isEmpty {
-                outputText += token.textDelta
+                chat.outputText += token.textDelta
             }
             if !token.reasoningDelta.isEmpty {
-                outputReasoningText += token.reasoningDelta
+                chat.outputReasoningText += token.reasoningDelta
             }
         case .finished(let diagnostics):
             finishSuccessfully(diagnostics)
@@ -956,8 +1060,9 @@ public final class AppModel {
 
     private func materializeServiceTranscript() {
         guard let reporter = client as? any AppInferenceTranscriptReporting else { return }
-        outputText = reporter.generationTranscriptMailbox.completeText
-        outputReasoningText = reporter.generationTranscriptMailbox.completeReasoningText
+        let chat = generatingChat ?? selectedChat
+        chat.outputText = reporter.generationTranscriptMailbox.completeText
+        chat.outputReasoningText = reporter.generationTranscriptMailbox.completeReasoningText
     }
 
     private func finishWithError(_ appError: AppInferenceError) {
@@ -977,6 +1082,7 @@ public final class AppModel {
         runState = .idle
         isCancellationPending = false
         activeRunRuntimeKey = nil
+        generatingChat = nil
         runTask = nil
     }
 
