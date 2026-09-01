@@ -5,8 +5,8 @@ import Foundation
 /// redraw the turn exactly as the model wrote it (SPEC MSG-5 / INV-1); that
 /// exact redraw is what lets the prompt cache extend across turns with
 /// thinking on or off.
-public struct AppChatTurn: Equatable, Sendable {
-    public enum Role: String, Equatable, Sendable {
+public struct AppChatTurn: Equatable, Sendable, Codable {
+    public enum Role: String, Equatable, Sendable, Codable {
         case user
         case assistant
     }

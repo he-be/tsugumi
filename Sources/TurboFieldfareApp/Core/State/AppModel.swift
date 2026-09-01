@@ -71,6 +71,11 @@ public final class AppModel {
     private var hasHandledTerminalEvent = false
     private let memorySampler: AppMemorySampler
     private let settingsPersistenceEnabled: Bool
+    private let chatStore: AppChatStore?
+    private var chatSaveTask: Task<Void, Never>?
+    /// Draft edits save behind this debounce; structural changes and
+    /// finished turns save immediately. Tests shorten it.
+    nonisolated(unsafe) static var chatSaveDebounceNanos: UInt64 = 1_000_000_000
     private let installETAClock: SuspendingClock
     private let installETAOrigin: SuspendingClock.Instant
     private var installETAEstimator = DownloadETAEstimator()
@@ -79,11 +84,23 @@ public final class AppModel {
                 client: any AppInferenceClient = RealInferenceClient(),
                 installer: (any AppModelInstallerClient)? = nil,
                 memorySampler: AppMemorySampler = AppMemorySampler(),
-                settingsPersistenceEnabled: Bool = false) {
-        let firstChat = AppChatSession()
-        self.chats = [firstChat]
-        self.selectedChatID = firstChat.id
-        self.mailboxOwnerChatID = firstChat.id
+                settingsPersistenceEnabled: Bool = false,
+                chatStore: AppChatStore? = nil) {
+        self.chatStore = chatStore
+        if let persisted = chatStore?.load(), !persisted.chats.isEmpty {
+            let sessions = persisted.chats.map { $0.makeSession() }
+            self.chats = sessions
+            let index = min(max(persisted.selectedChatIndex, 0), sessions.count - 1)
+            self.selectedChatID = sessions[index].id
+            // No generation has run yet, so the transcript mailbox is empty;
+            // owning it would mask the restored text with that emptiness.
+            self.mailboxOwnerChatID = nil
+        } else {
+            let firstChat = AppChatSession()
+            self.chats = [firstChat]
+            self.selectedChatID = firstChat.id
+            self.mailboxOwnerChatID = firstChat.id
+        }
         let kind = modelDirectory.flatMap(AppModelKind.probe(modelDirectory:))
             ?? .defaultKind
         let directory = (modelDirectory ?? AppModelLocation.defaultURL(for: kind))
@@ -150,7 +167,10 @@ public final class AppModel {
     // each member now reads or writes the selected chat.
     public var promptText: String {
         get { selectedChat.promptText }
-        set { selectedChat.promptText = newValue }
+        set {
+            selectedChat.promptText = newValue
+            scheduleChatPersist()
+        }
     }
 
     public var conversationTurns: [AppChatTurn] { selectedChat.conversationTurns }
@@ -168,7 +188,30 @@ public final class AppModel {
 
     public var attachedImagePaths: [String] {
         get { selectedChat.attachedImagePaths }
-        set { selectedChat.attachedImagePaths = newValue }
+        set {
+            selectedChat.attachedImagePaths = newValue
+            scheduleChatPersist()
+        }
+    }
+
+    private func persistChatsNow() {
+        guard let chatStore else { return }
+        chatSaveTask?.cancel()
+        chatSaveTask = nil
+        let selectedIndex = chats.firstIndex(where: { $0.id == selectedChatID }) ?? 0
+        try? chatStore.save(PersistedChats(
+            selectedChatIndex: selectedIndex,
+            chats: chats.map(PersistedChat.init)))
+    }
+
+    private func scheduleChatPersist() {
+        guard chatStore != nil else { return }
+        chatSaveTask?.cancel()
+        chatSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.chatSaveDebounceNanos)
+            guard !Task.isCancelled else { return }
+            self?.persistChatsNow()
+        }
     }
 
     /// Opens a fresh conversation, reselecting an existing empty one
@@ -178,11 +221,13 @@ public final class AppModel {
             $0.isEmpty && $0 !== generatingChat && responsePlainText(of: $0).isEmpty
         }) {
             selectedChatID = existing.id
+            persistChatsNow()
             return
         }
         let chat = AppChatSession()
         chats.append(chat)
         selectedChatID = chat.id
+        persistChatsNow()
     }
 
     /// Switching is allowed while another chat generates; the newly
@@ -190,6 +235,7 @@ public final class AppModel {
     public func selectChat(_ id: UUID) {
         guard chats.contains(where: { $0.id == id }) else { return }
         selectedChatID = id
+        persistChatsNow()
     }
 
     public func canDeleteChat(_ id: UUID) -> Bool {
@@ -205,6 +251,7 @@ public final class AppModel {
         if !chats.contains(where: { $0.id == selectedChatID }) {
             selectedChatID = chats[min(index, chats.count - 1)].id
         }
+        persistChatsNow()
     }
 
     public var isModelAvailable: Bool { loadState.isReady }
@@ -421,6 +468,7 @@ public final class AppModel {
         installer.cancel()
         installer = installerProvider(selectedModelKind)
         for chat in chats { chat.attachedImagePaths = [] }
+        persistChatsNow()
         applyPersistedSettings(
             forModelDirectory: URL(fileURLWithPath: path, isDirectory: true))
         loadGeneration &+= 1
@@ -869,6 +917,7 @@ public final class AppModel {
         }
         diagnostics = nil
         error = nil
+        persistChatsNow()
     }
 
     /// Moves the chat's finished live turn into its `conversationTurns` so
@@ -956,6 +1005,9 @@ public final class AppModel {
         // The images are baked into the request that just left; keeping them
         // attached would silently resend them with the next prompt.
         chat.attachedImagePaths = []
+        // The fold and the prompt snapshot are worth surviving a crash even
+        // if the answer never lands.
+        persistChatsNow()
 
         runTask = Task.detached { [weak self, client, request] in
             guard let self else { return }
@@ -1084,6 +1136,7 @@ public final class AppModel {
         activeRunRuntimeKey = nil
         generatingChat = nil
         runTask = nil
+        persistChatsNow()
     }
 
     private func clearLoadTask(generation: UInt64) {
