@@ -5,8 +5,8 @@
 <h1 align="center">Tsugumi</h1>
 
 <p align="center">
-  <strong>Gemma 4 26B-A4B inference in about 2 GB of RAM</strong><br>
-  A custom Swift + Metal runtime for any Apple Silicon Mac, even the 8 GB ones.
+  <strong>Talk to a local AI on an ordinary 16 GB Mac</strong><br>
+  16GB の Mac で、ローカルの AI と話す
 </p>
 
 <p align="center">
@@ -18,30 +18,39 @@
 
 <p align="center">
   <a href="#try-it">Quick start</a> ·
+  <a href="#upstream">Upstream</a> ·
+  <a href="docs/MAC_APP.md">Mac app</a> ·
   <a href="docs/OPENAI_SERVER.md">Local server</a> ·
   <a href="docs/BENCHMARKS.md">Benchmarks</a> ·
-  <a href="docs/COMMUNITY_BENCHMARKS.md">Contribute results</a> ·
   <a href="docs/SYSTEM_DESIGN.md">How it works</a> ·
-  <a href="docs/OPTIMIZATION_JOURNEY.md">Experiments</a> ·
-  <a href="docs/IMPLEMENTATION_REFERENCES.md">References</a>
+  <a href="docs/OPTIMIZATION_JOURNEY.md">Experiments</a>
 </p>
 
-![Tsugumi Mac app generating text with Gemma 4 26B-A4B](docs/assets/tsugumi-app.webp)
+![Tsugumi generating text with Gemma 4 26B-A4B](docs/assets/tsugumi-app.webp)
 
-Memory got expensive. So I gave a 26-billion-parameter model a ~2 GB budget.
+A Mac app that talks to a mixture-of-experts model on your own machine, and
+sends nothing anywhere. No account, no key, no request leaving the laptop —
+the conversation and the weights both stay on the SSD you own.
 
-Tsugumi runs the instruction-tuned
-**[Gemma 4 26B-A4B](https://ai.google.dev/gemma/docs/core/model_card_4)**
-without loading the entire 14.3 GB model into memory. It keeps the shared
-1.35 GB core and FP16 KV cache in memory, then streams only the experts needed
-for each token from SSD. This is what lets the model run on Macs with 8 GB of
-RAM.
+The trick that makes it fit is that a MoE model does not need all of itself at
+once. Tsugumi keeps the shared core and the KV cache resident and streams only
+the experts each token actually routes to, straight off the SSD, through a
+bounded cache. A 26-billion-parameter checkpoint on disk runs against a working
+set a normal Mac has room for.
 
-The runtime, streaming installer, CLI, and native Mac app are written in Swift
-and Metal. Tsugumi is model-specific rather than a wrapper around MLX or
-llama.cpp. The curated [experiment record](docs/experiments/EXPERIMENT_INVENTORY.md)
-summarizes 103 measured results across kernels, caching, I/O, prefill, and
-decode.
+Two checkpoints are supported, both with speculative decoding on by default:
+
+| | [Gemma 4 26B-A4B QAT](https://ai.google.dev/gemma/docs/core/model_card_4) | [Ornith-1.5 35B-A3B](https://huggingface.co/ornith-ai) |
+| --- | --- | --- |
+| Download | 15.7 GB | 21.0 GB |
+| Images | yes, up to 4 per message | no |
+| Thinking | toggle, off by default | toggle, on by default |
+| Speculation | 4-token drafter block | MTP head, width 2 |
+
+The runtime, the installer, the CLI, the OpenAI-compatible server and the Mac
+app are all Swift and Metal. Nothing here wraps MLX or llama.cpp. See
+[the Mac app's design notes](docs/MAC_APP.md) for what the app does with them,
+and [Upstream](#upstream) for where this came from.
 
 ## Try it
 
@@ -52,33 +61,44 @@ swift build -c release
 .build/release/TsugumiMac
 ```
 
-On the first run, Swift Package Manager downloads and builds the Swift packages
-required by the tokenizer. The complete release build includes the foreground
-Mac app and its sibling decode-service executable.
+The release build produces the app and its sibling decode service, which the
+app launches to own the model and Metal. On the first run Swift Package Manager
+also fetches the tokenizer packages.
 
-When the app opens, choose **Download** and let Tsugumi fetch and repack
-the pinned model (about 15 GB). Once it is ready, choose **Load Model**, type
-your prompt, and press **Generate**.
+When the app opens, choose **Download**. The default is Gemma 4, which arrives
+as a finished pack (15.7 GB) whose every file is verified against a SHA-256 pin
+before it is accepted. Then choose **Load Model** and start typing. Ornith can
+be installed later from the same screen if you want a second model; it is a
+larger download and no help on a machine that is short on disk.
 
 ## At a glance
 
-| Metric          | Value                                                                                                                    |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| Model           | Gemma 4 26B-A4B IT, 26B total parameters, about 3.88B active per token                                                   |
-| Weights         | MLX affine 4-bit, group 64; 8-bit router; 4-bit shared and routed experts                                                |
-| Memory          | ~2 GB of weights and 4K KV cache                                                                                         |
-| Storage         | About 14.3 GB for the installed text-only model                                                                          |
-| Hardware        | Apple Silicon Mac; 8 GB of RAM                                                                                            |
-| Platform        | macOS 15 or newer, Metal 3.2 (Metal 4 tensor kernels on macOS 26), Swift 6.2                                             |
-| M2 measured decode | [5.1-6.3 tok/s](docs/BENCHMARKS.md#m2-measured-decode) on an 8 GB M2 MacBook Air |
-| M5 measured decode | [31-35 tok/s](docs/BENCHMARKS.md#m5-measured-decode) on a 24 GB M5 Pro |
-| Community Reports | [Here](docs/COMMUNITY_BENCHMARKS.md#community-results) |
+| Metric | Value |
+| --- | --- |
+| Models | Gemma 4 26B-A4B IT (~3.88B active per token) and Ornith-1.5 35B-A3B |
+| Weights | affine 4-bit, group 64; 8-bit router; 4-bit shared and routed experts |
+| Disk | 15.7 GB for Gemma 4, 21.0 GB for Ornith. Installing both needs ~37 GB free |
+| Platform | macOS 15 or newer, Metal 3.2 (Metal 4 tensor kernels on macOS 26), Swift 6.2 |
+| M2 measured decode | [5.1-6.3 tok/s](docs/BENCHMARKS.md#m2-measured-decode) on an 8 GB M2 MacBook Air, text-only Gemma pack |
+| M5 measured decode | [31-35 tok/s](docs/BENCHMARKS.md#m5-measured-decode) on a 24 GB M5 Pro, text-only Gemma pack |
+| Community reports | [Here](docs/COMMUNITY_BENCHMARKS.md#community-results) |
+
+**What actually has to fit in memory** is the resident core plus the expert
+cache plus the KV cache, not the file on disk. Measured on an 18 GB M3 Pro with
+the vision-capable Gemma pack: 1.51 GB resident + 1.15 GB vision + 0.29 GB
+prefill scratch, then about 0.11 GB per expert-cache slot and a KV cache that
+depends on the context length ([the arithmetic, with the numbers, is in the
+server runbook](docs/SERVER_RUNBOOK.md)). The app refuses to load a
+configuration that would exceed what Metal recommends for the device rather
+than swapping the machine to death, and says which knob to turn down.
 
 The measured result is a reference point, not a performance ceiling. Prompt
 length, generated length, page-cache state, and hardware all affect throughput.
 See [community benchmark results](docs/COMMUNITY_BENCHMARKS.md#community-results)
 from other Macs, or follow the
-[community benchmark guide](docs/COMMUNITY_BENCHMARKS.md) to add your own.
+[community benchmark guide](docs/COMMUNITY_BENCHMARKS.md) to add your own —
+**a 16 GB Mac is exactly the machine this project most wants a report from**,
+and none of the numbers above were taken on one.
 
 ## Using Tsugumi
 
@@ -99,10 +119,12 @@ The Swift package exposes six products:
 
 ### Requirements
 
-- An Apple Silicon Mac; the validated target is an 8 GB M2 MacBook Air
+- An Apple Silicon Mac. The app is aimed at ordinary 16 GB machines; the
+  development machine is an 18 GB M3 Pro and upstream validated the text-only
+  pack on an 8 GB M2 MacBook Air
 - macOS 15 (Sequoia) or newer
 - Xcode 26 and Swift 6.2 or newer
-- Enough free storage for the ~14.3 GB model installation
+- Free storage for the model: 15.7 GB for Gemma 4, 21.0 GB for Ornith
 - An internet connection for the first model install
 
 The package is arm64-only. macOS 14 and earlier are not supported.
@@ -126,11 +148,12 @@ greedy output, but expect repetition: below the recommended temperature this
 model can fall into a loop and never finish an answer. The model can still
 repeat itself or give incorrect answers, so check important results.
 
-Tsugumi is text-only. The app and CLI support user and model messages
-plus optional system guidance; they do not expose or execute tools. The
-loopback server accepts function-tool declarations and returns
-model-produced tool calls for the client to authorize and execute. Images,
-audio, and video are not supported.
+The app and CLI support user and model messages plus optional system guidance;
+they do not expose or execute tools. The loopback server accepts function-tool
+declarations and returns model-produced tool calls for the client to authorize
+and execute. The Gemma pack carries a vision tower, so the app accepts up to
+four images per message under that model; Ornith is text-only. Audio and video
+are not supported by either.
 
 ### Mac app
 
@@ -142,24 +165,23 @@ swift build -c release
 ```
 
 Build the complete package so the app and its sibling decode service are both
-available. When launched from this checkout, the app stores the model in
-`scratch/gemma4.moepack`.
+available. When launched from this checkout, the app keeps its models under
+`scratch/`; a copy launched from anywhere else keeps them in
+`~/Library/Application Support/Tsugumi/`.
 
-#### Install the model
+#### Install a model
 
-On first launch, the app checks the available storage and shows the download
-and installed sizes. Choose **Download** to begin.
+On first launch the app checks the available storage and shows the download and
+installed sizes. Choose **Download** to begin.
 
-The installer never materializes the full source checkpoint. It streams the
-required byte ranges from the pinned Hugging Face revision and repacks them
-directly into the `.moepack` layout as they arrive. This avoids a second full
-checkpoint on disk and keeps scratch memory bounded.
-
-The first installation transfers about 15 GB through bounded Hugging Face
-range requests. Network speed and Hugging Face response times vary, so it can
-take a while. The completed `.moepack` installation occupies about 14.3 GB and
-is accepted only after its manifest and file hashes have been validated.
-Installation does not load the model into memory.
+Both checkpoints are downloaded as finished packs rather than repacked on the
+machine: neither can come out of a streaming repack (Gemma's symmetric
+quantization needs the staged snapshot's bias ranges, and Ornith needs a
+q_norm bake and a grafted MTP head that only the Python pipeline produces).
+Every file is pinned by SHA-256, written to a `.part` file, resumed with Range
+requests if interrupted, and only renamed into place once its hash matches. The
+revision in the URL is a convenience, not the integrity anchor. Installation
+does not load the model into memory.
 
 #### Load and generate
 
@@ -170,10 +192,18 @@ After installation:
 3. Choose **Generate**, or press <kbd>Command</kbd>+<kbd>Return</kbd>. Use **Settings > Send Message With** to choose Return or Command-Return.
 4. Use the stop button or <kbd>Escape</kbd> to end generation early.
 
+Conversations are multi-turn and kept in a sidebar; they are saved to
+`~/Library/Application Support/Tsugumi/chats.json` and come back when the app
+reopens. Chats are not tied to a model, so a conversation started under one
+checkpoint can be continued under the other. One generation runs at a time —
+switching to another chat while one is generating is allowed, and the output
+keeps landing in the chat that started it.
+
 The status bar shows generation progress, decode speed, and memory use. Use the
 right pane to configure sampling, context length, expert-cache slots, and
-runtime options. See [Runtime controls](docs/RUNTIME_CONTROLS.md) for details
-and defaults.
+runtime options. See [Runtime controls](docs/RUNTIME_CONTROLS.md) for the
+details and [the Mac app notes](docs/MAC_APP.md) for what differs between the
+two models.
 
 ### Command-line interface
 
@@ -402,15 +432,20 @@ Tsugumi currently includes:
   OpenAI-compatible server, and native SwiftUI/AppKit Mac app with a one-shot
   local decode service
 
-Current scope is text-only inference from the pinned Gemma 4 26B-A4B
-instruction checkpoint on Apple Silicon Macs with at least 8 GB of RAM.
+On top of that, this fork adds a second architecture (Qwen3.5-MoE / Ornith-1.5,
+with its linear-attention layers and its own MTP head), speculative decoding for
+both families, an OpenAI-compatible server written against llama.cpp's server as
+the reference implementation, and a Mac app that carries multi-turn chats,
+images, a thinking channel and a prompt cache across two checkpoints.
 
 ### Future work
 
+- Measure on an actual 16 GB Mac and make the app pick its own defaults from
+  what the device reports, instead of shipping one fixed operating point.
+- Ship a signed, notarized `.app` so the project can be used without a
+  toolchain.
 - Build iPhone and iPad apps, then measure inference speed and memory use on
   mobile hardware.
-- Benchmark more Apple Silicon Macs, especially the base 16 GB M4 Mac mini and
-  other 8 GB models.
 
 ## Experiments and technical documentation
 
@@ -429,26 +464,57 @@ Useful entry points:
 - [Experiment inventory and summaries](docs/experiments/EXPERIMENT_INVENTORY.md)
 - [Implementation references](docs/IMPLEMENTATION_REFERENCES.md)
 
+## Upstream
+
+Tsugumi is a fork of **[TurboFieldfare](https://github.com/drumih/turbo-fieldfare)**
+by **Andrey Mikhaylov**, released under the Apache License 2.0. The engine's
+shape is his: the `.moepack` container (which he wrote as `.gturbo`), the
+streaming repack, the bounded expert cache, the Metal kernels for quantized
+GEMV, attention, MoE, normalization, RoPE and sampling, and the first Mac app.
+None of what follows would exist without that work, and his afterword below is
+kept as he wrote it.
+
+The name follows from it rather than away from it. A fieldfare is a thrush —
+_Turdus_ — and ツグミ is what that genus is called in Japanese: the same bird,
+named again in the language this fork is written in. It is also said to come
+from 口をつぐむ, "to hold one's tongue", which is what the app does. Nothing it
+is told leaves the Mac.
+
+What this fork changed, at a glance: a second model architecture and its
+speculative-decoding head, an OpenAI-compatible server built line by line
+against a pinned llama.cpp, a prompt cache, a QAT symmetric weight path, a
+vision tower, and a Mac app rebuilt around multi-turn chats over two
+checkpoints. The measurements behind each of those are in `docs/`.
+
 ## License and model terms
 
 Tsugumi's source and documentation are licensed under the
-[Apache License 2.0](LICENSE).
+[Apache License 2.0](LICENSE), as is the upstream project it derives from.
 
-Model weights are not included. The installer downloads them separately from
-the pinned Hugging Face checkpoint, and the weights remain governed by their
-source terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the model
-and Swift package license review.
+Model weights are not included. The app downloads them separately and they
+remain governed by their own terms:
+
+| Weights | Terms |
+| --- | --- |
+| Gemma 4 26B-A4B | Google publishes Gemma 4 under the [Apache License 2.0](https://ai.google.dev/gemma/apache_2); the drafter used for speculation is a `license:gemma` artifact, so the [Gemma terms of use](https://ai.google.dev/gemma/terms) come with it |
+| Ornith-1.5 35B-A3B | MIT, from the upstream checkpoint |
+| Ornith's MTP head | Apache 2.0, grafted from shisa.ai's release |
+
+See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the full model and
+Swift package license review.
 
 Tsugumi is an independent research project. It is not affiliated with,
-sponsored by, or endorsed by Google.
+sponsored by, or endorsed by Google, Alibaba, or any model publisher.
 
-## Afterword and the project name
+## Upstream's afterword
+
+The section below is Andrey Mikhaylov's, from TurboFieldfare, unchanged.
 
 Thanks for checking out this project!
 
 My name is Andrey Mikhaylov. You can find me on
 [LinkedIn](https://www.linkedin.com/in/andrey-mikhaylov-ios-dev/).
-I am the author of Tsugumi and an iOS and Metal engineer. Most of my
+I am the author of TurboFieldfare and an iOS and Metal engineer. Most of my
 work is with images, video, and on-device AI.
 
 I dedicate this project to my wife, Sasha, the most supportive person I know.
@@ -456,7 +522,7 @@ She stands by me even through the hardest times. She loves wildlife, goes
 birdwatching, and volunteers with our local birding community. Because of her,
 I have also grown closer to birds and nature.
 
-Tsugumi is named after the fieldfare, a member of the thrush family and
+TurboFieldfare is named after the fieldfare, a member of the thrush family and
 my favourite bird. It is not the most noticeable or brightly coloured bird, but
 it definitely has a character and unique features of its own. I think the same
 is true of this project: it may not be the most practical, but I built it with
