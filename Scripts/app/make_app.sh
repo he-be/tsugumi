@@ -94,8 +94,9 @@ for bundle in "${RESOURCE_BUNDLES[@]}"; do
 done
 
 echo "== icon =="
-# アプリが実行時に読むのと同じ画像を .icns にする (docs/assets/tsugumi.png の複製。
-# SwiftPM のリソースはターゲットの下にしか置けないので、ここだけ二重になる)。
+# アプリが実行時に読むのと同じ画像を .icns にする。中身は
+# docs/assets/tsugumi.png を macOS の格子 (1024 の中央に 824 角の角丸) に
+# 収めたもので、作り直すときは Scripts/app/round_app_icon.swift を通すこと。
 ICON_SOURCE="$REPO_ROOT/Sources/TsugumiApp/Mac/Resources/tsugumi-app-icon.png"
 ICONSET="$(mktemp -d)/Tsugumi.iconset"
 mkdir -p "$ICONSET"

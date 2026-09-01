@@ -25,6 +25,13 @@ Scripts/app/verify_app.sh
 バージョンは `AboutPanelPresentation.fallbackShortVersion` から取って
 `Info.plist` に書く。About パネルの表示と `Info.plist` は同じ出所になる。
 
+アイコンは `Sources/TsugumiApp/Mac/Resources/tsugumi-app-icon.png` の 1 枚から、
+Finder/Dock 用の `.icns` も、アプリが実行時に読む画像 (`MacAppIcon`) も作る。
+中身は `docs/assets/tsugumi.png` を macOS の格子 — 1024 の canvas の中央に
+824 角の角丸正方形 — に収めたもので、ロゴを描き直したときは
+`swift Scripts/app/round_app_icon.swift docs/assets/tsugumi.png <出力>` を
+通してから置き換えること。全面を絵で埋めると角の立った四角いタイルになる。
+
 ### リソースの置き場所が Contents/Resources である理由
 
 SwiftPM が作る `Bundle.module` は `<パッケージ名>_<ターゲット名>.bundle` を
