@@ -28,8 +28,22 @@ public struct MoEExpertOffsets {
     }
 }
 
-final class MoE {
+public enum RouterError: Error, CustomStringConvertible {
+    case unsupportedWeightBits(Int)
+
+    public var description: String {
+        switch self {
+        case .unsupportedWeightBits(let bits):
+            return "Unsupported router weight bits: \(bits) (expected 8 or 16)"
+        }
+    }
+}
+
+package final class MoE {
     static let maxStreamedExperts = 8
+    /// Rows the shared router-logit staging is sized for. A verify block is at
+    /// most `SpeculativeBlock.maxTokens` wide; decode uses row 0 alone.
+    static let maxRouterRows = 8
 
     private static let realDecodeD: UInt32 = 2816
     private static let realDecodeF: UInt32 = 704
@@ -48,10 +62,22 @@ final class MoE {
         MetalFunctionConstant(index: 43, value: .bool(true)),
     ]
 
+    /// Router GEMV pipelines for whichever weight format this model uses. Only
+    /// one of the two kernels is ever compiled — see `routerWeightBits`.
     private let routerGemvPSO: MTLComputePipelineState
+    /// Both routers of a read-ahead layer in one dispatch. BF16 only, since the
+    /// preview path is (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-4 (b)).
+    private let routerGemvPairPSO: MTLComputePipelineState?
     private let routerGemvSpecializedPSO: MTLComputePipelineState
     private let routerSelectK8PSO: MTLComputePipelineState
     private let routerSelectK8SpecializedPSO: MTLComputePipelineState
+    /// The same two router kernels with the block's rows in the grid, so a
+    /// k-row verify block spends 2 dispatches a layer instead of 2k
+    /// (docs/mtp/27-M7-RESULTS.md §5).
+    private let routerGemvRowsPSO: MTLComputePipelineState?
+    private let routerGemvRowsSpecializedPSO: MTLComputePipelineState?
+    private let routerSelectK8RowsPSO: MTLComputePipelineState
+    private let routerSelectK8RowsSpecializedPSO: MTLComputePipelineState
     private let routerLogits: MTLBuffer
     private let phase1U16PSO: MTLComputePipelineState
     private let phase1U16SpecializedPSO: MTLComputePipelineState
@@ -62,8 +88,50 @@ final class MoE {
     private let routedArgEncoder: MTLArgumentEncoder
     private let reusableRoutedArgBuffer: MTLBuffer
 
-    init(context: MetalContext) throws {
-        let routerName = "router_gemv_gemma4_r4"
+    private let affineGroupSize: Int
+    /// 8 for affine INT8 router weights, 16 for the unquantized BF16 router
+    /// that the QAT checkpoints ship.
+    let routerWeightBits: Int
+
+    /// The activation a routed expert folds into its gate/up product. Gemma 4 is
+    /// `gelu_pytorch_tanh`, Qwen3.5-MoE is SiLU; nothing else about these
+    /// kernels differs between the two families
+    /// (`docs/qwen35moe/03-DESIGN.md` §4-1).
+    package enum GateActivation: Sendable {
+        case geluPytorchTanh
+        case silu
+
+        /// Gemma leaves the constant undefined so its pipelines keep compiling
+        /// the code they were measured on.
+        var constants: [MetalFunctionConstant] {
+            switch self {
+            case .geluPytorchTanh: return []
+            case .silu: return [MetalFunctionConstant(index: 4, value: .bool(true))]
+            }
+        }
+
+        /// The same switch for the prefill library, whose constant slots are a
+        /// separate numbering (`FC_PREFILL_MOE_ACT_SILU`, index 77).
+        var prefillConstants: [MetalFunctionConstant] {
+            switch self {
+            case .geluPytorchTanh: return []
+            case .silu: return [MetalFunctionConstant(index: 77, value: .bool(true))]
+            }
+        }
+    }
+
+    package init(context: MetalContext,
+                 routerWeightBits: Int = 8,
+                 gateActivation: GateActivation = .geluPytorchTanh) throws {
+        self.affineGroupSize = context.affineGroupSize
+        self.routerWeightBits = routerWeightBits
+        let activation = gateActivation.constants
+        let routerName: String
+        switch routerWeightBits {
+        case 8:  routerName = "router_gemv_gemma4_r4"
+        case 16: routerName = "router_gemv_gemma4_bf16_r4"
+        default: throw RouterError.unsupportedWeightBits(routerWeightBits)
+        }
         self.routerGemvPSO = try context.pipeline(
             routerName,
             constants: [],
@@ -72,27 +140,51 @@ final class MoE {
             routerName,
             constants: Self.realDecodeRouterConstants,
             maxTotalThreadsPerThreadgroup: 512)
+        self.routerGemvPairPSO = routerWeightBits == 16
+            ? try context.pipeline("router_gemv_gemma4_bf16_pair_r4",
+                                   constants: [],
+                                   maxTotalThreadsPerThreadgroup: 512)
+            : nil
         self.routerSelectK8PSO = try context.pipeline("router_topk_select_k8")
         self.routerSelectK8SpecializedPSO = try context.pipeline(
             "router_topk_select_k8",
             constants: Self.realDecodeRouterConstants)
-        self.phase1U16PSO = try context.pipeline("moe_phase1_gate_up_act_u16load")
+        // Only the BF16 router has a rows kernel: the INT8 router is not the
+        // format a speculative block runs on (`rowsRouterEnabled` requires 16).
+        self.routerGemvRowsPSO = routerWeightBits == 16
+            ? try context.pipeline("router_gemv_gemma4_bf16_rows",
+                                   constants: [],
+                                   maxTotalThreadsPerThreadgroup: 512)
+            : nil
+        self.routerGemvRowsSpecializedPSO = routerWeightBits == 16
+            ? try context.pipeline("router_gemv_gemma4_bf16_rows",
+                                   constants: Self.realDecodeRouterConstants,
+                                   maxTotalThreadsPerThreadgroup: 512)
+            : nil
+        self.routerSelectK8RowsPSO = try context.pipeline("router_topk_select_k8_rows")
+        self.routerSelectK8RowsSpecializedPSO = try context.pipeline(
+            "router_topk_select_k8_rows",
+            constants: Self.realDecodeRouterConstants)
+        self.phase1U16PSO = try context.pipeline("moe_phase1_gate_up_act_u16load",
+                                                 constants: activation)
         self.phase1U16SpecializedPSO = try context.pipeline(
             "moe_phase1_gate_up_act_u16load",
-            constants: Self.realDecodeMoEConstants)
-        self.phase1SubsetU16PSO = try context.pipeline("moe_phase1_gate_up_act_subset_u16load")
+            constants: Self.realDecodeMoEConstants + activation)
+        self.phase1SubsetU16PSO = try context.pipeline(
+            "moe_phase1_gate_up_act_subset_u16load",
+            constants: activation)
         self.phase1SubsetU16SpecializedPSO = try context.pipeline(
             "moe_phase1_gate_up_act_subset_u16load",
-            constants: Self.realDecodeMoEConstants)
+            constants: Self.realDecodeMoEConstants + activation)
         self.phase2ReduceK8PSO = try context.pipeline("moe_phase2_down_reduce_k8")
         self.phase2ReduceK8SpecializedPSO = try context.pipeline(
             "moe_phase2_down_reduce_k8",
             constants: Self.realDecodeMoEConstants)
 
         guard let logits = context.device.makeBuffer(
-            length: 256 * MemoryLayout<Float>.stride,
+            length: Self.maxRouterRows * 256 * MemoryLayout<Float>.stride,
             options: .storageModeShared),
-              let phase1Function = context.library.makeFunction(
+              let phase1Function = try context.library.makeFunction(
                 name: "moe_phase1_gate_up_act_u16load") else {
             throw MetalError.noDevice
         }
@@ -106,7 +198,7 @@ final class MoE {
         self.reusableRoutedArgBuffer = reusable
     }
 
-    func encodeRouterGemma4(commandBuffer: MTLCommandBuffer,
+    package func encodeRouterGemma4(commandBuffer: MTLCommandBuffer,
                                    weights: MTLBuffer, weightsOffset: Int = 0,
                                    scales: MTLBuffer, scalesOffset: Int = 0,
                                    biases: MTLBuffer, biasesOffset: Int = 0,
@@ -118,7 +210,11 @@ final class MoE {
                                    numExperts: UInt32,
                                    d: UInt32,
                                    topK: UInt32) {
-        precondition(d.isMultiple(of: UInt32(Quantization.groupSize)))
+        precondition(routerWeightBits == 8,
+                     "INT8 router encode on a \(routerWeightBits)-bit router")
+        precondition(d.isMultiple(of: UInt32(affineGroupSize)))
+        // The kernel walks the row in fixed 64-element steps (32 lanes x 2).
+        precondition(d.isMultiple(of: 64))
         precondition(numExperts <= 256)
         precondition(topK == UInt32(Self.maxStreamedExperts))
 
@@ -143,13 +239,249 @@ final class MoE {
             encoder.endEncoding()
         }
 
+        encodeRouterSelect(commandBuffer: commandBuffer,
+                           perExpertScale: perExpertScale,
+                           perExpertScaleOffset: perExpertScaleOffset,
+                           outIndices: outIndices,
+                           outWeights: outWeights,
+                           numExperts: numExperts,
+                           useSpecialized: useSpecialized)
+    }
+
+    /// BF16 (unquantized) router weights. Same logits and top-k contract as
+    /// `encodeRouterGemma4`, minus the scale/bias buffers.
+    /// The offsets exist for the speculative verify block, which routes k rows
+    /// through this kernel one row at a time so that its routing decisions are
+    /// decode's rather than a second implementation's: the two reduce the same
+    /// dot product in a different order, and a near-tie between two experts
+    /// resolves differently on either side (docs/mtp/16-M4.5-PLAN.md §4).
+    /// Plain decode passes zeros and is unaffected.
+    package func encodeRouterGemma4BF16(commandBuffer: MTLCommandBuffer,
+                                weights: MTLBuffer, weightsOffset: Int = 0,
+                                hidden: MTLBuffer, hiddenOffset: Int = 0,
+                                effectiveScale: MTLBuffer, effectiveScaleOffset: Int = 0,
+                                perExpertScale: MTLBuffer, perExpertScaleOffset: Int = 0,
+                                outIndices: MTLBuffer, outIndicesOffset: Int = 0,
+                                outWeights: MTLBuffer, outWeightsOffset: Int = 0,
+                                numExperts: UInt32,
+                                d: UInt32,
+                                topK: UInt32) {
+        precondition(routerWeightBits == 16,
+                     "BF16 router encode on a \(routerWeightBits)-bit router")
+        precondition(numExperts <= 256)
+        precondition(topK == UInt32(Self.maxStreamedExperts))
+
+        var expertCount = numExperts
+        var dimension = d
+        let useSpecialized = numExperts == Self.realDecodeNumExperts
+            && d == Self.realDecodeD
+        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+            encoder.setComputePipelineState(
+                useSpecialized ? routerGemvSpecializedPSO : routerGemvPSO)
+            encoder.setBuffer(weights, offset: weightsOffset, index: 0)
+            encoder.setBuffer(hidden, offset: hiddenOffset, index: 1)
+            encoder.setBuffer(effectiveScale, offset: effectiveScaleOffset, index: 2)
+            encoder.setBuffer(routerLogits, offset: 0, index: 3)
+            encoder.setBytes(&expertCount, length: MemoryLayout<UInt32>.stride, index: 4)
+            encoder.setBytes(&dimension, length: MemoryLayout<UInt32>.stride, index: 5)
+            encoder.dispatchThreadgroups(
+                MTLSize(width: (Int(numExperts) + 3) / 4, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+            encoder.endEncoding()
+        }
+
+        encodeRouterSelect(commandBuffer: commandBuffer,
+                           perExpertScale: perExpertScale,
+                           perExpertScaleOffset: perExpertScaleOffset,
+                           outIndices: outIndices,
+                           outIndicesOffset: outIndicesOffset,
+                           outWeights: outWeights,
+                           outWeightsOffset: outWeightsOffset,
+                           numExperts: numExperts,
+                           useSpecialized: useSpecialized)
+    }
+
+    /// The router's GEMV alone, into a caller-owned logit buffer, with no
+    /// select dispatch behind it.
+    ///
+    /// The select kernel is fixed at k=8 (`maxStreamedExperts`), but the GEMV
+    /// has always written all `numExperts` logits — so a caller that wants more
+    /// than eight ranks, or wants them on the host, needs the first half of the
+    /// pair and not the second. The read-ahead probe is that caller: it ranks
+    /// the logits itself and never uses the softmax weights
+    /// (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-1). Dropping the select is
+    /// also one dispatch per layer less.
+    ///
+    /// `outLogits` must hold `numExperts` Floats and be host-visible.
+    package func encodeRouterLogitsBF16(commandBuffer: MTLCommandBuffer,
+                                        weights: MTLBuffer, weightsOffset: Int = 0,
+                                        hidden: MTLBuffer, hiddenOffset: Int = 0,
+                                        effectiveScale: MTLBuffer,
+                                        effectiveScaleOffset: Int = 0,
+                                        outLogits: MTLBuffer, outLogitsOffset: Int = 0,
+                                        numExperts: UInt32,
+                                        d: UInt32) {
+        precondition(routerWeightBits == 16,
+                     "BF16 router encode on a \(routerWeightBits)-bit router")
+        precondition(numExperts <= 256)
+
+        var expertCount = numExperts
+        var dimension = d
+        let useSpecialized = numExperts == Self.realDecodeNumExperts
+            && d == Self.realDecodeD
+        guard let encoder = commandBuffer.makeComputeCommandEncoder() else { return }
+        encoder.setComputePipelineState(
+            useSpecialized ? routerGemvSpecializedPSO : routerGemvPSO)
+        encoder.setBuffer(weights, offset: weightsOffset, index: 0)
+        encoder.setBuffer(hidden, offset: hiddenOffset, index: 1)
+        encoder.setBuffer(effectiveScale, offset: effectiveScaleOffset, index: 2)
+        encoder.setBuffer(outLogits, offset: outLogitsOffset, index: 3)
+        encoder.setBytes(&expertCount, length: MemoryLayout<UInt32>.stride, index: 4)
+        encoder.setBytes(&dimension, length: MemoryLayout<UInt32>.stride, index: 5)
+        encoder.dispatchThreadgroups(
+            MTLSize(width: (Int(numExperts) + 3) / 4, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+        encoder.endEncoding()
+    }
+
+    /// This layer's router and the next layer's preview in one GEMV dispatch,
+    /// with the usual select behind it for this layer's own top-8.
+    ///
+    /// The two GEMVs read the same `hidden` and write different logit buffers,
+    /// so the only thing the split bought was two encoders per layer — and on
+    /// this path a dispatch costs about 33 µs of GPU time
+    /// (`docs/qwen35moe/28-PREFETCH-IDEAS.md` §3-4). Returns false when the
+    /// paired kernel is not available, and the caller keeps the two dispatches.
+    @discardableResult
+    package func encodeRouterGemma4BF16Paired(commandBuffer: MTLCommandBuffer,
+                                              weights: MTLBuffer, weightsOffset: Int = 0,
+                                              previewWeights: MTLBuffer,
+                                              previewWeightsOffset: Int = 0,
+                                              hidden: MTLBuffer, hiddenOffset: Int = 0,
+                                              effectiveScale: MTLBuffer,
+                                              effectiveScaleOffset: Int = 0,
+                                              perExpertScale: MTLBuffer,
+                                              perExpertScaleOffset: Int = 0,
+                                              outIndices: MTLBuffer, outIndicesOffset: Int = 0,
+                                              outWeights: MTLBuffer, outWeightsOffset: Int = 0,
+                                              previewLogits: MTLBuffer,
+                                              previewLogitsOffset: Int = 0,
+                                              numExperts: UInt32,
+                                              d: UInt32) -> Bool {
+        precondition(routerWeightBits == 16,
+                     "BF16 router encode on a \(routerWeightBits)-bit router")
+        precondition(numExperts <= 256)
+        guard let pairPSO = routerGemvPairPSO else { return false }
+
+        var expertCount = numExperts
+        var dimension = d
+        if let encoder = commandBuffer.makeComputeCommandEncoder() {
+            encoder.setComputePipelineState(pairPSO)
+            encoder.setBuffer(weights, offset: weightsOffset, index: 0)
+            encoder.setBuffer(hidden, offset: hiddenOffset, index: 1)
+            encoder.setBuffer(effectiveScale, offset: effectiveScaleOffset, index: 2)
+            encoder.setBuffer(routerLogits, offset: 0, index: 3)
+            encoder.setBytes(&expertCount, length: MemoryLayout<UInt32>.stride, index: 4)
+            encoder.setBytes(&dimension, length: MemoryLayout<UInt32>.stride, index: 5)
+            encoder.setBuffer(previewWeights, offset: previewWeightsOffset, index: 6)
+            encoder.setBuffer(previewLogits, offset: previewLogitsOffset, index: 7)
+            encoder.dispatchThreadgroups(
+                MTLSize(width: (2 * Int(numExperts) + 3) / 4, height: 1, depth: 1),
+                threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+            encoder.endEncoding()
+        }
+
+        encodeRouterSelect(commandBuffer: commandBuffer,
+                           perExpertScale: perExpertScale,
+                           perExpertScaleOffset: perExpertScaleOffset,
+                           outIndices: outIndices, outIndicesOffset: outIndicesOffset,
+                           outWeights: outWeights, outWeightsOffset: outWeightsOffset,
+                           numExperts: numExperts,
+                           useSpecialized: false)
+        return true
+    }
+
+    /// The router for a k-row block: one GEMV dispatch and one select dispatch
+    /// for the whole block instead of one pair per row.
+    ///
+    /// Each row keeps its own threadgroup, so the per-row reduction order — and
+    /// with it the expert choice on a near-tie — is the one the per-row
+    /// dispatch produced (docs/mtp/16-M4.5-PLAN.md §4). Returns false when the
+    /// rows kernels are not available for this model, and the caller keeps the
+    /// row loop.
+    @discardableResult
+    package func encodeRouterGemma4BF16Rows(commandBuffer: MTLCommandBuffer,
+                                            weights: MTLBuffer, weightsOffset: Int = 0,
+                                            hidden: MTLBuffer, hiddenOffset: Int = 0,
+                                            hiddenStrideElements: UInt32,
+                                            effectiveScale: MTLBuffer,
+                                            effectiveScaleOffset: Int = 0,
+                                            perExpertScale: MTLBuffer,
+                                            perExpertScaleOffset: Int = 0,
+                                            outIndices: MTLBuffer, outIndicesOffset: Int = 0,
+                                            outWeights: MTLBuffer, outWeightsOffset: Int = 0,
+                                            rowCount: Int,
+                                            numExperts: UInt32,
+                                            d: UInt32,
+                                            topK: UInt32) -> Bool {
+        precondition(routerWeightBits == 16,
+                     "BF16 router encode on a \(routerWeightBits)-bit router")
+        precondition(numExperts <= 256)
+        precondition(topK == UInt32(Self.maxStreamedExperts))
+        guard rowCount > 0, rowCount <= Self.maxRouterRows,
+              let rowsPSO = routerGemvRowsPSO,
+              let rowsSpecializedPSO = routerGemvRowsSpecializedPSO else { return false }
+
+        var expertCount = numExperts
+        var dimension = d
+        var hiddenStride = hiddenStrideElements
+        let useSpecialized = numExperts == Self.realDecodeNumExperts
+            && d == Self.realDecodeD
+        guard let gemv = commandBuffer.makeComputeCommandEncoder() else { return false }
+        gemv.setComputePipelineState(useSpecialized ? rowsSpecializedPSO : rowsPSO)
+        gemv.setBuffer(weights, offset: weightsOffset, index: 0)
+        gemv.setBuffer(hidden, offset: hiddenOffset, index: 1)
+        gemv.setBuffer(effectiveScale, offset: effectiveScaleOffset, index: 2)
+        gemv.setBuffer(routerLogits, offset: 0, index: 3)
+        gemv.setBytes(&expertCount, length: MemoryLayout<UInt32>.stride, index: 4)
+        gemv.setBytes(&dimension, length: MemoryLayout<UInt32>.stride, index: 5)
+        gemv.setBytes(&hiddenStride, length: MemoryLayout<UInt32>.stride, index: 6)
+        gemv.dispatchThreadgroups(
+            MTLSize(width: (Int(numExperts) + 3) / 4, height: rowCount, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+        gemv.endEncoding()
+
+        guard let select = commandBuffer.makeComputeCommandEncoder() else { return false }
+        select.setComputePipelineState(
+            useSpecialized ? routerSelectK8RowsSpecializedPSO : routerSelectK8RowsPSO)
+        select.setBuffer(routerLogits, offset: 0, index: 0)
+        select.setBuffer(perExpertScale, offset: perExpertScaleOffset, index: 1)
+        select.setBuffer(outIndices, offset: outIndicesOffset, index: 2)
+        select.setBuffer(outWeights, offset: outWeightsOffset, index: 3)
+        select.setBytes(&expertCount, length: MemoryLayout<UInt32>.stride, index: 4)
+        select.dispatchThreadgroups(MTLSize(width: 1, height: rowCount, depth: 1),
+                                    threadsPerThreadgroup: MTLSize(width: 1, height: 1, depth: 1))
+        select.endEncoding()
+        return true
+    }
+
+    private func encodeRouterSelect(commandBuffer: MTLCommandBuffer,
+                                    perExpertScale: MTLBuffer,
+                                    perExpertScaleOffset: Int,
+                                    outIndices: MTLBuffer,
+                                    outIndicesOffset: Int = 0,
+                                    outWeights: MTLBuffer,
+                                    outWeightsOffset: Int = 0,
+                                    numExperts: UInt32,
+                                    useSpecialized: Bool) {
+        var expertCount = numExperts
         if let encoder = commandBuffer.makeComputeCommandEncoder() {
             encoder.setComputePipelineState(
                 useSpecialized ? routerSelectK8SpecializedPSO : routerSelectK8PSO)
             encoder.setBuffer(routerLogits, offset: 0, index: 0)
             encoder.setBuffer(perExpertScale, offset: perExpertScaleOffset, index: 1)
-            encoder.setBuffer(outIndices, offset: 0, index: 2)
-            encoder.setBuffer(outWeights, offset: 0, index: 3)
+            encoder.setBuffer(outIndices, offset: outIndicesOffset, index: 2)
+            encoder.setBuffer(outWeights, offset: outWeightsOffset, index: 3)
             encoder.setBytes(&expertCount, length: MemoryLayout<UInt32>.stride, index: 4)
             encoder.dispatchThreadgroups(
                 MTLSize(width: 1, height: 1, depth: 1),
@@ -158,7 +490,7 @@ final class MoE {
         }
     }
 
-    func makeRoutedArgumentBuffer(routedBlobs: [MTLBuffer],
+    package func makeRoutedArgumentBuffer(routedBlobs: [MTLBuffer],
                                          topK: UInt32) -> MTLBuffer? {
         validate(routedBlobs: routedBlobs, topK: topK)
         guard let buffer = routedBlobs.first?.device.makeBuffer(
@@ -170,6 +502,23 @@ final class MoE {
         return buffer
     }
 
+    /// Rewrite a caller-owned argument buffer.
+    ///
+    /// `makeReusedRoutedArgumentBuffer` hands out **one** buffer shared by every
+    /// caller of this `MoE`, which is right for the body's forty layers (each
+    /// rewrite happens after the previous layer's command buffer has run) and
+    /// wrong for a second consumer on the same object — the MTP head runs its
+    /// own MoE between two body passes. It gets its own buffer and rewrites it
+    /// here.
+    package func encodeRoutedArgumentBuffer(into buffer: MTLBuffer,
+                                            routedBlobs: [MTLBuffer],
+                                            topK: UInt32) {
+        validate(routedBlobs: routedBlobs, topK: topK)
+        encodeRoutedArgumentBuffer(buffer, routedBlobs: routedBlobs)
+    }
+
+    package var routedArgumentBufferLength: Int { routedArgEncoder.encodedLength }
+
     func makeReusedRoutedArgumentBuffer(routedBlobs: [MTLBuffer],
                                                topK: UInt32) -> MTLBuffer {
         validate(routedBlobs: routedBlobs, topK: topK)
@@ -177,7 +526,7 @@ final class MoE {
         return reusableRoutedArgBuffer
     }
 
-    func encodeRoutedPersistentPhase1U16Load(
+    package func encodeRoutedPersistentPhase1U16Load(
         commandBuffer: MTLCommandBuffer,
         routedArgBuffer: MTLBuffer,
         routedBlobs: [MTLBuffer],
@@ -257,7 +606,7 @@ final class MoE {
         encoder.endEncoding()
     }
 
-    func encodeRoutedPersistentPhase2Reduce(
+    package func encodeRoutedPersistentPhase2Reduce(
         commandBuffer: MTLCommandBuffer,
         routedArgBuffer: MTLBuffer,
         routedBlobs: [MTLBuffer],

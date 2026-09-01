@@ -16,11 +16,29 @@
 
 require "json"
 require "net/http"
+require "shellwords"
 require "uri"
 
 ROOT = File.expand_path("..", __dir__)
 SOURCE = File.join(ROOT, "Sources/TurboFieldfareApp/MacPresentation/AboutPanelPresentation.swift")
-RELEASES_URL = "https://api.github.com/repos/drumih/turbo-fieldfare/releases?per_page=100"
+UPSTREAM_REPOSITORY = "drumih/turbo-fieldfare"
+
+# The releases worth comparing against are the ones this checkout publishes.
+# A fork that has not caught up with upstream is not "behind" on its own
+# version — it simply has other releases, or none — so ask the repository the
+# checkout belongs to. Actions names it; locally the origin remote does.
+def repository
+  from_environment = ENV["GITHUB_REPOSITORY"].to_s
+  return from_environment unless from_environment.empty?
+
+  remote = `git -C #{Shellwords.escape(ROOT)} remote get-url origin 2>/dev/null`.strip
+  remote[%r{(?:github\.com[:/])([^/]+/[^/]+?)(?:\.git)?\z}, 1] || UPSTREAM_REPOSITORY
+rescue StandardError
+  UPSTREAM_REPOSITORY
+end
+
+REPOSITORY = repository
+RELEASES_URL = "https://api.github.com/repos/#{REPOSITORY}/releases?per_page=100"
 
 def compiled_version
   source = File.read(SOURCE)
@@ -80,7 +98,7 @@ if published.nil?
   exit 0
 end
 if published.empty?
-  puts "app version #{compiled}; no releases published yet"
+  puts "app version #{compiled}; #{REPOSITORY} has published no releases yet"
   exit 0
 end
 
@@ -91,7 +109,7 @@ floor = published[1] || latest
 
 if compare(compiled, floor) < 0
   abort <<~MESSAGE
-    app version #{compiled} is more than one release behind (latest #{latest})
+    app version #{compiled} is more than one release behind #{REPOSITORY} (latest #{latest})
 
     Update fallbackShortVersion in
     Sources/TurboFieldfareApp/MacPresentation/AboutPanelPresentation.swift

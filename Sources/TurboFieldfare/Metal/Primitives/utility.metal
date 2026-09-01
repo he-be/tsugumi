@@ -16,3 +16,18 @@ void gelu_mul_fp16(
     const float u = float(up[tid]);
     out[tid] = half(gelu_pytorch_tanh(g) * u);
 }
+
+// In-place elementwise scale for the MTP drafter's layer tail
+// (`hidden *= layer_scalar`). The drafter's sandwich residual otherwise
+// reuses the vision tower's norm-residual join, so this is the only piece
+// of its layer loop without an existing kernel.
+[[kernel, max_total_threads_per_threadgroup(256)]]
+void scale_inplace_fp16(
+    device half*        x     [[buffer(0)]],
+    constant float&     scale [[buffer(1)]],
+    constant uint&      count [[buffer(2)]],
+    uint                tid   [[thread_position_in_grid]]
+) {
+    if (tid >= count) return;
+    x[tid] = half(float(x[tid]) * scale);
+}

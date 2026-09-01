@@ -1,0 +1,1 @@
+[{"role": "user", "content": "Explain why a mixture-of-experts model can be memory-bandwidth bound during single-token decoding even though only a fraction of its parameters are active. Give a concrete numeric example."}]

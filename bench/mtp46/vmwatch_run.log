@@ -1,0 +1,13 @@
+
+
+
+
+---
+
+**解答例：**
+
+**春：** 桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜-桜
+[stop=maxTokens prefill=11tok new=96tok decode=4.16s tok/s=23.093]
+[load=0.686s layerVerify=5.390s/30layers prefill=6.051s ttft=6.051s peak=4.49GB rss=2.39GB]
+[expert prefill hit=0.0% 0/998 io=0.257s | decode hit=86.5% 19715/22800 io=1.672s]
+[decode/tok io=17.46ms cb1=0.65ms cb2=0.28ms head=3.28ms]

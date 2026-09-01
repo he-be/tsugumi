@@ -13,7 +13,10 @@ using namespace metal;
 // Fused dequant + GEMV for the router and shared expert projections.
 // ============================================================================
 
-constant constexpr uint kInt8GroupSize = 64;
+#ifndef TURBO_AFFINE_GROUP_SIZE
+#define TURBO_AFFINE_GROUP_SIZE 64
+#endif
+constant constexpr uint kInt8GroupSize = TURBO_AFFINE_GROUP_SIZE;
 constant constexpr uint kRowsPerTGInt8 = 8;
 constant uint FC_INT8_M [[function_constant(70)]];
 constant uint FC_INT8_N [[function_constant(71)]];
@@ -75,11 +78,19 @@ kernel void dequant_int8_gemv_simd(
     device const bfloat*  s_row = scales + uint(row) * n_groups;
     device const bfloat*  b_row = biases + uint(row) * n_groups;
 
+    // A step is a fixed 64 elements (32 lanes x 2 bytes); the group size decides
+    // how many groups that spans. At group 64 `g == st` and this is the original
+    // loop. See the same transform in `router_gemv_gemma4_body` (moe.metal).
+    const uint groups_per_step = 64u / kInt8GroupSize;
+    const uint lanes_per_group = 32u / groups_per_step;
+    const uint steps = NN / 64u;
+
     float acc = 0.0f;
-    for (uint g = 0; g < n_groups; ++g) {
+    for (uint st = 0; st < steps; ++st) {
+        const uint g = st * groups_per_step + lane / lanes_per_group;
         float s = float(s_row[g]);
         float b = float(b_row[g]);
-        uint i0 = g * kInt8GroupSize + lane * 2;
+        uint i0 = st * 64u + lane * 2u;
         uint i1 = i0 + 1;
         float q0 = float(uint(W_row[i0]));
         float q1 = float(uint(W_row[i1]));
@@ -93,6 +104,83 @@ kernel void dequant_int8_gemv_simd(
     acc = simd_sum(acc);
     if (lane == 0) {
         y[row] = half(acc);
+    }
+}
+
+// y[t, m] = sum_n W[m, n] * x[t, n] for t < T, T <= kInt8MaxRows.
+//
+// The 8-bit twin of `dequant_int4_gemv_rows_simd` (dequant_int4.metal), written
+// for the same reason and four months later: a speculative verify block runs T
+// rows that differ only in the activation, so a weight byte should be read once
+// for the block rather than once per row.
+//
+// **On Ornith this is the whole difference between the two decode paths.** The
+// body's dense projections are 8-bit here, and the T-row chunk path served them
+// with `qwen_int8_qmm_f16_block` — one thread per output row, walking K=2048
+// bytes on its own, so adjacent threads read addresses 2048 B apart and nothing
+// coalesces. The tiled GEMM would fix that but refuses below eight rows
+// (`QwenPrefillInt8QMM.usesTiledPath`), which is exactly the width a verify pass
+// has. Measured: 23 ms of GPU per row (`docs/qwen35moe/36-MTP-DECODE.md` §4-3).
+//
+// The reduction for a given (t, m) is `dequant_int8_gemv_simd`'s, element for
+// element and in the same order, so T=1 is bit-identical to it.
+constant constexpr uint kInt8MaxRows = 4;
+
+[[kernel, max_total_threads_per_threadgroup(256)]]
+kernel void dequant_int8_gemv_rows_simd(
+    device const uint8_t* W        [[buffer(0)]],
+    device const bfloat*  scales   [[buffer(1)]],
+    device const bfloat*  biases   [[buffer(2)]],
+    device const half*    x        [[buffer(3)]],
+    device half*          y        [[buffer(4)]],
+    constant uint&        M        [[buffer(5)]],
+    constant uint&        N        [[buffer(6)]],
+    constant uint&        T        [[buffer(7)]],
+    constant uint&        x_stride [[buffer(8)]],
+    constant uint&        y_stride [[buffer(9)]],
+    uint                  tg_idx   [[threadgroup_position_in_grid]],
+    uint                  sg_idx   [[simdgroup_index_in_threadgroup]],
+    uint                  lane     [[thread_index_in_simdgroup]]
+) {
+    const uint MM = int8_fc_m(M);
+    const uint NN = int8_fc_n(N);
+    const uint row = tg_idx * kRowsPerTGInt8 + sg_idx;
+    if (row >= MM) return;
+    const uint n_groups = NN / kInt8GroupSize;
+    device const uint8_t* W_row = W      + uint(row) * NN;
+    device const bfloat*  s_row = scales + uint(row) * n_groups;
+    device const bfloat*  b_row = biases + uint(row) * n_groups;
+
+    const uint groups_per_step = 64u / kInt8GroupSize;
+    const uint lanes_per_group = 32u / groups_per_step;
+    const uint steps = NN / 64u;
+
+    float acc[kInt8MaxRows];
+    for (uint t = 0; t < kInt8MaxRows; ++t) { acc[t] = 0.0f; }
+
+    for (uint st = 0; st < steps; ++st) {
+        const uint g = st * groups_per_step + lane / lanes_per_group;
+        const float s = float(s_row[g]);
+        const float b = float(b_row[g]);
+        const uint i0 = st * 64u + lane * 2u;
+        // Read once, spend on every row.
+        const float q0 = float(uint(W_row[i0]));
+        const float q1 = float(uint(W_row[i0 + 1u]));
+        for (uint t = 0; t < kInt8MaxRows; ++t) {
+            if (t >= T) break;
+            device const half* x_row = x + t * x_stride;
+            const float x0 = float(x_row[i0]);
+            const float x1 = float(x_row[i0 + 1u]);
+            acc[t] = fma(s, q0 * x0 + q1 * x1, acc[t]);
+            acc[t] = fma(b, x0 + x1, acc[t]);
+        }
+    }
+    // `T` is uniform across the SIMD group, so every lane reaches each of these
+    // reductions together.
+    for (uint t = 0; t < kInt8MaxRows; ++t) {
+        if (t >= T) break;
+        const float total = simd_sum(acc[t]);
+        if (lane == 0) { y[t * y_stride + row] = half(total); }
     }
 }
 
@@ -124,10 +212,16 @@ kernel void shared_int8_gate_up_act_simd(
     device const bfloat* up_s_row = upScales + row * n_groups;
     device const bfloat* up_b_row = upBiases + row * n_groups;
 
+    // Same fixed-64-element step as `dequant_int8_gemv_simd` above.
+    const uint groups_per_step = 64u / kInt8GroupSize;
+    const uint lanes_per_group = 32u / groups_per_step;
+    const uint steps = NN / 64u;
+
     float gate_acc = 0.0f;
     float up_acc = 0.0f;
-    for (uint g = 0; g < n_groups; ++g) {
-        uint i0 = g * kInt8GroupSize + lane * 2u;
+    for (uint st = 0; st < steps; ++st) {
+        const uint g = st * groups_per_step + lane / lanes_per_group;
+        uint i0 = st * 64u + lane * 2u;
         uint i1 = i0 + 1u;
         float x0 = float(x[i0]);
         float x1 = float(x[i1]);

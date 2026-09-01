@@ -1,0 +1,6 @@
+label	n	ptok	prefill_s	pp	io_s	hit_pct	peak_gb	disk0_gb	flags
+warmup	0	1973	51.63	38.2	23.32	15.6	6.04	103.3	--expert-cache-slots 48 --prefill-chunk-tokens 128
+s48c128	1	1973	56.98	34.6	24.88	15.6	5.99	105.5	--expert-cache-slots 48 --prefill-chunk-tokens 128
+s16c512	1	1973	33.93	58.1	6.85	0.0	2.55	37.9	--expert-cache-slots 16 --prefill-chunk-tokens 512
+s16c2048	1	1973	31.83	62.0	2.09	0.0	3.30	12.6	--expert-cache-slots 16 --prefill-chunk-tokens 2048
+s80c2048	1	1973	31.88	61.9	2.36	0.0	10.46	13.9	--expert-cache-slots 80 --prefill-chunk-tokens 2048

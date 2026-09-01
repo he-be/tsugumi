@@ -30,11 +30,63 @@ public struct Model {
     public let device: MTLDevice
     public let config: ArchConfig
     public let streamingMode: ExpertStreamingMode
+    /// どちらの腕でエキスパートを読むか。**既定は mmap**
+    /// (`docs/mtp/52-D-P7-PREFILL-QUEUE-DEPTH.md` §8、`TF_EXPERT_MMAP=0` で外れる)。
+    /// ストリーマーを開くところと `ExpertCacheBudget` はここだけを読む。
+    public var usesMappedExperts: Bool { MmapExpertMapping.isEnabled }
     public let expertCachePolicy: ExpertCachePolicy
     public let integrityPolicy: ModelIntegrityPolicy
     public var modelID: String { manifest.modelID }
     public var sourceSnapshotHash: String? { manifest.sourceSnapshotHash }
     public var sharedExpertWeightBits: Int { manifest.quant?.sharedExpert.weightBits ?? 8 }
+    /// 8 for an affine INT8 `router.proj.weight`, 16 when the checkpoint leaves
+    /// it unquantized (BF16) — the QAT checkpoints do.
+    public var routerWeightBits: Int { manifest.quant?.router.weightBits ?? 8 }
+    /// Weight width of one resident tensor, read from the index rather than
+    /// from a `quant` slot.
+    ///
+    /// A slot holds one number for a whole role, which is all Gemma 4 needs but
+    /// not enough for `oQ4e-g64`: its imatrix pass left 4-bit and 8-bit
+    /// attention weights side by side, layer by layer
+    /// (`docs/qwen35moe/13-PHASE1-REPACK.md` §4-2). The packed byte count at a
+    /// known shape names the width with no ambiguity, and
+    /// `validateRuntimeSchema` has already checked that it is one of the two
+    /// supported widths, so a caller about to bind this tensor to a kernel can
+    /// ask here and dispatch on the answer. `nil` means no such tensor, or one
+    /// that is not a rank-2 affine weight.
+    public func residentWeightBits(_ name: String) -> Int? {
+        guard let entry = residentIndex.entries[name],
+              entry.dtype == GTurboFormatV1.DType.u32.rawValue,
+              entry.shape.0 > 0, entry.shape.1 > 0,
+              entry.shape.2 == 0, entry.shape.3 == 0 else { return nil }
+        let elements = UInt64(entry.shape.0) * UInt64(entry.shape.1)
+        return ResidentSchemaChecker.supportedWeightBits.first {
+            entry.sizeBytes == elements * UInt64($0) / 8
+        }
+    }
+
+    /// Every resident tensor's name, in index order. For tools that report on
+    /// an install rather than run it.
+    public var residentTensorNames: [String] { Array(residentIndex.entries.keys) }
+
+    /// Affine group size this model's weights are quantized at. Uniform across
+    /// every slot — `ManifestReader.validateQuant` rejects a manifest whose
+    /// slots disagree — so the embedding slot speaks for the whole model.
+    public var affineGroupSize: Int {
+        manifest.quant?.embedding.groupSize ?? Quantization.groupSize
+    }
+
+    /// How this model's 4-bit groups encode their zero point. Uniform across
+    /// every 4-bit slot for the same reason the group size is — one compiled
+    /// shader library serves all of them — so the embedding slot speaks for the
+    /// whole model. `sym` means the bias arrays are not in the file at all
+    /// (`docs/mtp/44-W1-WEIGHT-DIET.md`).
+    public var affineScheme: Quantization.AffineScheme {
+        if let forced = ProcessInfo.processInfo.environment["TF_FORCE_AFFINE_SCHEME"] {
+            return forced == "sym" ? .sym : .affine
+        }
+        return manifest.quant?.embedding.scheme.lowercased() == "sym" ? .sym : .affine
+    }
 
     let residentBuffer: ResidentBuffer
     let residentIndex: ResidentIndex
@@ -47,6 +99,30 @@ public struct Model {
     /// while still letting accessors mutate layer state via a serial queue.
     let streamersBox: StreamersBox
     let streamersQueue: DispatchQueue
+
+    /// The vision tower, mapped on the first image and never before
+    /// (`PLAN_VISION.md` §4-1). Its own box and queue rather than the streamers'
+    /// so a 1.15 GB verification cannot sit in front of a routed-expert open.
+    let visionBox: VisionWeightsBox
+    let visionQueue: DispatchQueue
+
+    final class VisionWeightsBox: @unchecked Sendable {
+        var weights: VisionWeights?
+    }
+
+    /// The MTP drafter, mapped on the first draft and never before — same
+    /// contract as the tower (D1: a run that never drafts pays nothing).
+    let draftBox: DraftWeightsBox
+    let draftQueue: DispatchQueue
+
+    final class DraftWeightsBox: @unchecked Sendable {
+        var weights: DraftWeights?
+    }
+
+    /// Routed-expert instrumentation. A reference type so every copy of this
+    /// struct — the runner's, the prefill kernels' — accumulates into one set of
+    /// counters.
+    public let telemetry: ExpertTelemetry
 
     final class StreamersBox: @unchecked Sendable {
         var streamers: [PreadExpertStreamer?]
@@ -67,7 +143,8 @@ public struct Model {
          packedExpertsLayout: PackedExpertsLayout,
          manifest: Manifest,
          directoryURL: URL,
-         modelDirectory: GTurboModelDirectory) {
+         modelDirectory: GTurboModelDirectory,
+         telemetry: ExpertTelemetry = ExpertTelemetry()) {
         self.device = device
         self.config = config
         self.streamingMode = streamingMode
@@ -81,6 +158,58 @@ public struct Model {
         self.modelDirectory = modelDirectory
         self.streamersBox = StreamersBox(numLayers: packedExpertsLayout.numLayers)
         self.streamersQueue = DispatchQueue(label: "turbo-fieldfare.expert-streamers")
+        self.visionBox = VisionWeightsBox()
+        self.visionQueue = DispatchQueue(label: "turbo-fieldfare.vision-weights")
+        self.draftBox = DraftWeightsBox()
+        self.draftQueue = DispatchQueue(label: "turbo-fieldfare.draft-weights")
+        self.telemetry = telemetry
+    }
+
+    // MARK: - Vision tower (lazy)
+
+    /// Whether this install carries a vision tower. False for every model built
+    /// without `--include-vision` / `--add-vision`.
+    public var hasVisionTower: Bool { manifest.vision != nil }
+
+    /// Bytes the tower's weight file declares, or zero without one.
+    public var visionPayloadBytes: UInt64 { manifest.vision?.payloadBytes ?? 0 }
+
+    /// Map and validate the tower, once per process.
+    ///
+    /// Called on the first image, not at load: under `.fullSha256` this hashes
+    /// 1.15 GB, and a text-only run must not pay for it (§4-1).
+    public func visionWeights() throws -> VisionWeights {
+        try visionQueue.sync {
+            if let loaded = visionBox.weights { return loaded }
+            let loaded = try VisionWeights.load(directoryURL: directoryURL,
+                                                manifest: manifest,
+                                                config: config,
+                                                device: device,
+                                                integrityPolicy: integrityPolicy)
+            visionBox.weights = loaded
+            return loaded
+        }
+    }
+
+    // MARK: - MTP drafter (lazy)
+
+    /// Whether this install carries an MTP drafter. False for every model
+    /// built without `--include-draft` / `--add-draft`.
+    public var hasDraft: Bool { manifest.draft != nil }
+
+    /// Map and validate the drafter, once per process (236 MB, and hashed only
+    /// under `.fullSha256`).
+    public func draftWeights() throws -> DraftWeights {
+        try draftQueue.sync {
+            if let loaded = draftBox.weights { return loaded }
+            let loaded = try DraftWeights.load(directoryURL: directoryURL,
+                                               manifest: manifest,
+                                               arch: config,
+                                               device: device,
+                                               integrityPolicy: integrityPolicy)
+            draftBox.weights = loaded
+            return loaded
+        }
     }
 
     // MARK: - Resident accessors
@@ -220,8 +349,14 @@ public struct Model {
             entry.fileOffset, size: entry.sizeBytes, field: "weights")
         let scaleRel = try checkedRelativeOffset(
             entry.scaleOffset, size: entry.scaleSize, field: "scales")
-        let biasRel = try checkedRelativeOffset(
-            entry.biasOffset, size: entry.biasSize, field: "biases")
+        // A `sym` model stores no bias array (`docs/mtp/44-W1-WEIGHT-DIET.md`):
+        // the entry carries `biasSize == 0` and the binding aliases the scales,
+        // so every kernel keeps its signature and the shader -- compiled with
+        // `TURBO_AFFINE_SYMMETRIC` -- derives `-8 * scale` without reading it.
+        let biasRel = entry.biasSize == 0
+            ? scaleRel
+            : try checkedRelativeOffset(entry.biasOffset, size: entry.biasSize,
+                                        field: "biases")
         return TensorView(
             buffer: residentBuffer.buffer,
             offset: relativeOffset,
@@ -271,6 +406,15 @@ public struct Model {
         if streamersBox.streamers[L] != nil {
             return
         }
+        let openStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        var verifyNanos: UInt64 = 0
+        var verifiedBytes: UInt64 = 0
+        defer {
+            telemetry.recordLayerOpen(
+                totalNanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - openStart,
+                verifyNanos: verifyNanos,
+                verifiedBytes: verifiedBytes)
+        }
         let basename = packedExpertsLayout.layers[L].file
         let url = directoryURL
             .appendingPathComponent("packed_experts")
@@ -290,9 +434,12 @@ public struct Model {
             }
             switch integrityPolicy {
             case .fullSha256:
+                let verifyStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
                 try Sha256Verifier.verifyFile(fileDescriptor: layerFD,
                                               named: manifestRel,
                                               expectedHex: entry.sha256)
+                verifyNanos = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - verifyStart
+                verifiedBytes = actualSize
             case .sizeCheckTrustedReceipt:
                 break
             }
@@ -311,12 +458,15 @@ public struct Model {
         case .pread(let configuredSlotCount):
             slotCount = configuredSlotCount
         }
+        // 経路を決めるのはここ 1 か所である。既定は D (mmap + residency set、
+        // docs/mtp/52 §5a)。`TF_EXPERT_MMAP=0` で 51 までの私有スロットに戻る。
         streamersBox.streamers[L] = try PreadExpertStreamer(
             layout: layout,
             device: device,
             slotCount: slotCount,
             cachePolicy: expertCachePolicy,
-            fileDescriptor: layerFD)
+            fileDescriptor: layerFD,
+            useMmap: usesMappedExperts)
         streamersBox.layerVerified[L] = true
     }
 
@@ -501,223 +651,6 @@ extension Model {
             guard actualSize == manifestEntry.size else {
                 throw ModelError.trustedReceiptInvalid(
                     detail: "\(relativePath) size \(actualSize) != \(manifestEntry.size)")
-            }
-        }
-    }
-
-    static func validateRuntimeSchema(residentIndex: ResidentIndex,
-                                      layout: PackedExpertsLayout,
-                                      manifest: Manifest,
-                                      config: ArchConfig) throws {
-        guard let quant = manifest.quant else {
-            throw ModelError.indexCorrupt(
-                detail: "manifest.quant is required by the executable runtime schema")
-        }
-
-        func checkedMultiply(_ lhs: UInt64, _ rhs: UInt64, field: String) throws -> UInt64 {
-            let (value, overflow) = lhs.multipliedReportingOverflow(by: rhs)
-            guard !overflow else {
-                throw ModelError.indexCorrupt(detail: "\(field) byte count overflows UInt64")
-            }
-            return value
-        }
-
-        func checkedIntMultiply(_ lhs: Int, _ rhs: Int, field: String) throws -> Int {
-            let (value, overflow) = lhs.multipliedReportingOverflow(by: rhs)
-            guard !overflow else {
-                throw ModelError.indexCorrupt(detail: "\(field) dimension overflows Int")
-            }
-            return value
-        }
-
-        func dimensions(_ rows: Int, _ columns: Int, field: String) throws -> (UInt32, UInt32) {
-            guard let r = UInt32(exactly: rows), let c = UInt32(exactly: columns),
-                  r > 0, c > 0 else {
-                throw ModelError.indexCorrupt(detail: "\(field) has invalid dimensions")
-            }
-            return (r, c)
-        }
-
-        func requireBF16(_ name: String, count: Int) throws {
-            guard let entry = residentIndex.entries[name] else {
-                throw ModelError.indexCorrupt(detail: "missing required resident tensor \(name)")
-            }
-            guard let logicalCount = UInt32(exactly: count), logicalCount > 0 else {
-                throw ModelError.indexCorrupt(detail: "\(name) has invalid dimensions")
-            }
-            let expectedBytes = try checkedMultiply(
-                UInt64(logicalCount), UInt64(MemoryLayout<UInt16>.size), field: name)
-            guard entry.dtype == GTurboFormatV1.DType.bf16.rawValue,
-                  entry.shape.0 == logicalCount,
-                  entry.shape.1 == 0, entry.shape.2 == 0, entry.shape.3 == 0,
-                  entry.sizeBytes == expectedBytes,
-                  entry.scaleOffset == 0, entry.scaleSize == 0,
-                  entry.biasOffset == 0, entry.biasSize == 0,
-                  entry.fileOffset % UInt64(MemoryLayout<UInt16>.alignment) == 0 else {
-                throw ModelError.indexCorrupt(detail: "\(name) does not match the required BF16 schema")
-            }
-        }
-
-        func affineSizes(rows: Int,
-                         columns: Int,
-                         slot: ManifestQuantSlot,
-                         field: String) throws -> (shape: (UInt32, UInt32), weight: UInt64, aux: UInt64) {
-            let shape = try dimensions(rows, columns, field: field)
-            guard slot.weightBits == 4 || slot.weightBits == 8,
-                  slot.groupSize > 0,
-                  columns % slot.groupSize == 0 else {
-                throw ModelError.indexCorrupt(detail: "\(field) has unsupported affine quantization")
-            }
-            let elements = try checkedMultiply(UInt64(rows), UInt64(columns), field: field)
-            let bitCount = try checkedMultiply(elements, UInt64(slot.weightBits), field: field)
-            guard bitCount % 8 == 0 else {
-                throw ModelError.indexCorrupt(detail: "\(field) packed byte count is fractional")
-            }
-            let groups = UInt64(columns / slot.groupSize)
-            let auxElements = try checkedMultiply(UInt64(shape.0), groups, field: field)
-            let auxBytes = try checkedMultiply(
-                auxElements, UInt64(MemoryLayout<UInt16>.size), field: field)
-            return (shape, bitCount / 8, auxBytes)
-        }
-
-        func requireAffine(_ name: String,
-                           rows: Int,
-                           columns: Int,
-                           slot: ManifestQuantSlot) throws {
-            guard let entry = residentIndex.entries[name] else {
-                throw ModelError.indexCorrupt(detail: "missing required resident tensor \(name)")
-            }
-            let expected = try affineSizes(
-                rows: rows, columns: columns, slot: slot, field: name)
-            let primaryAlignment: UInt64 = slot.weightBits == 4
-                ? UInt64(MemoryLayout<UInt16>.alignment)
-                : 1
-            guard entry.dtype == GTurboFormatV1.DType.u32.rawValue,
-                  entry.shape.0 == expected.shape.0,
-                  entry.shape.1 == expected.shape.1,
-                  entry.shape.2 == 0, entry.shape.3 == 0,
-                  entry.sizeBytes == expected.weight,
-                  entry.scaleSize == expected.aux,
-                  entry.biasSize == expected.aux,
-                  entry.fileOffset % primaryAlignment == 0,
-                  entry.scaleOffset % UInt64(MemoryLayout<UInt16>.alignment) == 0,
-                  entry.biasOffset % UInt64(MemoryLayout<UInt16>.alignment) == 0 else {
-                throw ModelError.indexCorrupt(
-                    detail: "\(name) affine metadata mismatch: dtype=\(entry.dtype), shape=[\(entry.shape.0),\(entry.shape.1),\(entry.shape.2),\(entry.shape.3)], bytes=\(entry.sizeBytes), scales=\(entry.scaleSize), biases=\(entry.biasSize), expected shape=[\(expected.shape.0),\(expected.shape.1),0,0], bytes=\(expected.weight), aux=\(expected.aux)")
-            }
-        }
-
-        try requireAffine(
-            "language_model.model.embed_tokens.weight",
-            rows: config.vocabSize,
-            columns: config.hiddenSize,
-            slot: quant.embedding)
-        try requireBF16("language_model.model.norm.weight", count: config.hiddenSize)
-
-        for layer in 0..<config.numLayers {
-            let prefix = "language_model.model.layers.\(layer)"
-            let isFull = config.fullAttentionLayerMask[layer] != 0
-            let headDimension = isFull ? config.fullHeadDim : config.headDim
-            let kvHeads = isFull ? config.numFullKVHeads : config.numKVHeads
-            let queryDimension = try checkedIntMultiply(
-                config.numHeads, headDimension, field: "layer \(layer) query")
-            let kvDimension = try checkedIntMultiply(
-                kvHeads, headDimension, field: "layer \(layer) key/value")
-
-            for name in [
-                "input_layernorm.weight",
-                "post_attention_layernorm.weight",
-                "pre_feedforward_layernorm.weight",
-                "pre_feedforward_layernorm_2.weight",
-                "post_feedforward_layernorm_1.weight",
-                "post_feedforward_layernorm_2.weight",
-                "post_feedforward_layernorm.weight",
-                "router.scale",
-            ] {
-                try requireBF16("\(prefix).\(name)", count: config.hiddenSize)
-            }
-            try requireBF16("\(prefix).self_attn.q_norm.weight", count: headDimension)
-            try requireBF16("\(prefix).self_attn.k_norm.weight", count: headDimension)
-            try requireBF16("\(prefix).router.per_expert_scale", count: config.numExperts)
-            try requireBF16("\(prefix).layer_scalar", count: 1)
-
-            try requireAffine("\(prefix).self_attn.q_proj.weight",
-                              rows: queryDimension, columns: config.hiddenSize,
-                              slot: quant.attention)
-            try requireAffine("\(prefix).self_attn.k_proj.weight",
-                              rows: kvDimension, columns: config.hiddenSize,
-                              slot: quant.attention)
-            if !isFull {
-                try requireAffine("\(prefix).self_attn.v_proj.weight",
-                                  rows: kvDimension, columns: config.hiddenSize,
-                                  slot: quant.attention)
-            }
-            try requireAffine("\(prefix).self_attn.o_proj.weight",
-                              rows: config.hiddenSize, columns: queryDimension,
-                              slot: quant.attention)
-            try requireAffine("\(prefix).mlp.gate_proj.weight",
-                              rows: config.intermediateSize, columns: config.hiddenSize,
-                              slot: quant.sharedExpert)
-            try requireAffine("\(prefix).mlp.up_proj.weight",
-                              rows: config.intermediateSize, columns: config.hiddenSize,
-                              slot: quant.sharedExpert)
-            try requireAffine("\(prefix).mlp.down_proj.weight",
-                              rows: config.hiddenSize, columns: config.intermediateSize,
-                              slot: quant.sharedExpert)
-            try requireAffine("\(prefix).router.proj.weight",
-                              rows: config.numExperts, columns: config.hiddenSize,
-                              slot: quant.router)
-        }
-
-        let routedShapes: [(String, Int, Int)] = [
-            ("gate", config.moeIntermediateSize, config.hiddenSize),
-            ("up", config.moeIntermediateSize, config.hiddenSize),
-            ("down", config.hiddenSize, config.moeIntermediateSize),
-        ]
-        for layer in layout.layers {
-            guard let reference = layer.experts.first else {
-                throw ModelError.indexCorrupt(
-                    detail: "routed layer \(layer.layer) has no experts")
-            }
-            for (role, rows, columns) in routedShapes {
-                let sizes = try affineSizes(
-                    rows: rows, columns: columns,
-                    slot: quant.routedExpert,
-                    field: "routed layer \(layer.layer) \(role)")
-                let expectedRoles: [(String, String, [UInt32], Int?, UInt64, UInt64)] = [
-                    (role, "U32", [sizes.shape.0, sizes.shape.1],
-                     quant.routedExpert.weightBits, sizes.weight,
-                     UInt64(MemoryLayout<UInt32>.alignment)),
-                    ("\(role)_scales", "BF16",
-                     [sizes.shape.0, UInt32(columns / quant.routedExpert.groupSize)],
-                     nil, sizes.aux, UInt64(MemoryLayout<UInt16>.alignment)),
-                    ("\(role)_biases", "BF16",
-                     [sizes.shape.0, UInt32(columns / quant.routedExpert.groupSize)],
-                     nil, sizes.aux, UInt64(MemoryLayout<UInt16>.alignment)),
-                ]
-                for (name, dtype, shape, bits, size, alignment) in expectedRoles {
-                    guard let expected = reference.subTensors[name] else {
-                        throw ModelError.indexCorrupt(
-                            detail: "routed layer \(layer.layer) is missing role \(name)")
-                    }
-                    let (end, overflow) = expected.offset.addingReportingOverflow(expected.size)
-                    guard expected.dtype == dtype,
-                          expected.shape == shape,
-                          expected.bits == bits,
-                          expected.size == size,
-                          expected.offset % alignment == 0,
-                          !overflow,
-                          end <= reference.size,
-                          end <= UInt64(UInt32.max) + 1 else {
-                        throw ModelError.indexCorrupt(
-                            detail: "routed layer \(layer.layer) role \(name) does not match the required schema")
-                    }
-                    for expert in layer.experts.dropFirst()
-                        where expert.subTensors[name] != expected {
-                        throw ModelError.indexCorrupt(
-                            detail: "routed layer \(layer.layer) role \(name) metadata differs across experts")
-                    }
-                }
             }
         }
     }

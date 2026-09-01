@@ -113,6 +113,7 @@ struct StructuredOutputDiagnosticsTests {
             prefillSeconds: 0,
             newTokens: 3,
             decodeSeconds: 0,
+            timeToFirstTokenSeconds: 0,
             reason: .toolCalls,
             kvPosition: 5,
             kvBackedTokenIDs: effectivePrompt + [20, 21],

@@ -1,0 +1,1 @@
+[{"role": "user", "content": "次の Swift 関数にはバグがあります。原因を 1 行で述べ、修正した関数全体を書き、テストを 3 つ挙げてください。\n\n```swift\nfunc chunk<T>(_ items: [T], size: Int) -> [[T]] {\n    var out: [[T]] = []\n    var i = 0\n    while i < items.count {\n        out.append(Array(items[i..<min(i + size, items.count)]))\n        i += size\n    }\n    return out\n}\n```"}]

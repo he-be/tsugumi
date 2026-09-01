@@ -1,0 +1,224 @@
+# ./bench/mtp51_mmap_ab.py --rounds 3 --out bench/mtp51/mmap_ab_256_math_v2.log
+# model=scratch/gemma4-qat-sym.gturbo messages=bench/math.json slots=32 max_new=256 cool=10s
+round 1  pread  io   14.63 ms/tok  tok/s  25.198  prefill  1.215s  peak  4.54GB  miss 9145/61200  out 40f67036aa88
+この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
+
+このような問題は、**三角関数を用いた置換**によって解くのが定石です。これは、3次方程式の解の公式（カルダノの公式）の背後にある、**「3倍角の公式」**を利用する手法です。
+
+### 解法：3倍角の公式を利用する
+
+まず、3倍角の公式 $\cos(3\theta) = 4\cos^3\theta - 3\cos\theta$ の形に近づけるために、変数変換を行います。
+
+#### 1. 変数変換
+$x = k\cos\theta$ とおいて、方程式に代入します。
+$$(k\cos\theta)^3 + 2(k\cos\theta)^2 - 3(k\cos\theta) - 1 = 0$$
+$$k^3\cos^3\theta + 2k^
+[stop=maxTokens prefill=43tok new=256tok decode=10.16s tok/s=25.198]
+[load=0.674s layerVerify=0.000s/30layers prefill=1.215s ttft=1.215s peak=4.54GB rss=3.29GB]
+[expert prefill hit=0.0% 0/1963 io=0.832s | decode hit=85.1% 52055/61200 io=3.732s]
+[decode/tok io=14.63ms cb1=0.64ms cb2=0.27ms head=3.28ms]
+
+round 1  mmap   io    7.42 ms/tok  tok/s  30.143  prefill  1.876s  peak  1.33GB  miss 9145/61200  out 40f67036aa88
+この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
+
+このような問題は、**三角関数を用いた置換**によって解くのが定石です。これは、3次方程式の解の公式（カルダノの公式）の背後にある、**「3倍角の公式」**を利用する手法です。
+
+### 解法：3倍角の公式を利用する
+
+まず、3倍角の公式 $\cos(3\theta) = 4\cos^3\theta - 3\cos\theta$ の形に近づけるために、変数変換を行います。
+
+#### 1. 変数変換
+$x = k\cos\theta$ とおいて、方程式に代入します。
+$$(k\cos\theta)^3 + 2(k\cos\theta)^2 - 3(k\cos\theta) - 1 = 0$$
+$$k^3\cos^3\theta + 2k^
+[stop=maxTokens prefill=43tok new=256tok decode=8.49s tok/s=30.143]
+[load=0.701s layerVerify=0.000s/30layers prefill=1.876s ttft=1.876s peak=1.33GB rss=0.37GB]
+[expert prefill hit=0.0% 0/1963 io=1.488s | decode hit=85.1% 52055/61200 io=1.891s]
+[expert mmap layers=30 mapped=12.90GB sync=5039(+11108/-10148) noop=2870 residency=3.296s /tok=12.87ms]
+[decode/tok io=7.42ms cb1=0.61ms cb2=0.25ms head=3.28ms]
+
+round 1  mmap   io    7.06 ms/tok  tok/s  30.551  prefill  1.783s  peak  1.30GB  miss 9145/61200  out 40f67036aa88
+この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
+
+このような問題は、**三角関数を用いた置換**によって解くのが定石です。これは、3次方程式の解の公式（カルダノの公式）の背後にある、**「3倍角の公式」**を利用する手法です。
+
+### 解法：3倍角の公式を利用する
+
+まず、3倍角の公式 $\cos(3\theta) = 4\cos^3\theta - 3\cos\theta$ の形に近づけるために、変数変換を行います。
+
+#### 1. 変数変換
+$x = k\cos\theta$ とおいて、方程式に代入します。
+$$(k\cos\theta)^3 + 2(k\cos\theta)^2 - 3(k\cos\theta) - 1 = 0$$
+$$k^3\cos^3\theta + 2k^
+[stop=maxTokens prefill=43tok new=256tok decode=8.38s tok/s=30.551]
+[load=0.679s layerVerify=0.000s/30layers prefill=1.783s ttft=1.783s peak=1.30GB rss=0.37GB]
+[expert prefill hit=0.0% 0/1963 io=1.334s | decode hit=85.1% 52055/61200 io=1.797s]
+[expert mmap layers=30 mapped=12.90GB sync=5039(+11108/-10148) noop=2870 residency=3.049s /tok=11.91ms]
+[decode/tok io=7.06ms cb1=0.60ms cb2=0.25ms head=3.25ms]
+
+round 1  pread  io   14.42 ms/tok  tok/s  25.414  prefill  1.197s  peak  4.52GB  miss 9145/61200  out 40f67036aa88
+この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
+
+このような問題は、**三角関数を用いた置換**によって解くのが定石です。これは、3次方程式の解の公式（カルダノの公式）の背後にある、**「3倍角の公式」**を利用する手法です。
+
+### 解法：3倍角の公式を利用する
+
+まず、3倍角の公式 $\cos(3\theta) = 4\cos^3\theta - 3\cos\theta$ の形に近づけるために、変数変換を行います。
+
+#### 1. 変数変換
+$x = k\cos\theta$ とおいて、方程式に代入します。
+$$(k\cos\theta)^3 + 2(k\cos\theta)^2 - 3(k\cos\theta) - 1 = 0$$
+$$k^3\cos^3\theta + 2k^
+[stop=maxTokens prefill=43tok new=256tok decode=10.07s tok/s=25.414]
+[load=0.700s layerVerify=0.000s/30layers prefill=1.197s ttft=1.197s peak=4.52GB rss=3.28GB]
+[expert prefill hit=0.0% 0/1963 io=0.767s | decode hit=85.1% 52055/61200 io=3.680s]
+[decode/tok io=14.42ms cb1=0.64ms cb2=0.27ms head=3.26ms]
+
+round 2  pread  io   13.99 ms/tok  tok/s  25.722  prefill  1.184s  peak  4.50GB  miss 9145/61200  out 40f67036aa88
+この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
+
+このような問題は、**三角関数を用いた置換**によって解くのが定石です。これは、3次方程式の解の公式（カルダノの公式）の背後にある、**「3倍角の公式」**を利用する手法です。
+
+### 解法：3倍角の公式を利用する
+
+まず、3倍角の公式 $\cos(3\theta) = 4\cos^3\theta - 3\cos\theta$ の形に近づけるために、変数変換を行います。
+
+#### 1. 変数変換
+$x = k\cos\theta$ とおいて、方程式に代入します。
+$$(k\cos\theta)^3 + 2(k\cos\theta)^2 - 3(k\cos\theta) - 1 = 0$$
+$$k^3\cos^3\theta + 2k^
+[stop=maxTokens prefill=43tok new=256tok decode=9.95s tok/s=25.722]
+[load=0.693s layerVerify=0.000s/30layers prefill=1.184s ttft=1.184s peak=4.50GB rss=3.28GB]
+[expert prefill hit=0.0% 0/1963 io=0.819s | decode hit=85.1% 52055/61200 io=3.570s]
+[decode/tok io=13.99ms cb1=0.64ms cb2=0.28ms head=3.26ms]
+
+round 2  mmap   io    7.73 ms/tok  tok/s  30.060  prefill  1.861s  peak  1.30GB  miss 9145/61200  out 40f67036aa88
+この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
+
+このような問題は、**三角関数を用いた置換**によって解くのが定石です。これは、3次方程式の解の公式（カルダノの公式）の背後にある、**「3倍角の公式」**を利用する手法です。
+
+### 解法：3倍角の公式を利用する
+
+まず、3倍角の公式 $\cos(3\theta) = 4\cos^3\theta - 3\cos\theta$ の形に近づけるために、変数変換を行います。
+
+#### 1. 変数変換
+$x = k\cos\theta$ とおいて、方程式に代入します。
+$$(k\cos\theta)^3 + 2(k\cos\theta)^2 - 3(k\cos\theta) - 1 = 0$$
+$$k^3\cos^3\theta + 2k^
+[stop=maxTokens prefill=43tok new=256tok decode=8.52s tok/s=30.060]
+[load=0.707s layerVerify=0.000s/30layers prefill=1.861s ttft=1.861s peak=1.30GB rss=0.37GB]
+[expert prefill hit=0.0% 0/1963 io=1.448s | decode hit=85.1% 52055/61200 io=1.970s]
+[expert mmap layers=30 mapped=12.90GB sync=5039(+11108/-10148) noop=2870 residency=3.335s /tok=13.03ms]
+[decode/tok io=7.73ms cb1=0.62ms cb2=0.24ms head=3.32ms]
+
+round 2  mmap   io    7.09 ms/tok  tok/s  30.366  prefill  1.730s  peak  1.31GB  miss 9145/61200  out 40f67036aa88
+この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
+
+このような問題は、**三角関数を用いた置換**によって解くのが定石です。これは、3次方程式の解の公式（カルダノの公式）の背後にある、**「3倍角の公式」**を利用する手法です。
+
+### 解法：3倍角の公式を利用する
+
+まず、3倍角の公式 $\cos(3\theta) = 4\cos^3\theta - 3\cos\theta$ の形に近づけるために、変数変換を行います。
+
+#### 1. 変数変換
+$x = k\cos\theta$ とおいて、方程式に代入します。
+$$(k\cos\theta)^3 + 2(k\cos\theta)^2 - 3(k\cos\theta) - 1 = 0$$
+$$k^3\cos^3\theta + 2k^
+[stop=maxTokens prefill=43tok new=256tok decode=8.43s tok/s=30.366]
+[load=0.705s layerVerify=0.000s/30layers prefill=1.730s ttft=1.730s peak=1.31GB rss=0.37GB]
+[expert prefill hit=0.0% 0/1963 io=1.296s | decode hit=85.1% 52055/61200 io=1.804s]
+[expert mmap layers=30 mapped=12.90GB sync=5039(+11108/-10148) noop=2870 residency=3.013s /tok=11.77ms]
+[decode/tok io=7.09ms cb1=0.61ms cb2=0.25ms head=3.29ms]
+
+round 2  pread  io   14.16 ms/tok  tok/s  25.892  prefill  1.185s  peak  4.53GB  miss 9145/61200  out 40f67036aa88
+この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
+
+このような問題は、**三角関数を用いた置換**によって解くのが定石です。これは、3次方程式の解の公式（カルダノの公式）の背後にある、**「3倍角の公式」**を利用する手法です。
+
+### 解法：3倍角の公式を利用する
+
+まず、3倍角の公式 $\cos(3\theta) = 4\cos^3\theta - 3\cos\theta$ の形に近づけるために、変数変換を行います。
+
+#### 1. 変数変換
+$x = k\cos\theta$ とおいて、方程式に代入します。
+$$(k\cos\theta)^3 + 2(k\cos\theta)^2 - 3(k\cos\theta) - 1 = 0$$
+$$k^3\cos^3\theta + 2k^
+[stop=maxTokens prefill=43tok new=256tok decode=9.89s tok/s=25.892]
+[load=0.681s layerVerify=0.000s/30layers prefill=1.185s ttft=1.185s peak=4.53GB rss=3.31GB]
+[expert prefill hit=0.0% 0/1963 io=0.754s | decode hit=85.1% 52055/61200 io=3.615s]
+[decode/tok io=14.16ms cb1=0.67ms cb2=0.27ms head=3.31ms]
+
+round 3  pread  io   14.39 ms/tok  tok/s  25.587  prefill  1.172s  peak  4.51GB  miss 9145/61200  out 40f67036aa88
+この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
+
+このような問題は、**三角関数を用いた置換**によって解くのが定石です。これは、3次方程式の解の公式（カルダノの公式）の背後にある、**「3倍角の公式」**を利用する手法です。
+
+### 解法：3倍角の公式を利用する
+
+まず、3倍角の公式 $\cos(3\theta) = 4\cos^3\theta - 3\cos\theta$ の形に近づけるために、変数変換を行います。
+
+#### 1. 変数変換
+$x = k\cos\theta$ とおいて、方程式に代入します。
+$$(k\cos\theta)^3 + 2(k\cos\theta)^2 - 3(k\cos\theta) - 1 = 0$$
+$$k^3\cos^3\theta + 2k^
+[stop=maxTokens prefill=43tok new=256tok decode=10.01s tok/s=25.587]
+[load=0.689s layerVerify=0.000s/30layers prefill=1.172s ttft=1.172s peak=4.51GB rss=3.30GB]
+[expert prefill hit=0.0% 0/1963 io=0.811s | decode hit=85.1% 52055/61200 io=3.672s]
+[decode/tok io=14.39ms cb1=0.65ms cb2=0.28ms head=3.28ms]
+
+round 3  mmap   io    7.62 ms/tok  tok/s  30.093  prefill  1.827s  peak  1.32GB  miss 9145/61200  out 40f67036aa88
+この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
+
+このような問題は、**三角関数を用いた置換**によって解くのが定石です。これは、3次方程式の解の公式（カルダノの公式）の背後にある、**「3倍角の公式」**を利用する手法です。
+
+### 解法：3倍角の公式を利用する
+
+まず、3倍角の公式 $\cos(3\theta) = 4\cos^3\theta - 3\cos\theta$ の形に近づけるために、変数変換を行います。
+
+#### 1. 変数変換
+$x = k\cos\theta$ とおいて、方程式に代入します。
+$$(k\cos\theta)^3 + 2(k\cos\theta)^2 - 3(k\cos\theta) - 1 = 0$$
+$$k^3\cos^3\theta + 2k^
+[stop=maxTokens prefill=43tok new=256tok decode=8.51s tok/s=30.093]
+[load=0.660s layerVerify=0.000s/30layers prefill=1.827s ttft=1.827s peak=1.32GB rss=0.38GB]
+[expert prefill hit=0.0% 0/1963 io=1.439s | decode hit=85.1% 52055/61200 io=1.941s]
+[expert mmap layers=30 mapped=12.90GB sync=5039(+11108/-10148) noop=2870 residency=3.296s /tok=12.88ms]
+[decode/tok io=7.62ms cb1=0.62ms cb2=0.24ms head=3.29ms]
+
+round 3  mmap   io    6.77 ms/tok  tok/s  30.992  prefill  1.719s  peak  1.32GB  miss 9145/61200  out 40f67036aa88
+この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
+
+このような問題は、**三角関数を用いた置換**によって解くのが定石です。これは、3次方程式の解の公式（カルダノの公式）の背後にある、**「3倍角の公式」**を利用する手法です。
+
+### 解法：3倍角の公式を利用する
+
+まず、3倍角の公式 $\cos(3\theta) = 4\cos^3\theta - 3\cos\theta$ の形に近づけるために、変数変換を行います。
+
+#### 1. 変数変換
+$x = k\cos\theta$ とおいて、方程式に代入します。
+$$(k\cos\theta)^3 + 2(k\cos\theta)^2 - 3(k\cos\theta) - 1 = 0$$
+$$k^3\cos^3\theta + 2k^
+[stop=maxTokens prefill=43tok new=256tok decode=8.26s tok/s=30.992]
+[load=0.683s layerVerify=0.000s/30layers prefill=1.719s ttft=1.719s peak=1.32GB rss=0.37GB]
+[expert prefill hit=0.0% 0/1963 io=1.281s | decode hit=85.1% 52055/61200 io=1.723s]
+[expert mmap layers=30 mapped=12.90GB sync=5039(+11108/-10148) noop=2870 residency=2.921s /tok=11.41ms]
+[decode/tok io=6.77ms cb1=0.61ms cb2=0.24ms head=3.26ms]
+
+round 3  pread  io   14.16 ms/tok  tok/s  25.682  prefill  1.188s  peak  4.55GB  miss 9145/61200  out 40f67036aa88
+この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
+
+このような問題は、**三角関数を用いた置換**によって解くのが定石です。これは、3次方程式の解の公式（カルダノの公式）の背後にある、**「3倍角の公式」**を利用する手法です。
+
+### 解法：3倍角の公式を利用する
+
+まず、3倍角の公式 $\cos(3\theta) = 4\cos^3\theta - 3\cos\theta$ の形に近づけるために、変数変換を行います。
+
+#### 1. 変数変換
+$x = k\cos\theta$ とおいて、方程式に代入します。
+$$(k\cos\theta)^3 + 2(k\cos\theta)^2 - 3(k\cos\theta) - 1 = 0$$
+$$k^3\cos^3\theta + 2k^
+[stop=maxTokens prefill=43tok new=256tok decode=9.97s tok/s=25.682]
+[load=0.672s layerVerify=0.000s/30layers prefill=1.188s ttft=1.188s peak=4.55GB rss=3.32GB]
+[expert prefill hit=0.0% 0/1963 io=0.765s | decode hit=85.1% 52055/61200 io=3.614s]
+[decode/tok io=14.16ms cb1=0.66ms cb2=0.27ms head=3.29ms]
+

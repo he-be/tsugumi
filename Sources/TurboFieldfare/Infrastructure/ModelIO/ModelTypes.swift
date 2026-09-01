@@ -104,6 +104,120 @@ public struct ArchConfig: Sendable, Equatable {
         for i in stride(from: 5, to: 30, by: 6) { mask[i] = 1 }
         return mask
     }
+
+    /// Ornith-1.5-35B-A3B (`qwen3_5_moe`), the second architecture this runtime
+    /// carries (`docs/qwen35moe/01-MODEL.md`). Three fields read oddly against
+    /// the Gemma baseline and are correct:
+    ///
+    /// - `slidingWindow = 0` — there is no sliding layer at all. The 30 zeros in
+    ///   `fullAttentionLayerMask` are recurrent layers, not windowed ones, which
+    ///   is why the manifest also carries `layerKinds`.
+    /// - `numKVHeads` / `headDim` restate the full-attention values. The
+    ///   recurrent layers have no K/V of that kind; their geometry lives in
+    ///   `manifest.arch.linearAttention`.
+    /// - `intermediateSize = moeIntermediateSize = 512` — upstream gives the
+    ///   shared expert and one routed expert the same width.
+    public static let ornith1_5_35B_A3B = ArchConfig(
+        hiddenSize: 2048,
+        intermediateSize: 512,
+        moeIntermediateSize: 512,
+        numHeads: 16,
+        numKVHeads: 2,
+        numFullKVHeads: 2,
+        headDim: 256,
+        fullHeadDim: 256,
+        vocabSize: 248320,
+        slidingWindow: 0,
+        finalLogitSoftcap: 0.0,
+        ropeTheta: 10_000_000.0,
+        fullRopeTheta: 10_000_000.0,
+        partialRotaryFactor: 0.25,
+        numLayers: 40,
+        numExperts: 256,
+        topKExperts: 8,
+        tieWordEmbeddings: false,
+        attentionKEqV: false,
+        fullAttentionLayerMask: Self.ornithLayerMask(),
+        hiddenActivation: "silu"
+    )
+
+    /// Every fourth layer attends; the other three keep a recurrent state.
+    private static func ornithLayerMask() -> [UInt8] {
+        var mask = [UInt8](repeating: 0, count: 40)
+        for i in stride(from: 3, to: 40, by: 4) { mask[i] = 1 }
+        return mask
+    }
+}
+
+/// Compile-time vision tower baseline, checked field-by-field against
+/// `manifest.json -> vision` when the installed model carries a tower. Unlike
+/// `ArchConfig` there is no per-checkpoint variation to accommodate: the tower
+/// comes from one pinned upstream repository (`PLAN_VISION.md` §1-1).
+public struct VisionConfig: Sendable, Equatable {
+    public let hiddenSize: Int
+    public let numLayers: Int
+    public let numHeads: Int
+    public let numKVHeads: Int
+    public let headDim: Int
+    public let intermediateSize: Int
+    public let patchSize: Int
+    public let poolingKernelSize: Int
+    public let positionEmbeddingSize: Int
+    public let ropeTheta: Double
+    public let rmsNormEps: Double
+    public let hiddenActivation: String
+    public let standardize: Bool
+    public let maxSoftTokens: Int
+    public let imageTokenID: Int
+    public let boiTokenID: Int
+    public let eoiTokenID: Int
+
+    public init(hiddenSize: Int, numLayers: Int, numHeads: Int, numKVHeads: Int,
+                headDim: Int, intermediateSize: Int, patchSize: Int,
+                poolingKernelSize: Int, positionEmbeddingSize: Int,
+                ropeTheta: Double, rmsNormEps: Double, hiddenActivation: String,
+                standardize: Bool, maxSoftTokens: Int,
+                imageTokenID: Int, boiTokenID: Int, eoiTokenID: Int) {
+        self.hiddenSize = hiddenSize
+        self.numLayers = numLayers
+        self.numHeads = numHeads
+        self.numKVHeads = numKVHeads
+        self.headDim = headDim
+        self.intermediateSize = intermediateSize
+        self.patchSize = patchSize
+        self.poolingKernelSize = poolingKernelSize
+        self.positionEmbeddingSize = positionEmbeddingSize
+        self.ropeTheta = ropeTheta
+        self.rmsNormEps = rmsNormEps
+        self.hiddenActivation = hiddenActivation
+        self.standardize = standardize
+        self.maxSoftTokens = maxSoftTokens
+        self.imageTokenID = imageTokenID
+        self.boiTokenID = boiTokenID
+        self.eoiTokenID = eoiTokenID
+    }
+
+    /// Gemma 4 vision tower. `maxSoftTokens` is an upper bound: the token count
+    /// of one image follows its aspect ratio (`PLAN_VISION.md` §2-1).
+    public static let gemma4Vision = VisionConfig(
+        hiddenSize: 1152,
+        numLayers: 27,
+        numHeads: 16,
+        numKVHeads: 16,
+        headDim: 72,
+        intermediateSize: 4304,
+        patchSize: 16,
+        poolingKernelSize: 3,
+        positionEmbeddingSize: 10240,
+        ropeTheta: 100.0,
+        rmsNormEps: 1e-6,
+        hiddenActivation: "gelu_pytorch_tanh",
+        standardize: true,
+        maxSoftTokens: 280,
+        imageTokenID: 258880,
+        boiTokenID: 255999,
+        eoiTokenID: 258882
+    )
 }
 
 /// Failure modes for the validation gates in `Model.load`.

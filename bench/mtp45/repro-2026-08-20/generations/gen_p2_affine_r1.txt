@@ -1,0 +1,20 @@
+-step-bythought
+In a Mixture-of-Experts (MoE) Transformer, the standard Feed-Forward Network (FFN) layer is replaced by a routing mechanism that selects a subset of specialized "experts" to process each token. This allows the model to have a massive number of total parameters while keeping the computational cost (FLOPs) per token relatively low.
+
+Here is the step-by-step process of how a token is routed through an MoE layer.
+
+---
+
+### 1. Input Representation
+The process begins when a token (represented as a high-dimensional vector $x$) arrives at the MoE layer. In a standard Transformer, this vector would go into a single FFN. In an MoE, the vector is first sent to a **Router** (also called a Gating Network).
+
+### 2. The Routing Calculation (Scoring)
+The Router is a learnable linear layer. It performs a matrix multiplication between the input token $x$ and a weight matrix $W_g$ to produce a set of "logits" (raw scores).
+
+$$Logits = x \cdot W_g$$
+
+If there are $N$ experts, the router produces $N$ scalar values
+[stop=maxTokens prefill=22tok new=256tok decode=14.22s tok/s=17.999]
+[load=0.794s layerVerify=5.987s/30layers prefill=6.889s ttft=6.889s peak=4.88GB rss=3.15GB]
+[expert prefill hit=0.0% 0/1873 io=0.424s | decode hit=77.8% 47632/61200 io=7.045s]
+[decode/tok io=27.57ms cb1=0.69ms cb2=0.32ms head=3.74ms]

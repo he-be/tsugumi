@@ -10,6 +10,7 @@ public final class GenerationTranscriptMailbox: Sendable {
     private struct State: Sendable {
         var pending = ""
         var complete = ""
+        var reasoning = ""
     }
 
     private let state = Mutex(State())
@@ -34,6 +35,17 @@ public final class GenerationTranscriptMailbox: Sendable {
 
     public var completeText: String {
         state.withLock { $0.complete }
+    }
+
+    /// Thought-channel text, accumulated apart from the answer so the two
+    /// never interleave in the transcript.
+    public func appendReasoning(_ text: String) {
+        guard !text.isEmpty else { return }
+        state.withLock { $0.reasoning += text }
+    }
+
+    public var completeReasoningText: String {
+        state.withLock { $0.reasoning }
     }
 
     public func reset() {

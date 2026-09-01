@@ -9,13 +9,24 @@ final class MPPPrefillInt4QMM {
 
     static let tileM = 64
     static let tileN = 32
-    static let tileK = Quantization.groupSize
+    /// The MPP tile walks K in fixed 64-element steps, so this path only
+    /// applies to group-64 models. A group-32 model has two scale/bias pairs
+    /// per tile and cannot be expressed by this kernel — the wrapper reports
+    /// `.unavailable` rather than silently reading the wrong scales.
+    static let tileK = 64
 
     private var pipeline: MTLComputePipelineState?
 
     init(context: MetalContext) {
+        guard context.affineGroupSize == Self.tileK else {
+            self.pipeline = nil
+            return
+        }
         do {
-            let library = try Self.compileTensorOpsLibrary(device: context.device)
+            let library = try Self.compileTensorOpsLibrary(
+                device: context.device,
+                affineGroupSize: context.affineGroupSize,
+                affineScheme: context.affineScheme)
             guard let function = library.makeFunction(
                 name: "mpp_prefill_affine_threadgroup_f16") else {
                 throw MetalError.missingFunction("mpp_prefill_affine_threadgroup_f16")
@@ -77,7 +88,17 @@ final class MPPPrefillInt4QMM {
         return .affineThreadgroupF16
     }
 
-    private static func compileTensorOpsLibrary(device: MTLDevice) throws -> MTLLibrary {
-        try MetalContext.moduleLibrary(device: device, module: "tensorops")
+    /// `tensorops` is compiled outside the combined runtime library, so it has
+    /// to be handed the same two whole-model constants the combined one bakes
+    /// in. Missing the scheme here would leave this path loading a bias array
+    /// that a `sym` model does not have.
+    private static func compileTensorOpsLibrary(device: MTLDevice,
+                                                affineGroupSize: Int,
+                                                affineScheme: Quantization.AffineScheme) throws
+        -> MTLLibrary {
+        try MetalContext.moduleLibrary(device: device,
+                                       module: "tensorops",
+                                       affineGroupSize: affineGroupSize,
+                                       affineScheme: affineScheme)
     }
 }

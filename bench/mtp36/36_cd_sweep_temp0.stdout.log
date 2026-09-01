@@ -1,0 +1,44 @@
+# mtp_cd_sweep: 10 runs planned (tasks=['prose', 'image'], bs=[0, 2, 3, 4], COOL_S=20s)
+[1/10] task=prose bs=0 slot=head_base OK tok/s=27.996 new=192 accept=n/a rounds=n/a d_ms=n/a outside/round_ms=n/a stop=maxTokens
+# cooldown 20s
+[2/10] task=prose bs=2 slot=mid OK tok/s=34.400 new=192 accept=0.504 rounds=127 d_ms=3.322834645669291 outside/round_ms=0.07086614173228616 stop=maxTokens
+# cooldown 20s
+[3/10] task=prose bs=3 slot=mid OK tok/s=31.124 new=192 accept=0.69 rounds=113 d_ms=3.0398230088495577 outside/round_ms=0.08849557522123705 stop=maxTokens
+# cooldown 20s
+[4/10] task=prose bs=4 slot=mid OK tok/s=29.100 new=192 accept=0.785 rounds=107 d_ms=2.8130841121495327 outside/round_ms=0.10280373831774983 stop=maxTokens
+# cooldown 20s
+[5/10] task=prose bs=0 slot=tail_base OK tok/s=27.913 new=192 accept=n/a rounds=n/a d_ms=n/a outside/round_ms=n/a stop=maxTokens
+# cooldown 20s
+[6/10] task=image bs=0 slot=head_base OK tok/s=25.298 new=192 accept=n/a rounds=n/a d_ms=n/a outside/round_ms=n/a stop=maxTokens
+# cooldown 20s
+[7/10] task=image bs=2 slot=mid OK tok/s=35.448 new=192 accept=0.69 rounds=113 d_ms=3.7168141592920354 outside/round_ms=0.15044247787610926 stop=maxTokens
+# cooldown 20s
+[8/10] task=image bs=3 slot=mid OK tok/s=36.780 new=192 accept=1.122 rounds=90 d_ms=3.333333333333333 outside/round_ms=0.12222222222222356 stop=maxTokens
+# cooldown 20s
+[9/10] task=image bs=4 slot=mid OK tok/s=35.487 new=192 accept=1.387 rounds=80 d_ms=3.175 outside/round_ms=0.1375000000000015 stop=maxTokens
+# cooldown 20s
+[10/10] task=image bs=0 slot=tail_base OK tok/s=25.421 new=192 accept=n/a rounds=n/a d_ms=n/a outside/round_ms=n/a stop=maxTokens
+
+# wrote bench/logs/36_cd_sweep_temp0.tsv
+# wrote bench/logs/36_cd_sweep_temp0.jsonl
+
+=== prose ===
+bs	t/s	base比	受理長	rounds	step_ms	d_ms	outside/round_ms	ms_per_tok	stop
+0	27.996	1.000	n/a	n/a	n/a	n/a	n/a	35.73	maxTokens
+2	34.400	1.229	0.504	127	40.54	3.32	0.07	29.06	maxTokens
+3	31.124	1.112	0.690	113	48.43	3.04	0.09	32.14	maxTokens
+4	29.100	1.039	0.785	107	53.14	2.81	0.10	34.37	maxTokens
+0	27.913	0.997	n/a	n/a	n/a	n/a	n/a	35.83	maxTokens
+
+=== image ===
+bs	t/s	base比	受理長	rounds	step_ms	d_ms	outside/round_ms	ms_per_tok	stop
+0	25.298	1.000	n/a	n/a	n/a	n/a	n/a	39.53	maxTokens
+2	35.448	1.401	0.690	113	44.10	3.72	0.15	28.23	maxTokens
+3	36.780	1.454	1.122	90	51.21	3.33	0.12	27.19	maxTokens
+4	35.487	1.403	1.387	80	57.96	3.17	0.14	28.18	maxTokens
+0	25.421	1.005	n/a	n/a	n/a	n/a	n/a	39.32	maxTokens
+
+=== 熱ドリフト (先頭 base vs 末尾 base) ===
+task	head t/s	tail t/s	差(%)
+prose	27.996	27.913	-0.30%
+image	25.298	25.421	+0.49%

@@ -1,0 +1,1 @@
+[{"role": "user", "content": "You are a coding agent. Produce ONLY a JSON object (no prose) describing the next action, with keys \"tool\", \"path\", and \"reason\". The task: the test suite fails with `NoSuchFileError: config/dev.yaml` and you need to look at the repository layout first."}]

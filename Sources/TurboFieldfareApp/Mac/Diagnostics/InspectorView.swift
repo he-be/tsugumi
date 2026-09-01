@@ -20,6 +20,20 @@ struct InspectorView: View {
 
     private var modelSection: some View {
         Section("Model") {
+            Picker("Model", selection: Binding(
+                get: { model.selectedModelKind },
+                set: { model.selectModel($0) })) {
+                ForEach(AppModelKind.allCases) { kind in
+                    Text(kind.displayName).tag(kind)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(model.isRunning || model.isInstallingModel || model.loadState.isLoading)
+            Text(model.supportsVision
+                 ? "Vision and MTP speculative decoding."
+                 : "Text only, MTP speculative decoding. Sampling is pinned to the official values.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             LabeledContent("Path") {
                 HStack(spacing: 6) {
                     Text(model.modelPathText)
@@ -92,15 +106,47 @@ struct InspectorView: View {
                 .labelsHidden()
                 .fixedSize()
             }
-            Text("More slots can improve decode speed by keeping more experts in memory, but they also use more RAM. Changes are compared with 4K context and 16 slots and apply after reloading the model.")
+            Text("More slots can improve decode speed by keeping more experts in memory, but they also use more RAM. Changes are compared with 4K context and 32 slots and apply after reloading the model.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if model.maxContextTokens == AppContextLengthOption.oneTwentyEightK.tokens {
+                Text("128K fits, but decode can halve unless the GPU wired limit is raised (sudo sysctl iogpu.wired_limit_mb). 32K–64K is the everyday range.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
         }
         .disabled(model.isRunning || model.loadState.isLoading)
     }
 
     private var generationSection: some View {
         Section("Generation") {
+            Toggle("Thinking", isOn: $model.thinkingEnabled)
+                .toggleStyle(.switch)
+            Text(model.selectedModelKind.thinkingDefault
+                 ? "This model reasons before answering by default. Turning it off answers directly."
+                 : "Off by default for this model. Turning it on lets the model reason before answering.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if model.isSamplingLocked {
+                lockedSampling
+            } else {
+                editableSampling
+            }
+        }
+        .disabled(model.isRunning || model.loadState.isLoading)
+    }
+
+    private var lockedSampling: some View {
+        LabeledContent("Sampling") {
+            let kind = model.selectedModelKind
+            Text("temp \(kind.officialTemperature, format: .number.precision(.fractionLength(1))) · top-k \(kind.officialTopK) · top-p \(kind.officialTopP, format: .number.precision(.fractionLength(2))) (official, fixed)")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private var editableSampling: some View {
             LabeledContent("Temperature") {
                 HStack(spacing: 8) {
                     Slider(value: $model.temperature, in: 0...2, step: 0.05)
@@ -135,13 +181,16 @@ struct InspectorView: View {
                     }
                 }
             }
-        }
-        .disabled(model.isRunning || model.loadState.isLoading)
     }
 
     private var runtimeSection: some View {
         Section("Runtime") {
             Toggle("Prefill", isOn: $model.runtimeOptions.prefillEnabled)
+            Toggle("MTP speculative decoding", isOn: $model.runtimeOptions.mtpEnabled)
+                .disabled(!model.runtimeOptions.prefillEnabled)
+            Text("MTP drafts tokens ahead and verifies them, often 1.2–1.4× faster decode. Requires prefill. Applies after reloading the model.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 8) {
                 Text("RDADVISE")
                 Picker("RDADVISE", selection: $model.runtimeOptions.rdadvisePolicy) {

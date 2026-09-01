@@ -40,6 +40,61 @@ struct RepackCLITests {
         #expect(result.stderr.contains("no resumable install state exists"))
     }
 
+    @Test func visionIsNotAModeForVerificationOrDiscard() throws {
+        let output = temporaryOutput("vision-modes")
+        defer { clean(output) }
+        let discard = try run(["--discard-partial", "--output", output,
+                               "--include-vision"])
+        #expect(discard.status == 2)
+        #expect(discard.stderr.contains("--discard-partial only accepts --output"))
+
+        let verify = try run(["--verify-install", "--input-gturbo", output,
+                              "--include-vision"])
+        #expect(verify.status == 2)
+        #expect(verify.stderr.contains("verification accepts only --input-gturbo"))
+    }
+
+    @Test func helpDocumentsTheVisionFlag() throws {
+        let result = try run(["--help"])
+        #expect(result.status == 0)
+        #expect(result.stdout.contains("--include-vision"))
+        #expect(result.stdout.contains("--add-vision"))
+    }
+
+    @Test func addVisionTakesOnlyAnInstalledModel() throws {
+        let output = temporaryOutput("add-vision-modes")
+        defer { clean(output) }
+
+        let missingInput = try run(["--add-vision"])
+        #expect(missingInput.status == 2)
+        #expect(missingInput.stderr.contains("missing required argument: --input-gturbo"))
+
+        let withOutput = try run(["--add-vision", "--input-gturbo", output,
+                                  "--output", output])
+        #expect(withOutput.status == 2)
+        #expect(withOutput.stderr.contains("--add-vision accepts only --input-gturbo"))
+
+        let redundant = try run(["--add-vision", "--input-gturbo", output,
+                                 "--include-vision"])
+        #expect(redundant.status == 2)
+        #expect(redundant.stderr.contains("drop --include-vision"))
+
+        let bothModes = try run(["--add-vision", "--verify-install",
+                                 "--input-gturbo", output])
+        #expect(bothModes.status == 2)
+        #expect(bothModes.stderr.contains("mutually exclusive"))
+    }
+
+    /// The refusal has to happen before anything is downloaded, so a wrong path
+    /// costs nothing.
+    @Test func addVisionRefusesAPathThatHoldsNoModel() throws {
+        let output = temporaryOutput("add-vision-missing")
+        defer { clean(output) }
+        let result = try run(["--add-vision", "--input-gturbo", output])
+        #expect(result.status == 1)
+        #expect(result.stderr.contains("no installed model at"))
+    }
+
     private func run(_ arguments: [String]) throws
         -> (status: Int32, stdout: String, stderr: String) {
         let executable = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)

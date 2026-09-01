@@ -1,0 +1,5 @@
+[stop=maxNewTokens prefill=127tok new=192tok decode=14.36s tok/s=13.372]
+[load=1.283s prefill=8.724s ttft=8.725s reasoning=0ch answer=445ch peak=0.46GB]
+[expert prefill hit=0.0% 0/5971 | decode hit=59.7% 36464/61120 | io prefill=0.07s decode=1.19s]
+[prefill/tok gpu=7.64ms io=0.59ms host=60.46ms cb=4.4]
+[decode/tok gpu=40.06ms io=6.17ms host=28.55ms cb=121.4]

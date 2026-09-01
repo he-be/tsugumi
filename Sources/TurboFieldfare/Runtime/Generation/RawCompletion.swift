@@ -24,6 +24,9 @@ public struct RawDecodeResult: Sendable {
     public let prefillSeconds: Double
     public let newTokens: Int
     public let decodeSeconds: Double
+    /// Wall time from the start of prefill to the first sampled token. Zero when
+    /// nothing was generated.
+    public let timeToFirstTokenSeconds: Double
     public let reason: StopReason
     public let kvPosition: Int
     public let kvBackedTokenIDs: [Int32]
@@ -59,6 +62,23 @@ public struct RawCompletionScratch: @unchecked Sendable {
     }
 }
 
+/// A producer that may answer with a GPU argmax instead of writing the logits
+/// buffer. `RealForwardRunner` is the production conformer; the constraint hook
+/// has to be able to ask the question without owning that concrete type, both
+/// because the answer is a policy decision (GEN-7 cannot mask logits that were
+/// never written) and because it has to be checkable without a model.
+protocol FusedGreedyReporting: LogitProducer {
+    var usesFusedGreedyHead: Bool { get }
+}
+
+extension RealForwardRunner: FusedGreedyReporting {}
+
+/// The refusal both fused-greedy shortcuts share: the producer answered with a
+/// GPU argmax and never wrote the logits a constraint has to mask.
+private let unconstrainableGreedyToken = GenerationConstraintError.logitsUnavailable(
+    "the producer answered with a GPU argmax instead of logits, so the constraint "
+    + "could not be applied; construct the runner with forceLogitsHead: true")
+
 extension GenerationConfig {
     /// A pure-greedy config can use the fused head's GPU argmax
     /// (`RealForwardRunner.lastGreedyToken`) instead of sampling from the
@@ -78,127 +98,106 @@ extension GenerationConfig {
 /// logits buffer is never written; the loop then requires a pure-greedy config
 /// and reads `lastGreedyToken`. Callers with sampling configs must construct
 /// the runner with `forceLogitsHead: true`.
+///
+/// `constraint` is the GEN-7 hook. Nil is the path everything took before it
+/// existed, down to the sampler call, so an unconstrained caller draws the same
+/// tokens it always did. Non-nil applies rejection sampling per token and rules
+/// out the fused-greedy shortcut, which never writes the logits a mask needs.
+///
+/// `forcer` is the RSN-4 hook, and it is the other shape: it does not narrow a
+/// draw, it replaces one. A token it names is emitted without reading logits at
+/// all, and then travels the rest of this loop exactly as a sampled token does
+/// — through the constraint, the detokenizer, `onProgress`, and the history
+/// that becomes `kvBackedTokenIDs` (SPEC §7 INV-1).
 public func runRawCompletion(producer: any LogitProducer,
                              tokenizer: GFTokenizer,
                              promptIds: [Int32],
                              config: GenerationConfig,
+                             constraint: (any GenerationConstraint)? = nil,
+                             forcer: (any ForcedTokenSource)? = nil,
                              context: MetalContext,
                              scratch: RawCompletionScratch,
                              prefillConfig: PrefillRuntimeConfig = .defaultChunked,
+                             vision: VisionPrefillInput? = nil,
                              start: RawCompletionStart = .reset,
                              shouldStop: () -> Bool = { false },
                              onProgress: (RawDecodeProgress) -> Void) async throws -> RawDecodeResult {
-    try config.validate()
-    guard !promptIds.isEmpty else {
-        throw GeneratorError.emptyPrompt
+    // GEN-7: one gate for the whole generation. It carries the end-of-generation
+    // ids the constraint itself does not know about, so `mayEndHere` can mask
+    // them, and it is consulted per draw, so it always reflects the state the
+    // last `accept` left behind.
+    let gate = constraint.map {
+        ConstraintGate(constraint: $0,
+                       endOfGenerationTokenIDs: tokenizer.stopTokenIDs.union(config.extraStopTokens))
     }
-    let fusedRunner = producer as? RealForwardRunner
-    let fusedGreedy = fusedRunner?.usesFusedGreedyHead == true
-    guard !fusedGreedy || config.isPureGreedy else {
-        throw PrefillError.unsupportedPrefillSeed(
-            "the fused-head producer cannot serve this sampling configuration; use a logits head")
+    if gate != nil, (producer as? any FusedGreedyReporting)?.usesFusedGreedyHead == true {
+        throw GenerationConstraintError.logitsUnavailable(
+            "a constrained request needs real logits, and this producer runs the "
+            + "fused greedy head; construct the runner with forceLogitsHead: true")
     }
-
-    let cachedPromptTokens: Int
-    switch start {
-    case .reset:
-        cachedPromptTokens = 0
-    case .resume(let count):
-        guard count > 0, count < promptIds.count else {
-            throw GeneratorError.invalidContinuation(
-                "cached prompt token count must be greater than zero and less than the effective prompt")
-        }
-        guard producer is any ContinuableLogitProducer else {
-            throw GeneratorError.invalidContinuation(
-                "producer does not support continuation")
-        }
-        cachedPromptTokens = count
-    }
-    let computedPrefillTokens = promptIds.count - cachedPromptTokens
-
+    let prepared = try await prepareGeneration(producer: producer,
+                                               promptIds: promptIds,
+                                               config: config,
+                                               scratch: scratch,
+                                               prefillConfig: prefillConfig,
+                                               vision: vision,
+                                               start: start,
+                                               onProgress: onProgress)
+    let fusedRunner = prepared.fusedRunner
+    let fusedGreedy = prepared.fusedGreedy
+    var position = prepared.position
+    var history = prepared.history
+    let prefillStart = prepared.prefillStart
+    let prefillSeed = prepared.prefillSeed
     var detok = GFDetokenizer(tokenizer: tokenizer,
                               barrierTokenIDs: tokenizer.structuralMarkerIDs)
-    var history = Array(promptIds.prefix(cachedPromptTokens))
-    history.reserveCapacity(promptIds.count + config.maxNewTokens)
 
-    if let context = producer as? any ContextWindowReporting,
-       promptIds.count + config.maxNewTokens > context.maxContext {
-        throw GeneratorError.contextOverflow(prompt: promptIds.count,
-                                             maxNew: config.maxNewTokens,
-                                             maxContext: context.maxContext)
-    }
-    switch start {
-    case .reset:
-        producer.reset()
-    case .resume:
-        let continuable = producer as! any ContinuableLogitProducer
-        try continuable.prepareForContinuation(expectedPosition: cachedPromptTokens)
-    }
-    let prefillStart = Date()
-    var position = cachedPromptTokens
-    var prefillSeed: PrefillSeed?
-    let prefillTokens = promptIds[cachedPromptTokens...]
-    switch prefillConfig.mode {
-    case .chunked where producer is any ChunkedPrefillRunner:
-        let chunked = producer as! any ChunkedPrefillRunner
-        let mode: PrefillOutputMode = fusedGreedy ? .greedyIfAvailable : .logits
-        let result = try await chunked.prefillChunked(tokens: prefillTokens,
-                                                      startPosition: position,
-                                                      outputMode: mode,
-                                                      config: prefillConfig,
-                                                      into: scratch.logits) { done in
-            onProgress(.prefill(done: cachedPromptTokens + done, total: promptIds.count))
-        }
-        if mode == .logits, result.seed != .logitsWritten {
-            throw PrefillError.unsupportedPrefillSeed(
-                "RawCompletion chunked prefill requested logits but producer returned \(result.seed)")
-        }
-        if case .greedyToken = result.seed, !config.isPureGreedy {
-            throw PrefillError.unsupportedPrefillSeed(
-                "RawCompletion chunked prefill returned a greedy token for a sampling config")
-        }
-        position = result.newPosition
-        prefillSeed = result.seed
-        history.append(contentsOf: prefillTokens)
-    case .chunked:
-        throw PrefillError.chunkedUnsupported(
-            PrefillError.chunkedRequiresChunkedRunnerReason)
-    case .off:
-        for t in prefillTokens {
-            try Task.checkCancellation()
-            try await producer.produce(token: t, position: position, into: scratch.logits)
-            position += 1
-            history.append(t)
-            onProgress(.prefill(done: position, total: promptIds.count))
-        }
-    }
-
-    let decodeStart = Date()
-    let prefillSeconds = decodeStart.timeIntervalSince(prefillStart)
+    let decodeStart = prepared.decodeStart
+    let prefillSeconds = prepared.prefillSeconds
     var stopMatcher = StreamingStopMatcher(stops: config.stopStrings)
     var generated = 0
     var reason: StopReason = .maxTokens
     var uncommittedBoundaryTokenIDs: [Int32] = []
+    var timeToFirstToken: Double = 0
 
     while true {
         try Task.checkCancellation()
 
         let tokenID: Int32
-        if generated == 0, let seed = prefillSeed {
+        // RSN-4. Forcing is not sampling: the token is emitted without reading
+        // a logit, so this comes before every draw and short-circuits all three
+        // of them — including the fused-greedy shortcuts, which a constraint
+        // cannot use but which a forced token has no quarrel with (it needs no
+        // logits either).
+        if let forced = forcer?.nextForcedToken() {
+            tokenID = forced
+        } else if generated == 0, let seed = prefillSeed {
             switch seed {
             case .greedyToken(let token):
+                guard gate == nil else { throw unconstrainableGreedyToken }
                 tokenID = Int32(bitPattern: token)
             case .logitsWritten:
                 tokenID = try sampleOnce(scratch: scratch, context: context,
-                                         history: history, config: config, position: generated)
+                                         history: history, config: config,
+                                         position: generated, constraint: gate).id
             }
         } else if fusedGreedy {
+            guard gate == nil else { throw unconstrainableGreedyToken }
             tokenID = Int32(bitPattern: fusedRunner!.lastGreedyToken)
         } else {
             tokenID = try sampleOnce(scratch: scratch, context: context,
-                                     history: history, config: config, position: generated)
+                                     history: history, config: config,
+                                     position: generated, constraint: gate).id
         }
+        // Every token the loop keeps goes to the gate, in order, including the
+        // one that ends generation. The gate decides what reaches the
+        // constraint: an end-of-generation id it allowed on `mayEndHere` alone
+        // is not something the constraint has state for.
+        try gate?.accept(tokenID)
         generated += 1
+        if generated == 1 {
+            timeToFirstToken = Date().timeIntervalSince(prefillStart)
+        }
         uncommittedBoundaryTokenIDs = [tokenID]
 
         if tokenizer.stopTokenIDs.contains(tokenID) || config.extraStopTokens.contains(tokenID) {
@@ -215,6 +214,17 @@ public func runRawCompletion(producer: any LogitProducer,
         }
 
         let delta = detok.push(tokenID)
+        // RSN-4. Fed after the detokenizer so `completesCharacter` can be the
+        // detokenizer's own verdict: an empty delta means a byte-fallback run
+        // is still open, i.e. this token sits inside a multi-byte character and
+        // a marker forced in right here would cut it in half. The reference
+        // asks `common_utf8_is_complete` about the token's piece for the same
+        // reason. The state this leaves behind is the state the *next*
+        // position is judged by, which is the same ordering the constraint
+        // gets.
+        forcer?.accept(tokenID: tokenID,
+                       generationIndex: generated - 1,
+                       completesCharacter: !delta.isEmpty)
         let visible = stopMatcher.push(delta)
         onProgress(.token(index: generated - 1, id: tokenID, delta: visible))
 
@@ -234,24 +244,14 @@ public func runRawCompletion(producer: any LogitProducer,
     }
 
     return RawDecodeResult(prefillTokens: promptIds.count,
-                           cachedPromptTokens: cachedPromptTokens,
-                           computedPrefillTokens: computedPrefillTokens,
+                           cachedPromptTokens: prepared.cachedPromptTokens,
+                           computedPrefillTokens: prepared.computedPrefillTokens,
                            prefillSeconds: prefillSeconds,
                            newTokens: generated,
                            decodeSeconds: Date().timeIntervalSince(decodeStart),
+                           timeToFirstTokenSeconds: timeToFirstToken,
                            reason: reason,
                            kvPosition: position,
                            kvBackedTokenIDs: history,
                            uncommittedBoundaryTokenIDs: uncommittedBoundaryTokenIDs)
-}
-
-private func sampleOnce(scratch: RawCompletionScratch, context: MetalContext,
-                        history: [Int32], config: GenerationConfig, position: Int) throws -> Int32 {
-    let cb = context.queue.makeCommandBuffer()!
-    scratch.sampler.sample(commandBuffer: cb, logits: scratch.logits, probs: scratch.probs,
-                           history: history, config: config, position: position,
-                           outToken: scratch.outToken)
-    cb.commit(); cb.waitUntilCompleted()
-    try checkCommandBufferError(cb.error)
-    return Int32(bitPattern: scratch.outToken.contents().load(as: UInt32.self))
 }

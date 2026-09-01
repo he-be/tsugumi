@@ -7,12 +7,30 @@ struct ModelStatusBadge: View {
     var body: some View {
         HStack(spacing: 6) {
             statusDot
-            Text("Gemma 4 26B")
-                .font(.callout.weight(.semibold))
-                .lineLimit(1)
-                .help(model.installDescriptor.repoID)
-                .accessibilityLabel("Model")
-                .accessibilityValue(model.installDescriptor.repoID)
+            Menu {
+                ForEach(AppModelKind.allCases) { kind in
+                    Button {
+                        model.selectModel(kind)
+                    } label: {
+                        if kind == model.selectedModelKind {
+                            Label(kind.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(kind.displayName)
+                        }
+                    }
+                }
+            } label: {
+                Text(model.selectedModelKind.shortName)
+                    .font(.callout.weight(.semibold))
+                    .lineLimit(1)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(model.isRunning || model.isInstallingModel
+                      || model.loadState.isLoading)
+            .help(model.installDescriptor.repoID)
+            .accessibilityLabel("Model")
+            .accessibilityValue(model.selectedModelKind.displayName)
         }
     }
 

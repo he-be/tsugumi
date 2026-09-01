@@ -104,6 +104,10 @@ gemma4.gturbo/
     layer_00.bin
     ...
     layer_29.bin
+  vision/
+    vision_weights.bin              # only with --include-vision / --add-vision
+  draft/
+    draft_weights.bin               # only with --include-draft / --add-draft
 ```
 
 `model_weights.bin` contains the embedding/head, attention projections,
@@ -124,6 +128,45 @@ is rejected.
 may load. It records the architecture, file sizes, and SHA-256 hashes. Without
 it, the runtime treats the installation as partial. `verified-install.json`
 records which manifest, directory, and files were verified.
+
+An installation made with `--include-vision` also carries `vision/`. The vision
+tower does not ship with the text checkpoint, so the installer fetches it from
+its own pinned repository and records that provenance in a `vision` section of
+the manifest, alongside a `visionTower` flag. The flag is the compatibility
+gate: a runtime that predates vision rejects unknown flags, so it refuses such
+a model outright rather than loading it and ignoring images. The tower lives in
+its own file because `model_weights.bin` is hashed in full at every load, and a
+text-only workload should not pay for weights it never reads. Because the two
+halves come from different repositories, the installer proves they belong
+together: unquantized tensors present in both are hashed on both sides and
+compared against a pinned digest before anything is written.
+
+A model that is already installed does not have to be rebuilt to gain the
+tower. `--add-vision --input-gturbo <model.gturbo>` downloads only the tower,
+writes it beside the text weights, and rewrites `manifest.json` and
+`verified-install.json`; the result is byte-identical to the same model
+installed with `--include-vision`. The same parity proof runs, measured against
+the installed `model_weights.bin` rather than the source checkpoint — the
+tensors it compares are stored there unquantized under their original names.
+The tower file is staged outside the model directory and moved in only once it
+is complete, so an interrupted run leaves the text-only model untouched. The
+whole install is re-verified afterwards, because the receipt it writes asserts
+that every file was checked.
+
+`--include-draft` and `--add-draft` add the MTP drafter (the assistant model
+used for speculative decoding) on exactly the same terms, in a `draft` section
+guarded by an `mtpDraft` flag, with `draft/draft_weights.bin` alongside the text
+weights. The drafter has no key/value projections of its own — it attends to the
+target's last sliding and last full attention layers — so its head geometry,
+sliding window and RoPE constants are not free parameters but the target's,
+restated. The manifest codec checks them against `arch` and refuses a drafter
+that does not fit, and the installer verifies that the tensors MLX left
+unquantized still hash to Google's BF16 QAT assistant before writing anything.
+The runtime loads the drafter lazily (`Model.draftWeights()`, same shape as the
+vision tower) and has a standalone forward for it (`DraftForward`) that M2 of
+[the MTP plan](mtp/README.md) validated against upstream's own reference
+outputs; the decode path itself still does not touch it, and speculation
+integration is the subject of M3–M5.
 
 [`TurboFieldfareFormat`](../Sources/TurboFieldfareFormat) defines the v1 JSON
 files and resident index used by the installer, verifier, and runtime. This
@@ -241,10 +284,13 @@ flowchart LR
 
 ## Instruction framing
 
-The Mac app and CLI `--messages-file` mode use the pinned text-only Gemma 4 chat
-format. The app wraps one user prompt. `--messages-file` accepts user and
+The Mac app and CLI `--messages-file` mode use the pinned Gemma 4 chat format.
+The app wraps one user prompt. `--messages-file` accepts user and
 assistant messages plus optional leading system guidance. Assistant messages
-render with Gemma's `model` role. The separate loopback server uses the pinned
+render with Gemma's `model` role. A message body may also be a list of content
+parts, which is how the CLI's `--image` attaches images: each image renders as
+one `<|image|>`, which the prompt assembler expands into the opener, that
+image's soft tokens, and the closer. The Mac app stays text-only. The separate loopback server uses the pinned
 upstream Jinja template for developer messages, function declarations,
 assistant tool calls, and tool results.
 
@@ -272,6 +318,17 @@ For each chunk and layer, TurboFieldfare:
   with both tiles fitting in the 16-slot cache;
 - never reuses a slot while queued GPU work still owns it; and
 - combines the resident shared branch and routed branch before the layer tail.
+
+A prompt that carries images runs the vision tower once per image before the
+first chunk, never inside the chunk loop, and keeps each image's soft tokens
+until the chunk that holds them: the embedding lookup writes every row of the
+chunk and the image rows are then overwritten with the tower's output, without
+the sqrt(hidden) factor that belongs to text embeddings. A chunk boundary is
+pulled back to the start of an image rather than cutting through one, so all of
+an image's keys reach the KV cache before any of its queries attend, and the
+sliding-window layers give those queries a visible end at the image's end
+instead of at their own position — the bidirectional span. The full-attention
+layers stay causal, as upstream does.
 
 Eligible 4-bit prefill projections use staged affine Metal Performance
 Primitives (MPP). The runtime unpacks each tile of affine-quantized weights into
@@ -413,6 +470,14 @@ references lead to the supporting code and tests.
 - **Router and routed MoE.** [`MoE`](../Sources/TurboFieldfare/Kernels/MoE/MoE.swift)
   and [`moe.metal`](../Sources/TurboFieldfare/Metal/MoE/moe.metal) implement
   top-8 selection, cached-hit work, affine GeGLU, and weighted down reduction.
+- **Vision groundwork (not on any runtime path).** [`VisionGeometry`](../Sources/TurboFieldfare/Vision/VisionGeometry.swift)
+  ports the upstream aspect-ratio-preserving resize, so an image's soft-token
+  count is derived rather than assumed to be the 280 cap;
+  [`VisionImagePreprocessor`](../Sources/TurboFieldfare/Vision/VisionImagePreprocessor.swift)
+  decodes and patchifies; [`VisionPrompt`](../Sources/TurboFieldfare/Vision/VisionPrompt.swift)
+  expands image placeholders and rejects literal media markers.
+  [`VisionFixtures`](../Sources/TurboFieldfareValidation/Support/Fixtures/VisionFixtures.swift)
+  reads the reference dumps produced by [`Scripts/vision/`](../Scripts/vision/README.md).
 - **Metal library and fusions.** [`MetalContext`](../Sources/TurboFieldfare/Infrastructure/Metal/MetalContext.swift),
   [`tensorops.metal`](../Sources/TurboFieldfare/Metal/TensorCore/tensorops.metal),
   and [`fused.metal`](../Sources/TurboFieldfare/Metal/Fusions/fused.metal) show
@@ -437,14 +502,25 @@ references lead to the supporting code and tests.
 
 ## Scope and limitations
 
-The current runtime supports text-only generation with the pinned Gemma 4
-26B-A4B instruction checkpoint. The source model supports image input, but
-TurboFieldfare omits its vision tower.
+The current runtime generates text from text and from images. The vision tower
+is optional at install time and runs in `RealForwardRunner` ahead of the prefill
+chunk loop; the whole path, its measured accuracy against the reference
+implementation, and its acceptance evidence are in
+[`PLAN_VISION.md`](../PLAN_VISION.md) and
+[`RESULTS_VISION.md`](../RESULTS_VISION.md). An image costs up to 280 prompt
+tokens (the count follows its aspect ratio) and about 1.9 s of GPU time before
+the first token; a model installed without the tower refuses image input rather
+than ignoring it. Audio and video are refused.
+
+The marker tokens (`<|image|>`, `<|audio|>`, `<|video|>`, and their openers and
+closers) are **rejected** when they appear as literal text in a prompt.
+Previously those ids were embedded as ordinary tokens, which produced a fluent
+answer about an image nobody supplied.
 
 The Mac app offers 4K, 8K, 16K, 32K, and 64K context lengths. Published app
-and CLI acceptance evidence covers up to 4K. Vision input, training,
-fine-tuning, server batching, remote serving, and general model support are
-outside the current scope. The optional HTTP server is loopback-only, owns one
+and CLI acceptance evidence covers up to 4K. The Mac app has no image input.
+Audio and video input, training, fine-tuning, server batching, remote serving,
+and general model support are outside the current scope. The optional HTTP server is loopback-only, owns one
 warm model, serializes generation, and retains one verified conversational KV
 prefix by default. It retains only that prefix. See the
 [local server guide](OPENAI_SERVER.md).

@@ -94,7 +94,8 @@ enum PrefillChunkPlanner {
 
     static func spans(tokenCount: Int,
                              startPosition: Int,
-                             chunkTokens: Int) -> [PrefillChunkSpan] {
+                             chunkTokens: Int,
+                             imageSpans: [VisionImageSpan] = []) -> [PrefillChunkSpan] {
         precondition(tokenCount >= 0, "prefill tokenCount must be non-negative")
         precondition(startPosition >= 0, "prefill startPosition must be non-negative")
         let chunk = max(1, min(chunkTokens, PrefillRuntimeConfig.maxChunkTokens))
@@ -104,15 +105,55 @@ enum PrefillChunkPlanner {
         spans.reserveCapacity((tokenCount + chunk - 1) / chunk)
         var offset = 0
         while offset < tokenCount {
-            let count = min(chunk, tokenCount - offset)
-            let completed = offset + count
+            var completed = min(offset + chunk, tokenCount)
+            // An image's soft tokens have to reach the KV cache before any of
+            // them is attended to, or the ones after the cut would be invisible
+            // to the ones before it and the bidirectional mask would be a lie
+            // (PLAN_VISION §0-A-1). Nothing has to grow to arrange that: the
+            // boundary moves back to the image's first token instead.
+            if completed < tokenCount,
+               let straddled = imageSpans.first(where: {
+                   $0.tokenOffset < completed && completed < $0.tokenEnd
+               }) {
+                precondition(straddled.tokenOffset > offset,
+                             "image span of \(straddled.tokenCount) tokens does not fit "
+                             + "in a \(chunk)-token prefill chunk")
+                completed = straddled.tokenOffset
+            }
             spans.append(PrefillChunkSpan(tokenOffset: offset,
-                                          tokenCount: count,
+                                          tokenCount: completed - offset,
                                           startPosition: startPosition + offset,
                                           completedCount: completed))
             offset = completed
         }
         return spans
+    }
+
+    /// Why a set of image spans cannot be prefilled at this chunk width, or nil.
+    ///
+    /// Separate from `spans` so the runner can fail with an explanation before
+    /// any KV row is written; `spans` itself only asserts, since by then the
+    /// decision is already made.
+    static func imageSpanRejection(imageSpans: [VisionImageSpan],
+                                   tokenCount: Int,
+                                   chunkTokens: Int) -> String? {
+        let chunk = max(1, min(chunkTokens, PrefillRuntimeConfig.maxChunkTokens))
+        var previousEnd = 0
+        for span in imageSpans {
+            guard span.tokenCount > 0,
+                  span.tokenOffset >= previousEnd,
+                  span.tokenEnd <= tokenCount else {
+                return "image span [\(span.tokenOffset), \(span.tokenEnd)) is out of order "
+                    + "or outside the \(tokenCount)-token prompt"
+            }
+            previousEnd = span.tokenEnd
+            if span.tokenCount > chunk {
+                return "image \(span.imageIndex) occupies \(span.tokenCount) tokens, more than "
+                    + "the \(chunk)-token prefill chunk; raise --prefill-chunk-tokens or lower "
+                    + "--image-tokens"
+            }
+        }
+        return nil
     }
 }
 
@@ -168,7 +209,12 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
         case chunked
     }
 
-    public static let maxChunkTokens = 128
+    /// Widest chunk the scratch layout and the chunk planner will honour. This
+    /// is a ceiling, not the sizing input: the KV ring and the expert-cache
+    /// budget are computed from the *configured* width
+    /// (`RuntimeConfiguration.prefillChunkTokens`), so raising this does not
+    /// cost a default-configured run anything.
+    public static let maxChunkTokens = 2048
 
     public let mode: Mode
     public let chunkTokens: Int
@@ -185,7 +231,7 @@ public struct PrefillRuntimeConfig: Sendable, Equatable {
     }
 
     public static var defaultChunked: PrefillRuntimeConfig {
-        production(chunkTokens: 128)
+        production(chunkTokens: 2048)
     }
 
     public static func production(chunkTokens: Int) -> PrefillRuntimeConfig {

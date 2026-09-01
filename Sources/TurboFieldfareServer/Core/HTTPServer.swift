@@ -5,35 +5,131 @@ import NIOPosix
 import Synchronization
 import TurboFieldfare
 
+extension ServerRequestError {
+    /// ERR-2's mapping, read off the error's own type. Kept next to the HTTP
+    /// layer because the error type itself is transport-agnostic.
+    var httpStatus: HTTPResponseStatus {
+        HTTPResponseStatus(statusCode: type.httpStatusCode)
+    }
+}
+
+/// What `/props` answers with about this process (EP-4).
+///
+/// Everything here is known before the model is: the flags say the path and the
+/// context, and the template is the repo's own file. That is what lets `/props`
+/// be one value handed to the server at startup rather than a question asked of
+/// a backend that may not exist yet (LIF-1).
+public struct ServerProperties: Equatable, Sendable {
+    /// EP-4 `model_path`: the directory this server was started with.
+    public let modelPath: String
+    /// EP-4's effective `n_ctx` — the value `--ctx-size` rounded down to
+    /// (FLAG-2), which a client has no other way to read.
+    public let contextLength: Int
+    /// EP-4 `chat_template`: the template the server actually renders with,
+    /// which is the repo-owned variant of DEV-12 and not the file the
+    /// checkpoint ships.
+    public let chatTemplate: String
+    /// EP-4 `modalities.vision`: whether *this* install has a vision path.
+    /// True for Gemma 4, which has one; false for Ornith, whose tower is Phase
+    /// 9 (`docs/qwen35moe/04-PHASES.md`) and whose backend refuses an image
+    /// with a 400. A client that reads `/props` to decide whether to attach a
+    /// picture should not have to send one to find out.
+    public let supportsVision: Bool
+
+    /// EP-4 `total_slots`. Generation is one slot on this machine, fixed
+    /// (DEV-3), so this is a constant and not a flag.
+    public static let totalSlots = 1
+
+    /// EP-4 `build_info`, which EP-4 also makes RSP-5's `system_fingerprint`.
+    /// One value, defined once in `ServerBuildIdentity` and read from there by
+    /// both — re-deriving it here would be a second answer to a question SPEC
+    /// says has one.
+    public static var buildInfo: String { ServerBuildIdentity.fingerprint }
+
+    public init(modelPath: String = "",
+                contextLength: Int = 0,
+                chatTemplate: String = "",
+                supportsVision: Bool = true) {
+        self.modelPath = modelPath
+        self.contextLength = contextLength
+        self.chatTemplate = chatTemplate
+        self.supportsVision = supportsVision
+    }
+}
+
 public actor TurboFieldfareHTTPServer {
-    public static let maximumBodyBytes = 1_048_576
+    /// The text-only body ceiling. Kept as the name it always had; a server
+    /// configured for images raises its own ceiling from `ServerImagePolicy`.
+    public static let maximumBodyBytes = ServerImagePolicy.textBodyBytes
 
     private let group: MultiThreadedEventLoopGroup
     private let modelID: String
-    private let backend: any ServerInferenceBackend
+    private let readiness: ServerReadiness
     private let coordinator: ServerCoordinator
     private let heartbeatInterval: TimeAmount
+    private let imagePolicy: ServerImagePolicy
+    private let defaults: ChatRequestDefaults
+    private let properties: ServerProperties
+    private let apiKeys: [String]
+    private let corsPolicy: ServerCORSPolicy
+    /// EP-6's two startup gates: `--slots` / `--no-slots` and `--metrics`.
+    private let slotsEndpointEnabled: Bool
+    private let metricsEndpointEnabled: Bool
     private let childChannels = ChildChannelRegistry()
     private var channel: Channel?
     private var shutdownTask: Task<Void, any Error>?
 
     public init(modelID: String,
                 queueLimit: Int,
-                backend: any ServerInferenceBackend,
+                backend: (any ServerInferenceBackend)?,
                 heartbeatInterval: TimeAmount = .seconds(5),
+                imagePolicy: ServerImagePolicy = .default,
+                defaults: ChatRequestDefaults = ChatRequestDefaults(),
+                properties: ServerProperties = ServerProperties(),
+                apiKeys: [String] = [],
+                corsPolicy: ServerCORSPolicy = .disabled,
+                // EP-6: the reference's defaults — `/slots` on unless it is
+                // turned off, `/metrics` off unless it is turned on.
+                slotsEndpointEnabled: Bool = true,
+                metricsEndpointEnabled: Bool = false,
                 group: MultiThreadedEventLoopGroup = .init(numberOfThreads: 1)) {
         self.group = group
         self.modelID = modelID
-        self.backend = backend
+        self.readiness = ServerReadiness(backend)
         self.coordinator = ServerCoordinator(queueLimit: queueLimit)
         self.heartbeatInterval = heartbeatInterval
+        self.imagePolicy = imagePolicy
+        self.defaults = defaults
+        self.properties = properties
+        self.apiKeys = apiKeys
+        self.corsPolicy = corsPolicy
+        self.slotsEndpointEnabled = slotsEndpointEnabled
+        self.metricsEndpointEnabled = metricsEndpointEnabled
     }
+
+    /// LIF-2 → LIF-3. The load finished and the endpoints may answer from the
+    /// model. Until this is called the server is listening but not ready, which
+    /// is the whole point of LIF-1: the client sees a status, never a refused
+    /// connection.
+    public func modelDidLoad(_ backend: any ServerInferenceBackend) {
+        readiness.modelDidLoad(backend)
+    }
+
+    /// LIF-3: whether the load has landed.
+    public var isReady: Bool { readiness.backend != nil }
 
     public func start(port: Int) async throws -> Channel {
         let modelID = self.modelID
-        let backend = self.backend
+        let readiness = self.readiness
         let coordinator = self.coordinator
         let heartbeatInterval = self.heartbeatInterval
+        let imagePolicy = self.imagePolicy
+        let defaults = self.defaults
+        let properties = self.properties
+        let apiKeys = self.apiKeys
+        let corsPolicy = self.corsPolicy
+        let slotsEndpointEnabled = self.slotsEndpointEnabled
+        let metricsEndpointEnabled = self.metricsEndpointEnabled
         let childChannels = self.childChannels
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.backlog, value: 16)
@@ -46,9 +142,16 @@ public actor TurboFieldfareHTTPServer {
                 ).flatMap {
                     channel.pipeline.addHandler(ServerHTTPHandler(
                         modelID: modelID,
-                        backend: backend,
+                        readiness: readiness,
                         coordinator: coordinator,
                         heartbeatInterval: heartbeatInterval,
+                        imagePolicy: imagePolicy,
+                        defaults: defaults,
+                        properties: properties,
+                        apiKeys: apiKeys,
+                        corsPolicy: corsPolicy,
+                        slotsEndpointEnabled: slotsEndpointEnabled,
+                        metricsEndpointEnabled: metricsEndpointEnabled,
                         childChannels: childChannels))
                 }
             }
@@ -109,29 +212,74 @@ public actor TurboFieldfareHTTPServer {
     }
 }
 
+/// LIF-1: the listening socket is open before the model exists, so the handler
+/// cannot capture a backend when the pipeline is built — it reads one out of
+/// here per request, and finds nothing until the load lands.
+private final class ServerReadiness: Sendable {
+    private let state: Mutex<(any ServerInferenceBackend)?>
+
+    init(_ backend: (any ServerInferenceBackend)?) {
+        state = Mutex(backend)
+    }
+
+    var backend: (any ServerInferenceBackend)? {
+        state.withLock { $0 }
+    }
+
+    func modelDidLoad(_ backend: any ServerInferenceBackend) {
+        state.withLock { $0 = backend }
+    }
+}
+
 private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = HTTPServerRequestPart
     typealias OutboundOut = HTTPServerResponsePart
 
     private let modelID: String
-    private let backend: any ServerInferenceBackend
+    private let readiness: ServerReadiness
     private let coordinator: ServerCoordinator
     private let heartbeatInterval: TimeAmount
+    private let imagePolicy: ServerImagePolicy
+    private let defaults: ChatRequestDefaults
+    private let properties: ServerProperties
+    private let apiKeys: [String]
+    private let corsPolicy: ServerCORSPolicy
+    /// EP-6's startup gates.
+    private let slotsEndpointEnabled: Bool
+    private let metricsEndpointEnabled: Bool
+    private let maximumBodyBytes: Int
     private let childChannels: ChildChannelRegistry
     private var head: HTTPRequestHead?
+    /// FLAG-6: the `Origin` of the request being answered, or nil.
+    private var requestOrigin: String?
     private var body = ByteBuffer()
     private var oversized = false
     private var activeTask: Task<Void, Never>?
 
     init(modelID: String,
-         backend: any ServerInferenceBackend,
+         readiness: ServerReadiness,
          coordinator: ServerCoordinator,
          heartbeatInterval: TimeAmount,
+         imagePolicy: ServerImagePolicy,
+         defaults: ChatRequestDefaults,
+         properties: ServerProperties,
+         apiKeys: [String],
+         corsPolicy: ServerCORSPolicy,
+         slotsEndpointEnabled: Bool,
+         metricsEndpointEnabled: Bool,
          childChannels: ChildChannelRegistry) {
         self.modelID = modelID
-        self.backend = backend
+        self.readiness = readiness
         self.coordinator = coordinator
         self.heartbeatInterval = heartbeatInterval
+        self.imagePolicy = imagePolicy
+        self.defaults = defaults
+        self.properties = properties
+        self.apiKeys = apiKeys
+        self.corsPolicy = corsPolicy
+        self.slotsEndpointEnabled = slotsEndpointEnabled
+        self.metricsEndpointEnabled = metricsEndpointEnabled
+        self.maximumBodyBytes = imagePolicy.maximumBodyBytes
         self.childChannels = childChannels
     }
 
@@ -139,10 +287,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         switch unwrapInboundIn(data) {
         case .head(let head):
             self.head = head
+            // FLAG-6: kept for the whole request, because the response head may
+            // be written long after this — a completion answers from its own
+            // task, and a stream writes its head later still.
+            requestOrigin = head.headers.first(name: "origin")
             body.clear()
             oversized = false
         case .body(var part):
-            if body.readableBytes + part.readableBytes > TurboFieldfareHTTPServer.maximumBodyBytes {
+            if body.readableBytes + part.readableBytes > maximumBodyBytes {
                 oversized = true
             } else {
                 body.writeBuffer(&part)
@@ -151,7 +303,10 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             guard let head else { return }
             self.head = nil
             if oversized {
-                writeError(context, status: .payloadTooLarge,
+                // ERR-2 / DEV-11: 413 has no type in the taxonomy, so an
+                // oversized body is the same 400 as any other request this
+                // server will not read.
+                writeError(context, status: .badRequest,
                            OpenAIErrorEnvelope(message: "request body is too large",
                                                code: "request_too_large"))
                 return
@@ -172,10 +327,44 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                        context: ChannelHandlerContext) {
         let path = head.uri.split(separator: "?", maxSplits: 1,
                                   omittingEmptySubsequences: false).first.map(String.init) ?? head.uri
+        // FLAG-6 / LIF-6: preflight is answered ahead of the load gate and
+        // ahead of the key, and identically for every path. A browser that
+        // cannot preflight cannot read the 503 either, so stopping here would
+        // keep it from even showing that the model is still loading; and it
+        // never puts an `Authorization` on a preflight, so the key cannot
+        // stand in front of it either (FLAG-5). Answering the same way for a
+        // route that exists, one this server does not adopt and one it has
+        // never heard of is what keeps the routing table unreadable from
+        // preflight (EP-7).
+        if head.method == .OPTIONS, corsPolicy.isEnabled {
+            writePreflight(context)
+            return
+        }
+        // LIF-2: nothing is answered from the model's side until there is one,
+        // and that includes the routes that never touch it — the reference
+        // implementation refuses the same way, from a middleware ahead of its
+        // routing table (`server-http.cpp:255`). A client that gets this knows
+        // the server exists and is coming up, which "connection refused" cannot
+        // tell it (LIF-1).
+        guard readiness.backend != nil else {
+            writeError(context, status: .serviceUnavailable, Self.loadingEnvelope)
+            return
+        }
+        // FLAG-5: after the load gate and before the routing table, which is
+        // the order the reference puts its two middlewares in
+        // (`server-http.cpp:302`). Ahead of routing so a caller with no key
+        // cannot map which paths exist by reading EP-7's 501s off the 404s.
+        guard isAuthorized(head: head, path: path) else {
+            writeError(context, status: .unauthorized, Self.invalidAPIKeyEnvelope)
+            return
+        }
         switch (head.method, path) {
-        case (.GET, "/health"):
+        // EP-1: one handler, both spellings, no API key.
+        case (.GET, "/health"), (.GET, "/v1/health"):
             writeJSON(context, status: .ok, object: ["status": "ok"])
-        case (.GET, "/v1/models"):
+        // EP-2 and EP-8: the reference implementation serves this under both
+        // spellings, so a base URL without the `/v1` works the same way.
+        case (.GET, "/v1/models"), (.GET, "/models"):
             let response = OpenAIModelList(
                 object: "list",
                 data: [.init(id: modelID,
@@ -183,7 +372,12 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                              created: 0,
                              ownedBy: "turbofieldfare")])
             writeCodable(context, status: .ok, response)
-        case (.POST, "/v1/chat/completions"):
+        // EP-4: the capability answer. Nothing here needs the model, but it is
+        // behind the readiness gate with everything else (LIF-2).
+        case (.GET, "/props"):
+            writeCodable(context, status: .ok, Self.props(properties))
+        // EP-3 and EP-8.
+        case (.POST, "/v1/chat/completions"), (.POST, "/chat/completions"):
             guard head.headers.first(name: "content-type")?
                 .lowercased().hasPrefix("application/json") == true else {
                 writeError(context, status: .unsupportedMediaType,
@@ -192,28 +386,451 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 return
             }
             handleCompletion(body: body, context: context)
-        case (_, "/health"), (_, "/v1/models"), (_, "/v1/chat/completions"):
+        // EP-5: the three tokenizer endpoints. All of them reach the model's
+        // tokenizer, so they are behind the load gate and the API key like
+        // every other non-public route.
+        case (.POST, "/tokenize"):
+            handleTokenize(body: body, context: context)
+        case (.POST, "/detokenize"):
+            handleDetokenize(body: body, context: context)
+        case (.POST, "/apply-template"):
+            handleApplyTemplate(body: body, context: context)
+        // EP-6: both are gated by a startup flag, as they are in the reference
+        // implementation. An endpoint that was not started answers EP-7's shape
+        // — 501 `not_supported_error` — and names the flag, because an operator
+        // reading it is one restart away from the answer they wanted.
+        case (.GET, "/slots"):
+            guard slotsEndpointEnabled else {
+                writeError(context, status: .notImplemented, Self.slotsDisabledEnvelope)
+                return
+            }
+            handleSlots(context: context)
+        case (.GET, "/metrics"):
+            guard metricsEndpointEnabled else {
+                writeError(context, status: .notImplemented, Self.metricsDisabledEnvelope)
+                return
+            }
+            handleMetrics(context: context)
+        // EP-7, ahead of the method check so that `POST /props` is answered as
+        // the endpoint this server does not adopt rather than as the wrong verb
+        // on the one it does.
+        case _ where Self.isUnsupportedEndpoint(method: head.method, path: path):
+            writeError(context, status: .notImplemented,
+                       OpenAIErrorEnvelope(
+                           message: "\(path) is not implemented by this server",
+                           type: .notSupported,
+                           code: "endpoint_not_supported"))
+        case (_, "/health"), (_, "/v1/health"), (_, "/v1/models"), (_, "/models"),
+             (_, "/props"), (_, "/v1/chat/completions"), (_, "/chat/completions"),
+             (_, "/tokenize"), (_, "/detokenize"), (_, "/apply-template"),
+             (_, "/slots"), (_, "/metrics"):
             writeError(context, status: .methodNotAllowed,
                        OpenAIErrorEnvelope(message: "method not allowed",
                                            code: "method_not_allowed"))
         default:
+            // EP-7: only a path this server has never heard of is a 404, and
+            // ERR-2 fixes the type that goes with the number.
             writeError(context, status: .notFound,
                        OpenAIErrorEnvelope(message: "route not found",
+                                           type: .notFound,
                                            code: "not_found"))
+        }
+    }
+
+    /// FLAG-6. The origin header pair, on every response this server writes.
+    ///
+    /// `Access-Control-Allow-Credentials` is never among them: this server's
+    /// authentication is a header a client sets on purpose, not a cookie a
+    /// browser attaches by itself, so there is no credentialed cross-origin
+    /// request to allow.
+    private func addCORSHeaders(to headers: inout HTTPHeaders) {
+        guard let allowed = corsPolicy.allowOrigin(for: requestOrigin) else { return }
+        headers.add(name: "access-control-allow-origin", value: allowed)
+        if corsPolicy.variesByOrigin {
+            headers.add(name: "vary", value: "Origin")
+        }
+    }
+
+    /// FLAG-6's preflight answer: the same one for every path, with an empty
+    /// body. What it advertises is this server's own verb set — there is no
+    /// DELETE — and the three headers a client of ours actually sends.
+    private func writePreflight(_ context: ChannelHandlerContext) {
+        var built = HTTPHeaders()
+        addCORSHeaders(to: &built)
+        built.add(name: "access-control-allow-methods", value: "GET, POST, OPTIONS")
+        built.add(name: "access-control-allow-headers",
+                  value: "authorization, content-type, x-api-key")
+        built.add(name: "content-length", value: "0")
+        // The write runs on the event loop, so it is handed the finished value
+        // rather than the local it was built in.
+        let headers = built
+        let contextBox = SendableContext(context)
+        context.eventLoop.execute {
+            contextBox.value.write(self.wrapOutboundOut(.head(
+                HTTPResponseHead(version: .http1_1, status: .ok, headers: headers))),
+                promise: nil)
+            contextBox.value.writeAndFlush(self.wrapOutboundOut(.end(nil)), promise: nil)
+        }
+    }
+
+    /// FLAG-5's answer to a missing or wrong key.
+    ///
+    /// OpenAI's own shape for this case: 401 carrying `invalid_request_error`
+    /// and `code: "invalid_api_key"`, which outranks the reference for `/v1/*`
+    /// wire format (SPEC §0). The reference says `authentication_error` with
+    /// the number in `code`, and DEV-1 has already ruled the number out.
+    /// ERR-2 gives three statuses to this type already (400, 405, 415) and
+    /// tells them apart by `code`; this is the fourth.
+    private static let invalidAPIKeyEnvelope = OpenAIErrorEnvelope(
+        message: "Invalid API Key",
+        type: .invalidRequest,
+        param: nil,
+        code: "invalid_api_key")
+
+    /// FLAG-5: the endpoints a client needs before it can authenticate
+    /// anything. EP-1 names the two health spellings; the reference's public
+    /// set at the pin adds both spellings of the model list
+    /// (`server-http.cpp:196`), which is how a client learns which model it is
+    /// talking to. Everything that reaches the model is behind the key.
+    private static let unauthenticatedPaths: Set<String> = [
+        "/health", "/v1/health", "/models", "/v1/models",
+    ]
+
+    private func isAuthorized(head: HTTPRequestHead, path: String) -> Bool {
+        // No key configured is no authentication at all: FLAG-5 keeps the
+        // 127.0.0.1 bind as the whole defence until an operator asks for more.
+        if apiKeys.isEmpty { return true }
+        if Self.unauthenticatedPaths.contains(path) { return true }
+        guard let presented = Self.presentedKey(head.headers) else { return false }
+        return apiKeys.contains(presented)
+    }
+
+    /// The three spellings the reference accepts: `Authorization` with or
+    /// without the `Bearer ` prefix, and Anthropic's `X-Api-Key` as a fallback.
+    private static func presentedKey(_ headers: HTTPHeaders) -> String? {
+        let raw = headers.first(name: "authorization")
+            ?? headers.first(name: "x-api-key")
+        guard let raw else { return nil }
+        let prefix = "Bearer "
+        let key = raw.hasPrefix(prefix) ? String(raw.dropFirst(prefix.count)) : raw
+        return key.isEmpty ? nil : key
+    }
+
+    /// SPEC §3's list of known paths this server does not adopt (DEV-7).
+    ///
+    /// The list is written by path, not by verb: a client that finds one of
+    /// these has the right idea of what a llama.cpp-shaped server offers and
+    /// the wrong idea of what this one does, whichever method it used.
+    private static let unsupportedPaths: Set<String> = [
+        "/v1/embeddings", "/embedding", "/reranking", "/rerank", "/infill",
+        "/v1/responses", "/v1/messages", "/v1/chat/completions/control",
+        "/lora-adapters", "/v1/completions", "/completion",
+    ]
+
+    private static func isUnsupportedEndpoint(method: HTTPMethod, path: String) -> Bool {
+        if unsupportedPaths.contains(path) { return true }
+        // `POST /props` is the reference implementation's write side; the read
+        // side is EP-4 and is answered above.
+        if path == "/props", method != .GET { return true }
+        // `/slots/{id}?action=…`. `GET /slots` itself is EP-6 and simply does
+        // not exist yet, so it stays a 404 until it does.
+        if path.hasPrefix("/slots/") { return true }
+        return false
+    }
+
+    /// EP-4's body.
+    ///
+    /// `default_generation_settings` is read off `ChatRequestSchema` — the same
+    /// table the request parser applies — because SPEC §4 makes `/props` the
+    /// truth about the defaults, and a second hand-written copy is a second
+    /// thing to keep in step.
+    private static func props(_ properties: ServerProperties) -> JSONValue {
+        var settings: [String: JSONValue] = [:]
+        for field in ChatRequestSchema.fields {
+            guard let defaultValue = field.defaultValue else { continue }
+            settings[field.name] = defaultValue
+        }
+        settings["n_ctx"] = .integer(Int64(properties.contextLength))
+        return .object([
+            "default_generation_settings": .object(settings),
+            "total_slots": .integer(Int64(ServerProperties.totalSlots)),
+            "model_path": .string(properties.modelPath),
+            "chat_template": .string(properties.chatTemplate),
+            "modalities": .object(["vision": .bool(properties.supportsVision)]),
+            "build_info": .string(ServerProperties.buildInfo),
+        ])
+    }
+
+    /// LIF-2, quoted. The one body SPEC writes out in full, because a client
+    /// has to be able to match on it.
+    private static let loadingEnvelope = OpenAIErrorEnvelope(
+        message: "Loading model",
+        type: .unavailable,
+        param: nil,
+        code: "model_loading")
+
+    /// EP-5 `POST /tokenize`.
+    ///
+    /// `content` in, `tokens` out (the reference's shape at the pin,
+    /// `server-context.cpp`). A body with no `content` — or with a null one,
+    /// which R2 makes the same thing — is an empty tokenization and not a
+    /// refusal: the field says how much text there is to count, and none is a
+    /// count.
+    private func handleTokenize(body: ByteBuffer, context: ChannelHandlerContext) {
+        runBackendEndpoint(body: body, context: context) { backend, data in
+            let object = try Self.requestObject(data)
+            guard let content = object["content"], content != .null else {
+                return .object(["tokens": .array([])])
+            }
+            guard case .string(let text) = content else {
+                throw ServerRequestError.invalid(
+                    message: "\"content\" must be a string",
+                    param: "content",
+                    code: "invalid_content")
+            }
+            let tokens = try await backend.tokenize(
+                text, addSpecial: object["add_special"] == .bool(true))
+            return .object(["tokens": .array(tokens.map { .integer(Int64($0)) })])
+        }
+    }
+
+    /// EP-5 `POST /detokenize`: the inverse direction, answering with
+    /// `content` — the field name the reference uses.
+    private func handleDetokenize(body: ByteBuffer, context: ChannelHandlerContext) {
+        runBackendEndpoint(body: body, context: context) { backend, data in
+            let object = try Self.requestObject(data)
+            guard let value = object["tokens"], value != .null else {
+                return .object(["content": .string("")])
+            }
+            guard case .array(let items) = value else {
+                throw Self.invalidTokens
+            }
+            let tokens: [Int32] = try items.map { item in
+                let number: Int64? = switch item {
+                case .integer(let value): value
+                case .unsignedInteger(let value): Int64(exactly: value)
+                default: nil
+                }
+                guard let number, let id = Int32(exactly: number) else {
+                    throw Self.invalidTokens
+                }
+                return id
+            }
+            return .object(["content": .string(try await backend.detokenize(tokens))])
+        }
+    }
+
+    /// EP-5 `POST /apply-template`: what prompt this conversation renders to.
+    ///
+    /// The body goes through `ChatRequestParser` exactly as `/chat/completions`
+    /// does, so the same request accepted here and sent there describes the same
+    /// prompt — down to the thought channel, which `chat_template_kwargs` and
+    /// `reasoning_effort` decide. The rendering itself is the repo-owned
+    /// variant of §12 **DEV-12**, which is the one this server prefills with.
+    private func handleApplyTemplate(body: ByteBuffer, context: ChannelHandlerContext) {
+        let imagePolicy = self.imagePolicy
+        let defaults = self.defaults
+        runBackendEndpoint(body: body, context: context) { backend, data in
+            let request = try ChatRequestParser.parse(data,
+                                                      imagePolicy: imagePolicy,
+                                                      defaults: defaults)
+            return .object(["prompt": .string(try await backend.applyChatTemplate(request))])
+        }
+    }
+
+    /// EP-6 `GET /slots`.
+    ///
+    /// One element, id 0 (§12 **DEV-3**): this machine holds the model and one
+    /// KV, so there is one generation slot and there is no `--parallel`. The two
+    /// fields are what SPEC's EP-6 line asks for; the reference's per-slot
+    /// sampler block, `id_task`, `next_token` and the rest are not in it.
+    private func handleSlots(context: ChannelHandlerContext) {
+        let coordinator = self.coordinator
+        let contextBox = SendableContext(context)
+        activeTask = childChannels.startTask {
+            let slots = await coordinator.queueState.slots
+            self.writeJSON(contextBox.value, status: .ok,
+                           object: slots.map { slot -> [String: Any] in
+                               ["id": slot.id, "is_processing": slot.isProcessing]
+                           })
+        }
+    }
+
+    /// EP-6 `GET /metrics`: the Prometheus text exposition.
+    ///
+    /// The counters are the backend's running totals — sums of what RSP-3
+    /// measured per request, so `/metrics` and a response's `timings` cannot
+    /// tell different stories — and the two gauges are the queue in front of the
+    /// slot. The `llamacpp:` prefix is the reference's, kept because a scraper's
+    /// rules are written against the names and not against who serves them.
+    private func handleMetrics(context: ChannelHandlerContext) {
+        // LIF-2 has already turned every request away while this is nil.
+        guard let backend = readiness.backend else {
+            writeError(context, status: .serviceUnavailable, Self.loadingEnvelope)
+            return
+        }
+        let coordinator = self.coordinator
+        let contextBox = SendableContext(context)
+        activeTask = childChannels.startTask {
+            let snapshot = await backend.metrics()
+            let queue = await coordinator.queueState
+            self.writeData(contextBox.value,
+                           status: .ok,
+                           data: Data(Self.prometheus(snapshot, queue).utf8),
+                           contentType: "text/plain; version=0.0.4")
+        }
+    }
+
+    private struct MetricItem {
+        let name: String
+        let help: String
+        let value: Double
+    }
+
+    /// EP-6's body, in the reference's layout: `# HELP`, `# TYPE`, value, one
+    /// metric after another, counters before gauges.
+    private static func prometheus(_ metrics: ServerMetricsSnapshot,
+                                   _ queue: ServerQueueState) -> String {
+        let counters = [
+            MetricItem(name: "prompt_tokens_total",
+                       help: "Number of prompt tokens processed, excluding cached tokens",
+                       value: Double(metrics.promptTokensTotal)),
+            MetricItem(name: "prompt_seconds_total",
+                       help: "Total time spent processing prompts",
+                       value: metrics.promptSecondsTotal),
+            MetricItem(name: "tokens_predicted_total",
+                       help: "Number of generation tokens processed",
+                       value: Double(metrics.predictedTokensTotal)),
+            MetricItem(name: "tokens_predicted_seconds_total",
+                       help: "Total time spent generating tokens",
+                       value: metrics.predictedSecondsTotal),
+        ]
+        let gauges = [
+            MetricItem(name: "prompt_tokens_seconds",
+                       help: "Average prompt throughput in tokens/s",
+                       value: metrics.promptTokensPerSecond),
+            MetricItem(name: "predicted_tokens_seconds",
+                       help: "Average generation throughput in tokens/s",
+                       value: metrics.predictedTokensPerSecond),
+            MetricItem(name: "requests_processing",
+                       help: "Number of requests processing",
+                       value: Double(queue.processingCount)),
+            MetricItem(name: "requests_deferred",
+                       help: "Number of requests deferred",
+                       value: Double(queue.deferredCount)),
+        ]
+        var text = ""
+        for (type, items) in [("counter", counters), ("gauge", gauges)] {
+            for item in items {
+                text += "# HELP llamacpp:\(item.name) \(item.help)\n"
+                text += "# TYPE llamacpp:\(item.name) \(type)\n"
+                text += "llamacpp:\(item.name) \(metricValue(item.value))\n"
+            }
+        }
+        return text
+    }
+
+    /// `%g` — what the reference's `ostream <<` writes for a double: an
+    /// integral value with no decimal point, six significant digits otherwise.
+    private static func metricValue(_ value: Double) -> String {
+        String(format: "%g", value)
+    }
+
+    /// EP-6: the answer when the endpoint was not started. EP-7's 501 with the
+    /// flag named.
+    private static let slotsDisabledEnvelope = OpenAIErrorEnvelope(
+        message: "this server does not expose the slots endpoint; start it with --slots",
+        type: .notSupported,
+        code: "endpoint_not_supported")
+
+    private static let metricsDisabledEnvelope = OpenAIErrorEnvelope(
+        message: "this server does not expose the metrics endpoint; start it with --metrics",
+        type: .notSupported,
+        code: "endpoint_not_supported")
+
+    private static let invalidTokens = ServerRequestError.invalid(
+        message: "\"tokens\" must be an array of token ids",
+        param: "tokens",
+        code: "invalid_tokens")
+
+    /// The body of an EP-5 request, as an object.
+    private static func requestObject(_ data: Data) throws -> [String: JSONValue] {
+        guard let value = try? JSONDecoder().decode(JSONValue.self, from: data),
+              let object = value.objectValue else {
+            // ERR-3: this is the one place the sentence is true.
+            throw ServerRequestError.invalid(
+                message: "the request body is not a JSON object",
+                param: nil,
+                code: "invalid_json")
+        }
+        return object
+    }
+
+    /// EP-5's three routes share one shape: read the body, ask the backend,
+    /// write one JSON object.
+    ///
+    /// The backend is an actor and this handler is not asynchronous, so the
+    /// work goes on the same task registry the completion route uses — which is
+    /// what makes it cancel with the connection and drain on shutdown.
+    private func runBackendEndpoint(
+        body: ByteBuffer,
+        context: ChannelHandlerContext,
+        _ answer: @escaping @Sendable (any ServerInferenceBackend, Data) async throws -> JSONValue
+    ) {
+        // LIF-2 has already turned every request away while this is nil.
+        guard let backend = readiness.backend else {
+            writeError(context, status: .serviceUnavailable, Self.loadingEnvelope)
+            return
+        }
+        let bytes = body.getBytes(at: body.readerIndex, length: body.readableBytes) ?? []
+        let contextBox = SendableContext(context)
+        activeTask = childChannels.startTask {
+            do {
+                let value = try await answer(backend, Data(bytes))
+                self.writeCodable(contextBox.value, status: .ok, value)
+            } catch let error as ServerRequestError {
+                self.writeError(contextBox.value, status: error.httpStatus, error.envelope)
+            } catch is CancellationError {
+            } catch {
+                self.writeError(
+                    contextBox.value,
+                    status: .internalServerError,
+                    OpenAIErrorEnvelope(
+                        message: "request failed; see TurboFieldfareServer stderr",
+                        type: .server,
+                        code: "internal_error"))
+            }
         }
     }
 
     private func handleCompletion(body: ByteBuffer,
                                   context: ChannelHandlerContext) {
+        // LIF-2 has already turned every request away while this is nil, so
+        // reaching here without a model is not a state the server has.
+        guard let backend = readiness.backend else {
+            writeError(context, status: .serviceUnavailable, Self.loadingEnvelope)
+            return
+        }
         do {
             let bytes = body.getBytes(at: body.readerIndex, length: body.readableBytes) ?? []
-            let decoded = try JSONDecoder().decode(OpenAIChatRequest.self, from: Data(bytes))
-            let request = try OpenAIRequestValidator.validate(decoded, modelID: modelID)
+            let request = try ChatRequestParser.parse(
+                Data(bytes),
+                imagePolicy: imagePolicy,
+                defaults: defaults)
             let responseID = "chatcmpl-" + UUID().uuidString.lowercased().replacingOccurrences(of: "-", with: "")
+            // R5: the answer carries the name the client asked for. A request
+            // that named no model gets this server's own id back.
+            let responseModel = request.model.isEmpty ? modelID : request.model
             let created = Int(Date().timeIntervalSince1970)
             let contextBox = SendableContext(context)
             let streamState = StreamState()
             let phaseState = RequestPhaseState()
+            // RSP-3 `timings_per_token`. Allocated only for a request that asked
+            // for it: without one the backend takes the ordinary path and no
+            // chunk carries running timings. It is read synchronously from
+            // inside the generation callback, which is the only place the route
+            // can learn anything about a generation it is not awaiting.
+            let monitor = request.timingsPerToken ? ServerTimingsMonitor() : nil
             let startStream: @Sendable () -> Void = {
                 guard request.stream,
                       streamState.start(eventLoop: contextBox.value.eventLoop,
@@ -223,9 +840,12 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                       }) else { return }
                 let future = self.beginStream(
                     contextBox.value,
-                    self.chunk(id: responseID, created: created,
+                    self.chunk(id: responseID, created: created, model: responseModel,
                                delta: ["role": "assistant"],
-                               finishReason: nil))
+                               finishReason: nil,
+                               // Nil here by construction: the role chunk is
+                               // written before the first token is drawn.
+                               timings: monitor?.current))
                 streamState.setStartFuture(future)
             }
             let onQueued: @Sendable () -> Void = {
@@ -236,12 +856,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             activeTask = childChannels.startTask {
                 defer { streamState.stop() }
                 let started = ContinuousClock.now
-                ServerLog.accepted(id: responseID, streaming: request.stream)
+                ServerLog.accepted(id: responseID,
+                                   streaming: request.stream,
+                                   thinking: request.enableThinking)
                 do {
                     let completion = try await self.coordinator.runPreparing(
                         onQueued: onQueued,
                         prepare: {
-                            let prepared = try await self.backend.prepare(request)
+                            let prepared = try await backend.prepare(request)
                             phaseState.set("prepared")
                             ServerLog.prepared(id: responseID,
                                                promptTokens: prepared.promptTokenCount)
@@ -254,21 +876,35 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                             try Task.checkCancellation()
                             phaseState.set("generating")
                             ServerLog.generating(id: responseID)
-                            return try await self.backend.generate(prepared) { event in
+                            return try await backend.generate(
+                                prepared, monitor: monitor
+                            ) { event in
                                 guard request.stream else { return }
                                 switch event {
                                 case .content(let text):
                                     self.writeStreamChunk(
                                         contextBox.value,
                                         self.chunk(id: responseID, created: created,
+                                                   model: responseModel,
                                                    delta: ["content": text],
-                                                   finishReason: nil))
+                                                   finishReason: nil,
+                                                   timings: monitor?.current))
+                                case .reasoning(let text):
+                                    self.writeStreamChunk(
+                                        contextBox.value,
+                                        self.chunk(id: responseID, created: created,
+                                                   model: responseModel,
+                                                   delta: ["reasoning_content": text],
+                                                   finishReason: nil,
+                                                   timings: monitor?.current))
                                 case .toolCall(let call):
                                     self.writeToolCall(contextBox.value,
                                                        id: responseID,
                                                        created: created,
+                                                       model: responseModel,
                                                        toolIndex: streamState.nextToolIndex(),
-                                                       call: call)
+                                                       call: call,
+                                                       timings: monitor?.current)
                                 }
                             }
                     })
@@ -280,12 +916,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                         self.finishStream(contextBox.value,
                                           id: responseID,
                                           created: created,
+                                          responseModel: responseModel,
                                           completion: completion,
                                           includeUsage: request.includeUsage)
                     } else {
                         self.writeCompletion(contextBox.value,
                                              id: responseID,
                                              created: created,
+                                             responseModel: responseModel,
                                              completion: completion)
                     }
                 } catch {
@@ -298,9 +936,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
                 }
             }
         } catch let error as ServerRequestError {
-            writeError(context,
-                       status: error == .unknownModel ? .notFound : .badRequest,
-                       error.envelope)
+            writeError(context, status: error.httpStatus, error.envelope)
         } catch {
             writeError(context, status: .badRequest,
                        OpenAIErrorEnvelope(message: "malformed JSON request",
@@ -311,6 +947,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private func writeCompletion(_ context: ChannelHandlerContext,
                                  id: String,
                                  created: Int,
+                                 responseModel: String,
                                  completion: ServerCompletion) {
         let encodedContent: Any =
             completion.content.isEmpty && !completion.toolCalls.isEmpty
@@ -320,21 +957,39 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             "role": "assistant",
             "content": encodedContent,
         ]
+        // DeepSeek's field, which the OpenAI-compatible clients here read
+        // (pi's adapter takes reasoning_content, reasoning, or reasoning_text).
+        // Absent rather than empty when the request did not reason, so a
+        // client cannot mistake "no thought channel" for "thought nothing".
+        if !completion.reasoningContent.isEmpty {
+            message["reasoning_content"] = completion.reasoningContent
+        }
         if !completion.toolCalls.isEmpty {
             message["tool_calls"] = completion.toolCalls.map(toolCallObject)
         }
-        let object: [String: Any] = [
+        var object: [String: Any] = [
             "id": id,
             "object": "chat.completion",
             "created": created,
-            "model": modelID,
+            "model": responseModel,
             "choices": [[
                 "index": 0,
                 "message": message,
                 "finish_reason": completion.finishReason,
             ]],
             "usage": usageObject(completion.usage),
+            // RSP-5, in the place OpenAI puts it: alongside `model`, on the
+            // completion object itself. EP-4 makes it the same string `/props`
+            // answers with as `build_info`.
+            "system_fingerprint": ServerProperties.buildInfo,
         ]
+        // RSP-3: what this completion cost. Absent only for a backend that
+        // measures nothing, which is the stubs and not a loaded model — an
+        // invented `timings` would be worse than a missing one, because the
+        // client's context arithmetic is built on it.
+        if let timings = completion.timings {
+            object["timings"] = timings.jsonObject
+        }
         writeJSON(context, status: .ok, object: object)
     }
 
@@ -352,6 +1007,7 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         headers.add(name: "content-type", value: "text/event-stream")
         headers.add(name: "cache-control", value: "no-cache")
         headers.add(name: "connection", value: "keep-alive")
+        addCORSHeaders(to: &headers)
         let head = HTTPResponseHead(version: .http1_1, status: .ok, headers: headers)
         let contextBox = SendableContext(context)
         let promise = context.eventLoop.makePromise(of: Void.self)
@@ -372,8 +1028,10 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
     private func writeToolCall(_ context: ChannelHandlerContext,
                                id: String,
                                created: Int,
+                               model: String,
                                toolIndex: Int,
-                               call: ParsedToolCall) {
+                               call: ParsedToolCall,
+                               timings: ServerTimings? = nil) {
         let fragments = utf8Fragments(call.argumentsJSON, maximumBytes: 1024)
         for (index, fragment) in fragments.enumerated() {
             var function: [String: Any] = ["arguments": fragment]
@@ -386,31 +1044,43 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
             }
             writeStreamChunk(
                 context,
-                chunk(id: id, created: created,
+                chunk(id: id, created: created, model: model,
                       delta: ["tool_calls": [tool]],
-                      finishReason: nil))
+                      finishReason: nil,
+                      timings: timings))
         }
     }
 
     private func finishStream(_ context: ChannelHandlerContext,
                               id: String,
                               created: Int,
+                              responseModel: String,
                               completion: ServerCompletion,
                               includeUsage: Bool) {
+        // RSP-3 puts the completion's timings on the *final* chunk, and the
+        // final chunk is the usage one when the request asked for it. The
+        // reference writes them onto `deltas.back()` for the same reason
+        // (`server-task.cpp` at the pin) rather than onto a named chunk.
         writeStreamChunk(
             context,
-            chunk(id: id, created: created,
+            chunk(id: id, created: created, model: responseModel,
                   delta: [:],
-                  finishReason: completion.finishReason))
+                  finishReason: completion.finishReason,
+                  timings: includeUsage ? nil : completion.timings))
         if includeUsage {
-            writeStreamChunk(context, [
+            var usageChunk: [String: Any] = [
                 "id": id,
                 "object": "chat.completion.chunk",
                 "created": created,
-                "model": modelID,
+                "model": responseModel,
                 "choices": [],
                 "usage": usageObject(completion.usage),
-            ])
+                "system_fingerprint": ServerProperties.buildInfo,
+            ]
+            if let timings = completion.timings {
+                usageChunk["timings"] = timings.jsonObject
+            }
+            writeStreamChunk(context, usageChunk)
         }
         let contextBox = SendableContext(context)
         context.eventLoop.execute {
@@ -422,20 +1092,34 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
 
     private func chunk(id: String,
                        created: Int,
+                       model: String,
                        delta: [String: Any],
-                       finishReason: String?) -> [String: Any] {
+                       finishReason: String?,
+                       timings: ServerTimings? = nil) -> [String: Any] {
         let encodedReason: Any = finishReason.map { $0 as Any } ?? NSNull()
-        return [
+        var object: [String: Any] = [
             "id": id,
             "object": "chat.completion.chunk",
             "created": created,
-            "model": modelID,
+            "model": model,
             "choices": [[
                 "index": 0,
                 "delta": delta,
                 "finish_reason": encodedReason,
             ]],
+            // RSP-5 rides every chunk, not only the last one: the reference
+            // puts it on each `chat.completion.chunk` it builds
+            // (`server-task.cpp`'s `add_delta` at the pin), and a client that
+            // only ever sees the stream would otherwise never read it.
+            "system_fingerprint": ServerProperties.buildInfo,
         ]
+        // RSP-3. Nil on every chunk but the last, unless the request asked for
+        // `timings_per_token` — in which case this is the monitor's reading at
+        // the moment the token that produced this chunk landed.
+        if let timings {
+            object["timings"] = timings.jsonObject
+        }
+        return object
     }
 
     private func writeStreamChunk(_ context: ChannelHandlerContext,
@@ -467,14 +1151,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
         let envelope: OpenAIErrorEnvelope
         let status: HTTPResponseStatus
         if let requestError = error as? ServerRequestError {
-            status = requestError == .queueFull ? .tooManyRequests : .badRequest
+            status = requestError.httpStatus
             envelope = requestError.envelope
         } else {
             status = .internalServerError
             envelope = OpenAIErrorEnvelope(
                 message: "generation failed; see TurboFieldfareServer stderr",
-                code: "internal_error",
-                type: "server_error")
+                type: .server,
+                code: "internal_error")
         }
         if !(error is CancellationError) {
             ServerLog.failed(id: id, phase: phase, status: status.code, error: error)
@@ -526,12 +1210,14 @@ private final class ServerHTTPHandler: ChannelInboundHandler, @unchecked Sendabl
 
     private func writeData(_ context: ChannelHandlerContext,
                            status: HTTPResponseStatus,
-                           data: Data) {
+                           data: Data,
+                           contentType: String = "application/json") {
         let contextBox = SendableContext(context)
         context.eventLoop.execute {
             var headers = HTTPHeaders()
-            headers.add(name: "content-type", value: "application/json")
+            headers.add(name: "content-type", value: contentType)
             headers.add(name: "content-length", value: "\(data.count)")
+            self.addCORSHeaders(to: &headers)
             contextBox.value.write(self.wrapOutboundOut(.head(
                 HTTPResponseHead(version: .http1_1, status: status, headers: headers))),
                 promise: nil)

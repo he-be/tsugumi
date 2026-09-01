@@ -59,19 +59,28 @@ public struct AppRuntimeOptions: Equatable, Sendable {
     public var prefillChunkTokens: Int
     public var rdadvisePolicy: AppRDAdvicePolicy
     public var modelVerification: AppModelVerification
+    /// MTP speculative decoding. On by default — the adopted operating point
+    /// for both families (`docs/SERVER_RUNBOOK.md`). The block width is the
+    /// model kind's own (`AppModelKind.draftBlockSize`); this only says
+    /// whether the speculative loop runs at all. Requires prefill: the MTP
+    /// path goes through chunked prefill, so `prefillEnabled == false` turns
+    /// this off at load.
+    public var mtpEnabled: Bool
 
-    public init(expertCacheSlots: Int = 16,
+    public init(expertCacheSlots: Int = 32,
                 expertCachePolicy: AppExpertCachePolicy = .lfu,
                 prefillEnabled: Bool = true,
-                prefillChunkTokens: Int = 128,
+                prefillChunkTokens: Int = 2048,
                 rdadvisePolicy: AppRDAdvicePolicy = .off,
-                modelVerification: AppModelVerification = .fullSha256) {
+                modelVerification: AppModelVerification = .fullSha256,
+                mtpEnabled: Bool = true) {
         self.expertCacheSlots = expertCacheSlots
         self.expertCachePolicy = expertCachePolicy
         self.prefillEnabled = prefillEnabled
         self.prefillChunkTokens = prefillChunkTokens
         self.rdadvisePolicy = rdadvisePolicy
         self.modelVerification = modelVerification
+        self.mtpEnabled = mtpEnabled
     }
 
     public func validate() throws {
@@ -89,18 +98,31 @@ public struct AppRuntimeOptions: Equatable, Sendable {
         prefillEnabled ? .production(chunkTokens: prefillChunkTokens) : .off
     }
 
+    /// Whether the speculative loop actually runs: the toggle, gated by the
+    /// prefill path it rides on.
+    public var effectiveMTPEnabled: Bool { mtpEnabled && prefillEnabled }
+
     public var resultSummary: String {
         let prefill = prefillEnabled ? "prefill \(prefillChunkTokens)" : "prefill off"
         let verification = modelVerification == .fullSha256 ? "full SHA-256" : "trusted receipt"
-        return "Cache \(expertCacheSlots) \(expertCachePolicy.label), \(prefill), FP16 KV, RDADVISE \(rdadvisePolicy.label.lowercased()), \(verification)"
+        let mtp = effectiveMTPEnabled ? "MTP on" : "MTP off"
+        return "Cache \(expertCacheSlots) \(expertCachePolicy.label), \(prefill), \(mtp), FP16 KV, RDADVISE \(rdadvisePolicy.label.lowercased()), \(verification)"
     }
 
+    /// Slot labels compare peak memory against the default (32 slots) using
+    /// the pinned QAT checkpoint's expert stride: 30 layers x 3,719,168 B
+    /// = about 0.11 GB per slot.
     public static func slotsLabel(for slots: Int) -> String {
         switch slots {
-        case 8: "8, -0.8 GB"
-        case 16: "16, Default"
-        case 24: "24, +0.8 GB"
-        case 32: "32, +1.61 GB"
+        case 8: "8, -4.46 GB"
+        case 16: "16, -3.57 GB"
+        case 24: "24, -2.68 GB"
+        case 32: "32, -1.79 GB"
+        case 48: "48, Default"
+        case 64: "64, +1.79 GB"
+        case 80: "80, +3.57 GB"
+        case 96: "96, +5.36 GB"
+        case 112: "112, +7.14 GB"
         default: "\(slots)"
         }
     }
@@ -125,6 +147,13 @@ public struct AppLoadedRuntimeKey: Equatable, Sendable {
     public var rdadvisePolicy: AppRDAdvicePolicy
     public var modelVerification: AppModelVerification
     public var forceLogitsHead: Bool
+    /// MTP changes what load allocates (Gemma's speculative scratch, Ornith's
+    /// head sidecar), so flipping it means a reload.
+    public var mtpEnabled: Bool
+    /// Since the two-model rework the family sessions bind their prefill
+    /// configuration at load, so these became load-time choices too.
+    public var prefillEnabled: Bool
+    public var prefillChunkTokens: Int
 
     public init(modelDirectory: URL,
                 maxContextTokens: Int,
@@ -137,5 +166,8 @@ public struct AppLoadedRuntimeKey: Equatable, Sendable {
         self.rdadvisePolicy = options.rdadvisePolicy
         self.modelVerification = options.modelVerification
         self.forceLogitsHead = forceLogitsHead
+        self.mtpEnabled = options.effectiveMTPEnabled
+        self.prefillEnabled = options.prefillEnabled
+        self.prefillChunkTokens = options.prefillChunkTokens
     }
 }

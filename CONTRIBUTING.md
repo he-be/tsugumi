@@ -5,7 +5,10 @@ benchmark reports from Apple Silicon Macs.
 
 ## Before opening a change
 
-- Keep the package compatible with macOS 26, Swift 6.2, and Metal 4.
+- Keep the package compatible with macOS 15 and newer, Swift 6.2, and Metal
+  3.2. Metal 4 / MSL 4.0 tensor kernels are allowed only behind their
+  `__HAVE_TENSOR__` shader guard plus a Swift fallback path, so the runtime
+  still works where the tensor kernels are absent.
 - Preserve the bounded-memory model path. Never load a complete checkpoint,
   shard, or large model tensor into Swift heap memory.
 - Keep public runtime controls limited to those documented in

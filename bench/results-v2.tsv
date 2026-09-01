@@ -1,0 +1,18 @@
+label	n	ptok	ntok	real	decode	rate	real_minus_decode	flags
+overhead-warmup	0	15	1	8.78	0.00	3533.533	8.78	--expert-cache-slots 32 --prefill off --rdadvise off
+overhead-load	1	15	1	8.61	0.00	2462.891	8.61	--expert-cache-slots 32 --prefill off --rdadvise off
+overhead-load	2	15	1	8.56	0.00	5210.316	8.56	--expert-cache-slots 32 --prefill off --rdadvise off
+overhead-load	3	15	1	8.55	0.00	4650.004	8.55	--expert-cache-slots 32 --prefill off --rdadvise off
+ptime-warmup	0	518	1	16.83	0.00	5648.894	16.83	--expert-cache-slots 32 --prefill on --prefill-chunk-tokens 128 --rdadvise off
+ptime-on128	1	518	1	16.88	0.00	5949.367	16.88	--expert-cache-slots 32 --prefill on --prefill-chunk-tokens 128 --rdadvise off
+ptime-on64	1	518	1	21.51	0.00	7632.946	21.51	--expert-cache-slots 32 --prefill on --prefill-chunk-tokens 64 --rdadvise off
+ptime-on32	1	518	1	17.04	0.00	5813.311	17.04	--expert-cache-slots 32 --prefill on --prefill-chunk-tokens 32 --rdadvise off
+ptime-off	1	518	1	26.07	0.00	1923.110	26.07	--expert-cache-slots 32 --prefill off --rdadvise off
+ptime-on128	2	518	1	15.82	0.00	7194.346	15.82	--expert-cache-slots 32 --prefill on --prefill-chunk-tokens 128 --rdadvise off
+ptime-on64	2	518	1	18.49	0.00	9010.320	18.49	--expert-cache-slots 32 --prefill on --prefill-chunk-tokens 64 --rdadvise off
+ptime-on32	2	518	1	17.09	0.00	6096.372	17.09	--expert-cache-slots 32 --prefill on --prefill-chunk-tokens 32 --rdadvise off
+ptime-off	2	518	1	26.13	0.00	6716.259	26.13	--expert-cache-slots 32 --prefill off --rdadvise off
+ptime-on128	3	518	1	15.84	0.00	6250.826	15.84	--expert-cache-slots 32 --prefill on --prefill-chunk-tokens 128 --rdadvise off
+ptime-on64	3	518	1	18.85	0.00	7745.714	18.85	--expert-cache-slots 32 --prefill on --prefill-chunk-tokens 64 --rdadvise off
+ptime-on32	3	518	1	17.40	0.00	5026.128	17.40	--expert-cache-slots 32 --prefill on --prefill-chunk-tokens 32 --rdadvise off
+ptime-off	3	518	1	25.73	0.00	9010.320	25.73	--expert-cache-slots 32 --prefill off --rdadvise off

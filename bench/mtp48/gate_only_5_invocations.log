@@ -1,0 +1,120 @@
+=== gate-only invocation 1 ===
+Pages free:                               79895. Pages wired down:                        136119. Pages stored in compressor:              311709. Pages occupied by compressor:            127646. 
+=== P-1: does Metal wire a `bytesNoCopy` buffer, or the mapping it came from? ===
+47 §6/§7. Kernels, shape and group size are 43/44's; the bytes are the
+shipped checkpoint's. Inference path untouched.
+
+  model               scratch/gemma4-qat-sym.gturbo
+  layer file          layer_00.bin 429916160 B = 26240 pages
+  hw.pagesize         16384
+  expertStride        3358720 B = 205 pages, remainder 0
+  experts / layer     128
+  step footprint      8 experts = 26.87 MB
+  PASS threshold      wired delta at commit ~= 27 MB, FAIL ~= 430 MB
+  experts used        ranks 0,16,32,48,64,80,96,112
+
+--- the gate: cold cost of 8 experts, ABBA interleaved ------
+    pread, parallel, into private slots  n=10  median 5.20 ms (5.16 GB/s)  min 4.90  max 5.61
+        5.03 5.61 4.96 5.35 4.90 5.29 5.12 5.51 4.97 5.54
+    mmap + F_RDADVISE, bytesNoCopy       n=10  median 6.29 ms (4.27 GB/s)  min 5.56  max 6.91
+        5.56 6.52 5.76 6.80 5.70 6.91 6.09 6.50 5.76 6.80
+    ratio mmap/pread   pooled medians 1.209x   paired per round 1.194x (n=5, 1.14..1.24)
+                       with the 0.25 ms kernel deducted from the mmap side: 1.161x
+    47 §7 gate is 1.20x. ON THE GATE -- the statistics straddle it.
+
+=== gate-only invocation 2 ===
+Pages free:                               79241. Pages wired down:                        137110. Pages stored in compressor:              311689. Pages occupied by compressor:            127639. 
+=== P-1: does Metal wire a `bytesNoCopy` buffer, or the mapping it came from? ===
+47 §6/§7. Kernels, shape and group size are 43/44's; the bytes are the
+shipped checkpoint's. Inference path untouched.
+
+  model               scratch/gemma4-qat-sym.gturbo
+  layer file          layer_00.bin 429916160 B = 26240 pages
+  hw.pagesize         16384
+  expertStride        3358720 B = 205 pages, remainder 0
+  experts / layer     128
+  step footprint      8 experts = 26.87 MB
+  PASS threshold      wired delta at commit ~= 27 MB, FAIL ~= 430 MB
+  experts used        ranks 0,16,32,48,64,80,96,112
+
+--- the gate: cold cost of 8 experts, ABBA interleaved ------
+    pread, parallel, into private slots  n=10  median 5.39 ms (4.99 GB/s)  min 4.94  max 5.60
+        5.31 5.49 4.98 5.60 4.94 5.53 4.99 5.47 5.07 5.58
+    mmap + F_RDADVISE, bytesNoCopy       n=10  median 6.03 ms (4.45 GB/s)  min 5.72  max 7.00
+        5.97 6.00 5.82 7.00 5.72 6.98 5.81 6.96 6.07 6.75
+    ratio mmap/pread   pooled medians 1.120x   paired per round 1.212x (n=5, 1.11..1.22)
+                       with the 0.25 ms kernel deducted from the mmap side: 1.073x
+    47 §7 gate is 1.20x. ON THE GATE -- the statistics straddle it.
+
+=== gate-only invocation 3 ===
+Pages free:                               79365. Pages wired down:                        137128. Pages stored in compressor:              311661. Pages occupied by compressor:            127631. 
+=== P-1: does Metal wire a `bytesNoCopy` buffer, or the mapping it came from? ===
+47 §6/§7. Kernels, shape and group size are 43/44's; the bytes are the
+shipped checkpoint's. Inference path untouched.
+
+  model               scratch/gemma4-qat-sym.gturbo
+  layer file          layer_00.bin 429916160 B = 26240 pages
+  hw.pagesize         16384
+  expertStride        3358720 B = 205 pages, remainder 0
+  experts / layer     128
+  step footprint      8 experts = 26.87 MB
+  PASS threshold      wired delta at commit ~= 27 MB, FAIL ~= 430 MB
+  experts used        ranks 0,16,32,48,64,80,96,112
+
+--- the gate: cold cost of 8 experts, ABBA interleaved ------
+    pread, parallel, into private slots  n=10  median 5.35 ms (5.02 GB/s)  min 4.97  max 5.68
+        5.60 5.57 4.97 5.64 5.07 5.68 4.99 5.14 5.05 5.59
+    mmap + F_RDADVISE, bytesNoCopy       n=10  median 6.25 ms (4.30 GB/s)  min 5.53  max 7.20
+        5.53 7.20 6.00 6.79 6.05 6.44 6.04 6.90 5.70 6.89
+    ratio mmap/pread   pooled medians 1.167x   paired per round 1.183x (n=5, 1.14..1.28)
+                       with the 0.25 ms kernel deducted from the mmap side: 1.121x
+    47 §7 gate is 1.20x. PASS.
+
+=== gate-only invocation 4 ===
+Pages free:                               79340. Pages wired down:                        137130. Pages stored in compressor:              311453. Pages occupied by compressor:            127576. 
+=== P-1: does Metal wire a `bytesNoCopy` buffer, or the mapping it came from? ===
+47 §6/§7. Kernels, shape and group size are 43/44's; the bytes are the
+shipped checkpoint's. Inference path untouched.
+
+  model               scratch/gemma4-qat-sym.gturbo
+  layer file          layer_00.bin 429916160 B = 26240 pages
+  hw.pagesize         16384
+  expertStride        3358720 B = 205 pages, remainder 0
+  experts / layer     128
+  step footprint      8 experts = 26.87 MB
+  PASS threshold      wired delta at commit ~= 27 MB, FAIL ~= 430 MB
+  experts used        ranks 0,16,32,48,64,80,96,112
+
+--- the gate: cold cost of 8 experts, ABBA interleaved ------
+    pread, parallel, into private slots  n=10  median 5.49 ms (4.90 GB/s)  min 4.92  max 5.74
+        5.55 5.44 4.95 5.54 4.92 5.62 4.99 5.74 5.11 5.63
+    mmap + F_RDADVISE, bytesNoCopy       n=10  median 6.35 ms (4.23 GB/s)  min 5.19  max 6.93
+        5.19 6.93 5.76 6.81 6.13 6.58 5.74 6.67 5.79 6.88
+    ratio mmap/pread   pooled medians 1.158x   paired per round 1.179x (n=5, 1.10..1.20)
+                       with the 0.25 ms kernel deducted from the mmap side: 1.112x
+    47 §7 gate is 1.20x. PASS.
+
+=== gate-only invocation 5 ===
+Pages free:                               77389. Pages wired down:                        143688. Pages stored in compressor:              311441. Pages occupied by compressor:            127573. 
+=== P-1: does Metal wire a `bytesNoCopy` buffer, or the mapping it came from? ===
+47 §6/§7. Kernels, shape and group size are 43/44's; the bytes are the
+shipped checkpoint's. Inference path untouched.
+
+  model               scratch/gemma4-qat-sym.gturbo
+  layer file          layer_00.bin 429916160 B = 26240 pages
+  hw.pagesize         16384
+  expertStride        3358720 B = 205 pages, remainder 0
+  experts / layer     128
+  step footprint      8 experts = 26.87 MB
+  PASS threshold      wired delta at commit ~= 27 MB, FAIL ~= 430 MB
+  experts used        ranks 0,16,32,48,64,80,96,112
+
+--- the gate: cold cost of 8 experts, ABBA interleaved ------
+    pread, parallel, into private slots  n=10  median 5.45 ms (4.93 GB/s)  min 4.91  max 5.69
+        5.37 5.69 4.96 5.59 5.00 5.52 4.91 5.53 4.91 5.59
+    mmap + F_RDADVISE, bytesNoCopy       n=10  median 6.45 ms (4.17 GB/s)  min 5.09  max 7.06
+        5.09 6.58 5.77 6.97 6.10 6.82 6.32 6.83 5.87 7.06
+    ratio mmap/pread   pooled medians 1.184x   paired per round 1.229x (n=5, 1.06..1.26)
+                       with the 0.25 ms kernel deducted from the mmap side: 1.138x
+    47 §7 gate is 1.20x. ON THE GATE -- the statistics straddle it.
+

@@ -79,10 +79,22 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
                     let generationID = UUID()
                     generationTranscriptMailbox.reset()
                     let command = DecodeGenerationRequest(
+                        history: request.history.map { turn in
+                            DecodeChatTurn(
+                                role: turn.role.rawValue,
+                                text: turn.text,
+                                reasoningText: turn.reasoningText.isEmpty
+                                    ? nil : turn.reasoningText,
+                                imagePaths: turn.imagePaths)
+                        },
                         prompt: request.prompt, maxNewTokens: request.maxNewTokens,
                         maxContextTokens: request.maxContextTokens,
                         temperature: request.temperature,
+                        topK: request.topK,
+                        topP: request.topP,
                         repetitionPenalty: request.repetitionPenalty,
+                        enableThinking: request.enableThinking,
+                        imagePaths: request.imagePaths,
                         runtimeOptions: Self.decodeRuntimeOptions(request.runtimeOptions),
                         generationID: generationID)
                     try handles.input.write(contentsOf: DecodeFrameCodec.encode(
@@ -111,6 +123,14 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
                         }
                         if event.kind == .snapshot {
                             generationTranscriptMailbox.append(event.textDelta)
+                            if let reasoning = event.reasoningDelta, !reasoning.isEmpty {
+                                generationTranscriptMailbox.appendReasoning(reasoning)
+                                continuation.yield(.token(AppTokenEvent(
+                                    index: max(0, event.tokenCount - 1),
+                                    textDelta: "",
+                                    elapsedDecodeSeconds: event.decodeSeconds,
+                                    reasoningDelta: reasoning)))
+                            }
                             let now = Date()
                             let beginsVisibleText = !hasYieldedVisibleText
                                 && event.textDelta.contains { !$0.isWhitespace }
@@ -267,10 +287,19 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
             ?? (event.kind == .cancelled
                 ? .cancelled
                 : event.kind == .failed ? .failed : .maxTokens)
+        var speculative: AppSpeculativeDiagnostics?
+        if let proposed = event.draftProposed, let accepted = event.draftAccepted {
+            speculative = AppSpeculativeDiagnostics(
+                blockTokens: event.draftBlockTokens ?? 0,
+                proposed: proposed,
+                accepted: accepted)
+        }
         return AppDiagnostics(
             generatedTokens: event.tokenCount,
             stopReason: stop,
             promptTokenCount: event.promptTokenCount,
+            cachedPromptTokens: event.cachedPromptTokens,
+            speculative: speculative,
             prefillSeconds: event.prefillSeconds,
             timeToFirstTokenSeconds: event.timeToFirstTokenSeconds,
             decodeSeconds: event.decodeSeconds,
@@ -319,7 +348,8 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
             prefillEnabled: options.prefillEnabled,
             prefillChunkTokens: options.prefillChunkTokens,
             rdadvisePolicy: options.rdadvisePolicy.rawValue,
-            modelVerification: options.modelVerification.rawValue)
+            modelVerification: options.modelVerification.rawValue,
+            mtpEnabled: options.mtpEnabled)
     }
 
     private static func removeLaunchJob(label: String) {

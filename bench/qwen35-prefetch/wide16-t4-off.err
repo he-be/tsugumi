@@ -1,0 +1,8 @@
+
+[stop=maxNewTokens prefill=2698tok new=128tok decode=8.35s tok/s=15.325]
+[load=1.292s prefill=10.123s ttft=10.123s reasoning=0ch answer=208ch peak=0.73GB]
+[expert prefill hit=0.0% 0/18293 | decode hit=65.9% 26765/40640 | io prefill=5.29s decode=2.85s]
+[prefill/tok gpu=2.71ms io=1.96ms host=-0.92ms cb=0.6]
+[decode/tok gpu=35.97ms io=22.25ms host=7.03ms cb=121.0]
+[residency syncs=5860 added=32168 removed=30888 55.29ms/tok (edit=0.06 commit=53.79 request=1.44)]
+[preview pairs=4953 ranks=16 overlap=45.1% missCovered=84.5% (11191/13243) rankUsed=97.0/93.8/89.4/81.6/72.7/62.6/52.2/40.3/31.3/25.1/19.7/16.3/12.6/10.8/9.3/7.3 rankMiss=16.8/20.4/22.1/23.3/23.2/23.0/20.2/15.6/13.6/10.9/9.1/7.6/6.4/5.5/4.5/3.9]

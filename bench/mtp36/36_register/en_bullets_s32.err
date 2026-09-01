@@ -1,0 +1,6 @@
+
+[stop=maxTokens prefill=355tok new=192tok decode=9.88s tok/s=19.440]
+[load=0.790s layerVerify=0.000s/30layers prefill=4.487s ttft=4.487s peak=4.95GB rss=3.38GB]
+[expert prefill hit=0.0% 0/2996 io=1.890s | decode hit=81.0% 37136/45840 io=4.387s]
+[vision images=1 soft=266 tower=1.822s towerLoad=0.001s]
+[decode/tok io=22.89ms cb1=0.66ms cb2=0.28ms head=3.65ms]

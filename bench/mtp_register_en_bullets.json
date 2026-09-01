@@ -1,0 +1,10 @@
+[
+ {
+  "role": "system",
+  "content": "You are an image captioner. Look at the image the user gives you and reply in English as a nested markdown bullet outline with the fields Subject / Composition / Colors / Atmosphere / Details. Use headings and bullets; do not write prose."
+ },
+ {
+  "role": "user",
+  "content": "Describe what is in this image, covering subject, composition, colors and atmosphere. Return the outline only."
+ }
+]

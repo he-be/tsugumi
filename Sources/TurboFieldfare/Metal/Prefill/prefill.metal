@@ -6,7 +6,56 @@ using namespace metal;
 using namespace mpp::tensor_ops;
 #endif
 
-constant constexpr uint kPrefillGroupSize = 64;
+#ifndef TURBO_AFFINE_GROUP_SIZE
+#define TURBO_AFFINE_GROUP_SIZE 64
+#endif
+constant constexpr uint kPrefillGroupSize = TURBO_AFFINE_GROUP_SIZE;
+
+// ---------------------------------------------------------------------------
+// Affine zero point
+//
+// `TURBO_AFFINE_SYMMETRIC` is the second whole-model compile-time constant
+// (`MetalContext.affineScheme`), alongside the group size. When it is set the
+// packer has dropped the bias arrays because the checkpoint satisfies
+// `bias == -8 * scale` as a BF16 bit pattern in every group -- exactly, not
+// approximately (`docs/mtp/44-W1-WEIGHT-DIET.md` §1). The bias *bindings* stay:
+// callers alias them onto the scale buffer, so no kernel signature changes and
+// the pointer below is simply never dereferenced.
+// ---------------------------------------------------------------------------
+#ifndef TURBO_AFFINE_SYMMETRIC
+#define TURBO_AFFINE_SYMMETRIC 0
+#endif
+
+static inline float prefill_int4_bias(device const bfloat* biases, uint index,
+                                     float scale) {
+#if TURBO_AFFINE_SYMMETRIC
+    return -8.0f * scale;
+#else
+    return float(biases[index]);
+#endif
+}
+
+/// `acc + scale * dot + bias * sum` for one group, where `dot` is the group's
+/// integer-weighted activation sum and `sum` its plain activation sum.
+///
+/// Two FMAs in both schemes: the symmetric branch folds the zero point into the
+/// dot product rather than paying a second accumulate, which is the form
+/// measured in 44 §4 (`gate/up` -9.7% at an unchanged 134.8 GB/s).
+/// `acc + scale * dot + bias * sum` for one group, where `dot` is the group's
+/// integer-weighted activation sum and `sum` its plain activation sum.
+///
+/// The two schemes run the *same* two FMAs in the same order, and `sym`'s
+/// `bias` is `-8 * scale` computed in FP32. That product is exact -- BF16
+/// stores `-8 * scale` without rounding, so converting it back gives the same
+/// float the affine model loaded -- which makes the whole pipeline **bit
+/// identical** to the affine one on a checkpoint that satisfies the identity.
+/// Folding the zero point into `dot` instead would save nothing (`gate/up` is
+/// on the bandwidth floor, so the FMA is free) and would cost that property.
+static inline float prefill_int4_accumulate(float acc, float scale, float bias,
+                                           float dot, float sum) {
+    acc = fma(scale, dot, acc);
+    return fma(bias, sum, acc);
+}
 constant constexpr uint kPrefillRmsMaxSimdGroups = 8;
 constant constexpr uint kPrefillPostMaxD = 4096;
 constant constexpr uint kPrefillRouterMaxExperts = 256;
@@ -22,6 +71,20 @@ static inline float prefill_gelu_pytorch_tanh(float x) {
     float inner = kPrefillGeluSqrt2OverPi * (x + kPrefillGeluCubicCoeff * x3);
     inner = clamp(inner, -20.0f, 20.0f);
     return 0.5f * x * (1.0f + tanh(inner));
+}
+
+// Which activation a routed expert folds into its gate/up product. The decode
+// side of this decision is `FC_MOE_ACT_SILU` in moe.metal; this is the same
+// switch on the prefill kernels (`docs/qwen35moe/20-PHASE3-DECODE.md` §8 left
+// it as Phase 4's homework). Gemma 4 is `gelu_pytorch_tanh` and never defines
+// the constant, so its pipelines compile exactly the code they were measured
+// on; Qwen3.5-MoE is SiLU.
+constant bool FC_PREFILL_MOE_ACT_SILU [[function_constant(77)]];
+
+static inline float prefill_moe_gate_activation(float x) {
+    const bool silu = is_function_constant_defined(FC_PREFILL_MOE_ACT_SILU)
+        && FC_PREFILL_MOE_ACT_SILU;
+    return silu ? (x / (1.0f + exp(-x))) : prefill_gelu_pytorch_tanh(x);
 }
 kernel void prefill_embed_lookup_int4_block(
     device const uint8_t* table     [[buffer(0)]],
@@ -47,7 +110,7 @@ kernel void prefill_embed_lookup_int4_block(
     const uint8_t byte = row_q[d >> 1];
     const uint q = (d & 1u) == 0u ? uint(byte & 0x0Fu) : uint(byte >> 4);
     const float s = float(row_s[d / kPrefillGroupSize]);
-    const float b = float(row_b[d / kPrefillGroupSize]);
+    const float b = prefill_int4_bias(row_b, d / kPrefillGroupSize, s);
     out[t * D + d] = half((float(q) * s + b) * out_scale);
 }
 
@@ -344,6 +407,18 @@ struct PrefillStreamedRoutedBlobsMSL {
     device const uint8_t* blob[kPrefillMaxTileExperts];
 };
 
+/// One slice of one expert's route pairs. Pairs are sorted by expert, so a
+/// slice is contiguous in `sorted_pairs` and every row in it shares a single set
+/// of weights — which is what lets the GEMM below hold a weight tile in
+/// threadgroup memory and spend it on 64 rows instead of one, and what lets the
+/// rows path below spend one weight read on the whole speculative block.
+struct PrefillRoutedGEMMBlockMSL {
+    uint local_slot;   // index into PrefillStreamedRoutedBlobsMSL::blob
+    uint pair_start;   // global index into sorted_pairs
+    uint row_count;    // 1...64 (tiled), 1...kPrefillMoERowsMax (rows)
+    uint local_row;    // first row of this block inside the batch scratch
+};
+
 struct PrefillGroupedRoutedMoEStreamedParamsMSL {
     uint pair_start;
     uint pair_count;
@@ -420,7 +495,7 @@ static inline float prefill_moe_int4_gemv_row_dev(
     float acc = 0.0f;
     for (uint g = 0; g < groups; ++g) {
         const float scale = float(s_row[g]);
-        const float bias = float(b_row[g]);
+        const float bias = prefill_int4_bias(b_row, g, scale);
         device const uint8_t* Wg = W_row + g * (kPrefillGroupSize / 2u);
         device const half* xg = x + g * kPrefillGroupSize;
         float dot_qx = 0.0f;
@@ -456,7 +531,7 @@ static inline float prefill_moe_int4_gemv_row_tg(
     float acc = 0.0f;
     for (uint g = 0; g < groups; ++g) {
         const float scale = float(s_row[g]);
-        const float bias = float(b_row[g]);
+        const float bias = prefill_int4_bias(b_row, g, scale);
         device const uint8_t* Wg = W_row + g * (kPrefillGroupSize / 2u);
         threadgroup const half* xg = x + g * kPrefillGroupSize;
         float dot_qx = 0.0f;
@@ -473,6 +548,61 @@ static inline float prefill_moe_int4_gemv_row_tg(
         acc = fma(bias, sum_x, acc);
     }
     return acc;
+}
+
+// Shared by the INT8 and BF16 router blocks: pick the top-KK scores, softmax
+// them, and fold in the per-expert gain. Only thread 0 of the group runs it.
+static inline void prefill_router_emit_topk(
+    threadgroup const float* scores,
+    device const bfloat*     per_expert_scale,
+    device uint*             out_indices,
+    device half*             out_weights,
+    uint                     NE,
+    uint                     KK,
+    uint                     row,
+    uint                     top_k
+) {
+    uint top_idx[kPrefillRouterMaxTopK];
+    float top_score[kPrefillRouterMaxTopK];
+    for (uint i = 0; i < kPrefillRouterMaxTopK; ++i) {
+        top_idx[i] = 0u;
+        top_score[i] = -INFINITY;
+    }
+
+    for (uint e = 0; e < NE; ++e) {
+        float s = scores[e];
+        if (KK > 0 && s <= top_score[KK - 1]) continue;
+        uint pos = KK;
+        for (uint i = 0; i < KK; ++i) {
+            if (s > top_score[i] || (s == top_score[i] && e < top_idx[i])) {
+                pos = i;
+                break;
+            }
+        }
+        if (pos >= KK) continue;
+        for (uint i = KK - 1; i > pos; --i) {
+            top_idx[i] = top_idx[i - 1];
+            top_score[i] = top_score[i - 1];
+        }
+        top_idx[pos] = e;
+        top_score[pos] = s;
+    }
+
+    float max_s = top_score[0];
+    float sum_exp = 0.0f;
+    float exps[kPrefillRouterMaxTopK];
+    for (uint i = 0; i < KK; ++i) {
+        float e = fast::exp(top_score[i] - max_s);
+        exps[i] = e;
+        sum_exp += e;
+    }
+    for (uint i = 0; i < KK; ++i) {
+        const uint expert_idx = top_idx[i];
+        const float w = exps[i] / sum_exp;
+        const float gain = float(per_expert_scale[expert_idx]);
+        out_indices[row * top_k + i] = expert_idx;
+        out_weights[row * top_k + i] = half(w * gain);
+    }
 }
 
 kernel void prefill_router_gemma4_block(
@@ -528,47 +658,50 @@ kernel void prefill_router_gemma4_block(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if (tid == 0) {
-        uint top_idx[kPrefillRouterMaxTopK];
-        float top_score[kPrefillRouterMaxTopK];
-        for (uint i = 0; i < kPrefillRouterMaxTopK; ++i) {
-            top_idx[i] = 0u;
-            top_score[i] = -INFINITY;
-        }
+        prefill_router_emit_topk(scores, per_expert_scale, out_indices,
+                                 out_weights, NE, KK, row, top_k);
+    }
+}
 
-        for (uint e = 0; e < NE; ++e) {
-            float s = scores[e];
-            if (KK > 0 && s <= top_score[KK - 1]) continue;
-            uint pos = KK;
-            for (uint i = 0; i < KK; ++i) {
-                if (s > top_score[i] || (s == top_score[i] && e < top_idx[i])) {
-                    pos = i;
-                    break;
-                }
-            }
-            if (pos >= KK) continue;
-            for (uint i = KK - 1; i > pos; --i) {
-                top_idx[i] = top_idx[i - 1];
-                top_score[i] = top_score[i - 1];
-            }
-            top_idx[pos] = e;
-            top_score[pos] = s;
-        }
+// BF16 router weights (QAT checkpoints). No scales/biases and no group
+// structure — see the note on `router_gemv_gemma4_bf16_body` in moe.metal.
+kernel void prefill_router_gemma4_bf16_block(
+    device const bfloat*  W                [[buffer(0)]],
+    device const half*    hidden           [[buffer(1)]],
+    device const bfloat*  effective_scale  [[buffer(2)]],
+    device const bfloat*  per_expert_scale [[buffer(3)]],
+    device uint*          out_indices      [[buffer(4)]],
+    device half*          out_weights      [[buffer(5)]],
+    constant uint&        T                [[buffer(6)]],
+    constant uint&        num_experts      [[buffer(7)]],
+    constant uint&        D                [[buffer(8)]],
+    constant uint&        top_k            [[buffer(9)]],
+    constant uint&        hidden_stride    [[buffer(10)]],
+    uint                  row              [[threadgroup_position_in_grid]],
+    uint                  tid              [[thread_position_in_threadgroup]],
+    uint                  tg_size          [[threads_per_threadgroup]]
+) {
+    if (row >= T) return;
+    threadgroup float scores[kPrefillRouterMaxExperts];
+    const uint NE = min(num_experts, kPrefillRouterMaxExperts);
+    const uint KK = min(top_k, kPrefillRouterMaxTopK);
+    device const half* row_hidden = hidden + row * hidden_stride;
 
-        float max_s = top_score[0];
-        float sum_exp = 0.0f;
-        float exps[kPrefillRouterMaxTopK];
-        for (uint i = 0; i < KK; ++i) {
-            float e = fast::exp(top_score[i] - max_s);
-            exps[i] = e;
-            sum_exp += e;
+    for (uint e = tid; e < NE; e += tg_size) {
+        device const bfloat* W_row = W + e * D;
+        float acc = 0.0f;
+        for (uint k = 0; k < D; ++k) {
+            acc = fma(float(W_row[k]),
+                      float(row_hidden[k]) * float(effective_scale[k]),
+                      acc);
         }
-        for (uint i = 0; i < KK; ++i) {
-            const uint expert_idx = top_idx[i];
-            const float w = exps[i] / sum_exp;
-            const float gain = float(per_expert_scale[expert_idx]);
-            out_indices[row * top_k + i] = expert_idx;
-            out_weights[row * top_k + i] = half(w * gain);
-        }
+        scores[e] = acc;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid == 0) {
+        prefill_router_emit_topk(scores, per_expert_scale, out_indices,
+                                 out_weights, NE, KK, row, top_k);
     }
 }
 
@@ -633,7 +766,7 @@ kernel void prefill_grouped_routed_moe_batched_phase1(
     gate_up_act_scratch[index] = half(gate);
     gate_up_act_scratch[row_elements + index] = half(up);
     gate_up_act_scratch[2u * row_elements + index] =
-        half(prefill_gelu_pytorch_tanh(gate) * up);
+        half(prefill_moe_gate_activation(gate) * up);
 }
 
 kernel void prefill_grouped_routed_moe_batched_down(
@@ -669,6 +802,464 @@ kernel void prefill_grouped_routed_moe_batched_down(
     route_partials[(pair.token * p.top_k + pair.rank) * p.D + d] = value;
 }
 
+/// Routed-expert GEMM: `Y[rows, N] = X[rows, K] * W[N, K]^T` for one expert.
+///
+/// `prefill_grouped_routed_moe_batched_phase1` / `_down` give one thread the
+/// whole K reduction for a single (pair, row) and re-read the expert's weights
+/// once per 8 pairs, which put the routed MoE at 892 MB of logical reads per
+/// token. This kernel is the tiled QMM (`prefill_int4_qmm_simdgroup_f16`) with
+/// two changes that the routed case needs:
+///
+///   * rows come from a `PrefillRoutedGEMMBlockMSL`, so the M dimension is a
+///     gather (mode 0: pair -> token -> hidden row) or a scatter (mode 1:
+///     pair -> (token, rank) -> route_partials row) instead of a plain stride;
+///   * the weights come from the expert blob named by the block, so a weight
+///     byte is read once per 64 pairs of that expert.
+///
+/// Mode 0 runs gate and up over the same activation tile (`tgid.z` picks which)
+/// into the first two thirds of `act`; `prefill_moe_gate_up_gelu_mul` folds
+/// them into the third. Mode 1 runs down out of that third into route_partials.
+///
+/// Geometry, accumulator precision and the K-tile/affine-group relationship are
+/// all identical to `prefill_int4_qmm_simdgroup_f16` — see its comment.
+constant constexpr uint kPrefillMoEGEMMTileM = 64;
+constant constexpr uint kPrefillMoEGEMMTileN = 64;
+constant constexpr uint kPrefillMoEGEMMTileK = 32;
+constant constexpr uint kPrefillMoEGEMMThreads = 128;
+constant constexpr uint kPrefillMoEGEMMModeGateUp = 0;
+
+kernel void prefill_moe_gemm_int4(
+    device const half*                                   hidden         [[buffer(0)]],
+    device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
+    device const PrefillRoutedGEMMBlockMSL*              blocks         [[buffer(2)]],
+    device half*                                         route_partials [[buffer(5)]],
+    device half*                                         act            [[buffer(7)]],
+    device const PrefillStreamedRoutedBlobsMSL&          routed         [[buffer(9)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p              [[buffer(10)]],
+    constant uint&                                       mode           [[buffer(11)]],
+    uint3                                                lid3           [[thread_position_in_threadgroup]],
+    uint3                                                tgid3          [[threadgroup_position_in_grid]]
+) {
+    const uint lid = lid3.x;
+    const uint sgid = lid / 32u;
+    const PrefillRoutedGEMMBlockMSL blk = blocks[tgid3.y];
+    const uint nBase = tgid3.x * kPrefillMoEGEMMTileN;
+    const bool gate_up = (mode == kPrefillMoEGEMMModeGateUp);
+    const bool is_up = gate_up && (tgid3.z == 1u);
+
+    const uint N = gate_up ? p.F : p.D;
+    const uint K = gate_up ? p.D : p.F;
+    const uint act_rows = p.pair_count;
+
+    threadgroup float stage[kPrefillMoEGEMMTileM * kPrefillMoEGEMMTileN];
+    threadgroup half* As = (threadgroup half*)stage;
+    threadgroup half* Bs = As + kPrefillMoEGEMMTileM * kPrefillMoEGEMMTileK;
+    // Row-major element offsets of this block's rows, resolved once.
+    threadgroup uint src_off[kPrefillMoEGEMMTileM];
+    threadgroup uint dst_off[kPrefillMoEGEMMTileM];
+
+    device const uint8_t* blob = routed.blob[blk.local_slot];
+    uint w_off = p.down_W_off;
+    uint s_off = p.down_s_off;
+    uint b_off = p.down_b_off;
+    if (gate_up) {
+        w_off = is_up ? p.up_W_off : p.gate_W_off;
+        s_off = is_up ? p.up_s_off : p.gate_s_off;
+        b_off = is_up ? p.up_b_off : p.gate_b_off;
+    }
+    device const uint8_t* W = blob + w_off;
+    device const bfloat* S = reinterpret_cast<device const bfloat*>(blob + s_off);
+    device const bfloat* B = reinterpret_cast<device const bfloat*>(blob + b_off);
+
+    device const half* X = gate_up ? hidden
+                                   : (device const half*)(act + 2u * act_rows * p.F);
+    device half* Y = gate_up ? (act + (is_up ? act_rows * p.F : 0u)) : route_partials;
+
+    if (lid < kPrefillMoEGEMMTileM) {
+        uint so = 0u;
+        uint dof = 0u;
+        if (lid < blk.row_count) {
+            const PrefillTokenExpertPairMSL pr = sorted_pairs[blk.pair_start + lid];
+            if (gate_up) {
+                so = pr.token * p.hidden_stride_elements;
+                dof = (blk.local_row + lid) * p.F;
+            } else {
+                so = (blk.local_row + lid) * p.F;
+                dof = (pr.token * p.top_k + pr.rank) * p.D;
+            }
+        }
+        src_off[lid] = so;
+        dst_off[lid] = dof;
+    }
+
+    // Quadrant of the 64x64 tile this simdgroup accumulates.
+    const uint sg_m = (sgid / 2u) * 32u;
+    const uint sg_n = (sgid % 2u) * 32u;
+
+    simdgroup_float8x8 acc[4][4];
+    for (uint i = 0; i < 4u; ++i) {
+        for (uint j = 0; j < 4u; ++j) {
+            acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+        }
+    }
+
+    const uint groups = K / kPrefillGroupSize;
+    const uint row_bytes = K / 2u;
+    const uint w_n_local = lid & (kPrefillMoEGEMMTileN - 1u);
+    const uint w_chunk_base = lid / kPrefillMoEGEMMTileN;
+    const uint w_n = nBase + w_n_local;
+    device const uint8_t* w_row = W + w_n * row_bytes;
+    device const bfloat* s_row = S + w_n * groups;
+    device const bfloat* b_row = B + w_n * groups;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint k0 = 0; k0 < K; k0 += kPrefillMoEGEMMTileK) {
+        // Activations: 64x32 halves, 16 per thread, K-contiguous per row.
+        for (uint i = 0; i < 16u; ++i) {
+            const uint idx = i * kPrefillMoEGEMMThreads + lid;
+            const uint m = idx / kPrefillMoEGEMMTileK;
+            const uint kk = idx % kPrefillMoEGEMMTileK;
+            As[idx] = (m < blk.row_count) ? X[src_off[m] + k0 + kk] : half(0.0f);
+        }
+
+        // Weights: 32x64 halves, K-major so an 8x8 load is the [k, n] fragment.
+        for (uint c = 0; c < 2u; ++c) {
+            const uint kk = (w_chunk_base + c * 2u) * 8u;
+            if (w_n < N) {
+                const uint g = (k0 + kk) / kPrefillGroupSize;
+                const float scale = float(s_row[g]);
+                const float bias = prefill_int4_bias(b_row, g, scale);
+                device const uint8_t* w_ptr = w_row + ((k0 + kk) >> 1);
+                for (uint q = 0; q < 4u; ++q) {
+                    const uint8_t packed = w_ptr[q];
+                    const float lo = fma(float(packed & 0x0Fu), scale, bias);
+                    const float hi = fma(float(packed >> 4), scale, bias);
+                    Bs[(kk + 2u * q) * kPrefillMoEGEMMTileN + w_n_local] = half(lo);
+                    Bs[(kk + 2u * q + 1u) * kPrefillMoEGEMMTileN + w_n_local] = half(hi);
+                }
+            } else {
+                for (uint q = 0; q < 8u; ++q) {
+                    Bs[(kk + q) * kPrefillMoEGEMMTileN + w_n_local] = half(0.0f);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        simdgroup_half8x8 a[4];
+        simdgroup_half8x8 b[4];
+        for (uint kk = 0; kk < kPrefillMoEGEMMTileK; kk += 8u) {
+            for (uint i = 0; i < 4u; ++i) {
+                simdgroup_load(a[i],
+                               As + (sg_m + i * 8u) * kPrefillMoEGEMMTileK + kk,
+                               kPrefillMoEGEMMTileK);
+            }
+            for (uint j = 0; j < 4u; ++j) {
+                simdgroup_load(b[j],
+                               Bs + kk * kPrefillMoEGEMMTileN + sg_n + j * 8u,
+                               kPrefillMoEGEMMTileN);
+            }
+            for (uint i = 0; i < 4u; ++i) {
+                for (uint j = 0; j < 4u; ++j) {
+                    simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (uint i = 0; i < 4u; ++i) {
+        for (uint j = 0; j < 4u; ++j) {
+            simdgroup_store(acc[i][j],
+                            stage + (sg_m + i * 8u) * kPrefillMoEGEMMTileN + sg_n + j * 8u,
+                            kPrefillMoEGEMMTileN);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = 0; i < 32u; ++i) {
+        const uint idx = i * kPrefillMoEGEMMThreads + lid;
+        const uint m = idx / kPrefillMoEGEMMTileN;
+        const uint n = nBase + idx % kPrefillMoEGEMMTileN;
+        if (m < blk.row_count && n < N) {
+            Y[dst_off[m] + n] = half(stage[idx]);
+        }
+    }
+}
+
+/// `act[2] = gelu(act[0]) * act[1]` over one batch of routed rows. The two
+/// GEMM halves land in separate thirds of the scratch, so the non-linearity
+/// that used to be fused into the per-pair kernel is its own pass; it is one
+/// pass over `rows x F` halves per batch.
+kernel void prefill_moe_gate_up_gelu_mul(
+    device half*   act   [[buffer(0)]],
+    constant uint& rows  [[buffer(1)]],
+    constant uint& F     [[buffer(2)]],
+    uint           gid   [[thread_position_in_grid]]
+) {
+    const uint total = rows * F;
+    if (gid >= total) return;
+    const float gate = float(act[gid]);
+    const float up = float(act[total + gid]);
+    act[2u * total + gid] = half(prefill_moe_gate_activation(gate) * up);
+}
+
+// ---------------------------------------------------------------------------
+// Routed MoE for a block of at most eight rows — the speculative verify width.
+//
+// `prefill_moe_gemm_int4` above computes a 64-row output tile per threadgroup
+// because a prompt chunk fills one. A k-token verify block puts at most k rows
+// on any expert, so that kernel spends 64 rows of arithmetic to produce k of
+// them: at k=4 it is the largest single item in the verify bill
+// (docs/mtp/15-M4-RESULTS.md §4-2, re-read in 16-M4.5-PLAN.md §2).
+//
+// These two kernels are the decode routed path — `moe_phase1_gate_up_act_u16load`
+// and the GEMV inside `moe_phase2_down_reduce_k8` — with the activation loop
+// moved inside the weight block: one SIMD group owns one output row of one
+// expert and spends that row's weights on every route row of that expert
+// before moving on. A weight byte is therefore read once per block, as in the
+// tiled kernel, while the arithmetic per (row, output) element stays decode's,
+// element for element and in decode's order. That is what makes a verify block
+// a generalization of decode rather than a second implementation of it
+// (16-M4.5-PLAN.md §4 a).
+//
+// Rows come from `PrefillRoutedGEMMBlockMSL`, one block per live expert, so
+// the M dimension is a gather on the way in (pair -> token -> hidden row) and a
+// scatter on the way out (pair -> (token, rank) -> route_partials row).
+// ---------------------------------------------------------------------------
+constant constexpr uint kPrefillMoERowsMax = 8;
+// The widest routed block this dispatch actually holds, pinned at build time.
+//
+// An expert holds at most one row per token, so a k-token verify block never
+// puts more than k rows in a block — but the kernel was compiled for eight, so
+// it unrolled eight row slots and kept eight accumulators live whatever k was.
+// Pinning the cap shrinks the unrolled body and the register arrays to the
+// block that is actually running (`docs/mtp/20-M4.8-RESULTS.md` §4).
+constant uint FC_MOE_ROWS_CAP [[function_constant(16)]];
+
+static inline uint prefill_moe_rows_cap() {
+    return is_function_constant_defined(FC_MOE_ROWS_CAP)
+        ? FC_MOE_ROWS_CAP : kPrefillMoERowsMax;
+}
+constant constexpr uint kPrefillMoERowsPerTG = 8;
+// Vectorized INT4 block geometry — see the note in dequant_int4.metal. A block
+// is a fixed 128 bytes (32 lanes x 4 bytes); the affine group size decides how
+// many groups that spans and how many lanes cover one group.
+constant constexpr uint kPrefillRowsGroupsPerBlock = 256u / kPrefillGroupSize;
+constant constexpr uint kPrefillRowsLanesPerGroup  = kPrefillGroupSize / 8u;
+constant constexpr uint kPrefillRowsTailLanes      = kPrefillGroupSize / 2u;
+
+kernel void prefill_moe_rows_gate_up_act(
+    device const half*                                   hidden       [[buffer(0)]],
+    device const PrefillTokenExpertPairMSL*              sorted_pairs [[buffer(1)]],
+    device const PrefillRoutedGEMMBlockMSL*              blocks       [[buffer(2)]],
+    device half*                                         act          [[buffer(7)]],
+    device const PrefillStreamedRoutedBlobsMSL&          routed       [[buffer(9)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p            [[buffer(10)]],
+    uint2                                                tgid         [[threadgroup_position_in_grid]],
+    uint                                                 sg_idx       [[simdgroup_index_in_threadgroup]],
+    uint                                                 lane         [[thread_index_in_simdgroup]]
+) {
+    const PrefillRoutedGEMMBlockMSL blk = blocks[tgid.y];
+    const uint f = tgid.x * kPrefillMoERowsPerTG + sg_idx;
+    if (f >= p.F || blk.row_count == 0u) return;
+    const uint cap = prefill_moe_rows_cap();
+    const uint rows = min(blk.row_count, cap);
+
+    device const uint8_t* base = routed.blob[blk.local_slot];
+    const uint n_groups = p.D / kPrefillGroupSize;
+    const uint row_bytes = p.D / 2u;
+    device const uint8_t* gW_row = base + p.gate_W_off + f * row_bytes;
+    device const uint8_t* uW_row = base + p.up_W_off + f * row_bytes;
+    device const bfloat* gS_row =
+        (device const bfloat*)(base + p.gate_s_off) + f * n_groups;
+    device const bfloat* gB_row =
+        (device const bfloat*)(base + p.gate_b_off) + f * n_groups;
+    device const bfloat* uS_row =
+        (device const bfloat*)(base + p.up_s_off) + f * n_groups;
+    device const bfloat* uB_row =
+        (device const bfloat*)(base + p.up_b_off) + f * n_groups;
+
+    // Resolved once: the rows of this block are the same for every f, and the
+    // index arithmetic does not belong in the K loop.
+    device const half* x_row[kPrefillMoERowsMax];
+    for (uint r = 0; r < cap; ++r) {
+        const uint pick = min(r, rows - 1u);
+        const PrefillTokenExpertPairMSL pr = sorted_pairs[blk.pair_start + pick];
+        x_row[r] = hidden + pr.token * p.hidden_stride_elements;
+    }
+
+    float g_acc[kPrefillMoERowsMax];
+    float u_acc[kPrefillMoERowsMax];
+    for (uint r = 0; r < cap; ++r) { g_acc[r] = 0.0f; u_acc[r] = 0.0f; }
+
+    const uint full_blocks = n_groups / kPrefillRowsGroupsPerBlock;
+    for (uint b = 0; b < full_blocks; ++b) {
+        const uint byte_base = b * 128u + lane * 4u;
+        // Two 16-bit loads assemble each 4-byte chunk: packed sub-tensor
+        // offsets are only 2-byte aligned.
+        device const ushort* gp = (device const ushort*)(gW_row + byte_base);
+        device const ushort* up = (device const ushort*)(uW_row + byte_base);
+        const uint gw4 = uint(gp[0]) | (uint(gp[1]) << 16);
+        const uint uw4 = uint(up[0]) | (uint(up[1]) << 16);
+        const uint g = b * kPrefillRowsGroupsPerBlock + lane / kPrefillRowsLanesPerGroup;
+        const float gs = float(gS_row[g]);
+        const float gb = prefill_int4_bias(gB_row, g, gs);
+        const float us = float(uS_row[g]);
+        const float ub = prefill_int4_bias(uB_row, g, us);
+        const uint elem = byte_base * 2u;
+        const uint gb0 = gw4 & 0xFFu, gb1 = (gw4 >> 8) & 0xFFu;
+        const uint gb2 = (gw4 >> 16) & 0xFFu, gb3 = (gw4 >> 24) & 0xFFu;
+        const uint ub0 = uw4 & 0xFFu, ub1 = (uw4 >> 8) & 0xFFu;
+        const uint ub2 = (uw4 >> 16) & 0xFFu, ub3 = (uw4 >> 24) & 0xFFu;
+        for (uint r = 0; r < cap; ++r) {
+            if (r >= rows) break;
+            const half4 xa = *((device const half4*)(x_row[r] + elem));
+            const half4 xb = *((device const half4*)(x_row[r] + elem + 4u));
+            const float e0 = float(xa.x), e1 = float(xa.y);
+            const float e2 = float(xa.z), e3 = float(xa.w);
+            const float e4 = float(xb.x), e5 = float(xb.y);
+            const float e6 = float(xb.z), e7 = float(xb.w);
+            const float sum = e0 + e1 + e2 + e3 + e4 + e5 + e6 + e7;
+            float g_dot = 0.0f;
+            g_dot = fma(float(gb0 & 0x0Fu), e0, g_dot); g_dot = fma(float(gb0 >> 4), e1, g_dot);
+            g_dot = fma(float(gb1 & 0x0Fu), e2, g_dot); g_dot = fma(float(gb1 >> 4), e3, g_dot);
+            g_dot = fma(float(gb2 & 0x0Fu), e4, g_dot); g_dot = fma(float(gb2 >> 4), e5, g_dot);
+            g_dot = fma(float(gb3 & 0x0Fu), e6, g_dot); g_dot = fma(float(gb3 >> 4), e7, g_dot);
+            float u_dot = 0.0f;
+            u_dot = fma(float(ub0 & 0x0Fu), e0, u_dot); u_dot = fma(float(ub0 >> 4), e1, u_dot);
+            u_dot = fma(float(ub1 & 0x0Fu), e2, u_dot); u_dot = fma(float(ub1 >> 4), e3, u_dot);
+            u_dot = fma(float(ub2 & 0x0Fu), e4, u_dot); u_dot = fma(float(ub2 >> 4), e5, u_dot);
+            u_dot = fma(float(ub3 & 0x0Fu), e6, u_dot); u_dot = fma(float(ub3 >> 4), e7, u_dot);
+            g_acc[r] = prefill_int4_accumulate(g_acc[r], gs, gb, g_dot, sum);
+            u_acc[r] = prefill_int4_accumulate(u_acc[r], us, ub, u_dot, sum);
+        }
+    }
+    for (uint g = full_blocks * kPrefillRowsGroupsPerBlock; g < n_groups; ++g) {
+        // Only the first kPrefillRowsTailLanes lanes hold a byte of this group.
+        if (lane >= kPrefillRowsTailLanes) break;
+        const float gs = float(gS_row[g]);
+        const float gb = prefill_int4_bias(gB_row, g, gs);
+        const float us = float(uS_row[g]);
+        const float ub = prefill_int4_bias(uB_row, g, us);
+        const uint8_t gbv = gW_row[g * (kPrefillGroupSize / 2u) + lane];
+        const uint8_t ubv = uW_row[g * (kPrefillGroupSize / 2u) + lane];
+        for (uint r = 0; r < cap; ++r) {
+            if (r >= rows) break;
+            const float x0 = float(x_row[r][g * kPrefillGroupSize + lane * 2u]);
+            const float x1 = float(x_row[r][g * kPrefillGroupSize + lane * 2u + 1u]);
+            const float sum = x0 + x1;
+            float g_dot = fma(float(uint(gbv & 0x0Fu)), x0, 0.0f);
+            g_dot = fma(float(uint(gbv >> 4)), x1, g_dot);
+            float u_dot = fma(float(uint(ubv & 0x0Fu)), x0, 0.0f);
+            u_dot = fma(float(uint(ubv >> 4)), x1, u_dot);
+            g_acc[r] = prefill_int4_accumulate(g_acc[r], gs, gb, g_dot, sum);
+            u_acc[r] = prefill_int4_accumulate(u_acc[r], us, ub, u_dot, sum);
+        }
+    }
+
+    // `rows` is uniform across the SIMD group, so every lane reaches each of
+    // these reductions.
+    for (uint r = 0; r < cap; ++r) {
+        if (r >= rows) break;
+        const float gate = simd_sum(g_acc[r]);
+        const float up_value = simd_sum(u_acc[r]);
+        if (lane == 0) {
+            act[(blk.local_row + r) * p.F + f] =
+                half(prefill_moe_gate_activation(gate) * up_value);
+        }
+    }
+}
+
+kernel void prefill_moe_rows_down(
+    device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
+    device const PrefillRoutedGEMMBlockMSL*              blocks         [[buffer(2)]],
+    device half*                                         route_partials [[buffer(5)]],
+    device const half*                                   act            [[buffer(7)]],
+    device const PrefillStreamedRoutedBlobsMSL&          routed         [[buffer(9)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p              [[buffer(10)]],
+    uint2                                                tgid           [[threadgroup_position_in_grid]],
+    uint                                                 sg_idx         [[simdgroup_index_in_threadgroup]],
+    uint                                                 lane           [[thread_index_in_simdgroup]]
+) {
+    const PrefillRoutedGEMMBlockMSL blk = blocks[tgid.y];
+    const uint d = tgid.x * kPrefillMoERowsPerTG + sg_idx;
+    if (d >= p.D || blk.row_count == 0u) return;
+    const uint cap = prefill_moe_rows_cap();
+    const uint rows = min(blk.row_count, cap);
+
+    device const uint8_t* base = routed.blob[blk.local_slot];
+    const uint n_groups = p.F / kPrefillGroupSize;
+    const uint row_bytes = p.F / 2u;
+    device const uint8_t* W_row = base + p.down_W_off + d * row_bytes;
+    device const bfloat* s_row =
+        (device const bfloat*)(base + p.down_s_off) + d * n_groups;
+    device const bfloat* b_row =
+        (device const bfloat*)(base + p.down_b_off) + d * n_groups;
+
+    device const half* x_row[kPrefillMoERowsMax];
+    uint dst[kPrefillMoERowsMax];
+    for (uint r = 0; r < cap; ++r) {
+        const uint pick = min(r, rows - 1u);
+        const PrefillTokenExpertPairMSL pr = sorted_pairs[blk.pair_start + pick];
+        x_row[r] = act + (blk.local_row + pick) * p.F;
+        dst[r] = (pr.token * p.top_k + pr.rank) * p.D;
+    }
+
+    float acc[kPrefillMoERowsMax];
+    for (uint r = 0; r < cap; ++r) { acc[r] = 0.0f; }
+
+    const uint full_blocks = n_groups / kPrefillRowsGroupsPerBlock;
+    for (uint b = 0; b < full_blocks; ++b) {
+        const uint byte_base = b * 128u + lane * 4u;
+        device const ushort* wp = (device const ushort*)(W_row + byte_base);
+        const uint w4 = uint(wp[0]) | (uint(wp[1]) << 16);
+        const uint g = b * kPrefillRowsGroupsPerBlock + lane / kPrefillRowsLanesPerGroup;
+        const float s = float(s_row[g]);
+        const float bias = prefill_int4_bias(b_row, g, s);
+        const uint elem = byte_base * 2u;
+        const uint b0 = w4 & 0xFFu, b1 = (w4 >> 8) & 0xFFu;
+        const uint b2 = (w4 >> 16) & 0xFFu, b3 = (w4 >> 24) & 0xFFu;
+        for (uint r = 0; r < cap; ++r) {
+            if (r >= rows) break;
+            const half4 xa = *((device const half4*)(x_row[r] + elem));
+            const half4 xb = *((device const half4*)(x_row[r] + elem + 4u));
+            const float e0 = float(xa.x), e1 = float(xa.y);
+            const float e2 = float(xa.z), e3 = float(xa.w);
+            const float e4 = float(xb.x), e5 = float(xb.y);
+            const float e6 = float(xb.z), e7 = float(xb.w);
+            float dot = 0.0f;
+            dot = fma(float(b0 & 0x0Fu), e0, dot); dot = fma(float(b0 >> 4), e1, dot);
+            dot = fma(float(b1 & 0x0Fu), e2, dot); dot = fma(float(b1 >> 4), e3, dot);
+            dot = fma(float(b2 & 0x0Fu), e4, dot); dot = fma(float(b2 >> 4), e5, dot);
+            dot = fma(float(b3 & 0x0Fu), e6, dot); dot = fma(float(b3 >> 4), e7, dot);
+            const float sum = e0 + e1 + e2 + e3 + e4 + e5 + e6 + e7;
+            acc[r] = prefill_int4_accumulate(acc[r], s, bias, dot, sum);
+        }
+    }
+    for (uint g = full_blocks * kPrefillRowsGroupsPerBlock; g < n_groups; ++g) {
+        if (lane >= kPrefillRowsTailLanes) break;
+        const float s = float(s_row[g]);
+        const float bias = prefill_int4_bias(b_row, g, s);
+        const uint8_t byte = W_row[g * (kPrefillGroupSize / 2u) + lane];
+        for (uint r = 0; r < cap; ++r) {
+            if (r >= rows) break;
+            const float x0 = float(x_row[r][g * kPrefillGroupSize + lane * 2u]);
+            const float x1 = float(x_row[r][g * kPrefillGroupSize + lane * 2u + 1u]);
+            float dot = fma(float(uint(byte & 0x0Fu)), x0, 0.0f);
+            dot = fma(float(uint(byte >> 4)), x1, dot);
+            acc[r] = prefill_int4_accumulate(acc[r], s, bias, dot, x0 + x1);
+        }
+    }
+
+    for (uint r = 0; r < cap; ++r) {
+        if (r >= rows) break;
+        const float value = simd_sum(acc[r]);
+        if (lane == 0) {
+            route_partials[dst[r] + d] = half(value);
+        }
+    }
+}
+
 kernel void prefill_dequant_int4_qmm_f16_block(
     device const uint8_t* W      [[buffer(0)]],
     device const bfloat*  scales [[buffer(1)]],
@@ -695,7 +1286,7 @@ kernel void prefill_dequant_int4_qmm_f16_block(
     float acc = 0.0f;
     for (uint g = 0; g < groups; ++g) {
         const float scale = float(s_row[g]);
-        const float bias = float(b_row[g]);
+        const float bias = prefill_int4_bias(b_row, g, scale);
         const uint group_base = g * kPrefillGroupSize;
         for (uint kk = 0; kk < kPrefillGroupSize; ++kk) {
             const uint k = group_base + kk;
@@ -706,6 +1297,148 @@ kernel void prefill_dequant_int4_qmm_f16_block(
         }
     }
     Y[t * N + n] = half(acc);
+}
+
+/// `Y[T, N] = X[T, K] * W[N, K]^T` with 8x8 `simdgroup_matrix` tiles.
+///
+/// `prefill_dequant_int4_qmm_f16_block` gives one thread the whole K reduction
+/// for a single (token, row) pair, so a weight byte is re-read once per token
+/// block of 8 and every FMA is scalar. This one stages a 64x32 activation tile
+/// and a dequantized 32x64 weight tile in threadgroup memory, then walks them
+/// with `simdgroup_multiply_accumulate`: a weight byte is read once per 64
+/// tokens and the reduction runs on the matrix units.
+///
+/// One threadgroup (4 simdgroups, 128 threads) owns a 64x64 output tile; each
+/// simdgroup owns a 32x32 quadrant of it as a 4x4 array of 8x8 accumulators.
+/// The accumulators stay `float` so the K reduction keeps the scalar kernel's
+/// precision. `stage` is aliased as the two half tiles during the K loop and
+/// reused as the float epilogue tile afterwards.
+///
+/// K is a multiple of the affine group size (32 or 64) and therefore of the
+/// 32-wide K tile, so a tile never straddles a group boundary and each 8-wide
+/// dequant chunk needs one scale/bias pair. T and N are unconstrained.
+constant constexpr uint kPrefillQMMTileM = 64;
+constant constexpr uint kPrefillQMMTileN = 64;
+constant constexpr uint kPrefillQMMTileK = 32;
+constant constexpr uint kPrefillQMMThreads = 128;
+
+kernel void prefill_int4_qmm_simdgroup_f16(
+    device const uint8_t* W      [[buffer(0)]],
+    device const bfloat*  scales [[buffer(1)]],
+    device const bfloat*  biases [[buffer(2)]],
+    device const half*    X      [[buffer(3)]],
+    device half*          Y      [[buffer(4)]],
+    constant uint&        T      [[buffer(5)]],
+    constant uint&        N      [[buffer(6)]],
+    constant uint&        K      [[buffer(7)]],
+    uint3                 lid3   [[thread_position_in_threadgroup]],
+    uint3                 tgid3  [[threadgroup_position_in_grid]],
+    uint                  sgid   [[simdgroup_index_in_threadgroup]]
+) {
+    const uint lid = lid3.x;
+    const uint2 tgid = tgid3.xy;
+    threadgroup float stage[kPrefillQMMTileM * kPrefillQMMTileN];
+    threadgroup half* As = (threadgroup half*)stage;
+    threadgroup half* Bs = As + kPrefillQMMTileM * kPrefillQMMTileK;
+
+    const uint tBase = tgid.y * kPrefillQMMTileM;
+    const uint nBase = tgid.x * kPrefillQMMTileN;
+    const uint groups = K / kPrefillGroupSize;
+    const uint row_bytes = K / 2u;
+
+    // Quadrant of the 64x64 tile this simdgroup accumulates.
+    const uint sg_m = (sgid / 2u) * 32u;
+    const uint sg_n = (sgid % 2u) * 32u;
+
+    simdgroup_float8x8 acc[4][4];
+    for (uint i = 0; i < 4u; ++i) {
+        for (uint j = 0; j < 4u; ++j) {
+            acc[i][j] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+        }
+    }
+
+    // Weight row and dequant chunk this thread refills every K tile. Two
+    // threads share a row and take two of the four 8-wide chunks each.
+    const uint w_n_local = lid & (kPrefillQMMTileN - 1u);
+    const uint w_chunk_base = lid / kPrefillQMMTileN;
+    const uint w_n = nBase + w_n_local;
+    device const uint8_t* w_row = W + w_n * row_bytes;
+    device const bfloat* s_row = scales + w_n * groups;
+    device const bfloat* b_row = biases + w_n * groups;
+
+    for (uint k0 = 0; k0 < K; k0 += kPrefillQMMTileK) {
+        // Activations: 64x32 halves, 16 per thread, K-contiguous per row.
+        for (uint i = 0; i < 16u; ++i) {
+            const uint idx = i * kPrefillQMMThreads + lid;
+            const uint m = idx / kPrefillQMMTileK;
+            const uint kk = idx % kPrefillQMMTileK;
+            const uint t = tBase + m;
+            As[idx] = (t < T) ? X[t * K + k0 + kk] : half(0.0f);
+        }
+
+        // Weights: 32x64 halves, stored K-major so an 8x8 load is already the
+        // [k, n] fragment the matrix unit wants.
+        for (uint c = 0; c < 2u; ++c) {
+            const uint kk = (w_chunk_base + c * 2u) * 8u;
+            if (w_n < N) {
+                const uint g = (k0 + kk) / kPrefillGroupSize;
+                const float scale = float(s_row[g]);
+                const float bias = prefill_int4_bias(b_row, g, scale);
+                device const uint8_t* w_ptr = w_row + ((k0 + kk) >> 1);
+                for (uint p = 0; p < 4u; ++p) {
+                    const uint8_t packed = w_ptr[p];
+                    const float lo = fma(float(packed & 0x0Fu), scale, bias);
+                    const float hi = fma(float(packed >> 4), scale, bias);
+                    Bs[(kk + 2u * p) * kPrefillQMMTileN + w_n_local] = half(lo);
+                    Bs[(kk + 2u * p + 1u) * kPrefillQMMTileN + w_n_local] = half(hi);
+                }
+            } else {
+                for (uint p = 0; p < 8u; ++p) {
+                    Bs[(kk + p) * kPrefillQMMTileN + w_n_local] = half(0.0f);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        simdgroup_half8x8 a[4];
+        simdgroup_half8x8 b[4];
+        for (uint kk = 0; kk < kPrefillQMMTileK; kk += 8u) {
+            for (uint i = 0; i < 4u; ++i) {
+                simdgroup_load(a[i],
+                               As + (sg_m + i * 8u) * kPrefillQMMTileK + kk,
+                               kPrefillQMMTileK);
+            }
+            for (uint j = 0; j < 4u; ++j) {
+                simdgroup_load(b[j],
+                               Bs + kk * kPrefillQMMTileN + sg_n + j * 8u,
+                               kPrefillQMMTileN);
+            }
+            for (uint i = 0; i < 4u; ++i) {
+                for (uint j = 0; j < 4u; ++j) {
+                    simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+                }
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (uint i = 0; i < 4u; ++i) {
+        for (uint j = 0; j < 4u; ++j) {
+            simdgroup_store(acc[i][j],
+                            stage + (sg_m + i * 8u) * kPrefillQMMTileN + sg_n + j * 8u,
+                            kPrefillQMMTileN);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint i = 0; i < 32u; ++i) {
+        const uint idx = i * kPrefillQMMThreads + lid;
+        const uint t = tBase + idx / kPrefillQMMTileN;
+        const uint n = nBase + idx % kPrefillQMMTileN;
+        if (t < T && n < N) {
+            Y[t * N + n] = half(stage[idx]);
+        }
+    }
 }
 
 static inline void prefill_rope_apply_neox_pair(
@@ -785,7 +1518,34 @@ struct PrefillAttentionParams {
     uint qTokenStrideElements;
     uint oTokenStrideElements;
     float scale;
+    /// Non-zero when buffer(5) carries a per-query visible end, which is how an
+    /// image span attends bidirectionally (PLAN_VISION §4-5-b).
+    uint hasSpanMask;
 };
+
+/// Exclusive end of the keys query `t` may see.
+///
+/// Causal rows end at their own position. A row inside an image span ends at
+/// the span's end instead, so every soft token of one image sees all the
+/// others — upstream's `token_type_ids_mask_function`, which it ORs into the
+/// causal mask of the *sliding* layers only (PLAN_VISION §2-7). The span is at
+/// most 280 tokens and the window is 1024, so opening the future direction is
+/// the whole of it: the window's lower edge already covers the span's start.
+///
+/// `span_end[t] == 0` means "ordinary causal row", so a text-only chunk with
+/// the mask enabled behaves exactly as it does with the mask off.
+static inline uint prefill_attention_visible_end(
+    constant PrefillAttentionParams& p,
+    device const uint* span_end,
+    uint t,
+    uint abs_q
+) {
+    uint last = abs_q + 1u;
+    if (p.hasSpanMask != 0u) {
+        last = max(last, span_end[t]);
+    }
+    return min(p.kvValidCount, last);
+}
 
 static inline uint prefill_kv_slot(uint logical) {
     return (is_function_constant_defined(FC_PREFILL_KV_RING_CAP) &&
@@ -839,6 +1599,7 @@ kernel void attention_prefill_causal_tiled(
     device const half* V [[buffer(2)]],
     device half* O [[buffer(3)]],
     constant PrefillAttentionParams& p [[buffer(4)]],
+    device const uint* span_end [[buffer(5)]],
     uint3 tg [[threadgroup_position_in_grid]],
     uint3 tid [[thread_position_in_threadgroup]],
     uint lane [[thread_index_in_simdgroup]],
@@ -860,7 +1621,7 @@ kernel void attention_prefill_causal_tiled(
     if (p.slidingWindow != 0u && abs_q + 1u > p.slidingWindow) {
         first = abs_q + 1u - p.slidingWindow;
     }
-    const uint last_exclusive = min(p.kvValidCount, abs_q + 1u);
+    const uint last_exclusive = prefill_attention_visible_end(p, span_end, t, abs_q);
 
     device const half* q_row = Q + t * p.qTokenStrideElements + qh * p.headDim;
     float row_max = -INFINITY;
@@ -895,6 +1656,175 @@ kernel void attention_prefill_causal_tiled(
         device half* out_row = O + t * p.oTokenStrideElements + qh * p.headDim;
         out_row[d] = row_sum > 0.0f ? half(acc / row_sum) : half(0.0f);
     }
+}
+
+// Query-blocked sliding-window attention.
+//
+// `attention_prefill_causal_tiled` above gives every (query, head) pair its own
+// threadgroup and walks the window one key at a time, reducing across the whole
+// threadgroup per key. Nothing is shared between queries, so each sliding-window
+// layer re-reads its whole K/V window once per query: at headDim 256 and a
+// 1024-row window that is 1 MB of K plus V per query, which is where a long
+// prompt's prefill time goes.
+//
+// Here one simdgroup owns `kQBlock` consecutive queries of one head. Each key
+// row is read into registers once and reused by all of them, and the per-key
+// reduction is a `simd_sum` rather than a threadgroup barrier, so the kernel
+// never synchronises. Device K/V traffic drops by `kQBlock`.
+//
+// Lane `l` owns head-dim elements `l, l + 32, l + 64, ...` so that the 32 lanes
+// of a load cover 32 consecutive halfs. `kElemsPerLane * 32` must equal
+// `p.headDim`; the host picks the specialisation that matches and falls back to
+// the tiled kernel for every other shape.
+template <uint kElemsPerLane, uint kQBlock>
+static inline void attention_prefill_causal_qblock_impl(
+    device const half* Q,
+    device const half* K,
+    device const half* V,
+    device half* O,
+    constant PrefillAttentionParams& p,
+    device const uint* span_end,
+    uint3 tg,
+    uint lane,
+    uint simd_group,
+    uint simdgroups
+) {
+    const uint head_dim = kElemsPerLane * 32u;
+    const uint qh = tg.y;
+    if (qh >= p.numQHeads) return;
+
+    const uint queries_per_group = kQBlock * simdgroups;
+    const uint q_first = tg.x * queries_per_group + simd_group * kQBlock;
+    if (q_first >= p.queryCount) return;
+    // Uniform across the simdgroup, so every branch on it below keeps the
+    // simdgroup converged and `simd_sum` stays well defined.
+    const uint q_count = min(kQBlock, p.queryCount - q_first);
+
+    const uint q_per_kv = p.numQHeads / p.numKVHeads;
+    const uint kv_head_offset = (qh / q_per_kv) * head_dim;
+
+    float q_reg[kQBlock][kElemsPerLane];
+    float acc[kQBlock][kElemsPerLane];
+    float row_max[kQBlock];
+    float row_sum[kQBlock];
+    uint window_first[kQBlock];
+    uint window_last[kQBlock];
+
+    uint block_first = 0xFFFFFFFFu;
+    uint block_last = 0u;
+
+    for (uint j = 0u; j < kQBlock; ++j) {
+        const bool active = j < q_count;
+        const uint t = active ? (q_first + j) : q_first;
+        device const half* q_row = Q + t * p.qTokenStrideElements + qh * head_dim;
+        for (uint i = 0u; i < kElemsPerLane; ++i) {
+            q_reg[j][i] = active ? float(q_row[lane + i * 32u]) : 0.0f;
+            acc[j][i] = 0.0f;
+        }
+        row_max[j] = -INFINITY;
+        row_sum[j] = 0.0f;
+
+        const uint abs_q = p.startPosition + t;
+        uint first = 0u;
+        if (p.slidingWindow != 0u && abs_q + 1u > p.slidingWindow) {
+            first = abs_q + 1u - p.slidingWindow;
+        }
+        window_first[j] = first;
+        // `block_last` picks up the span's end through this, so the key loop
+        // widens on its own and its structure is untouched.
+        window_last[j] = active
+            ? prefill_attention_visible_end(p, span_end, t, abs_q)
+            : 0u;
+        if (active) {
+            block_first = min(block_first, first);
+            block_last = max(block_last, window_last[j]);
+        }
+    }
+
+    for (uint key = block_first; key < block_last; ++key) {
+        const uint phys_key = prefill_kv_slot(key);
+        device const half* k_row = K + phys_key * p.kvTokenStrideElements + kv_head_offset;
+        device const half* v_row = V + phys_key * p.kvTokenStrideElements + kv_head_offset;
+
+        float k_reg[kElemsPerLane];
+        float v_reg[kElemsPerLane];
+        for (uint i = 0u; i < kElemsPerLane; ++i) {
+            k_reg[i] = float(k_row[lane + i * 32u]);
+            v_reg[i] = float(v_row[lane + i * 32u]);
+        }
+
+        for (uint j = 0u; j < kQBlock; ++j) {
+            if (key < window_first[j] || key >= window_last[j]) {
+                continue;
+            }
+            float partial = 0.0f;
+            for (uint i = 0u; i < kElemsPerLane; ++i) {
+                partial = fma(q_reg[j][i], k_reg[i], partial);
+            }
+            const float score = simd_sum(partial) * p.scale;
+
+            const float new_max = max(row_max[j], score);
+            const float old_scale = row_sum[j] > 0.0f ? fast::exp(row_max[j] - new_max) : 0.0f;
+            const float new_scale = fast::exp(score - new_max);
+            for (uint i = 0u; i < kElemsPerLane; ++i) {
+                acc[j][i] = fma(new_scale, v_reg[i], acc[j][i] * old_scale);
+            }
+            row_sum[j] = row_sum[j] * old_scale + new_scale;
+            row_max[j] = new_max;
+        }
+    }
+
+    for (uint j = 0u; j < kQBlock; ++j) {
+        if (j >= q_count) {
+            continue;
+        }
+        device half* out_row = O + (q_first + j) * p.oTokenStrideElements + qh * head_dim;
+        const float inv = row_sum[j] > 0.0f ? 1.0f / row_sum[j] : 0.0f;
+        for (uint i = 0u; i < kElemsPerLane; ++i) {
+            out_row[lane + i * 32u] = half(acc[j][i] * inv);
+        }
+    }
+}
+
+[[kernel, max_total_threads_per_threadgroup(256)]]
+kernel void attention_prefill_causal_qblock_d256(
+    device const half* Q [[buffer(0)]],
+    device const half* K [[buffer(1)]],
+    device const half* V [[buffer(2)]],
+    device half* O [[buffer(3)]],
+    constant PrefillAttentionParams& p [[buffer(4)]],
+    device const uint* span_end [[buffer(5)]],
+    uint3 tg [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]],
+    uint simdgroups [[simdgroups_per_threadgroup]]
+) {
+    attention_prefill_causal_qblock_impl<8u, 4u>(
+        Q, K, V, O, p, span_end, tg, lane, simd_group, simdgroups);
+}
+
+// Same kernel at headDim 512, which is the full-attention layers.
+//
+// Those layers have no window, so the key loop is the whole prefix and the
+// register cost of a query block is what limits it: `q_reg` and `acc` are both
+// `kQBlock * kElemsPerLane` floats per lane, and kElemsPerLane doubles with the
+// head dimension. Two queries per simdgroup keeps that at 64 registers plus the
+// key/value pair, where four would be 128 and spill.
+[[kernel, max_total_threads_per_threadgroup(256)]]
+kernel void attention_prefill_causal_qblock_d512(
+    device const half* Q [[buffer(0)]],
+    device const half* K [[buffer(1)]],
+    device const half* V [[buffer(2)]],
+    device half* O [[buffer(3)]],
+    constant PrefillAttentionParams& p [[buffer(4)]],
+    device const uint* span_end [[buffer(5)]],
+    uint3 tg [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]],
+    uint simdgroups [[simdgroups_per_threadgroup]]
+) {
+    attention_prefill_causal_qblock_impl<16u, 2u>(
+        Q, K, V, O, p, span_end, tg, lane, simd_group, simdgroups);
 }
 
 #if defined(__HAVE_TENSOR__)

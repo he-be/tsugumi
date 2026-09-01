@@ -1,0 +1,76 @@
+=== affine group size 64, scheme affine ===
+  PASS  int4-gemv m=128 n=2816  rel=3.683e-04 tol=5.0e-03  groups=44 blocks=11 tail=0
+  PASS  int4-gemv m=64 n=4096  rel=3.224e-04 tol=5.0e-03  groups=64 blocks=16 tail=0
+  PASS  int4-gemv m=128 n=2112  rel=3.729e-04 tol=5.0e-03  groups=33 blocks=8 tail=1
+  PASS  int4-gemv m=128 n=704  rel=2.665e-04 tol=5.0e-03  groups=11 blocks=2 tail=3
+  PASS  routed-moe d=2816 f=704 topK=8  rel=4.330e-04 tol=1.0e-02  gate/up groups=44 down groups=11
+  PASS  lm-head-greedy d=2816 v=2048 draws=4  rel=0.000e+00 tol=0.0e+00  argmax agrees on all 4 draws
+  PASS  router-int8 d=2816 experts=128  rel=3.320e-04 tol=5.0e-03  top-8 agrees on all 4 draws, groups=44
+  PASS  router-bf16 d=2816 experts=128  rel=2.308e-04 tol=5.0e-03  top-8 agrees on all 4 draws
+  PASS  int8-gemv m=128 n=2112  rel=3.454e-04 tol=5.0e-03  groups=33 steps=33
+  PASS  shared-expert-int8 d=2816 f=2112  rel=3.761e-04 tol=1.0e-02  gate/up groups=44 down groups=33
+  PASS  prefill-qmm t=64 n=2112 k=2816  rel=4.137e-04 tol=5.0e-03  path=simdgroup-matrix tiles=1x33x88 kTilesPerGroup=2
+  PASS  prefill-qmm t=131 n=100 k=2816  rel=2.427e-04 tol=5.0e-03  path=simdgroup-matrix tiles=3x2x88 kTilesPerGroup=2
+  PASS  prefill-qmm t=7 n=64 k=128  rel=3.103e-04 tol=5.0e-03  path=simdgroup-matrix tiles=1x1x4 kTilesPerGroup=2
+=== affine group size 64, scheme sym ===
+  PASS  int4-gemv m=128 n=2816  rel=3.686e-04 tol=5.0e-03  groups=44 blocks=11 tail=0
+  PASS  int4-gemv m=64 n=4096  rel=2.746e-04 tol=5.0e-03  groups=64 blocks=16 tail=0
+  PASS  int4-gemv m=128 n=2112  rel=3.764e-04 tol=5.0e-03  groups=33 blocks=8 tail=1
+  PASS  int4-gemv m=128 n=704  rel=2.448e-04 tol=5.0e-03  groups=11 blocks=2 tail=3
+  PASS  routed-moe d=2816 f=704 topK=8  rel=4.268e-04 tol=1.0e-02  gate/up groups=44 down groups=11
+  PASS  lm-head-greedy d=2816 v=2048 draws=4  rel=0.000e+00 tol=0.0e+00  argmax agrees on all 4 draws
+  PASS  router-int8 d=2816 experts=128  rel=3.320e-04 tol=5.0e-03  top-8 agrees on all 4 draws, groups=44
+  PASS  router-bf16 d=2816 experts=128  rel=2.308e-04 tol=5.0e-03  top-8 agrees on all 4 draws
+  PASS  int8-gemv m=128 n=2112  rel=3.454e-04 tol=5.0e-03  groups=33 steps=33
+  PASS  shared-expert-int8 d=2816 f=2112  rel=3.761e-04 tol=1.0e-02  gate/up groups=44 down groups=33
+  PASS  prefill-qmm t=64 n=2112 k=2816  rel=4.085e-04 tol=5.0e-03  path=simdgroup-matrix tiles=1x33x88 kTilesPerGroup=2
+  PASS  prefill-qmm t=131 n=100 k=2816  rel=2.504e-04 tol=5.0e-03  path=simdgroup-matrix tiles=3x2x88 kTilesPerGroup=2
+  PASS  prefill-qmm t=7 n=64 k=128  rel=3.088e-04 tol=5.0e-03  path=simdgroup-matrix tiles=1x1x4 kTilesPerGroup=2
+=== affine group size 32, scheme affine ===
+  PASS  int4-gemv m=128 n=2816  rel=3.043e-04 tol=5.0e-03  groups=88 blocks=11 tail=0
+  PASS  int4-gemv m=64 n=4096  rel=1.963e-04 tol=5.0e-03  groups=128 blocks=16 tail=0
+  PASS  int4-gemv m=128 n=2112  rel=2.227e-04 tol=5.0e-03  groups=66 blocks=8 tail=2
+  PASS  int4-gemv m=128 n=704  rel=2.451e-04 tol=5.0e-03  groups=22 blocks=2 tail=6
+  PASS  routed-moe d=2816 f=704 topK=8  rel=3.752e-04 tol=1.0e-02  gate/up groups=88 down groups=22
+  PASS  lm-head-greedy d=2816 v=2048 draws=4  rel=0.000e+00 tol=0.0e+00  argmax agrees on all 4 draws
+  PASS  router-int8 d=2816 experts=128  rel=4.261e-04 tol=5.0e-03  top-8 agrees on all 4 draws, groups=88
+  PASS  router-bf16 d=2816 experts=128  rel=3.756e-04 tol=5.0e-03  top-8 agrees on all 4 draws
+  PASS  int8-gemv m=128 n=2112  rel=2.172e-04 tol=5.0e-03  groups=66 steps=33
+  PASS  shared-expert-int8 d=2816 f=2112  rel=4.372e-04 tol=1.0e-02  gate/up groups=88 down groups=66
+  PASS  prefill-qmm t=64 n=2112 k=2816  rel=3.508e-04 tol=5.0e-03  path=simdgroup-matrix tiles=1x33x88 kTilesPerGroup=1
+  PASS  prefill-qmm t=131 n=100 k=2816  rel=3.916e-04 tol=5.0e-03  path=simdgroup-matrix tiles=3x2x88 kTilesPerGroup=1
+  PASS  prefill-qmm t=7 n=64 k=128  rel=3.166e-04 tol=5.0e-03  path=simdgroup-matrix tiles=1x1x4 kTilesPerGroup=1
+=== affine group size 32, scheme sym ===
+  PASS  int4-gemv m=128 n=2816  rel=2.824e-04 tol=5.0e-03  groups=88 blocks=11 tail=0
+  PASS  int4-gemv m=64 n=4096  rel=2.320e-04 tol=5.0e-03  groups=128 blocks=16 tail=0
+  PASS  int4-gemv m=128 n=2112  rel=2.380e-04 tol=5.0e-03  groups=66 blocks=8 tail=2
+  PASS  int4-gemv m=128 n=704  rel=2.502e-04 tol=5.0e-03  groups=22 blocks=2 tail=6
+  PASS  routed-moe d=2816 f=704 topK=8  rel=4.178e-04 tol=1.0e-02  gate/up groups=88 down groups=22
+  PASS  lm-head-greedy d=2816 v=2048 draws=4  rel=0.000e+00 tol=0.0e+00  argmax agrees on all 4 draws
+  PASS  router-int8 d=2816 experts=128  rel=4.261e-04 tol=5.0e-03  top-8 agrees on all 4 draws, groups=88
+  PASS  router-bf16 d=2816 experts=128  rel=3.756e-04 tol=5.0e-03  top-8 agrees on all 4 draws
+  PASS  int8-gemv m=128 n=2112  rel=2.172e-04 tol=5.0e-03  groups=66 steps=33
+  PASS  shared-expert-int8 d=2816 f=2112  rel=4.372e-04 tol=1.0e-02  gate/up groups=88 down groups=66
+  PASS  prefill-qmm t=64 n=2112 k=2816  rel=3.624e-04 tol=5.0e-03  path=simdgroup-matrix tiles=1x33x88 kTilesPerGroup=1
+  PASS  prefill-qmm t=131 n=100 k=2816  rel=3.638e-04 tol=5.0e-03  path=simdgroup-matrix tiles=3x2x88 kTilesPerGroup=1
+  PASS  prefill-qmm t=7 n=64 k=128  rel=3.044e-04 tol=5.0e-03  path=simdgroup-matrix tiles=1x1x4 kTilesPerGroup=1
+=== vision tower (BF16; independent of the affine group size) ===
+  PASS  vision-qmm t=64 n=1152 k=1152  rel=2.936e-04 tol=5.0e-03  tiles=1x18x36 kTail=0 nTail=0
+  PASS  vision-qmm t=131 n=4304 k=1152  rel=3.040e-04 tol=5.0e-03  tiles=3x68x36 kTail=0 nTail=16
+  PASS  vision-qmm t=37 n=1152 k=4304  rel=3.258e-04 tol=5.0e-03  tiles=1x18x135 kTail=16 nTail=0
+  PASS  vision-qmm t=7 n=100 k=72  rel=3.294e-04 tol=5.0e-03  tiles=1x2x3 kTail=8 nTail=36
+  PASS  vision-patch-embed 9x5  rel=4.083e-04 tol=5.0e-03  P=45 tableLen=64
+  PASS  vision-patch-embed/grid-transposed  rel=1.060e+00 tol=5.0e-02  must exceed
+  PASS  vision-qk-rope2d 9x5 heads=4  rel=3.121e-04 tol=5.0e-03  headDim=72 theta=100.0
+  PASS  vision-qk-rope2d/axes-swapped  rel=1.739e+00 tol=5.0e-02  must exceed
+  PASS  vision-attention/segment8 P=48 heads=3  rel=2.538e-04 tol=1.0e-02  scale=1.0 groups=1 tail=48
+  PASS  vision-attention/qblock P=48 heads=3  rel=2.538e-04 tol=1.0e-02  scale=1.0 groups=1 tail=48
+  PASS  vision-attention/segment8 P=200 heads=2  rel=2.566e-04 tol=1.0e-02  scale=1.0 groups=4 tail=8
+  PASS  vision-attention/qblock P=200 heads=2  rel=2.566e-04 tol=1.0e-02  scale=1.0 groups=4 tail=8
+  PASS  vision-mlp-act n=30128  rel=2.449e-04 tol=5.0e-03  gelu_pytorch_tanh
+  PASS  vision-norm-residual-add t=37 d=1152  rel=3.605e-04 tol=5.0e-03  in-place residual
+  PASS  vision-norm-residual-add/residual-dropped  rel=1.143e+00 tol=5.0e-02  must exceed
+  PASS  vision-pool-std 9x6  rel=3.350e-04 tol=5.0e-03  cells=6 d=128
+  PASS  vision-pool-std/column-major  rel=1.327e+00 tol=5.0e-02  must exceed
+
+PASS  69 cases (group sizes [64, 32] + vision)

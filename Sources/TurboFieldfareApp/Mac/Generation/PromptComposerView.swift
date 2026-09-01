@@ -2,14 +2,19 @@ import AppKit
 import TurboFieldfareAppCore
 import TurboFieldfareMacPresentation
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct PromptComposerView: View {
     @Bindable var model: AppModel
     @FocusState private var promptFocused: Bool
     @State private var showingPromptTips = false
+    @State private var showingImageImporter = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if !model.attachedImagePaths.isEmpty {
+                attachmentsRow
+            }
             editor
             footer
         }
@@ -71,9 +76,77 @@ struct PromptComposerView: View {
     private var footer: some View {
         HStack(spacing: 10) {
             promptTips
+            if model.supportsVision {
+                attachImagesButton
+            }
             Spacer()
             clearAction
             GenerateControl(model: model)
+        }
+    }
+
+    private var attachImagesButton: some View {
+        Button {
+            showingImageImporter = true
+        } label: {
+            Label("Attach images", systemImage: "photo.badge.plus")
+                .labelStyle(.iconOnly)
+                .frame(width: 28, height: 28)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .disabled(model.isRunning || model.attachedImagePaths.count >= 4)
+        .help("Attach up to 4 images (PNG, JPEG, WebP)")
+        .fileImporter(isPresented: $showingImageImporter,
+                      allowedContentTypes: [.png, .jpeg, .webP, .gif],
+                      allowsMultipleSelection: true) { result in
+            guard case .success(let urls) = result else { return }
+            model.attachImages(urls.map(\.path))
+        }
+    }
+
+    private var attachmentsRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(model.attachedImagePaths, id: \.self) { path in
+                    attachmentThumbnail(path)
+                }
+            }
+        }
+        .frame(height: 52)
+    }
+
+    private func attachmentThumbnail(_ path: String) -> some View {
+        HStack(spacing: 6) {
+            if let image = NSImage(contentsOfFile: path) {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: 44, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+            } else {
+                Image(systemName: "photo")
+                    .frame(width: 44, height: 44)
+            }
+            Text((path as NSString).lastPathComponent)
+                .font(.caption)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(maxWidth: 120)
+            Button {
+                model.removeAttachedImage(path)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .symbolRenderingMode(.hierarchical)
+            }
+            .buttonStyle(.borderless)
+            .help("Remove image")
+        }
+        .padding(4)
+        .background {
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(nsColor: .windowBackgroundColor))
         }
     }
 
@@ -110,7 +183,7 @@ struct PromptComposerView: View {
             tipSection("For code and calculations",
                        "Provide types, dimensions, interfaces, edge cases, or a small scaffold. Compile or run the result before relying on it.")
             tipSection("Try a focused revision",
-                       "If the answer drifts, shorten the task and make the missing requirement explicit. The default temperature is 0.20 for steadier responses.")
+                       "If the answer drifts, shorten the task and make the missing requirement explicit. The sampler defaults to each model's official recommendation.")
         }
         .font(.callout)
         .frame(width: 390, alignment: .leading)

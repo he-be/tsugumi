@@ -4,7 +4,7 @@ import PackageDescription
 let package = Package(
     name: "TurboFieldfare",
     platforms: [
-        .macOS(.v26),
+        .macOS(.v15),
         .iOS(.v26),
     ],
     products: [
@@ -34,6 +34,7 @@ let package = Package(
             path: "Sources/TurboFieldfare",
             resources: [
                 .copy("Metal"),
+                .copy("Templates"),
             ]
         ),
         .target(
@@ -59,7 +60,12 @@ let package = Package(
         ),
         .target(
             name: "TurboFieldfareAppCore",
-            dependencies: ["TurboFieldfare", "TurboFieldfareRepackCore", "TurboFieldfareDecodeProtocol"],
+            dependencies: [
+                "TurboFieldfare",
+                "TurboFieldfareRepackCore",
+                "TurboFieldfareDecodeProtocol",
+                "TurboFieldfareServerCore",
+            ],
             path: "Sources/TurboFieldfareApp/Core",
             resources: [
                 .copy("Resources/app-prompts.json"),
@@ -106,6 +112,14 @@ let package = Package(
             name: "TurboFieldfareValidationSupport",
             dependencies: ["TurboFieldfare"],
             path: "Sources/TurboFieldfareValidation/Support"
+        ),
+        // Numeric self-check for the affine-INT4 kernels at each supported
+        // group size. An executable rather than a test target because
+        // `swift test` cannot run in the development environment.
+        .executableTarget(
+            name: "TurboFieldfareKernelCheck",
+            dependencies: ["TurboFieldfare", "TurboFieldfareValidationSupport"],
+            path: "Sources/TurboFieldfareKernelCheck"
         ),
         .testTarget(
             name: "TurboFieldfareFormatTests",

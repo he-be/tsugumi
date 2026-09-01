@@ -5,13 +5,14 @@ import Testing
     @Test func productionDefaultsAreStable() {
         let runtime = RuntimeConfiguration.production
         #expect(runtime.fp16RingEnabled)
-        #expect(runtime.expertCacheSlots == 16)
+        // 32 = 運用点。上限も 32 になった (2026-08-20、docs/mtp/52 §9)。
+        #expect(runtime.expertCacheSlots == 32)
         #expect(runtime.expertCachePolicy == .lfu)
         #expect(runtime.rdadvisePolicy == .off)
         #expect(!runtime.rdadviseEnabled)
         #expect(runtime.prefillPolicy == .chunked)
-        #expect(runtime.prefillChunkTokens == 128)
-        #expect(runtime.prefillAttentionPath == .fullTensorOps2DPreferred)
+        #expect(runtime.prefillChunkTokens == 2048)
+        #expect(runtime.prefillAttentionPath == .causalQBlock)
         #expect(runtime.headPath == .fusedRows)
     }
 
@@ -32,7 +33,7 @@ import Testing
         #expect(runtime.headPath == .logits)
     }
 
-    @Test(arguments: [32, 64, 128])
+    @Test(arguments: RuntimeConfiguration.allowedPrefillChunkTokens)
     func productionPrefillSupportsPublicChunkSizes(_ chunkTokens: Int) {
         let runtime = RuntimeConfiguration(prefillChunkTokens: chunkTokens)
         #expect(runtime.prefillConfig.mode == .chunked)

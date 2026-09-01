@@ -37,11 +37,39 @@ public enum GFTokenizerError: Error, CustomStringConvertible {
 ///
 /// TurboFieldfare owns the minimal chat framing because the upstream
 /// `tokenizer_config.json` has no `chat_template`. Literal control-token text in
-/// user content is accepted as a trusted-input research-runtime limitation.
+/// user content is accepted as a trusted-input research-runtime limitation —
+/// with one carve-out: the multimodal markers (`<|image|>`, `<|audio|>`,
+/// `<|video|>`, and their openers/closers) are rejected outright, because those
+/// ids would otherwise be embedded as ordinary text and produce a fluent answer
+/// about an image nobody supplied (`VisionPromptAssembler.rejectMediaMarkers`).
 public struct GFTokenizer: @unchecked Sendable {
     public static let modelID = "google/gemma-4-26B-A4B-it"
     public static let chatTemplateIdentity = "gemma4-it-text-no-tools-v1"
     public static let toolChatTemplateIdentity = "gemma4-it-tools-jinja-v1"
+
+    /// Which rendering of the chat format a caller wants.
+    ///
+    /// `.modelBundled` is the pinned checkpoint's own template, on both paths:
+    /// the Swift rendering of it here and `chat_template.jinja` itself on the
+    /// tool path. `.serverRedraw` is the repo-owned variant that draws a
+    /// finished model turn the way it was generated (SPEC INV-1,
+    /// `ServerChatTemplate`) so the prompt cache's common prefix reaches the
+    /// end of the last turn. The server asks for it; the CLI and the app do
+    /// not, and their token streams are unchanged.
+    public enum ChatTemplateVariant: String, Sendable {
+        case modelBundled
+        case serverRedraw
+
+        /// What the domain of a prompt cache entry has to agree on: two
+        /// requests rendered by different variants are different token
+        /// streams and must not share a cache.
+        public var identity: String {
+            switch self {
+            case .modelBundled: return GFTokenizer.chatTemplateIdentity
+            case .serverRedraw: return "gemma4-server-redraw-v1"
+            }
+        }
+    }
 
     public let bosID: Int32
     public let eosID: Int32
@@ -280,6 +308,10 @@ public struct GFTokenizer: @unchecked Sendable {
         public let toolCalls: [HistoricalToolCall]
         public let toolCallID: String?
         public let name: String?
+        /// The thinking an assistant turn was produced with, handed back by the
+        /// client (SPEC MSG-5). It is what the `.serverRedraw` variant needs to
+        /// draw that turn as the model wrote it.
+        public let reasoningContent: String?
 
         public init(role: Role, content: String) {
             self.role = role
@@ -287,54 +319,229 @@ public struct GFTokenizer: @unchecked Sendable {
             self.toolCalls = []
             self.toolCallID = nil
             self.name = nil
+            self.reasoningContent = nil
         }
 
         public init(role: Role,
                     content: String?,
                     toolCalls: [HistoricalToolCall] = [],
                     toolCallID: String? = nil,
-                    name: String? = nil) {
+                    name: String? = nil,
+                    reasoningContent: String? = nil) {
             self.role = role
             self.content = content
             self.toolCalls = toolCalls
             self.toolCallID = toolCallID
             self.name = name
+            self.reasoningContent = reasoningContent
+        }
+    }
+
+    /// One piece of a message body. `image` is a placeholder the caller has
+    /// attached a real image to; it renders as the single `<|image|>` token the
+    /// bundled template emits for an `image` content part, and
+    /// `VisionPromptAssembler.expandImagePlaceholders` later widens it to
+    /// `<|image>` + n soft tokens + `<image|>`.
+    public enum ContentPart: Sendable, Equatable {
+        case text(String)
+        case image
+    }
+
+    /// A message whose body is a sequence of parts. `Message` is the text-only
+    /// special case of this and renders identically.
+    public struct MultimodalMessage: Sendable, Equatable {
+        public let role: Role
+        public let parts: [ContentPart]
+        public let reasoningContent: String?
+
+        public init(role: Role, parts: [ContentPart], reasoningContent: String? = nil) {
+            self.role = role
+            self.parts = parts
+            self.reasoningContent = reasoningContent
+        }
+
+        public var imageCount: Int {
+            parts.reduce(into: 0) { $0 += ($1 == .image ? 1 : 0) }
         }
     }
 
     /// Text-only, no-tool rendering of the pinned IT checkpoint's bundled
-    /// `chat_template.jinja`, with thinking disabled. Keeping this narrow makes
-    /// unsupported tool/media behavior explicit instead of approximating it.
+    /// `chat_template.jinja`. Keeping this narrow makes unsupported tool/media
+    /// behavior explicit instead of approximating it.
     private static let turnOpen    = "<|turn>"
     private static let turnClose   = "<turn|>"
     private static let bosMark     = "<bos>"
+    private static let thinkMark   = "<|think|>"
+    private static let thoughtOpen  = "<|channel>thought\n"
+    private static let thoughtClose = "<channel|>"
+    /// The channel a non-reasoning generation prompt opens and closes at once,
+    /// telling the model to answer without thinking. It is in the KV of every
+    /// turn produced that way, so `.serverRedraw` draws it again (SPEC INV-1).
+    private static let emptyThoughtChannel = thoughtOpen + thoughtClose
 
-    public func applyChatTemplate(_ messages: [Message]) throws -> String {
-        var s = Self.bosMark
-        for (index, message) in messages.enumerated() {
-            guard let rawContent = message.content else {
+    /// - Parameter enableThinking: mirrors the template's `enable_thinking`.
+    ///   When false the generation prompt opens the thought channel and closes
+    ///   it immediately, which tells the model to answer without reasoning.
+    ///   When true a `<|think|>` marker leads the system turn and the thought
+    ///   channel is left for the model to open, so it reasons first. The
+    ///   reasoning is real output: it costs generated tokens, and callers that
+    ///   want it hidden route it through `StructuredAssistantDecoder`.
+    public func applyChatTemplate(_ messages: [Message],
+                                  enableThinking: Bool = false,
+                                  variant: ChatTemplateVariant = .modelBundled) throws -> String {
+        let multimodal = try messages.map { message -> MultimodalMessage in
+            guard let content = message.content else {
                 throw GFTokenizerError.invalidChatTemplate("text-only messages require content")
             }
-            let content = rawContent.trimmingCharacters(in: .whitespacesAndNewlines)
+            return MultimodalMessage(role: message.role,
+                                     parts: [.text(content)],
+                                     reasoningContent: message.reasoningContent)
+        }
+        return try applyChatTemplate(multimodal: multimodal,
+                                     enableThinking: enableThinking,
+                                     variant: variant)
+    }
+
+    /// The same rendering with image placeholders allowed in the bodies.
+    ///
+    /// Each text part is trimmed on its own and the parts are concatenated with
+    /// no separator, which is what the bundled template does with a sequence
+    /// `content` (`chat_template.jinja`: `item['text'] | trim`, then
+    /// `'<|image|>'` for an image item). A message of one text part therefore
+    /// renders byte for byte as the text-only path above.
+    public func applyChatTemplate(multimodal messages: [MultimodalMessage],
+                                  enableThinking: Bool = false,
+                                  variant: ChatTemplateVariant = .modelBundled) throws -> String {
+        func render(_ parts: [ContentPart]) throws -> String {
+            var body = ""
+            for part in parts {
+                switch part {
+                case .text(let text):
+                    try VisionPromptAssembler.rejectMediaMarkers(in: text)
+                    body += text.trimmingCharacters(in: .whitespacesAndNewlines)
+                case .image:
+                    body += VisionMediaTokenIDs.imageToken
+                }
+            }
+            return body
+        }
+
+        var s = Self.bosMark
+        var rest = messages[...]
+        // The template emits a system turn whenever thinking is on, even with
+        // no system message to put in it, because that turn carries the marker.
+        if enableThinking {
+            var body = ""
+            if let first = messages.first, first.role == .system {
+                body = try render(first.parts)
+                rest = messages.dropFirst()
+            }
+            s += Self.turnOpen + "system\n" + Self.thinkMark + "\n" + body
+                + Self.turnClose + "\n"
+        }
+        for (index, message) in rest.enumerated() {
             if message.role == .system && index != 0 {
                 throw GFTokenizerError.invalidChatTemplate("system message must be first")
             }
+            let content = try render(message.parts)
             let role = message.role == .assistant ? "model" : message.role.rawValue
-            s += Self.turnOpen + role + "\n" + content + Self.turnClose + "\n"
+            s += Self.turnOpen + role + "\n"
+            if variant == .serverRedraw && message.role == .assistant {
+                s += Self.finishedTurnChannel(reasoning: message.reasoningContent,
+                                              enableThinking: enableThinking)
+            }
+            s += content + Self.turnClose + "\n"
         }
-        s += Self.turnOpen + "model\n<|channel>thought\n<channel|>"
+        s += Self.turnOpen + "model\n"
+        if !enableThinking { s += Self.emptyThoughtChannel }
         return s
     }
 
+    /// The thought channel a finished model turn opened while it was produced.
+    ///
+    /// Reasoning off: the empty channel the generation prompt wrote. Reasoning
+    /// on: the block the model itself wrote, which only exists here if the
+    /// client handed it back (SPEC MSG-5) — when it did not, nothing is drawn,
+    /// because inventing a block would put tokens in the prompt that were never
+    /// in the KV, which is the same divergence the other way round.
+    private static func finishedTurnChannel(reasoning: String?,
+                                            enableThinking: Bool) -> String {
+        if let reasoning, !reasoning.isEmpty {
+            return thoughtOpen + reasoning + "\n" + thoughtClose
+        }
+        return enableThinking ? "" : emptyThoughtChannel
+    }
+
+    /// A turn on the tool-calling path: `Message`'s metadata with a body that
+    /// can hold images.
+    ///
+    /// The tool template renders content as either a string or a sequence of
+    /// parts, and it needs the tool metadata (`tool_calls`, `tool_call_id`) that
+    /// `MultimodalMessage` has no room for — so the tool path gets its own turn
+    /// type rather than either of the two halves growing the other's fields.
+    public struct ToolChatMessage: Sendable, Equatable {
+        public let role: Role
+        public let parts: [ContentPart]
+        public let toolCalls: [HistoricalToolCall]
+        public let toolCallID: String?
+        public let name: String?
+        public let reasoningContent: String?
+
+        public init(role: Role,
+                    parts: [ContentPart],
+                    toolCalls: [HistoricalToolCall] = [],
+                    toolCallID: String? = nil,
+                    name: String? = nil,
+                    reasoningContent: String? = nil) {
+            self.role = role
+            self.parts = parts
+            self.toolCalls = toolCalls
+            self.toolCallID = toolCallID
+            self.name = name
+            self.reasoningContent = reasoningContent
+        }
+
+        public init(_ message: Message) {
+            self.init(role: message.role,
+                      parts: message.content.map { [.text($0)] } ?? [],
+                      toolCalls: message.toolCalls,
+                      toolCallID: message.toolCallID,
+                      name: message.name,
+                      reasoningContent: message.reasoningContent)
+        }
+
+        public var imageCount: Int {
+            parts.reduce(into: 0) { $0 += ($1 == .image ? 1 : 0) }
+        }
+    }
+
     public func encodeToolChat(messages: [Message],
-                               tools: [FunctionDefinition]) throws -> [Int32] {
-        guard tokenizer.hasChatTemplate else {
+                               tools: [FunctionDefinition],
+                               enableThinking: Bool = false,
+                               variant: ChatTemplateVariant = .modelBundled) throws -> [Int32] {
+        try encodeToolChat(messages: messages.map(ToolChatMessage.init),
+                           tools: tools,
+                           enableThinking: enableThinking,
+                           variant: variant)
+    }
+
+    /// The same rendering with image placeholders allowed in the bodies.
+    ///
+    /// A turn whose body is one text part is sent as a *string*, exactly as the
+    /// text-only overload always did, so a request that carries no image
+    /// renders byte for byte as before (11-S2 §2). Only a turn that actually
+    /// holds an image is sent as a parts array.
+    public func encodeToolChat(messages: [ToolChatMessage],
+                               tools: [FunctionDefinition],
+                               enableThinking: Bool = false,
+                               variant: ChatTemplateVariant = .modelBundled) throws -> [Int32] {
+        guard variant != .modelBundled || tokenizer.hasChatTemplate else {
             throw GFTokenizerError.missingToolTemplate
         }
         let upstreamMessages: [Tokenizers.Message] = try messages.map { message in
             var value: Tokenizers.Message = [
                 "role": message.role.rawValue,
-                "content": message.content,
+                "content": try Self.toolChatContent(message.parts),
             ]
             if !message.toolCalls.isEmpty {
                 value["tool_calls"] = try message.toolCalls.map { call -> [String: any Sendable] in
@@ -350,6 +557,9 @@ public struct GFTokenizer: @unchecked Sendable {
             }
             if let toolCallID = message.toolCallID { value["tool_call_id"] = toolCallID }
             if let name = message.name { value["name"] = name }
+            if let reasoning = message.reasoningContent, !reasoning.isEmpty {
+                value["reasoning_content"] = reasoning
+            }
             return value
         }
         let upstreamTools: [ToolSpec] = try tools.map { tool in
@@ -362,57 +572,46 @@ public struct GFTokenizer: @unchecked Sendable {
                 ] as [String: any Sendable],
             ]
         }
+        let chatTemplate: ChatTemplateArgument? = switch variant {
+        case .modelBundled: nil
+        case .serverRedraw: .literal(try ServerChatTemplate.jinja())
+        }
         return try tokenizer.applyChatTemplate(
             messages: upstreamMessages,
-            chatTemplate: nil,
+            chatTemplate: chatTemplate,
             addGenerationPrompt: true,
             truncation: false,
             maxLength: nil,
             tools: upstreamTools,
-            additionalContext: ["enable_thinking": false]
+            additionalContext: ["enable_thinking": enableThinking]
         ).map(Int32.init)
     }
 
-    public func encodeTextContinuation(userContent: String) -> [Int32] {
-        let content = userContent.trimmingCharacters(in: .whitespacesAndNewlines)
-        return [endOfTurnID] + encode(
-            "\n\(Self.turnOpen)user\n\(content)\(Self.turnClose)\n"
-                + "\(Self.turnOpen)model\n<|channel>thought\n<channel|>",
-            addBOS: false)
+    /// The `content` value for one tool-path turn.
+    ///
+    /// nil for a turn that carries only tool calls, a string for a plain text
+    /// body, and the template's `[{type: text|image}]` sequence when an image
+    /// is present. Text parts are trimmed here because the template trims a
+    /// string body but not the items of a sequence.
+    private static func toolChatContent(_ parts: [ContentPart]) throws -> (any Sendable)? {
+        guard parts.contains(.image) else {
+            let text = parts.compactMap { part -> String? in
+                if case .text(let text) = part { return text }
+                return nil
+            }.joined()
+            return parts.isEmpty ? nil : text
+        }
+        return try parts.map { part -> [String: any Sendable] in
+            switch part {
+            case .text(let text):
+                try VisionPromptAssembler.rejectMediaMarkers(in: text)
+                return ["type": "text", "text": text]
+            case .image:
+                return ["type": "image"]
+            }
+        } as [any Sendable]
     }
 
-    public func encodeToolResultContinuation(
-        cachedMessages: [Message],
-        assistant: Message,
-        incomingMessages: [Message],
-        tools: [FunctionDefinition]
-    ) throws -> [Int32] {
-        let prefix = try encodeToolChat(
-            messages: cachedMessages + [assistant],
-            tools: tools)
-        let full = try encodeToolChat(messages: incomingMessages, tools: tools)
-        let callCount = assistant.toolCalls.count
-        let starts = prefix.indices.filter { prefix[$0] == toolCallStartID }
-        guard callCount > 0, starts.count >= callCount,
-              let callEnd = prefix.lastIndex(of: toolCallEndID) else {
-            throw GFTokenizerError.invalidChatTemplate(
-                "cached assistant tool-call boundary is missing")
-        }
-        let callStart = starts[starts.count - callCount]
-        let callSequence = Array(prefix[callStart...callEnd])
-        let matches = full.subsequenceStartIndices(matching: callSequence)
-        guard matches.count == 1 else {
-            throw GFTokenizerError.invalidChatTemplate(
-                "cached assistant tool-call boundary is ambiguous")
-        }
-        let suffixStart = matches[0] + callSequence.count
-        let suffix = Array(full[suffixStart...])
-        guard suffix.first == toolResponseID else {
-            throw GFTokenizerError.invalidChatTemplate(
-                "tool-result continuation does not begin at the KV boundary")
-        }
-        return suffix
-    }
 }
 
 private extension Array where Element: Equatable {

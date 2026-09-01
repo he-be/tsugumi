@@ -77,14 +77,29 @@ import TurboFieldfareRepackCore
 
   @MainActor
   @Test func defaultInstallDescriptorMatchesPinnedAudit() {
+    // Repinned to the prebuilt sym install published on Hugging Face; the
+    // sizes are the sum of the pinned per-file table.
     let descriptor = AppModelInstallDescriptor.default
-    #expect(descriptor.displayName == "Gemma 4 26B-A4B IT 4-bit")
-    #expect(descriptor.repoID == "mlx-community/gemma-4-26b-a4b-it-4bit")
-    #expect(descriptor.revision == "0d77464eeb233a2da68ebf9d7dc4edaac7db956d")
-    #expect(descriptor.sourceIndexSHA256 == "bf198c9f5ea6462addca1966e5dd669c407537a876e82cf06db9084c5c850b13")
-    #expect(descriptor.approximateDownloadBytes == 14_620_479_420)
-    #expect(descriptor.installedBytes == 14_291_921_884)
-    #expect(descriptor.requiredFreeBytes == 15_432_772_572)
+    #expect(descriptor.kind == .gemmaQATSym)
+    #expect(descriptor.displayName == "Gemma 4 26B-A4B QAT (Vision + MTP)")
+    #expect(descriptor.repoID == "mh73772/turbofieldfare-gemma4-qat-sym")
+    #expect(descriptor.sourceIndexSHA256 == "7dbbeef0345505798abcf0ac54434116a48c2f1e7aad828071c17a7a871adfe7")
+    #expect(descriptor.approximateDownloadBytes == 15_681_261_432)
+    #expect(descriptor.installedBytes == 15_681_261_432)
+    #expect(descriptor.requiredFreeBytes == 15_681_261_432 + 1_073_741_824)
+  }
+
+  @MainActor
+  @Test func ornithInstallDescriptorMatchesPinnedAudit() {
+    let descriptor = AppModelInstallDescriptor.descriptor(for: .ornith)
+    #expect(descriptor.kind == .ornith)
+    #expect(descriptor.repoID == "mh73772/turbofieldfare-ornith-oq4e-g64")
+    #expect(descriptor.sourceIndexSHA256 == "4280eb9999b17eeb94f45f8ac6ba60510afbf4e1ea5adf32aa83754e68d33bf3")
+    // 19.6 GB pack + 503 MB MTP-head sidecar, from the pinned table.
+    #expect(descriptor.installedBytes == 20_998_071_775)
+    #expect(PrebuiltModelSource.ornith.files.contains {
+      $0.path.hasPrefix("mtp-head/")
+    })
   }
 
   @MainActor

@@ -1,0 +1,6 @@
+[stop=maxNewTokens prefill=127tok new=192tok decode=11.79s tok/s=16.289]
+[load=1.340s prefill=9.191s ttft=9.191s reasoning=0ch answer=445ch peak=0.47GB]
+[expert prefill hit=0.0% 0/5971 | decode hit=59.7% 36464/61120 | io prefill=0.09s decode=0.80s]
+[prefill/tok gpu=7.95ms io=0.70ms host=63.72ms cb=4.4]
+[decode/tok gpu=32.69ms io=4.19ms host=24.51ms cb=121.4]
+[residency syncs=7389 added=27387 removed=26107 19.74ms/tok (edit=0.03 commit=19.48 request=0.23)]

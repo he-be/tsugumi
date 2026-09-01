@@ -113,6 +113,109 @@ import Darwin
         ]
     }
 
+    /// Vision section as the installer writes it. `overrides` mutate one field
+    /// at a time so a test can name exactly which disagreement it is checking.
+    static func visionSection(_ overrides: [String: Any] = [:]) -> [String: Any] {
+        let expected = VisionConfig.gemma4Vision
+        var section: [String: Any] = [
+            "hiddenSize": expected.hiddenSize,
+            "numLayers": expected.numLayers,
+            "numHeads": expected.numHeads,
+            "numKVHeads": expected.numKVHeads,
+            "headDim": expected.headDim,
+            "intermediateSize": expected.intermediateSize,
+            "patchSize": expected.patchSize,
+            "poolingKernelSize": expected.poolingKernelSize,
+            "positionEmbeddingSize": expected.positionEmbeddingSize,
+            "ropeTheta": expected.ropeTheta,
+            "rmsNormEps": expected.rmsNormEps,
+            "hiddenActivation": expected.hiddenActivation,
+            "standardize": expected.standardize,
+            "maxSoftTokens": expected.maxSoftTokens,
+            "weightDType": "bf16",
+            "imageTokenID": expected.imageTokenID,
+            "boiTokenID": expected.boiTokenID,
+            "eoiTokenID": expected.eoiTokenID,
+            "weightsPath": "vision/vision_weights.bin",
+            "tensorCount": 356,
+            "payloadBytes": 1_145_588_832,
+            "sourceRepo": "google/gemma-4-26B-A4B-it-qat-q4_0-unquantized",
+            "sourceRevision": "f1e06dc520982d9b9edd76859fdb7ab209449949",
+        ]
+        for (key, value) in overrides { section[key] = value }
+        return section
+    }
+
+    static func visionFiles() -> [String: [String: Any]] {
+        var files: [String: [String: Any]] = [
+            "model_weights.bin": ["size": 1024, "sha256": String(repeating: "0", count: 64)],
+            "packed_experts/layout.json": ["size": 1024, "sha256": String(repeating: "0", count: 64)],
+            "vision/vision_weights.bin": ["size": 1_145_605_216,
+                                          "sha256": String(repeating: "0", count: 64)],
+        ]
+        for L in 0..<ArchConfig.gemma4Toy().numLayers {
+            files["packed_experts/layer_\(L).bin"] =
+                ["size": 16384, "sha256": String(repeating: "0", count: 64)]
+        }
+        return files
+    }
+
+    @Test func loadsVisionManifest() throws {
+        let (dir, toy) = try Self.writeToyManifest(
+            ["vision": Self.visionSection(), "versionMinor": 1],
+            flags: ["streamingPresent": true, "visionTower": true],
+            filesOverride: Self.visionFiles())
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let manifest = try ManifestReader.load(directoryURL: dir, expecting: toy)
+        #expect(manifest.vision?.numLayers == 27)
+        #expect(manifest.vision?.maxSoftTokens == 280)
+        #expect(manifest.files["vision/vision_weights.bin"] != nil)
+    }
+
+    // `headDim` is deliberately absent: changing it alone breaks
+    // `numHeads * headDim == hiddenSize`, which the wire format rejects first.
+    @Test(arguments: [("numKVHeads", 8), ("numLayers", 26), ("maxSoftTokens", 140),
+                      ("imageTokenID", 258881), ("poolingKernelSize", 2)])
+    func rejectsVisionGeometryTheRuntimeWasNotBuiltFor(_ field: String,
+                                                       _ value: Int) throws {
+        let (dir, toy) = try Self.writeToyManifest(
+            ["vision": Self.visionSection([field: value]), "versionMinor": 1],
+            flags: ["streamingPresent": true, "visionTower": true],
+            filesOverride: Self.visionFiles())
+        defer { try? FileManager.default.removeItem(at: dir) }
+        #expect {
+            _ = try ManifestReader.load(directoryURL: dir, expecting: toy)
+        } throws: { error in
+            guard case let ModelError.archMismatch(mismatched, _, _) = error else { return false }
+            return mismatched == "vision.\(field)"
+        }
+    }
+
+    /// The point of the flag: a build that does not know about towers refuses
+    /// the model outright. This build does know, so it must instead refuse a
+    /// manifest whose flag and section disagree.
+    @Test func rejectsVisionFlagWithoutASection() throws {
+        let (dir, toy) = try Self.writeToyManifest(
+            flags: ["streamingPresent": true, "visionTower": true])
+        defer { try? FileManager.default.removeItem(at: dir) }
+        #expect(throws: ModelError.self) {
+            _ = try ManifestReader.load(directoryURL: dir, expecting: toy)
+        }
+    }
+
+    @Test func rejectsVisionSectionWhoseWeightsAreNotInstalled() throws {
+        var files = Self.visionFiles()
+        files.removeValue(forKey: "vision/vision_weights.bin")
+        let (dir, toy) = try Self.writeToyManifest(
+            ["vision": Self.visionSection(), "versionMinor": 1],
+            flags: ["streamingPresent": true, "visionTower": true],
+            filesOverride: files)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        #expect(throws: ModelError.self) {
+            _ = try ManifestReader.load(directoryURL: dir, expecting: toy)
+        }
+    }
+
     @Test func loadsValidManifest() throws {
         let (dir, toy) = try Self.writeToyManifest()
         defer { try? FileManager.default.removeItem(at: dir) }

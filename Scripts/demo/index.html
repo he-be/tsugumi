@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TurboFieldfare Vision Demo</title>
+<style>
+  :root {
+    --bg: #0e1116; --panel: #161b22; --panel-2: #1c232d; --line: #2a323d;
+    --fg: #e6edf3; --muted: #8b949e; --accent: #4aa3ff; --ok: #3fb950;
+    --warn: #d29922; --err: #f85149; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.6 -apple-system, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--panel);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: .02em; }
+  .pill {
+    font-family: var(--mono); font-size: 12px; padding: 3px 9px; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--panel-2); color: var(--muted);
+  }
+  .pill.ok { color: var(--ok); border-color: #1d4429; }
+  .pill.busy { color: var(--warn); border-color: #4a3a12; }
+  .pill.err { color: var(--err); border-color: #5c2020; }
+  main { display: grid; grid-template-columns: 340px 1fr; gap: 14px; padding: 14px; align-items: start; }
+  @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+             color: var(--muted); margin: 0 0 10px; font-weight: 600; }
+  /* 3 列固定だと 50 枚で 17 行 (約 1,800 px) になり、下のプロンプト欄まで
+     スクロールしないと届かない。列は幅に追従させ、一覧自体を高さ上限つきの
+     スクロール領域にして、カードの丈を枚数から切り離す。 */
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); gap: 6px;
+    max-height: 40vh; overflow-y: auto; overscroll-behavior: contain;
+    padding: 2px 4px 2px 2px;
+  }
+  .grid::-webkit-scrollbar { width: 8px; }
+  .grid::-webkit-scrollbar-thumb { background: var(--line); border-radius: 999px; }
+  .thumb {
+    position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; cursor: pointer;
+    border: 2px solid transparent; background: var(--panel-2); padding: 0;
+  }
+  .thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .thumb.sel { border-color: var(--accent); }
+  .thumb .badge {
+    position: absolute; top: 4px; left: 4px; background: var(--accent); color: #04121f;
+    font: 600 11px var(--mono); border-radius: 4px; padding: 0 5px;
+  }
+  label.field { display: block; font-size: 12px; color: var(--muted); margin: 10px 0 4px; }
+  textarea, input, select, button {
+    width: 100%; background: var(--panel-2); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 8px; padding: 8px; font-size: 13px;
+    font-family: inherit;
+  }
+  textarea { resize: vertical; min-height: 74px; }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  button.primary {
+    background: var(--accent); color: #04121f; font-weight: 700; border: none;
+    padding: 11px; margin-top: 12px; cursor: pointer;
+  }
+  button.primary:disabled { background: #24303c; color: var(--muted); cursor: not-allowed; }
+  button.ghost { background: transparent; cursor: pointer; }
+  .steps { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .step {
+    font: 12px var(--mono); padding: 3px 9px; border-radius: 6px;
+    border: 1px solid var(--line); color: var(--muted);
+  }
+  .step.active { color: var(--warn); border-color: #4a3a12; background: #221b0a; }
+  .step.done { color: var(--ok); border-color: #1d4429; background: #0c1f13; }
+  .bar { height: 10px; border-radius: 999px; background: var(--panel-2);
+         border: 1px solid var(--line); overflow: hidden; }
+  .bar > div { height: 100%; width: 0; background: linear-gradient(90deg, #2d6bb5, var(--accent));
+               transition: width .12s linear; }
+  .barline { display: flex; justify-content: space-between; font: 12px var(--mono);
+             color: var(--muted); margin: 6px 0 4px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-top: 12px; }
+  .stat { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  .stat .k { font-size: 11px; color: var(--muted); }
+  .stat .v { font: 600 19px/1.3 var(--mono); }
+  .stat .v small { font-size: 12px; color: var(--muted); font-weight: 400; }
+  #spark { width: 100%; height: 54px; display: block; margin-top: 10px; }
+  #out {
+    white-space: pre-wrap; word-break: break-word; min-height: 220px; margin-top: 12px;
+    background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+    font-size: 14px;
+  }
+  #out .cursor { display: inline-block; width: 8px; background: var(--accent);
+                 animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+  details { margin-top: 12px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  pre.log {
+    font: 11px/1.5 var(--mono); background: #0a0d12; border: 1px solid var(--line);
+    border-radius: 8px; padding: 10px; max-height: 220px; overflow: auto; margin: 8px 0 0;
+    color: #a9b6c4; white-space: pre-wrap;
+  }
+  .imgnote { font: 11px var(--mono); color: var(--muted); margin-top: 8px; }
+  #overlay {
+    position: fixed; inset: 0; background: rgba(8,11,15,.94); z-index: 20;
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  #overlay .box { max-width: 620px; width: 100%; }
+  #overlay h2 { font-size: 16px; text-transform: none; letter-spacing: 0; color: var(--fg); }
+  .hidden { display: none !important; }
+  .err { color: var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <h1>TurboFieldfare — 画像デモ</h1>
+  <span class="pill" id="pill-state">起動中…</span>
+  <span class="pill" id="pill-model">model —</span>
+  <span class="pill" id="pill-config">config —</span>
+  <span class="pill" id="pill-warm">warmup —</span>
+</header>
+
+<main>
+  <section class="card">
+    <h2>画像 <span id="imgcount" style="text-transform:none;letter-spacing:0"></span></h2>
+    <div class="grid" id="grid"></div>
+    <div class="imgnote" id="imgnote">最大 4 枚。クリックで選択。</div>
+    <label class="field">自分の画像を追加</label>
+    <input type="file" id="file" accept="image/*" multiple>
+
+    <label class="field">プロンプト</label>
+    <textarea id="prompt">この画像を日本語で詳しく説明してください。箇条書きは使わず、自然な文章で述べてください。</textarea>
+    <div class="row">
+      <div>
+        <label class="field">temperature</label>
+        <select id="temp">
+          <option value="0.2" selected>0.2 (安定)</option>
+          <option value="1.0">1.0 (Google 既定)</option>
+          <option value="0">0 (決定的)</option>
+        </select>
+      </div>
+      <div>
+        <label class="field">max tokens</label>
+        <input id="maxtok" type="number" value="512" min="16" max="4096" step="16">
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label class="field">送信時の最大辺 (px)</label>
+        <select id="edge">
+          <option value="768">768</option>
+          <option value="1024" selected>1024</option>
+          <option value="1536">1536</option>
+        </select>
+      </div>
+      <div>
+        <label class="field">JPEG 品質</label>
+        <select id="quality">
+          <option value="0.7">0.70</option>
+          <option value="0.85" selected>0.85</option>
+          <option value="0.95">0.95</option>
+        </select>
+      </div>
+    </div>
+    <button class="primary" id="run" disabled>ウォームアップ待ち…</button>
+    <button class="ghost" id="stop" style="margin-top:8px" disabled>中止</button>
+  </section>
+
+  <section class="card">
+    <h2>実行</h2>
+    <div class="steps">
+      <span class="step" id="s-send">送信</span>
+      <span class="step" id="s-prepared">プロンプト整形</span>
+      <span class="step" id="s-queued">キュー</span>
+      <span class="step" id="s-prefill">プレフィル</span>
+      <span class="step" id="s-decode">生成</span>
+      <span class="step" id="s-done">完了</span>
+    </div>
+
+    <div class="barline">
+      <span id="pf-label">プレフィル (推定)</span>
+      <span id="pf-detail">—</span>
+    </div>
+    <div class="bar"><div id="pf-bar"></div></div>
+
+    <div class="stats">
+      <div class="stat"><div class="k">プロンプト</div><div class="v" id="v-prompt">— <small>tok</small></div></div>
+      <div class="stat"><div class="k">プレフィル</div><div class="v" id="v-pf">— <small>s</small></div></div>
+      <div class="stat"><div class="k">TTFT</div><div class="v" id="v-ttft">— <small>s</small></div></div>
+      <div class="stat"><div class="k">生成速度</div><div class="v" id="v-tps">— <small>tok/s</small></div></div>
+      <div class="stat"><div class="k">生成トークン</div><div class="v" id="v-gen">— <small>tok</small></div></div>
+      <div class="stat"><div class="k">MTP 受理長</div><div class="v" id="v-accept">— <small>/round</small></div></div>
+    </div>
+    <canvas id="spark" height="54"></canvas>
+
+    <div id="out"></div>
+
+    <details id="logbox">
+      <summary>サーバーログ (stderr)</summary>
+      <pre class="log" id="log"></pre>
+    </details>
+  </section>
+</main>
+
+<div id="overlay">
+  <div class="card box">
+    <h2 id="ov-title">16K サーバーを起動しています…</h2>
+    <div class="steps" style="margin-top:10px">
+      <span class="step" id="o-preflight">プロセス確認</span>
+      <span class="step" id="o-launching">起動</span>
+      <span class="step" id="o-loading">モデルロード</span>
+      <span class="step" id="o-ready">ポート開通</span>
+      <span class="step" id="o-warming">ウォームアップ</span>
+      <span class="step" id="o-warm">準備完了</span>
+    </div>
+    <div id="ov-note" style="color:var(--muted);font-size:12px">
+      ポートはロード後に開きます (20〜40 秒)。ウォームアップでテキストと画像を 1 回ずつ通し、
+      最初の 1 枚がタワーの初回コストを払わないようにします。
+    </div>
+    <pre class="log" id="ov-log"></pre>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const state = {
+  ready: false,
+  images: [],            // {name, dataURI, w, h, bytes, label}
+  selected: new Set(),
+  requestID: null,
+  run: null,
+  abort: null,
+  // Two separate estimates, because an image request's prefill is not a token
+  // count: 283 prompt tokens with one picture takes ~10 s, and 283 tokens of
+  // text takes ~1.5 s. The tower's per-image cost is its own term.
+  textRate: Number(localStorage.getItem("tf.textRate")) || 190,     // tok/s, EMA
+  imageCost: Number(localStorage.getItem("tf.imageCost")) || 9.5,   // s/image, EMA
+};
+
+// A picture occupies about this many soft tokens at the default 280 budget
+// (256 square, 266 at 4:3), which is how the text part of a prompt is separated
+// from the image part for the estimate below.
+const SOFT_TOKENS_PER_IMAGE = 260;
+
+function splitPrompt(run) {
+  const images = run.stamps ? run.stamps.length : 0;
+  const text = Math.max(0, (run.promptTokens || 0) - images * SOFT_TOKENS_PER_IMAGE);
+  return { images, text };
+}
+
+// A short prompt's prefill is mostly fixed cost, not throughput: 36 tokens take
+// 1.6 s and 24,000 take 124 s. Keeping the constant separate is what stops a
+// two-line prompt from teaching the estimator a 23 tok/s "rate".
+const PREFILL_FIXED_S = 0.6;
+
+function estimatePrefillSeconds(run) {
+  const { images, text } = splitPrompt(run);
+  return PREFILL_FIXED_S + images * state.imageCost + text / state.textRate;
+}
+
+// ---------------------------------------------------------------- utilities
+
+const fmt = (x, d = 1) => (x === null || x === undefined || !isFinite(x)) ? "—" : x.toFixed(d);
+const kb = (n) => (n / 1024 >= 1024) ? (n / 1048576).toFixed(1) + " MB" : Math.round(n / 1024) + " KB";
+
+function setStep(id, cls) {
+  const el = $(id);
+  if (!el) return;
+  el.classList.remove("active", "done");
+  if (cls) el.classList.add(cls);
+}
+
+function resetSteps() {
+  ["s-send", "s-prepared", "s-queued", "s-prefill", "s-decode", "s-done"].forEach(id => setStep(id, null));
+}
+
+// ------------------------------------------------------------ startup state
+
+const overlaySteps = ["preflight", "launching", "loading", "ready", "warming", "warm"];
+
+// The header pill says what this server actually runs, including which
+// routed-expert path (mmap is the default; `--expert-io pread` is the old one).
+function applyConfig(cfg) {
+  if (!cfg) return;
+  const parts = [(cfg.max_context / 1024) + "K ctx", cfg.expert_cache_slots + " slots",
+                 "MTP " + cfg.draft_block_size];
+  if (cfg.expert_io) parts.push("expert " + cfg.expert_io);
+  $("pill-config").textContent = parts.join(" / ");
+}
+
+function refreshConfig() {
+  fetch("/api/status").then(r => r.json()).then(s => applyConfig(s.config)).catch(() => {});
+}
+
+function applyPhase(phase, detail) {
+  const idx = overlaySteps.indexOf(phase);
+  if (idx >= 0) {
+    overlaySteps.forEach((p, i) => setStep("o-" + p, i < idx ? "done" : (i === idx ? "active" : null)));
+  }
+  const pill = $("pill-state");
+  if (phase === "attached") {
+    $("ov-title").textContent = "既に動いているサーバーに接続しました";
+    setStep("o-preflight", "done"); setStep("o-launching", "done");
+    setStep("o-loading", "done"); setStep("o-ready", "done");
+  }
+  if (phase === "warming") {
+    $("ov-title").textContent = "ウォームアップ中 (" + (detail && detail.step === "image" ? "画像" : "テキスト") + ")…";
+    pill.textContent = "ウォームアップ中"; pill.className = "pill busy";
+  } else if (phase === "warm") {
+    setStep("o-warm", "done");
+    refreshConfig();
+    state.ready = true;
+    $("overlay").classList.add("hidden");
+    pill.textContent = "待機中"; pill.className = "pill ok";
+    $("run").disabled = false;
+    $("run").textContent = "実行";
+    if (detail && detail.model_id) $("pill-model").textContent = "model " + detail.model_id;
+    if (detail && detail.warmup) {
+      $("pill-warm").textContent = "warmup text " + fmt(detail.warmup.text_s, 1)
+        + "s / image " + fmt(detail.warmup.image_s, 1) + "s";
+    }
+  } else if (phase === "failed") {
+    $("overlay").classList.remove("hidden");
+    $("ov-title").innerHTML = '<span class="err">起動に失敗しました</span>';
+    $("ov-note").textContent = (detail && detail.message) || "";
+    pill.textContent = "エラー"; pill.className = "pill err";
+    state.ready = false;
+    $("run").disabled = true;
+  } else if (phase === "stopped" || phase === "stopping") {
+    pill.textContent = "停止"; pill.className = "pill err";
+    state.ready = false; $("run").disabled = true;
+  } else if (!state.ready) {
+    pill.textContent = { preflight: "プロセス確認", launching: "起動中", loading: "モデルロード中",
+                         ready: "ポート開通", attached: "接続済み" }[phase] || phase;
+    pill.className = "pill busy";
+  }
+}
+
+function appendLog(line) {
+  for (const el of [$("log"), $("ov-log")]) {
+    el.textContent += line + "\n";
+    if (el.textContent.length > 40000) el.textContent = el.textContent.slice(-30000);
+    el.scrollTop = el.scrollHeight;
+  }
+}
+
+// Request lifecycle straight from the server's own stderr. The id is what ties
+// a line to this run, and the server logs `accepted`/`prepared`/`generating`
+// within ~50 ms -- before the first streaming chunk hands the browser that id.
+// So every line is buffered with the moment it arrived, and replayed once the
+// id is known; timings then come from the arrival stamp, not the replay.
+const LOG_RE = /request (chatcmpl-\S+) (accepted|prepared|queued|generating|completed|failed)(.*)$/;
+const logBuffer = [];
+
+function recordLog(line, at) {
+  logBuffer.push({ line, at });
+  if (logBuffer.length > 300) logBuffer.shift();
+  correlate(line, at);
+}
+
+function replayLogs() {
+  for (const entry of logBuffer) correlate(entry.line, entry.at);
+}
+
+function correlate(line, at) {
+  const m = LOG_RE.exec(line);
+  if (!m || !state.run || m[1] !== state.requestID) return;
+  const [, , event, rest] = m;
+  const run = state.run;
+  if (event === "prepared") {
+    const tok = /prompt=(\d+)/.exec(rest);
+    if (tok) {
+      run.promptTokens = Number(tok[1]);
+      $("v-prompt").innerHTML = run.promptTokens + ' <small>tok</small>';
+    }
+    setStep("s-send", "done"); setStep("s-prepared", "done");
+  } else if (event === "queued") {
+    setStep("s-queued", "active");
+  } else if (event === "generating") {
+    setStep("s-queued", "done"); setStep("s-prefill", "active");
+    run.prefillStart = at;
+  } else if (event === "completed") {
+    const acc = /accept=([\d.]+)/.exec(rest);
+    if (acc) $("v-accept").innerHTML = Number(acc[1]).toFixed(2) + ' <small>/round</small>';
+  }
+}
+
+const events = new EventSource("/api/events");
+events.onmessage = (ev) => {
+  let payload;
+  try { payload = JSON.parse(ev.data); } catch { return; }
+  if (payload.kind === "log") { appendLog(payload.line); recordLog(payload.line, performance.now()); }
+  else if (payload.kind === "phase") {
+    applyPhase(payload.phase, payload.detail || {});
+    if (payload.phase === "launching" && payload.detail && payload.detail.command)
+      appendLog("[demo] " + payload.detail.command);
+  }
+};
+
+// ------------------------------------------------------------------- images
+
+async function loadImages() {
+  const res = await fetch("/api/images");
+  const data = await res.json();
+  const grid = $("grid");
+  grid.innerHTML = "";
+  $("imgcount").textContent = "(" + data.images.length + " 枚)";
+  data.images.forEach((entry) => {
+    const b = document.createElement("button");
+    b.className = "thumb";
+    b.title = entry.name + " (" + kb(entry.bytes) + ")";
+    b.innerHTML = '<img loading="lazy" src="/api/images/' + encodeURIComponent(entry.name) + '">'
+                + '<span class="badge hidden"></span>';
+    b.onclick = () => toggle(entry.name, b);
+    grid.appendChild(b);
+  });
+}
+
+function toggle(name, node) {
+  if (state.selected.has(name)) state.selected.delete(name);
+  else {
+    if (state.selected.size >= 4) { flashNote("画像は 1 リクエスト 4 枚まで (--max-images 4)"); return; }
+    state.selected.add(name);
+  }
+  node.classList.toggle("sel", state.selected.has(name));
+  renumber();
+}
+
+function renumber() {
+  const names = [...state.selected];
+  document.querySelectorAll(".thumb").forEach((node) => {
+    const src = decodeURIComponent(node.querySelector("img").getAttribute("src").split("/").pop());
+    const badge = node.querySelector(".badge");
+    const i = names.indexOf(src);
+    badge.classList.toggle("hidden", i < 0);
+    badge.textContent = i + 1;
+  });
+  $("imgnote").textContent = names.length
+    ? names.length + " 枚選択中 — 画像リクエストはプロンプトキャッシュを使いません (毎回フルプレフィル)"
+    : "最大 4 枚。クリックで選択。画像なしならテキストのみで実行します。";
+}
+
+function flashNote(text) {
+  const note = $("imgnote");
+  note.textContent = text;
+  note.style.color = "var(--warn)";
+  setTimeout(() => { note.style.color = ""; renumber(); }, 2200);
+}
+
+const customImages = new Map();   // name -> data URI (from the file picker)
+
+$("file").onchange = async (ev) => {
+  for (const file of ev.target.files) {
+    const uri = await new Promise((ok) => {
+      const r = new FileReader(); r.onload = () => ok(r.result); r.readAsDataURL(file);
+    });
+    customImages.set(file.name, uri);
+    const b = document.createElement("button");
+    b.className = "thumb";
+    b.title = file.name;
+    b.innerHTML = '<img src="' + uri + '"><span class="badge hidden"></span>';
+    b.onclick = () => toggle(file.name, b);
+    $("grid").appendChild(b);
+  }
+  ev.target.value = "";
+};
+
+/** Downscale in the browser, exactly like sample_imgs/caption.py does in Python:
+ *  the tower resizes anyway, so shipping the full-resolution file only makes the
+ *  base64 payload (and the HTTP hop) larger. */
+async function encodeImage(name) {
+  const src = customImages.get(name) || ("/api/images/" + encodeURIComponent(name));
+  const img = await new Promise((ok, fail) => {
+    const el = new Image();
+    el.onload = () => ok(el);
+    el.onerror = () => fail(new Error("画像を読み込めません: " + name));
+    el.src = src;
+  });
+  const edge = Number($("edge").value);
+  const scale = Math.min(1, edge / Math.max(img.naturalWidth, img.naturalHeight));
+  const w = Math.max(1, Math.round(img.naturalWidth * scale));
+  const h = Math.max(1, Math.round(img.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w; canvas.height = h;
+  canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+  const uri = canvas.toDataURL("image/jpeg", Number($("quality").value));
+  return { name, uri, w, h, bytes: Math.floor((uri.length - uri.indexOf(",") - 1) * 3 / 4) };
+}
+
+// ----------------------------------------------------------------- sparkline
+
+const spark = $("spark");
+function drawSpark(samples) {
+  const dpr = window.devicePixelRatio || 1;
+  const width = spark.clientWidth, height = 54;
+  if (spark.width !== width * dpr) { spark.width = width * dpr; spark.height = height * dpr; }
+  const g = spark.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, width, height);
+  if (samples.length < 2) return;
+  const max = Math.max(...samples) * 1.15 || 1;
+  g.beginPath();
+  samples.forEach((v, i) => {
+    const x = i / (samples.length - 1) * width;
+    const y = height - (v / max) * (height - 6) - 3;
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  });
+  g.strokeStyle = "#4aa3ff"; g.lineWidth = 1.5; g.stroke();
+  g.lineTo(width, height); g.lineTo(0, height); g.closePath();
+  g.fillStyle = "rgba(74,163,255,.14)"; g.fill();
+  g.fillStyle = "#8b949e"; g.font = "10px ui-monospace, monospace";
+  g.fillText(max.toFixed(0) + " tok/s", 4, 11);
+}
+
+// --------------------------------------------------------------- the request
+
+$("run").onclick = () => start();
+$("stop").onclick = () => { if (state.abort) state.abort.abort(); };
+
+async function start() {
+  if (!state.ready) return;
+  $("run").disabled = true; $("stop").disabled = false;
+  $("pill-state").textContent = "生成中"; $("pill-state").className = "pill busy";
+  $("out").innerHTML = '<span class="cursor">&nbsp;</span>';
+  resetSteps();
+  ["v-prompt", "v-pf", "v-ttft", "v-tps", "v-gen", "v-accept"].forEach((id) => {
+    const small = $(id).querySelector("small").outerHTML;
+    $(id).innerHTML = "— " + small;
+  });
+  $("pf-bar").style.width = "0%";
+  $("pf-label").textContent = "プレフィル (推定)";
+  $("pf-detail").textContent = "—";
+
+  const run = {
+    t0: performance.now(), prefillStart: null, firstToken: null,
+    promptTokens: null, cached: null, tokens: 0, text: "",
+    stamps: [], samples: [], done: false,
+  };
+  state.run = run; state.requestID = null;
+
+  let parts;
+  try {
+    parts = [];
+    const text = $("prompt").value.trim();
+    if (text) parts.push({ type: "text", text });
+    for (const name of state.selected) {
+      const encoded = await encodeImage(name);
+      run.stamps.push(encoded);
+      parts.push({ type: "image_url", image_url: { url: encoded.uri } });
+    }
+  } catch (err) {
+    finish(run, "画像のエンコードに失敗しました: " + err.message, true);
+    return;
+  }
+  if (!parts.length) { finish(run, "プロンプトか画像を指定してください。", true); return; }
+
+  const payloadBytes = run.stamps.reduce((a, s) => a + s.bytes, 0);
+  if (run.stamps.length) {
+    $("imgnote").textContent = run.stamps
+      .map((s) => s.name + " " + s.w + "x" + s.h + " " + kb(s.bytes)).join(" / ")
+      + " — 合計 " + kb(payloadBytes);
+  }
+
+  setStep("s-send", "active");
+  const body = {
+    model: "gemma-4-26b-a4b-it",
+    messages: [{ role: "user", content: parts }],
+    temperature: Number($("temp").value),
+    max_tokens: Number($("maxtok").value),
+    stream: true,
+    stream_options: { include_usage: true },
+  };
+
+  state.abort = new AbortController();
+  const timer = setInterval(() => tick(run), 100);
+  try {
+    const res = await fetch("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: state.abort.signal,
+    });
+    if (!res.ok || !res.body) {
+      const detail = await res.text();
+      throw new Error("HTTP " + res.status + " " + detail.slice(0, 400));
+    }
+    await consume(res.body, run);
+    clearInterval(timer);
+    finish(run, null, false);
+  } catch (err) {
+    clearInterval(timer);
+    const aborted = err.name === "AbortError";
+    finish(run, aborted ? "中止しました。" : ("失敗: " + err.message), !aborted);
+  }
+}
+
+async function consume(stream, run) {
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let cut;
+    while ((cut = buffer.indexOf("\n\n")) >= 0) {
+      const frame = buffer.slice(0, cut);
+      buffer = buffer.slice(cut + 2);
+      for (const line of frame.split("\n")) {
+        if (!line.startsWith("data:")) continue;         // ": ping" heartbeats
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") return;
+        let chunk;
+        try { chunk = JSON.parse(data); } catch { continue; }
+        handleChunk(chunk, run);
+      }
+    }
+  }
+}
+
+function handleChunk(chunk, run) {
+  if (chunk.id && !state.requestID) {
+    state.requestID = chunk.id;
+    setStep("s-send", "done");
+    replayLogs();          // the prepared/generating lines are already in hand
+  }
+  if (chunk.usage) {
+    run.promptTokens = chunk.usage.prompt_tokens ?? run.promptTokens;
+    run.cached = chunk.usage.prompt_tokens_details
+      ? chunk.usage.prompt_tokens_details.cached_tokens : null;
+    if (typeof chunk.usage.completion_tokens === "number") run.exact = chunk.usage.completion_tokens;
+  }
+  const delta = chunk.choices && chunk.choices[0] && chunk.choices[0].delta;
+  const text = delta && delta.content;
+  if (!text) return;
+  const at = performance.now();
+  if (run.firstToken === null) {
+    run.firstToken = at;
+    setStep("s-prefill", "done"); setStep("s-decode", "active");
+    $("pf-bar").style.width = "100%";
+    const prefillS = (at - (run.prefillStart ?? run.t0)) / 1000;
+    $("v-ttft").innerHTML = ((at - run.t0) / 1000).toFixed(2) + ' <small>s</small>';
+    $("v-pf").innerHTML = prefillS.toFixed(2) + ' <small>s</small>';
+    $("pf-label").textContent = "プレフィル (実測)";
+    const { images, text } = splitPrompt(run);
+    $("pf-detail").textContent = (run.promptTokens || "?") + " tok / " + prefillS.toFixed(2) + " s"
+      + (images ? " — 画像 " + images + " 枚 + テキスト " + text + " tok" : "")
+      + (run.cached ? " (cached " + run.cached + ")" : "");
+    // Feed the next request's estimate. EMA so one odd run does not own it, and
+    // the two terms are learned separately.
+    if (run.promptTokens) {
+      if (images) {
+        const perImage = Math.max(0.1,
+          (prefillS - PREFILL_FIXED_S - text / state.textRate) / images);
+        state.imageCost = 0.7 * state.imageCost + 0.3 * perImage;
+        localStorage.setItem("tf.imageCost", state.imageCost.toFixed(2));
+      } else if (text >= 512 && prefillS > PREFILL_FIXED_S) {
+        // Only long enough prompts say anything about tok/s.
+        state.textRate = 0.7 * state.textRate + 0.3 * (text / (prefillS - PREFILL_FIXED_S));
+        localStorage.setItem("tf.textRate", String(Math.round(state.textRate)));
+      }
+    }
+  }
+  run.tokens += 1;                    // one delta per sampled token on this server
+  run.text += text;
+  run.stampsAt = at;
+  run.recent = run.recent || [];
+  run.recent.push(at);
+  while (run.recent.length && at - run.recent[0] > 2000) run.recent.shift();
+  $("out").innerHTML = escapeHTML(run.text) + '<span class="cursor">&nbsp;</span>';
+  $("out").scrollTop = $("out").scrollHeight;
+}
+
+function escapeHTML(s) {
+  return s.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+}
+
+/** 100 ms UI tick: the estimated prefill bar and the live rate both need to move
+ *  between chunks, not only when one arrives. */
+function tick(run) {
+  const at = performance.now();
+  if (run.firstToken === null) {
+    const started = run.prefillStart;
+    if (started && run.promptTokens) {
+      const elapsed = (at - started) / 1000;
+      const total = Math.max(0.3, estimatePrefillSeconds(run));
+      $("pf-bar").style.width = Math.min(99, elapsed / total * 100).toFixed(1) + "%";
+      const { images, text } = splitPrompt(run);
+      $("pf-detail").textContent = elapsed.toFixed(1) + " / 推定 " + total.toFixed(1) + " s"
+        + " (" + run.promptTokens + " tok"
+        + (images ? " = 画像 " + images + " 枚 + テキスト " + text + " tok" : "") + ")";
+    } else if (started) {
+      $("pf-detail").textContent = ((at - started) / 1000).toFixed(1) + " s 経過";
+    }
+    return;
+  }
+  const windowed = run.recent && run.recent.length > 1
+    ? (run.recent.length - 1) / ((at - run.recent[0]) / 1000) : null;
+  const overall = run.tokens / ((at - run.firstToken) / 1000);
+  const rate = windowed ?? overall;
+  if (isFinite(rate) && rate > 0) {
+    $("v-tps").innerHTML = rate.toFixed(1) + ' <small>tok/s</small>';
+    run.samples.push(rate);
+    if (run.samples.length > 240) run.samples.shift();
+    drawSpark(run.samples);
+  }
+  $("v-gen").innerHTML = run.tokens + ' <small>tok</small>';
+}
+
+function finish(run, message, isError) {
+  run.done = true;
+  state.run = null;
+  $("run").disabled = !state.ready;
+  $("stop").disabled = true;
+  if (state.ready) { $("pill-state").textContent = "待機中"; $("pill-state").className = "pill ok"; }
+  $("stop").textContent = "中止";
+  setStep("s-decode", "done");
+  setStep("s-done", isError ? "active" : "done");
+  const total = (performance.now() - run.t0) / 1000;
+  const tokens = run.exact ?? run.tokens;
+  if (run.firstToken) {
+    const decode = (performance.now() - run.firstToken) / 1000;
+    $("v-tps").innerHTML = (tokens / decode).toFixed(1) + ' <small>tok/s</small>';
+    $("v-gen").innerHTML = tokens + ' <small>tok</small>';
+  }
+  const tail = message
+    ? '\n\n<span class="err">' + escapeHTML(message) + "</span>"
+    : '\n\n<span style="color:var(--muted)">— 完了 ' + total.toFixed(2) + " s / "
+      + tokens + " tok</span>";
+  $("out").innerHTML = escapeHTML(run.text) + tail;
+}
+
+// -------------------------------------------------------------------- boot
+
+(async function boot() {
+  const status = await (await fetch("/api/status")).json();
+  if (status.model_id) $("pill-model").textContent = "model " + status.model_id;
+  applyConfig(status.config);
+  applyPhase(status.phase, { model_id: status.model_id, warmup: status.warmup,
+                             message: status.error });
+  await loadImages();
+  renumber();
+  window.addEventListener("resize", () => state.run && drawSpark(state.run.samples || []));
+})();
+</script>
+</body>
+</html>

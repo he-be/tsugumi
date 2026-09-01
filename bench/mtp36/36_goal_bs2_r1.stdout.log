@@ -1,0 +1,13 @@
+# goal-condition A/B, bs=2, 3 images
+image	order	wall_off	wall_on	new_off	new_on	ratio	accept	stop
+IMG_2113.JPG	off/on	53.2	37.1	1056	1041	1.433	0.821	endOfTurn/endOfTurn
+IMG_2114.JPG	on/off	46.5	33.5	879	890	1.389	0.811	endOfTurn/endOfTurn
+IMG_2115.JPG	off/on	47.7	33.6	948	943	1.419	0.808	endOfTurn/endOfTurn
+
+median decode t/s ratio (on / off):      1.483
+median generated-length ratio (on/off):  0.995
+median end-to-end wall ratio (off / on): 1.419
+  target 1.33 / abort 1.10 (22-GOAL-RESET §5) -> target met
+  identical text off vs on: 0/3 (04-PHASES §3 gate 1 records where it diverges, it does not require equality)
+  wrote bench/logs/36_goal_bs2_r1.tsv
+  wrote bench/logs/36_goal_bs2_r1.texts.json

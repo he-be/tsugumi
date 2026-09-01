@@ -60,17 +60,48 @@ enum GTurboJSON {
             tieWordEmbeddings: arch.tieWordEmbeddings,
             attentionKEqV: arch.attentionKEqV,
             hiddenActivation: arch.hiddenActivation,
-            fullAttentionLayerMask: arch.fullAttentionLayerMask.map(Int.init))
+            fullAttentionLayerMask: arch.fullAttentionLayerMask.map(Int.init),
+            // Gemma 4 is the family this format was written for, and its
+            // manifests must stay byte-for-byte what they have always been:
+            // the three keys below are written only for a family that needs
+            // them, and an absent family means Gemma.
+            family: arch.isGemma4 ? nil : arch.family,
+            layerKinds: arch.isGemma4 ? nil : arch.layerKinds,
+            linearAttention: arch.linearAttention.map {
+                GTurboManifestLinearAttentionV1(numKeyHeads: $0.numKeyHeads,
+                                                numValueHeads: $0.numValueHeads,
+                                                keyHeadDim: $0.keyHeadDim,
+                                                valueHeadDim: $0.valueHeadDim,
+                                                convKernelDim: $0.convKernelDim,
+                                                layerCount: $0.layerCount)
+            })
         func slot(_ name: String) throws -> GTurboManifestQuantSlotV1 {
             guard let weightBits = bitWidthsByQuantSlot[name] else {
                 throw RepackError.configurationInvalid(
                     detail: "missing manifest quant slot bit width for \(name)")
             }
+            guard weightBits != 16 else {
+                // Unquantized BF16 slot (the QAT router): no affine companions,
+                // so the scheme and the companion types have to say "none"
+                // rather than describe scales that were never written. The
+                // group size still carries the model's base value; nothing
+                // reads it for this slot.
+                return GTurboManifestQuantSlotV1(
+                    weightBits: 16,
+                    scheme: "bf16",
+                    scaleType: "none",
+                    biasType: "none",
+                    groupSize: plan.baseGroupSize)
+            }
+            // Only the 4-bit lattice can be symmetric: an INT8 group's zero
+            // point is real data, so an INT8 slot keeps its bias array even in
+            // a model whose 4-bit slots dropped theirs.
+            let symmetric = plan.symmetric && weightBits == 4
             return GTurboManifestQuantSlotV1(
                 weightBits: weightBits,
-                scheme: plan.baseMode,
+                scheme: symmetric ? "sym" : plan.baseMode,
                 scaleType: "BF16",
-                biasType: "BF16",
+                biasType: symmetric ? "none" : "BF16",
                 groupSize: plan.baseGroupSize)
         }
         let quant = GTurboManifestQuantV1(
@@ -89,21 +120,133 @@ enum GTurboJSON {
                     detail: "duplicate manifest file entry \(file.relativePath)")
             }
         }
+        var flags = [
+            "streamingPresent": true,
+            "turboQuantKV": false,
+            "aneSharedExpert": false,
+        ]
+        if wireArch.linearAttention != nil {
+            // Same compatibility gate as the tower's and the drafter's: a
+            // runtime that predates recurrent layers must refuse this model,
+            // not read its zeros as sliding windows.
+            flags["linearAttention"] = true
+        }
+        var wireVision: GTurboManifestVisionV1?
+        if let vision = plan.vision {
+            // The flag is the compatibility gate: a runtime that predates vision
+            // rejects the whole model rather than quietly ignoring images.
+            flags["visionTower"] = true
+            let config = vision.source.config
+            wireVision = GTurboManifestVisionV1(
+                hiddenSize: config.hiddenSize,
+                numLayers: config.numLayers,
+                numHeads: config.numHeads,
+                numKVHeads: config.numKVHeads,
+                headDim: config.headDim,
+                intermediateSize: config.intermediateSize,
+                patchSize: config.patchSize,
+                poolingKernelSize: config.poolingKernelSize,
+                positionEmbeddingSize: config.positionEmbeddingSize,
+                ropeTheta: config.ropeTheta,
+                rmsNormEps: config.rmsNormEps,
+                hiddenActivation: config.hiddenActivation,
+                standardize: config.standardize,
+                maxSoftTokens: config.maxSoftTokens,
+                weightDType: "bf16",
+                imageTokenID: config.imageTokenID,
+                boiTokenID: config.boiTokenID,
+                eoiTokenID: config.eoiTokenID,
+                weightsPath: GTurboFormatV1.visionWeightsPath,
+                tensorCount: vision.tensorCount,
+                payloadBytes: vision.payloadBytes,
+                sourceRepo: vision.source.repoID,
+                sourceRevision: vision.source.revision)
+        }
+        var wireDraft: GTurboManifestDraftV1?
+        if let draft = plan.draft {
+            // Same compatibility gate as the tower's: a runtime that predates
+            // speculation rejects the model rather than ignoring the drafter.
+            flags["mtpDraft"] = true
+            wireDraft = try draftSection(
+                draft, fullAttentionLayerMask: wireArch.fullAttentionLayerMask)
+        }
+        var versionMinor = GTurboFormatV1.versionMinor
+        if wireVision != nil {
+            versionMinor = max(versionMinor, GTurboFormatV1.versionMinorVision)
+        }
+        if wireDraft != nil {
+            versionMinor = max(versionMinor, GTurboFormatV1.versionMinorDraft)
+        }
+        if wireArch.linearAttention != nil {
+            versionMinor = max(versionMinor, GTurboFormatV1.versionMinorLinearAttention)
+        }
         return try GTurboManifestCodec.encode(GTurboManifestV1(
-            flags: [
-                "streamingPresent": true,
-                "turboQuantKV": false,
-                "aneSharedExpert": false,
-            ],
+            versionMinor: versionMinor,
+            flags: flags,
             modelID: modelID,
             sourceSnapshotHash: sourceSnapshotHash,
             arch: wireArch,
             quant: quant,
+            vision: wireVision,
+            draft: wireDraft,
             files: wireFiles,
             expertsPerLayer: expertsPerLayer,
             numLayers: numLayers,
             expertStride: expertStride,
             bitWidthOverridesHonored: plan.bitsOverrideCount))
+    }
+
+    /// The manifest's `draft` section for a planned drafter. Shared by the
+    /// install and the append paths so both write the same bytes.
+    ///
+    /// The drafter has no K/V of its own: its sliding layers read the target's
+    /// last sliding layer and its full layer the target's last full one
+    /// (`docs/mtp/01-CHECKPOINT.md` §2). Those two indices are derived from the
+    /// target's own layer mask here rather than pinned, so a target with a
+    /// different layer pattern names its own layers.
+    static func draftSection(_ plan: DraftFilePlan,
+                             fullAttentionLayerMask: [Int])
+        throws -> GTurboManifestDraftV1 {
+        guard let sharedFull = fullAttentionLayerMask.lastIndex(of: 1),
+              let sharedSliding = fullAttentionLayerMask.lastIndex(of: 0) else {
+            throw RepackError.configurationInvalid(detail: """
+                the drafter shares K/V with the target's last sliding and last full \
+                attention layer, and this target has no layer of one of those kinds
+                """)
+        }
+        let config = plan.source.config
+        return GTurboManifestDraftV1(
+            hiddenSize: config.hiddenSize,
+            numLayers: config.numLayers,
+            numHeads: config.numHeads,
+            numKVHeads: config.numKVHeads,
+            numFullKVHeads: config.numFullKVHeads,
+            headDim: config.headDim,
+            fullHeadDim: config.fullHeadDim,
+            intermediateSize: config.intermediateSize,
+            backboneHiddenSize: config.backboneHiddenSize,
+            vocabSize: config.vocabSize,
+            slidingWindow: config.slidingWindow,
+            ropeTheta: config.ropeTheta,
+            fullRopeTheta: config.fullRopeTheta,
+            partialRotaryFactor: config.partialRotaryFactor,
+            rmsNormEps: config.rmsNormEps,
+            hiddenActivation: config.hiddenActivation,
+            tieWordEmbeddings: config.tieWordEmbeddings,
+            attentionKEqV: config.attentionKEqV,
+            fullAttentionLayerMask: config.fullAttentionLayerMask,
+            sharedSlidingKVLayer: sharedSliding,
+            sharedFullKVLayer: sharedFull,
+            quant: GTurboManifestQuantSlotV1(weightBits: config.quantBits,
+                                             scheme: config.quantMode,
+                                             scaleType: "BF16",
+                                             biasType: "BF16",
+                                             groupSize: config.quantGroupSize),
+            weightsPath: GTurboFormatV1.draftWeightsPath,
+            tensorCount: plan.tensorCount,
+            payloadBytes: plan.payloadBytes,
+            sourceRepo: plan.source.repoID,
+            sourceRevision: plan.source.revision)
     }
 
     static func encodeLayout(plan: RepackPlan,

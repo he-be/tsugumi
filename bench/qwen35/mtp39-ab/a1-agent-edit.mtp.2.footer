@@ -1,0 +1,8 @@
+[stop=maxNewTokens prefill=127tok new=192tok decode=11.07s tok/s=17.346]
+[load=1.302s prefill=8.963s ttft=8.963s reasoning=0ch answer=445ch mtpP1=89.1% a=1.901 passes=101 peak=0.53GB]
+[expert prefill hit=49.9% 29587/59303 | decode hit=0.0% 0/0 | io prefill=4.83s decode=0.00s]
+[prefill/tok gpu=8.00ms io=38.06ms host=24.51ms cb=4.4]
+[decode/tok gpu=24.07ms io=0.00ms host=33.59ms cb=64.2]
+[mtp/pass draft=6.19ms verify=103.35ms snapshot=0.00ms tok=1.901]
+[mtp/draft gpu=5.52ms catchup=0.49ms/0.32ms preRouter=0.93ms/0.67ms tail=4.75ms/4.52ms rows=1.88 cb=2.88]
+[residency syncs=4393 added=29716 removed=28436 19.40ms/tok (edit=0.04 commit=19.26 request=0.10)]

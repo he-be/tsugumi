@@ -11,18 +11,27 @@ public final class AppModel {
     }
 
     public var modelPathText: String
-    public var promptText: String = ""
-    public private(set) var outputPromptText: String = ""
-    public var outputText: String = ""
+    public private(set) var selectedModelKind: AppModelKind = .defaultKind
+    /// All conversations, oldest first. Exactly one is selected; at most
+    /// one is generating, and it need not be the selected one.
+    public private(set) var chats: [AppChatSession]
+    public private(set) var selectedChatID: UUID
+    /// The chat the running generation streams into; nil while idle.
+    private var generatingChat: AppChatSession?
+    /// The chat whose text the transcript mailbox currently holds. The
+    /// mailbox is a single client-owned channel, so reads must be gated on
+    /// this or another chat would display the generating chat's text.
+    private var mailboxOwnerChatID: UUID?
     public var runState: RunState = .idle
     public var runtimeOptions = AppRuntimeOptions()
     public var maxNewTokensOverride: Int?
     public var maxContextTokens: Int = 4096
-    public var temperature: Double = 0.2
+    public var temperature: Double = 1.0
     public var topKEnabled: Bool = true
     public var topK: Int = 64
     public var topPEnabled: Bool = true
     public var topP: Double = 0.95
+    public var thinkingEnabled: Bool = false
     public private(set) var newlineShortcut: AppNewlineShortcut = .return
     public private(set) var showPromptExamples: Bool = true
     public private(set) var sentPromptBehavior: AppSentPromptBehavior = .keep
@@ -45,7 +54,11 @@ public final class AppModel {
     public private(set) var isCancellationPending: Bool = false
 
     private let client: any AppInferenceClient
-    private let installer: any AppModelInstallerClient
+    /// Builds the installer for one model kind. The default downloads the
+    /// prebuilt install; tests inject a fixed mock through the `installer`
+    /// init parameter, which pins this to a constant.
+    private let installerProvider: (AppModelKind) -> any AppModelInstallerClient
+    private var installer: any AppModelInstallerClient
     private var runTask: Task<Void, Never>?
     private var loadTask: Task<Void, Never>?
     private var installTask: Task<Void, Never>?
@@ -58,36 +71,73 @@ public final class AppModel {
     private var hasHandledTerminalEvent = false
     private let memorySampler: AppMemorySampler
     private let settingsPersistenceEnabled: Bool
+    private let chatStore: AppChatStore?
+    private var chatSaveTask: Task<Void, Never>?
+    /// Draft edits save behind this debounce; structural changes and
+    /// finished turns save immediately. Tests shorten it.
+    nonisolated(unsafe) static var chatSaveDebounceNanos: UInt64 = 1_000_000_000
     private let installETAClock: SuspendingClock
     private let installETAOrigin: SuspendingClock.Instant
     private var installETAEstimator = DownloadETAEstimator()
 
     public init(modelDirectory: URL? = nil,
                 client: any AppInferenceClient = RealInferenceClient(),
-                installer: any AppModelInstallerClient = RepackModelInstallerClient(),
+                installer: (any AppModelInstallerClient)? = nil,
                 memorySampler: AppMemorySampler = AppMemorySampler(),
-                settingsPersistenceEnabled: Bool = false) {
-        let directory = (modelDirectory ?? AppModelLocation.defaultURL()).standardizedFileURL
+                settingsPersistenceEnabled: Bool = false,
+                chatStore: AppChatStore? = nil) {
+        self.chatStore = chatStore
+        if let persisted = chatStore?.load(), !persisted.chats.isEmpty {
+            let sessions = persisted.chats.map { $0.makeSession() }
+            self.chats = sessions
+            let index = min(max(persisted.selectedChatIndex, 0), sessions.count - 1)
+            self.selectedChatID = sessions[index].id
+            // No generation has run yet, so the transcript mailbox is empty;
+            // owning it would mask the restored text with that emptiness.
+            self.mailboxOwnerChatID = nil
+        } else {
+            let firstChat = AppChatSession()
+            self.chats = [firstChat]
+            self.selectedChatID = firstChat.id
+            self.mailboxOwnerChatID = firstChat.id
+        }
+        let kind = modelDirectory.flatMap(AppModelKind.probe(modelDirectory:))
+            ?? .defaultKind
+        let directory = (modelDirectory ?? AppModelLocation.defaultURL(for: kind))
+            .standardizedFileURL
         let installETAClock = SuspendingClock()
         let settings = settingsPersistenceEnabled
-            ? MacAppSettingsFileStore.loadOrCreate(forModelDirectory: directory)
-            : MacAppSettings()
+            ? MacAppSettingsFileStore.loadOrCreate(
+                forModelDirectory: directory,
+                defaults: MacAppSettings.defaults(for: kind))
+            : MacAppSettings.defaults(for: kind)
         self.modelPathText = directory.path
+        self.selectedModelKind = kind
         self.runtimeOptions = AppRuntimeOptions(
             expertCacheSlots: settings.expertCacheSlots,
-            prefillEnabled: settings.prefillEnabled)
+            prefillEnabled: settings.prefillEnabled,
+            mtpEnabled: settings.mtpEnabled)
         self.maxContextTokens = settings.contextTokens
         self.temperature = settings.temperature
         self.topKEnabled = settings.topKEnabled
         self.topK = settings.topK
         self.topPEnabled = settings.topPEnabled
         self.topP = settings.topP
+        self.thinkingEnabled = settings.thinkingEnabled
         self.newlineShortcut = settings.newlineShortcut
         self.showPromptExamples = settings.showPromptExamples
         self.sentPromptBehavior = settings.sentPromptBehavior
-        self.installationStatus = AppModelInstallationProbe.status(at: directory)
+        let provider: (AppModelKind) -> any AppModelInstallerClient
+        if let installer {
+            provider = { _ in installer }
+        } else {
+            provider = { PrebuiltModelInstallerClient(kind: $0) }
+        }
+        self.installerProvider = provider
+        self.installer = provider(kind)
+        self.installationStatus = AppModelInstallationProbe.status(
+            at: directory, descriptor: provider(kind).descriptor)
         self.client = client
-        self.installer = installer
         self.memorySampler = memorySampler
         self.settingsPersistenceEnabled = settingsPersistenceEnabled
         self.installETAClock = installETAClock
@@ -96,6 +146,113 @@ public final class AppModel {
     }
 
     public var isRunning: Bool { runState == .running }
+
+    public var selectedChat: AppChatSession {
+        chats.first(where: { $0.id == selectedChatID }) ?? chats[0]
+    }
+
+    public var generatingChatID: UUID? { generatingChat?.id }
+
+    public var isSelectedChatGenerating: Bool {
+        isRunning && generatingChat === selectedChat
+    }
+
+    /// While one chat generates, every other chat is view-only: no sending,
+    /// no editing, no clearing — switching back is the way to interact.
+    public var isSelectedChatReadOnly: Bool {
+        isRunning && generatingChat !== selectedChat
+    }
+
+    // The single-conversation surface the views and tests were built on;
+    // each member now reads or writes the selected chat.
+    public var promptText: String {
+        get { selectedChat.promptText }
+        set {
+            selectedChat.promptText = newValue
+            scheduleChatPersist()
+        }
+    }
+
+    public var conversationTurns: [AppChatTurn] { selectedChat.conversationTurns }
+
+    public var outputPromptText: String { selectedChat.outputPromptText }
+
+    public var outputImagePaths: [String] { selectedChat.outputImagePaths }
+
+    public var outputText: String {
+        get { selectedChat.outputText }
+        set { selectedChat.outputText = newValue }
+    }
+
+    public var outputReasoningText: String { selectedChat.outputReasoningText }
+
+    public var attachedImagePaths: [String] {
+        get { selectedChat.attachedImagePaths }
+        set {
+            selectedChat.attachedImagePaths = newValue
+            scheduleChatPersist()
+        }
+    }
+
+    private func persistChatsNow() {
+        guard let chatStore else { return }
+        chatSaveTask?.cancel()
+        chatSaveTask = nil
+        let selectedIndex = chats.firstIndex(where: { $0.id == selectedChatID }) ?? 0
+        try? chatStore.save(PersistedChats(
+            selectedChatIndex: selectedIndex,
+            chats: chats.map(PersistedChat.init)))
+    }
+
+    private func scheduleChatPersist() {
+        guard chatStore != nil else { return }
+        chatSaveTask?.cancel()
+        chatSaveTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.chatSaveDebounceNanos)
+            guard !Task.isCancelled else { return }
+            self?.persistChatsNow()
+        }
+    }
+
+    /// Opens a fresh conversation, reselecting an existing empty one
+    /// instead of piling up blanks.
+    public func newChat() {
+        if let existing = chats.first(where: {
+            $0.isEmpty && $0 !== generatingChat && responsePlainText(of: $0).isEmpty
+        }) {
+            selectedChatID = existing.id
+            persistChatsNow()
+            return
+        }
+        let chat = AppChatSession()
+        chats.append(chat)
+        selectedChatID = chat.id
+        persistChatsNow()
+    }
+
+    /// Switching is allowed while another chat generates; the newly
+    /// selected chat is then read-only (`isSelectedChatReadOnly`).
+    public func selectChat(_ id: UUID) {
+        guard chats.contains(where: { $0.id == id }) else { return }
+        selectedChatID = id
+        persistChatsNow()
+    }
+
+    public func canDeleteChat(_ id: UUID) -> Bool {
+        generatingChat?.id != id
+    }
+
+    public func deleteChat(_ id: UUID) {
+        guard canDeleteChat(id),
+              let index = chats.firstIndex(where: { $0.id == id }) else { return }
+        chats.remove(at: index)
+        if mailboxOwnerChatID == id { mailboxOwnerChatID = nil }
+        if chats.isEmpty { chats = [AppChatSession()] }
+        if !chats.contains(where: { $0.id == selectedChatID }) {
+            selectedChatID = chats[min(index, chats.count - 1)].id
+        }
+        persistChatsNow()
+    }
 
     public var isModelAvailable: Bool { loadState.isReady }
 
@@ -208,25 +365,33 @@ public final class AppModel {
     public var canCancel: Bool { isRunning && !isCancellationPending }
 
     public var hasOutputTranscript: Bool {
-        !outputPromptText.isEmpty || !outputText.isEmpty
+        !conversationTurns.isEmpty || !outputPromptText.isEmpty || !outputText.isEmpty
     }
 
     public var outputResponsePlainText: String {
-        generationTranscriptMailbox?.completeText ?? outputText
+        responsePlainText(of: selectedChat)
+    }
+
+    private func responsePlainText(of chat: AppChatSession) -> String {
+        guard chat.id == mailboxOwnerChatID,
+              let mailbox = generationTranscriptMailbox else {
+            return chat.outputText
+        }
+        return mailbox.completeText
     }
 
     public var outputConversationPlainText: String {
-        let response = outputResponsePlainText
-        switch (outputPromptText.isEmpty, response.isEmpty) {
-        case (true, true):
-            return ""
-        case (false, true):
-            return "You:\n\(outputPromptText)"
-        case (true, false):
-            return "Answer:\n\(response)"
-        case (false, false):
-            return "You:\n\(outputPromptText)\n\nAnswer:\n\(response)"
+        var sections = conversationTurns.map { turn in
+            turn.role == .user ? "You:\n\(turn.text)" : "Answer:\n\(turn.text)"
         }
+        if !outputPromptText.isEmpty {
+            sections.append("You:\n\(outputPromptText)")
+        }
+        let response = outputResponsePlainText
+        if !response.isEmpty {
+            sections.append("Answer:\n\(response)")
+        }
+        return sections.joined(separator: "\n\n")
     }
 
     public var liveTokensPerSecond: Double {
@@ -261,6 +426,13 @@ public final class AppModel {
         (client as? any AppInferenceTranscriptReporting)?.generationTranscriptMailbox
     }
 
+    /// The live mailbox, but only when the selected chat is the one whose
+    /// text it holds; the transcript view of any other chat must not drain
+    /// another conversation's stream.
+    public var selectedChatTranscriptMailbox: GenerationTranscriptMailbox? {
+        selectedChat.id == mailboxOwnerChatID ? generationTranscriptMailbox : nil
+    }
+
     private var currentRuntimeKey: AppLoadedRuntimeKey {
         AppLoadedRuntimeKey(modelDirectory: URL(fileURLWithPath: modelPathText),
                             maxContextTokens: maxContextTokens,
@@ -272,12 +444,31 @@ public final class AppModel {
         temperature != 0
     }
 
+    /// Switches to the other shipped checkpoint: its default install
+    /// location, its persisted settings, its installer.
+    public func selectModel(_ kind: AppModelKind) {
+        guard !isRunning else { return }
+        guard kind != selectedModelKind else { return }
+        setModelURL(AppModelLocation.defaultURL(for: kind), kind: kind)
+    }
+
     public func setModelURL(_ url: URL) {
+        setModelURL(url, kind: nil)
+    }
+
+    private func setModelURL(_ url: URL, kind: AppModelKind?) {
         guard !isRunning else { return }
         let path = url.standardizedFileURL.path
-        guard path != modelPathText else { return }
+        guard path != modelPathText || (kind != nil && kind != selectedModelKind) else { return }
 
         modelPathText = path
+        selectedModelKind = kind
+            ?? AppModelKind.probe(modelDirectory: url.standardizedFileURL)
+            ?? selectedModelKind
+        installer.cancel()
+        installer = installerProvider(selectedModelKind)
+        for chat in chats { chat.attachedImagePaths = [] }
+        persistChatsNow()
         applyPersistedSettings(
             forModelDirectory: URL(fileURLWithPath: path, isDirectory: true))
         loadGeneration &+= 1
@@ -296,7 +487,8 @@ public final class AppModel {
         diagnostics = nil
         error = nil
         phase = .idle
-        installationStatus = AppModelInstallationProbe.status(at: URL(fileURLWithPath: path))
+        installationStatus = AppModelInstallationProbe.status(
+            at: URL(fileURLWithPath: path), descriptor: installer.descriptor)
         refreshInstallReadiness()
 
         if let lifecycle = client as? AppModelLifecycleClient {
@@ -461,11 +653,7 @@ public final class AppModel {
     }
 
     public var hasPartialModelDownload: Bool {
-        guard let paths = try? RemoteInstallPaths(outputDirectory: modelPathText) else {
-            return false
-        }
-        return FileManager.default.fileExists(atPath: paths.partialDirectory)
-            || FileManager.default.fileExists(atPath: paths.checkpointFile)
+        installer.hasPartialInstall(outputDirectory: URL(fileURLWithPath: modelPathText))
     }
 
     public var canDiscardModelDownload: Bool {
@@ -623,18 +811,22 @@ public final class AppModel {
     }
 
     private func applyPersistedSettings(forModelDirectory modelDirectory: URL) {
-        guard settingsPersistenceEnabled else { return }
-        let settings = MacAppSettingsFileStore.loadOrCreate(
-            forModelDirectory: modelDirectory)
+        let defaults = MacAppSettings.defaults(for: selectedModelKind)
+        let settings = settingsPersistenceEnabled
+            ? MacAppSettingsFileStore.loadOrCreate(
+                forModelDirectory: modelDirectory, defaults: defaults)
+            : defaults
         runtimeOptions = AppRuntimeOptions(
             expertCacheSlots: settings.expertCacheSlots,
-            prefillEnabled: settings.prefillEnabled)
+            prefillEnabled: settings.prefillEnabled,
+            mtpEnabled: settings.mtpEnabled)
         maxContextTokens = settings.contextTokens
         temperature = settings.temperature
         topKEnabled = settings.topKEnabled
         topK = settings.topK
         topPEnabled = settings.topPEnabled
         topP = settings.topP
+        thinkingEnabled = settings.thinkingEnabled
         newlineShortcut = settings.newlineShortcut
         showPromptExamples = settings.showPromptExamples
         sentPromptBehavior = settings.sentPromptBehavior
@@ -651,6 +843,8 @@ public final class AppModel {
             topPEnabled: topPEnabled,
             topP: topP,
             prefillEnabled: runtimeOptions.prefillEnabled,
+            mtpEnabled: runtimeOptions.mtpEnabled,
+            thinkingEnabled: thinkingEnabled,
             newlineShortcut: newlineShortcut,
             showPromptExamples: showPromptExamples,
             sentPromptBehavior: sentPromptBehavior)
@@ -711,15 +905,64 @@ public final class AppModel {
 
     public func clearOutput() {
         guard !isRunning else { return }
-        outputPromptText = ""
-        outputText = ""
-        generationTranscriptMailbox?.reset()
+        let chat = selectedChat
+        chat.conversationTurns = []
+        chat.outputPromptText = ""
+        chat.outputImagePaths = []
+        chat.outputText = ""
+        chat.outputReasoningText = ""
+        if chat.id == mailboxOwnerChatID {
+            generationTranscriptMailbox?.reset()
+            mailboxOwnerChatID = nil
+        }
         diagnostics = nil
         error = nil
+        persistChatsNow()
+    }
+
+    /// Moves the chat's finished live turn into its `conversationTurns` so
+    /// the next request resends it as history. A turn whose answer never
+    /// produced text or reasoning is dropped instead — resending a user
+    /// turn with no assistant turn after it would redraw a conversation the
+    /// model never saw.
+    private func foldCompletedTurnIntoHistory(of chat: AppChatSession) {
+        let response = responsePlainText(of: chat)
+        let reasoning = chat.id == mailboxOwnerChatID
+            ? (generationTranscriptMailbox?.completeReasoningText
+               ?? chat.outputReasoningText)
+            : chat.outputReasoningText
+        guard !chat.outputPromptText.isEmpty else { return }
+        if !response.isEmpty || !reasoning.isEmpty {
+            chat.conversationTurns.append(AppChatTurn(role: .user,
+                                                      text: chat.outputPromptText,
+                                                      imagePaths: chat.outputImagePaths))
+            chat.conversationTurns.append(AppChatTurn(role: .assistant,
+                                                      text: response,
+                                                      reasoningText: reasoning))
+        }
+        chat.outputPromptText = ""
+        chat.outputImagePaths = []
+        chat.outputText = ""
+        chat.outputReasoningText = ""
+    }
+
+    public func attachImages(_ paths: [String]) {
+        guard !isRunning, selectedModelKind.supportsVision else { return }
+        var merged = attachedImagePaths
+        for path in paths where !merged.contains(path) {
+            merged.append(path)
+        }
+        attachedImagePaths = Array(merged.prefix(4))
+    }
+
+    public func removeAttachedImage(_ path: String) {
+        attachedImagePaths.removeAll { $0 == path }
     }
 
     public func run() {
         guard canRun else { return }
+        let chat = selectedChat
+        foldCompletedTurnIntoHistory(of: chat)
         let request: AppGenerationRequest
         do {
             request = try makeRequest()
@@ -734,8 +977,12 @@ public final class AppModel {
         persistSettings()
 
         generationTranscriptMailbox?.reset()
-        outputPromptText = request.prompt
-        outputText = ""
+        mailboxOwnerChatID = chat.id
+        generatingChat = chat
+        chat.outputPromptText = request.prompt
+        chat.outputImagePaths = request.imagePaths
+        chat.outputText = ""
+        chat.outputReasoningText = ""
         diagnostics = nil
         error = nil
         hasHandledTerminalEvent = false
@@ -753,8 +1000,14 @@ public final class AppModel {
         phase = .prefill
         runState = .running
         if sentPromptBehavior == .clear {
-            promptText = ""
+            chat.promptText = ""
         }
+        // The images are baked into the request that just left; keeping them
+        // attached would silently resend them with the next prompt.
+        chat.attachedImagePaths = []
+        // The fold and the prompt snapshot are worth surviving a crash even
+        // if the answer never lands.
+        persistChatsNow()
 
         runTask = Task.detached { [weak self, client, request] in
             guard let self else { return }
@@ -776,17 +1029,33 @@ public final class AppModel {
         client.cancel()
     }
 
+    /// S1: Ornith runs the official sampler whatever the controls held; the
+    /// session would pin the values anyway, so the request carries them
+    /// directly and the UI shows them locked.
+    public var isSamplingLocked: Bool { selectedModelKind.samplingIsLocked }
+
+    public var supportsVision: Bool { selectedModelKind.supportsVision }
+
     public func makeRequest() throws -> AppGenerationRequest {
+        let kind = selectedModelKind
+        let temperature = kind.samplingIsLocked ? kind.officialTemperature : temperature
+        let topK = kind.samplingIsLocked ? kind.officialTopK : (topKEnabled ? topK : nil)
+        let topP = kind.samplingIsLocked
+            ? kind.officialTopP
+            : (topKEnabled && topPEnabled ? topP : nil)
         let request = AppGenerationRequest(
             modelDirectory: URL(fileURLWithPath: modelPathText),
+            history: conversationTurns,
             prompt: promptText,
             maxNewTokens: maxNewTokensOverride ?? maxContextTokens,
             maxContextTokens: maxContextTokens,
             temperature: Float(temperature),
-            topK: topKEnabled ? topK : nil,
-            topP: topKEnabled && topPEnabled ? Float(topP) : nil,
+            topK: topK,
+            topP: topP.map(Float.init),
             repetitionPenalty: 1.0,
-            runtimeOptions: runtimeOptions)
+            runtimeOptions: runtimeOptions,
+            enableThinking: thinkingEnabled,
+            imagePaths: kind.supportsVision ? attachedImagePaths : [])
         try request.validate(requireModelDirectory: true)
         return request
     }
@@ -806,8 +1075,12 @@ public final class AppModel {
             } else {
                 liveMemoryBytes = memorySampler.sample()
             }
+            let chat = generatingChat ?? selectedChat
             if !token.textDelta.isEmpty {
-                outputText += token.textDelta
+                chat.outputText += token.textDelta
+            }
+            if !token.reasoningDelta.isEmpty {
+                chat.outputReasoningText += token.reasoningDelta
             }
         case .finished(let diagnostics):
             finishSuccessfully(diagnostics)
@@ -839,7 +1112,9 @@ public final class AppModel {
 
     private func materializeServiceTranscript() {
         guard let reporter = client as? any AppInferenceTranscriptReporting else { return }
-        outputText = reporter.generationTranscriptMailbox.completeText
+        let chat = generatingChat ?? selectedChat
+        chat.outputText = reporter.generationTranscriptMailbox.completeText
+        chat.outputReasoningText = reporter.generationTranscriptMailbox.completeReasoningText
     }
 
     private func finishWithError(_ appError: AppInferenceError) {
@@ -859,7 +1134,9 @@ public final class AppModel {
         runState = .idle
         isCancellationPending = false
         activeRunRuntimeKey = nil
+        generatingChat = nil
         runTask = nil
+        persistChatsNow()
     }
 
     private func clearLoadTask(generation: UInt64) {

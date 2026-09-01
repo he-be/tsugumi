@@ -107,4 +107,66 @@ struct ChatTemplateTests {
         let p = try tok.applyChatTemplate([])
         #expect(p == "<bos><|turn>model\n<|channel>thought\n<channel|>")
     }
+
+    // MARK: - SPEC §12 DEV-12: the server's own variant
+
+    /// The default rendering is the checkpoint's, unchanged. This is what lets
+    /// the CLI, the app, and KernelCheck keep the token streams every earlier
+    /// measurement was taken with; it is pinned here so the variant cannot
+    /// quietly become the default.
+    @Test("modelBundled leaves a finished turn as the checkpoint draws it")
+    func DEV_12_bundled_variant_is_unchanged() throws {
+        let messages = [Message(role: .user, content: "A"),
+                        Message(role: .assistant, content: "B"),
+                        Message(role: .user, content: "C")]
+        let bundled = try tok.applyChatTemplate(messages, variant: .modelBundled)
+        #expect(bundled.contains("<|turn>model\nB<turn|>"))
+        #expect(try bundled == tok.applyChatTemplate(messages))
+    }
+
+    /// SPEC INV-1: the server variant draws the channel that was in the KV
+    /// while the turn was produced — empty when the session was not reasoning.
+    @Test("serverRedraw draws the empty thought channel of a finished turn")
+    func DEV_12_server_variant_redraws_the_empty_channel() throws {
+        let rendered = try tok.applyChatTemplate([
+            Message(role: .user, content: "A"),
+            Message(role: .assistant, content: "B"),
+            Message(role: .user, content: "C"),
+        ], enableThinking: false, variant: .serverRedraw)
+        #expect(rendered.contains("<|turn>model\n<|channel>thought\n<channel|>B<turn|>"))
+    }
+
+    /// The same turn when the session was reasoning: the block the model wrote,
+    /// which only exists here because the client handed it back (SPEC MSG-5).
+    @Test("serverRedraw draws the thought block a client handed back")
+    func DEV_12_server_variant_redraws_the_thought_block() throws {
+        let rendered = try tok.applyChatTemplate([
+            Message(role: .user, content: "A"),
+            Message(role: .assistant, content: "B", reasoningContent: "why B"),
+            Message(role: .user, content: "C"),
+        ], enableThinking: true, variant: .serverRedraw)
+        #expect(rendered.contains("<|turn>model\n<|channel>thought\nwhy B\n<channel|>B<turn|>"))
+    }
+
+    /// Reasoning on and nothing handed back: nothing is drawn. Inventing a
+    /// block would put tokens in the prompt that were never in the KV, which
+    /// is the same divergence INV-1 is about, only the other way round.
+    @Test("serverRedraw invents no thought block when the client kept it")
+    func DEV_12_server_variant_invents_nothing() throws {
+        let rendered = try tok.applyChatTemplate([
+            Message(role: .user, content: "A"),
+            Message(role: .assistant, content: "B"),
+            Message(role: .user, content: "C"),
+        ], enableThinking: true, variant: .serverRedraw)
+        #expect(rendered.contains("<|turn>model\nB<turn|>"))
+    }
+
+    /// The variant's jinja is a package resource, so it can go missing without
+    /// a compile error. Reading it here is the guard.
+    @Test("the repo-owned template is in the bundle and is the tool path's")
+    func DEV_12_server_template_resource_loads() throws {
+        let jinja = try ServerChatTemplate.jinja()
+        #expect(jinja.contains("SPEC INV-1"))
+        #expect(jinja.contains("{%- if role == 'model' and not continue_same_model_turn -%}"))
+    }
 }

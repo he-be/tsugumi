@@ -84,6 +84,10 @@ struct LayerFilePlan: Sendable {
 
 struct RepackPlan: Sendable {
     let arch: ArchInfo
+    /// Whether the 4-bit slots are laid out `sym` -- verified to satisfy
+    /// `bias == -8 * scale` in every group, so the bias arrays are not written
+    /// at all (`docs/mtp/44-W1-WEIGHT-DIET.md`).
+    let symmetric: Bool
     let baseMode: String                  // "affine"
     let baseGroupSize: Int                // 64
     let bitsOverrideCount: Int
@@ -91,6 +95,36 @@ struct RepackPlan: Sendable {
     let layers: [LayerFilePlan]
     let matchedModelID: String?
     let excludedMultimodalTensorNames: [String]
+    /// Drafter tensors that sat inside the text checkpoint and were left out of
+    /// the text install. Recorded so the audit can show they were seen and
+    /// skipped on purpose rather than silently dropped.
+    var excludedInlineDraftTensorNames: [String] = []
+    /// Vision tower weights, when the install was asked for them. A separate
+    /// resident file so a text-only run never reads or hashes its bytes.
+    var vision: VisionFilePlan? = nil
+    /// MTP drafter weights, when the install was asked for them. Separate for
+    /// the same reason the tower is.
+    var draft: DraftFilePlan? = nil
+}
+
+/// The vision tower's resident file plus the provenance the manifest records
+/// for it. The tower comes from a different repository than the text weights,
+/// so it carries its own source identity (`PLAN_VISION.md` §4-1-a).
+struct VisionFilePlan: Sendable {
+    let resident: ResidentFilePlan
+    let source: VisionSourcePin
+    let payloadBytes: UInt64
+    var tensorCount: Int { resident.entries.count }
+}
+
+/// The MTP drafter's resident file plus the provenance the manifest records for
+/// it. Like the tower, it comes from a repository of its own and carries its own
+/// source identity (`docs/mtp/03-DESIGN.md` D1).
+struct DraftFilePlan: Sendable {
+    let resident: ResidentFilePlan
+    let source: DraftSourcePin
+    let payloadBytes: UInt64
+    var tensorCount: Int { resident.entries.count }
 }
 
 // MARK: - Planner
@@ -102,11 +136,19 @@ enum RepackPlanner {
         case lmResident
         case routedExpert(role: String, layer: Int)   // role = "gate"|"up"|"down"
         case excludedMultimodal
+        /// An MTP head shipped inside the text checkpoint (Qwen3.5-MoE carries
+        /// its own drafter). It has a layer index of its own that collides with
+        /// the body's, so it is split off here and installed separately
+        /// (`docs/qwen35moe/03-DESIGN.md` §6).
+        case excludedDraft
         case unknown
     }
 
     static func classify(_ name: String, numLayers: Int) -> Bucket {
         if name.hasPrefix("language_model.") {
+            if isInlineDraftTensorName(name) {
+                return .excludedDraft
+            }
             // Routed expert?
             if let role = routedExpertRole(in: name),
                let layer = layerIndex(in: name),
@@ -122,11 +164,23 @@ enum RepackPlanner {
     }
 
     private static func routedExpertRole(in name: String) -> String? {
-        guard name.contains(".experts.switch_glu.") else { return nil }
+        // Gemma writes its per-layer expert stack as `experts.switch_glu`;
+        // the MLX conversion of Qwen3.5-MoE writes the same three roles as
+        // `mlp.switch_mlp` (`docs/qwen35moe/03-DESIGN.md` §1-2). The tensors
+        // underneath have the same shape and the same meaning.
+        guard name.contains(".experts.switch_glu.") || name.contains(".mlp.switch_mlp.") else {
+            return nil
+        }
         if name.contains(".gate_proj.") { return "gate" }
         if name.contains(".up_proj.")   { return "up" }
         if name.contains(".down_proj.") { return "down" }
         return nil
+    }
+
+    /// A drafter that ships inside the text checkpoint rather than in a
+    /// repository of its own. Its `layers.0` is not the body's `layers.0`.
+    static func isInlineDraftTensorName(_ name: String) -> Bool {
+        name.hasPrefix("language_model.mtp.")
     }
 
     private static func layerIndex(in name: String) -> Int? {
@@ -139,10 +193,19 @@ enum RepackPlanner {
 
     /// Build the plan from parsed shard headers + source metadata.
     /// - throws: classification + companion + override count failures.
+    /// - parameter readSourceBytes: supplied only when the source shards are
+    ///   local files. With it the planner probes `bias == -8 * scale` over every
+    ///   4-bit tensor and, if it holds everywhere, lays the model out `sym` --
+    ///   no bias arrays, 5.000 -> 4.500 bits per weight
+    ///   (`docs/mtp/44-W1-WEIGHT-DIET.md`). Without it the plan stays `affine`:
+    ///   a streaming install would have to fetch the bias ranges before it could
+    ///   plan the file that omits them.
     static func plan(meta: IndexLoader.SourceMetadata,
                             arch: ArchInfo,
                             shardHeaders: [Safetensors.Header],
-                            outputDir: String) throws -> RepackPlan {
+                            outputDir: String,
+                            readSourceBytes: ((SourceTensor) throws -> Data)? = nil,
+                            log: ((String) -> Void)? = nil) throws -> RepackPlan {
 
         // Companion tensors may live in different shards, so resolve them
         // through one global registry.
@@ -158,10 +221,14 @@ enum RepackPlanner {
 
         var lmResidentBases: [String] = []
         var excludedMultimodalNames: [String] = []
+        var excludedDraftNames: [String] = []
         var routedByLayerAndRole: [Int: [String: String]] = [:]
         for (name, _) in registry {
             if isMultimodalTensorName(name) {
                 excludedMultimodalNames.append(name)
+            }
+            if isInlineDraftTensorName(name) {
+                excludedDraftNames.append(name)
             }
             if name.hasSuffix(".scales") || name.hasSuffix(".biases") { continue }
             let b = classify(name, numLayers: arch.numLayers)
@@ -176,6 +243,7 @@ enum RepackPlanner {
                 byRole[role] = name
                 routedByLayerAndRole[layer] = byRole
             case .excludedMultimodal:           continue
+            case .excludedDraft:                continue
             case .unknown:                      throw RepackError.unknownTensorPrefix(name: name)
             }
         }
@@ -183,11 +251,38 @@ enum RepackPlanner {
         // Sort deterministically. The LM order follows a fixed template.
         lmResidentBases.sort(by: lmResidentOrdering())
         excludedMultimodalNames.sort()
+        excludedDraftNames.sort()
+
+        // Decide the scheme before laying anything out: it changes which
+        // regions exist, so it cannot be revisited once offsets are assigned.
+        var routedBases: [String] = []
+        for bundle in routedByLayerAndRole.values.sorted(by: { $0.keys.sorted().first ?? "" < $1.keys.sorted().first ?? "" }) {
+            for name in bundle.values.sorted() {
+                routedBases.append(name.hasSuffix(".weight")
+                    ? String(name.dropLast(".weight".count)) : name)
+            }
+        }
+        let probeBases = lmResidentBases.compactMap { name -> String? in
+            guard name.hasSuffix(".weight"), registry[name]?.dtype == .u32 else { return nil }
+            return String(name.dropLast(".weight".count))
+        } + routedBases.sorted()
+
+        var symmetric = false
+        if let readSourceBytes {
+            let result = SymmetricProbe.probe(bases: probeBases, registry: registry,
+                                              readBytes: readSourceBytes)
+            symmetric = result.symmetric
+            log?("[repack] affine scheme — \(result.summary)")
+        } else {
+            log?("[repack] affine scheme — affine: source shards are not local, "
+                    + "the bias identity cannot be probed before planning")
+        }
 
         let residentPath = (outputDir as NSString).appendingPathComponent("model_weights.bin")
         let resident = try planResidentFile(path: residentPath,
                                             baseNames: lmResidentBases,
-                                            registry: registry, meta: meta)
+                                            registry: registry, meta: meta,
+                                            symmetric: symmetric)
 
         let layersDir = (outputDir as NSString).appendingPathComponent("packed_experts")
         var layerPlans: [LayerFilePlan] = []
@@ -211,20 +306,23 @@ enum RepackPlanner {
                 .appendingPathComponent("layer_\(String(format: "%02d", layer)).bin")
             let lp = try planLayerFile(path: path, layer: layer,
                                        gateName: gName, upName: uName, downName: dName,
-                                       registry: registry, meta: meta, arch: arch)
+                                       registry: registry, meta: meta, arch: arch,
+                                       symmetric: symmetric)
             layerPlans.append(lp)
         }
 
         let matched = SourceFingerprint.modelID(forIndexSha256: meta.indexSha256Hex)
 
         return RepackPlan(arch: arch,
+                          symmetric: symmetric,
                           baseMode: meta.baseMode,
                           baseGroupSize: meta.baseGroupSize,
                           bitsOverrideCount: bitsOverrideCount,
                           resident: resident,
                           layers: layerPlans,
                           matchedModelID: matched,
-                          excludedMultimodalTensorNames: excludedMultimodalNames)
+                          excludedMultimodalTensorNames: excludedMultimodalNames,
+                          excludedInlineDraftTensorNames: excludedDraftNames)
     }
 
     private static func isMultimodalTensorName(_ name: String) -> Bool {
@@ -235,31 +333,37 @@ enum RepackPlanner {
 
     // MARK: - Resident planning
 
-    private static func planResidentFile(path: String,
-                                         baseNames: [String],
-                                         registry: [String: SourceTensor],
-                                         meta: IndexLoader.SourceMetadata) throws
-                                        -> ResidentFilePlan {
-        let entryCount = baseNames.count
-
+    /// String table plus the padded index region size for a set of entry names.
+    /// Shared by the LM resident file and the vision tower file so both obey the
+    /// same v1 index layout.
+    static func residentIndexLayout(names: [String])
+        -> (stringTable: [UInt8], offsets: [UInt32], indexSize: UInt64) {
         var stringTable: [UInt8] = []
         var offsets: [UInt32] = []
-        offsets.reserveCapacity(entryCount)
-        for n in baseNames {
+        offsets.reserveCapacity(names.count)
+        for n in names {
             offsets.append(UInt32(stringTable.count))
             stringTable.append(contentsOf: n.utf8)
         }
-
         // Index size includes the fixed header, fixed-width entries, and the
         // string table, padded to a 16 KB page boundary.
         let rawIdx = UInt64(GTurboBinary.indexHeaderBytes
-            + entryCount * GTurboBinary.indexEntryBytes
+            + names.count * GTurboBinary.indexEntryBytes
             + stringTable.count)
-        let indexSize = roundUpToPage(rawIdx)
+        return (stringTable, offsets, roundUpToPage(rawIdx))
+    }
+
+    private static func planResidentFile(path: String,
+                                         baseNames: [String],
+                                         registry: [String: SourceTensor],
+                                         meta: IndexLoader.SourceMetadata,
+                                         symmetric: Bool) throws
+                                        -> ResidentFilePlan {
+        let (stringTable, offsets, indexSize) = residentIndexLayout(names: baseNames)
 
         var fileCursor = indexSize
         var entries: [ResidentEntry] = []
-        entries.reserveCapacity(entryCount)
+        entries.reserveCapacity(baseNames.count)
 
         for name in baseNames {
             guard let weight = registry[name] else {
@@ -287,8 +391,11 @@ enum RepackPlanner {
                 let wSize = weight.sizeBytes
                 let sOff = wOff + wSize
                 let sSize = scales.sizeBytes
+                // `sym` writes no bias region. The entry reports zero length
+                // and the runtime aliases the binding onto the scales.
+                let dropBias = symmetric && spec.bits == 4
                 let bOff = sOff + sSize
-                let bSize = biases.sizeBytes
+                let bSize = dropBias ? 0 : biases.sizeBytes
                 fileCursor = bOff + bSize
 
                 entries.append(ResidentEntry(
@@ -296,9 +403,13 @@ enum RepackPlanner {
                     logicalShape4: padTo4(logical),
                     fileOffset: wOff, sizeBytes: wSize,
                     scaleOffset: sOff, scaleSize: sSize,
-                    biasOffset: bOff, biasSize: bSize,
+                    // v1 requires an absent payload to carry a zero offset;
+                    // the runtime aliases the binding onto the scales when it
+                    // sees `biasSize == 0` (`Model.residentView`).
+                    biasOffset: dropBias ? 0 : bOff, biasSize: bSize,
                     quantSpec: spec,
-                    sourceWeight: weight, sourceScales: scales, sourceBiases: biases))
+                    sourceWeight: weight, sourceScales: scales,
+                    sourceBiases: dropBias ? nil : biases))
             } else {
                 // Unquantized (BF16 norm / scalar) — no companions.
                 let off = fileCursor
@@ -332,7 +443,8 @@ enum RepackPlanner {
                                       gateName: String, upName: String, downName: String,
                                       registry: [String: SourceTensor],
                                       meta: IndexLoader.SourceMetadata,
-                                      arch: ArchInfo) throws -> LayerFilePlan {
+                                      arch: ArchInfo,
+                                      symmetric: Bool) throws -> LayerFilePlan {
         let expertCount = arch.numExperts
         let roles: [(role: String, name: String)] = [
             ("gate", gateName), ("up", upName), ("down", downName)
@@ -385,15 +497,21 @@ enum RepackPlanner {
                 sourceOffsetPerExpert: perExpertScaleSize, sourceTensor: s,
                 bitsForWeights: nil)
             blobCursor += perExpertScaleSize
-            let bSlice = PerExpertTensorSlice(
-                role: role, component: "biases", dtype: GTurboFormatV1.DType.bf16.rawValue,
-                logicalShape: biasesLogical,
-                offsetInExpertBlob: blobCursor, sizeInExpertBlob: perExpertBiasSize,
-                sourceOffsetPerExpert: perExpertBiasSize, sourceTensor: b,
-                bitsForWeights: nil)
-            blobCursor += perExpertBiasSize
+            subs.append(wSlice); subs.append(sSlice)
 
-            subs.append(wSlice); subs.append(sSlice); subs.append(bSlice)
+            // `sym` omits the bias sub-tensor entirely: the expert blob loses
+            // 10% of its bytes and `expertStride` lands on the value a
+            // group-64 affine model already uses (44 §6).
+            if !(symmetric && spec.bits == 4) {
+                subs.append(PerExpertTensorSlice(
+                    role: role, component: "biases",
+                    dtype: GTurboFormatV1.DType.bf16.rawValue,
+                    logicalShape: biasesLogical,
+                    offsetInExpertBlob: blobCursor, sizeInExpertBlob: perExpertBiasSize,
+                    sourceOffsetPerExpert: perExpertBiasSize, sourceTensor: b,
+                    bitsForWeights: nil))
+                blobCursor += perExpertBiasSize
+            }
         }
 
         let expertStride = roundUpToPage(blobCursor)
@@ -476,6 +594,31 @@ enum RepackPlanner {
         if n.hasSuffix(".post_feedforward_layernorm_1.weight") { return 17 }
         if n.hasSuffix(".post_feedforward_layernorm_2.weight") { return 18 }
         if n.hasSuffix(".layer_scalar")           { return 19 }
+        return qwenSlotRank(in: n)
+    }
+
+    /// The Qwen3.5-MoE half of the same order. Its layers come in two shapes —
+    /// one that attends and one that holds a recurrent state — so the ranks
+    /// below interleave: whichever tensors a layer has, they come out in the
+    /// order the layer runs them (`docs/qwen35moe/01-MODEL.md` §2).
+    private static func qwenSlotRank(in n: String) -> Int {
+        // Linear-attention layer.
+        if n.contains(".linear_attn.in_proj_qkv.")  { return 20 }
+        if n.contains(".linear_attn.in_proj_z.")    { return 21 }
+        if n.contains(".linear_attn.in_proj_a.")    { return 22 }
+        if n.contains(".linear_attn.in_proj_b.")    { return 23 }
+        if n.contains(".linear_attn.conv1d.")       { return 24 }
+        if n.hasSuffix(".linear_attn.A_log")        { return 25 }
+        if n.hasSuffix(".linear_attn.dt_bias")      { return 26 }
+        if n.contains(".linear_attn.norm.")         { return 27 }
+        if n.contains(".linear_attn.out_proj.")     { return 28 }
+        // MoE block. The router comes first because its choice is what decides
+        // which expert bytes the layer will need.
+        if n.contains(".mlp.gate.")                 { return 29 }
+        if n.contains(".mlp.shared_expert_gate.")   { return 30 }
+        if n.contains(".mlp.shared_expert.gate_proj.") { return 31 }
+        if n.contains(".mlp.shared_expert.up_proj.")   { return 32 }
+        if n.contains(".mlp.shared_expert.down_proj.") { return 33 }
         return 100
     }
 }

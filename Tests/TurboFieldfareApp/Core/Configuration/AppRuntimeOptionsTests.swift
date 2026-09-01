@@ -6,17 +6,17 @@ import TurboFieldfare
 @Suite struct AppRuntimeOptionsTests {
     @Test func defaultsMatchProduction() throws {
         let options = AppRuntimeOptions()
-        #expect(options.expertCacheSlots == 16)
+        #expect(options.expertCacheSlots == 32)
         #expect(options.expertCachePolicy == .lfu)
         #expect(options.prefillEnabled)
-        #expect(options.prefillChunkTokens == 128)
+        #expect(options.prefillChunkTokens == 2048)
         #expect(options.rdadvisePolicy == .off)
         #expect(options.modelVerification == .fullSha256)
 
         let runtime = try options.resolvedRuntimeConfiguration(forceLogitsHead: false)
         #expect(runtime == .production)
         #expect(options.resultSummary ==
-            "Cache 16 LFU, prefill 128, FP16 KV, RDADVISE off, full SHA-256")
+            "Cache 32 LFU, prefill 2048, MTP on, FP16 KV, RDADVISE off, full SHA-256")
     }
 
     @Test func everyPublicChoiceMapsToRuntime() throws {
@@ -87,15 +87,22 @@ import TurboFieldfare
             options: base,
             forceLogitsHead: true) != baseline)
 
+        // The family sessions bind prefill and MTP at load, so these are
+        // load-time choices since the two-model rework.
         value = base; value.prefillEnabled = false
         #expect(AppLoadedRuntimeKey(
             modelDirectory: directory,
             maxContextTokens: 4096,
-            options: value) == baseline)
+            options: value) != baseline)
         value = base; value.prefillChunkTokens = 64
         #expect(AppLoadedRuntimeKey(
             modelDirectory: directory,
             maxContextTokens: 4096,
-            options: value) == baseline)
+            options: value) != baseline)
+        value = base; value.mtpEnabled = false
+        #expect(AppLoadedRuntimeKey(
+            modelDirectory: directory,
+            maxContextTokens: 4096,
+            options: value) != baseline)
     }
 }

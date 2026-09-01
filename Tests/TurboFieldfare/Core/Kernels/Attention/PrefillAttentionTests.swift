@@ -1,4 +1,6 @@
 import Testing
+import Accelerate
+import Dispatch
 import Foundation
 import Metal
 @testable import TurboFieldfare
@@ -128,6 +130,77 @@ import TurboFieldfareValidationSupport
                                            kvHeads: c.kvHeads)
             try Self.runAndCompare(fixture, label: c.label)
         }
+    }
+
+    /// headDim 256 dispatches `attention_prefill_causal_qblock_d256`, where one
+    /// simdgroup carries four queries and a threadgroup carries 32. The chunk
+    /// sizes here straddle those two boundaries so a query block that is only
+    /// partly filled, and a chunk that needs more than one threadgroup, both
+    /// have to come out right.
+    @Test(arguments: [1, 3, 4, 5, 31, 32, 33, 67])
+    func qBlockSlidingWindowMatchesReferenceAcrossBlockBoundaries(_ chunk: Int) throws {
+        let fixture = Self.makeFixture(start: 1_021,
+                                       chunk: chunk,
+                                       window: 1_024,
+                                       seed: 0xA950 + UInt64(chunk),
+                                       headDim: 256,
+                                       qHeads: 16,
+                                       kvHeads: 8)
+        try Self.runAndCompare(fixture, label: "qblock-chunk-\(chunk)")
+    }
+
+    /// headDim 512 dispatches `attention_prefill_causal_qblock_d512`, the full
+    /// attention layers. One simdgroup carries two queries there and a
+    /// threadgroup carries 16, and those layers see the whole prefix rather
+    /// than a window, so the key loop runs from zero. Same boundary straddling
+    /// as the 256 case, plus a start offset that puts the block's queries on
+    /// either side of a chunk edge.
+    @Test(arguments: [1, 2, 3, 15, 16, 17, 33])
+    func qBlockFullAttentionMatchesReferenceAcrossBlockBoundaries(_ chunk: Int) throws {
+        for start in [0, 1_021] {
+            let fixture = Self.makeFixture(start: start,
+                                           chunk: chunk,
+                                           window: 0,
+                                           seed: 0xA970 + UInt64(chunk),
+                                           headDim: 512,
+                                           qHeads: 16,
+                                           kvHeads: 2)
+            try Self.runAndCompare(fixture, label: "qblock512-start\(start)-chunk\(chunk)")
+        }
+    }
+
+    /// The same kernel again, this time reading a wrapped FP16 ring: the
+    /// sliding-window layers are the ones that run on a ring in production, and
+    /// the ring modulus is a function constant, so it is a separate pipeline.
+    @Test func qBlockRingCapacityMatchesLinearReference() throws {
+        let fixture = Self.makeFixture(start: 300,
+                                       chunk: 36,
+                                       window: 128,
+                                       seed: 0xA960,
+                                       headDim: 256,
+                                       qHeads: 16,
+                                       kvHeads: 8)
+        let ringCapacity = 192
+        var kRing = [Float](repeating: 0, count: ringCapacity * fixture.kvStride)
+        var vRing = [Float](repeating: 0, count: ringCapacity * fixture.kvStride)
+        for p in 0..<fixture.kvValid {
+            let dst = (p % ringCapacity) * fixture.kvStride
+            let src = p * fixture.kvStride
+            kRing.replaceSubrange(dst..<(dst + fixture.kvStride),
+                                  with: fixture.k[src..<(src + fixture.kvStride)])
+            vRing.replaceSubrange(dst..<(dst + fixture.kvStride),
+                                  with: fixture.v[src..<(src + fixture.kvStride)])
+        }
+
+        var ringFixture = fixture
+        ringFixture.k = kRing
+        ringFixture.v = vRing
+        let actual = try Self.runKernel(ringFixture, kvRingCapacity: UInt32(ringCapacity))
+        let reference = Self.reference(fixture)
+        let maxAbs = RelError.maxAbsDiff(actual, reference)
+        let rel = RelError.compute(actual: actual, reference: reference)
+        #expect(maxAbs <= 2e-2, "qblock ring maxAbs=\(maxAbs) rel=\(rel)")
+        #expect(rel <= 2e-2, "qblock ring rel=\(rel) maxAbs=\(maxAbs)")
     }
 
     @Test(arguments: [
@@ -310,40 +383,69 @@ import TurboFieldfareValidationSupport
     private static func reference(_ fixture: Fixture) -> [Float] {
         var out = [Float](repeating: 0, count: fixture.chunk * fixture.qHeads * fixture.headDim)
         let qPerKV = fixture.qHeads / fixture.kvHeads
-        for t in 0..<fixture.chunk {
-            let absQ = fixture.start + t
-            let first: Int
-            if fixture.window == 0 {
-                first = 0
-            } else {
-                first = max(0, absQ + 1 - fixture.window)
-            }
-            let last = min(fixture.kvValid, absQ + 1)
-            for qh in 0..<fixture.qHeads {
-                let kvh = qh / qPerKV
-                var scores: [Float] = []
-                scores.reserveCapacity(last - first)
-                for key in first..<last {
-                    var score: Float = 0
-                    for d in 0..<fixture.headDim {
-                        let qv = fixture.q[t * fixture.qStride + qh * fixture.headDim + d]
-                        let kv = fixture.k[key * fixture.kvStride + kvh * fixture.headDim + d]
-                        score += qv * kv
-                    }
-                    scores.append(score * fixture.scale)
+        out.withUnsafeMutableBufferPointer { outBuffer in
+            // One query row per iteration: each writes only its own heads, and
+            // reads nothing another row writes. The widest case here is 33
+            // queries x 16 heads over a 1024-key window, which is most of this
+            // suite's wall clock when it runs on one core.
+            nonisolated(unsafe) let output = outBuffer.baseAddress!
+            DispatchQueue.concurrentPerform(iterations: fixture.chunk) { t in
+                let absQ = fixture.start + t
+                let first: Int
+                if fixture.window == 0 {
+                    first = 0
+                } else {
+                    first = max(0, absQ + 1 - fixture.window)
                 }
-                let maxScore = scores.max() ?? -.infinity
-                var denom: Float = 0
-                for score in scores {
-                    denom += Foundation.exp(score - maxScore)
-                }
-                for d in 0..<fixture.headDim {
-                    var acc: Float = 0
-                    for (i, key) in (first..<last).enumerated() {
-                        let w = Foundation.exp(scores[i] - maxScore)
-                        acc += w * fixture.v[key * fixture.kvStride + kvh * fixture.headDim + d]
+                let last = min(fixture.kvValid, absQ + 1)
+                for qh in 0..<fixture.qHeads {
+                    let kvh = qh / qPerKV
+                    let qBase = t * fixture.qStride + qh * fixture.headDim
+                    let kvBase = kvh * fixture.headDim
+                    let keyCount = last - first
+                    guard keyCount > 0 else { continue }
+
+                    // Score row: one dot product per key position.
+                    var weights = [Float](repeating: 0, count: keyCount)
+                    fixture.q.withUnsafeBufferPointer { pq in
+                        fixture.k.withUnsafeBufferPointer { pk in
+                            weights.withUnsafeMutableBufferPointer { pw in
+                                for i in 0..<keyCount {
+                                    let kBase = (first + i) * fixture.kvStride + kvBase
+                                    var dot: Float = 0
+                                    vDSP_dotpr(pq.baseAddress! + qBase, 1,
+                                               pk.baseAddress! + kBase, 1,
+                                               &dot, vDSP_Length(fixture.headDim))
+                                    pw[i] = dot * fixture.scale
+                                }
+                            }
+                        }
                     }
-                    out[(t * fixture.qHeads + qh) * fixture.headDim + d] = denom > 0 ? acc / denom : 0
+
+                    // Softmax, shifted by the row maximum.
+                    var maxScore: Float = 0
+                    vDSP_maxv(weights, 1, &maxScore, vDSP_Length(keyCount))
+                    var negMax = -maxScore
+                    vDSP_vsadd(weights, 1, &negMax, &weights, 1, vDSP_Length(keyCount))
+                    weights = vForce.exp(weights)
+                    var denom: Float = 0
+                    vDSP_sve(weights, 1, &denom, vDSP_Length(keyCount))
+
+                    // Output column d is the weight row dotted against V's column
+                    // d, which is strided by the padded KV token stride.
+                    let outBase = (t * fixture.qHeads + qh) * fixture.headDim
+                    weights.withUnsafeBufferPointer { pw in
+                        fixture.v.withUnsafeBufferPointer { pv in
+                            let vColumn = pv.baseAddress! + first * fixture.kvStride + kvBase
+                            for d in 0..<fixture.headDim {
+                                var acc: Float = 0
+                                vDSP_dotpr(pw.baseAddress!, 1,
+                                           vColumn + d, vDSP_Stride(fixture.kvStride),
+                                           &acc, vDSP_Length(keyCount))
+                                (output + outBase + d).pointee = denom > 0 ? acc / denom : 0
+                            }
+                        }
+                    }
                 }
             }
         }

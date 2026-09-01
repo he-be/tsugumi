@@ -97,13 +97,29 @@ import TurboFieldfareDecodeProtocol
 
                 do {
                     let options = try appRuntimeOptions(request.runtimeOptions)
+                    let history: [AppChatTurn] = try request.history.map { turn in
+                        guard let role = AppChatTurn.Role(rawValue: turn.role) else {
+                            throw AppInferenceError.invalidRequest(
+                                "unknown chat turn role \(turn.role)")
+                        }
+                        return AppChatTurn(role: role,
+                                           text: turn.text,
+                                           reasoningText: turn.reasoningText ?? "",
+                                           imagePaths: turn.imagePaths)
+                    }
                     let generation = AppGenerationRequest(
-                        modelDirectory: modelDirectory, prompt: request.prompt,
+                        modelDirectory: modelDirectory,
+                        history: history,
+                        prompt: request.prompt,
                         maxNewTokens: request.maxNewTokens,
                         maxContextTokens: request.maxContextTokens,
                         temperature: request.temperature,
+                        topK: request.topK,
+                        topP: request.topP,
                         repetitionPenalty: request.repetitionPenalty,
-                        runtimeOptions: options)
+                        runtimeOptions: options,
+                        enableThinking: request.enableThinking,
+                        imagePaths: request.imagePaths)
                     for try await event in client.generate(generation) {
                         outbox.publish(event)
                     }
@@ -169,7 +185,8 @@ import TurboFieldfareDecodeProtocol
             prefillEnabled: options.prefillEnabled,
             prefillChunkTokens: options.prefillChunkTokens,
             rdadvisePolicy: rdadvisePolicy,
-            modelVerification: modelVerification)
+            modelVerification: modelVerification,
+            mtpEnabled: options.mtpEnabled)
         try resolved.validate()
         return resolved
     }

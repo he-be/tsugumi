@@ -44,6 +44,7 @@ import Testing
         let url = try makeCompleteModelInstall("wrong-checkpoint")
         defer { try? FileManager.default.removeItem(at: url) }
         let descriptor = AppModelInstallDescriptor(
+            kind: .gemmaQATSym,
             displayName: "different",
             repoID: "example/different",
             revision: "revision",

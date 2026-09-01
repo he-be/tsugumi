@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Metal
 import TurboFieldfareFormat
@@ -15,9 +16,43 @@ public struct RoutedExpertFetchPlan: Sendable {
         self.layer = layer
         self.cachePlan = cachePlan
     }
+
+    /// The part of this plan that covers `range` of its experts.
+    ///
+    /// A speculative block plans a whole layer's expert union in one call —
+    /// planning it a tile at a time lets one tile evict an expert a later tile
+    /// of the same layer is about to ask for, and the layer then reads it back
+    /// (docs/mtp/27-M7-RESULTS.md §3). The tiles still fetch separately, so the
+    /// GPU can start on the tile whose experts are already resident, and each
+    /// tile needs the slice of the plan that is its own.
+    public func slice(_ range: Range<Int>) -> RoutedExpertFetchPlan {
+        precondition(range.lowerBound >= 0 && range.upperBound <= cachePlan.experts.count,
+                     "routed expert plan slice out of range")
+        let misses = cachePlan.misses
+            .filter { range.contains($0) }
+            .map { $0 - range.lowerBound }
+        return RoutedExpertFetchPlan(
+            layer: layer,
+            cachePlan: ExpertCachePlan(
+                experts: Array(cachePlan.experts[range]),
+                assignedSlots: Array(cachePlan.assignedSlots[range]),
+                misses: misses,
+                hits: range.count - misses.count))
+    }
 }
 
 extension Model {
+    /// Empty every open layer's expert cache. Measurement only: it lets a probe
+    /// start two phases from the same cold cache (`PreadExpertStreamer.resetCache`).
+    /// Layers that were never opened have nothing cached, so they are skipped.
+    public func resetExpertCaches() {
+        streamersQueue.sync {
+            for streamer in streamersBox.streamers {
+                streamer?.resetCache()
+            }
+        }
+    }
+
     public func routedExpertOffsets(layer: Int) -> MoEExpertOffsets {
         let expert = packedExpertsLayout.expert(layer: layer, expert: 0)
         func offset(_ role: String) -> UInt32 {
@@ -27,16 +62,25 @@ extension Model {
             }
             return offset
         }
+        /// A `sym` expert blob has no bias region, so the bias binding aliases
+        /// the scales: a valid address the `TURBO_AFFINE_SYMMETRIC` kernels
+        /// never dereference (`docs/mtp/44-W1-WEIGHT-DIET.md`). Keeping the
+        /// binding is what lets the kernel signatures stay scheme-independent.
+        func biasOffset(_ role: String) -> UInt32 {
+            expert.subTensors["\(role)_biases"] != nil
+                ? offset("\(role)_biases")
+                : offset("\(role)_scales")
+        }
         return MoEExpertOffsets(
             gateWOff: offset("gate"),
             gateSOff: offset("gate_scales"),
-            gateBOff: offset("gate_biases"),
+            gateBOff: biasOffset("gate"),
             upWOff: offset("up"),
             upSOff: offset("up_scales"),
-            upBOff: offset("up_biases"),
+            upBOff: biasOffset("up"),
             downWOff: offset("down"),
             downSOff: offset("down_scales"),
-            downBOff: offset("down_biases"))
+            downBOff: biasOffset("down"))
     }
 
     public func routedExpertPhysicalOffsets(layer: Int) -> [UInt64] {
@@ -48,6 +92,13 @@ extension Model {
         try ensureLayerOpened(layer)
         let streamer = streamersQueue.sync { streamersBox.streamers[layer]! }
         return streamer.adviseExpertMisses(experts: experts)
+    }
+
+    /// Which of `experts` are in a slot right now, in the order given.
+    public func routedExpertResidency(layer: Int, experts: [Int]) throws -> [Bool] {
+        try ensureLayerOpened(layer)
+        let streamer = streamersQueue.sync { streamersBox.streamers[layer]! }
+        return streamer.residentExperts(experts)
     }
 
     public func routedExpertAdviceByteEstimate(layer: Int,
@@ -85,6 +136,40 @@ extension Model {
         return RoutedExpertFetchPlan(layer: layer, cachePlan: cachePlan)
     }
 
+    /// A plan for a read this layer has not asked for yet
+    /// (`PreadExpertStreamer.planSpeculativeExperts`): the caller guessed the
+    /// experts from the previous layer's router and wants the bytes moving
+    /// before the layer is reached (docs/mtp/29-M8-B-PROBE.md §6).
+    ///
+    /// Nil when the guess cannot be placed without evicting something the layer
+    /// used in its last round. That is not an error — the prefetch is dropped
+    /// and the layer fetches normally when it gets there.
+    public func planSpeculativeRoutedExperts(layer: Int,
+                                             experts: [Int],
+                                             avoidingSlots: Set<Int> = []) throws
+        -> RoutedExpertFetchPlan? {
+        try ensureLayerOpened(layer)
+        let streamer = streamersQueue.sync { streamersBox.streamers[layer]! }
+        let validSlots = Set(avoidingSlots.filter { $0 >= 0 && $0 < streamer.slotCount })
+        guard let cachePlan = streamer.planSpeculativeExperts(experts: experts,
+                                                              avoidingSlots: validSlots)
+        else {
+            return nil
+        }
+        return RoutedExpertFetchPlan(layer: layer, cachePlan: cachePlan)
+    }
+
+    /// D の経路 (既定) でこの層の `MTLResidencySet` を返す。
+    /// `TF_EXPERT_MMAP=0` で開いたモデルでは nil で、呼び手は何もしない。
+    ///
+    /// 掛けるのは**エキスパートを読むコマンドバッファだけ**である。set は
+    /// `useResource` の代わりではなく上乗せなので (49 §2 の腕 B\*)、掛け忘れた
+    /// コマンドバッファも正しく動く — 遅くなるだけである。
+    func routedExpertResidencySet(layer: Int) -> (any MTLResidencySet)? {
+        guard layer >= 0, layer < streamersBox.streamers.count else { return nil }
+        return streamersQueue.sync { streamersBox.streamers[layer]?.mmap?.residencySet }
+    }
+
     public func routedExpertCacheSlotCount(layer _: Int) -> Int? {
         guard case .pread(let slotCount) = streamingMode else { return nil }
         return slotCount
@@ -105,10 +190,89 @@ extension Model {
         return streamer.adviseExpertCachePlanMisses(plan.cachePlan)
     }
 
+    /// The same fetch for a plan that has nothing to read.
+    ///
+    /// `fetchRoutedExperts` hops to the I/O queue even when every expert is
+    /// already resident, and a speculative verify block issues one fetch per
+    /// tile per layer — about a hundred hops a block, on a path whose expert
+    /// cache hits better than 90% of the time
+    /// (docs/mtp/16-M4.5-PLAN.md §4 d). Returns nil when the plan has misses,
+    /// which is the caller's signal to take the asynchronous path.
+    public func fetchResidentRoutedExperts(plan: RoutedExpertFetchPlan) throws
+        -> [TensorView]? {
+        guard plan.misses.isEmpty else { return nil }
+        try ensureLayerOpened(plan.layer)
+        let streamer = streamersQueue.sync { streamersBox.streamers[plan.layer]! }
+        let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        let buffers = try streamer.executeExpertCachePlan(plan.cachePlan)
+        let views = Self.makeExpertViews(buffers,
+                                         layer: plan.layer,
+                                         experts: plan.experts)
+        telemetry.recordFetch(layer: plan.layer,
+                              experts: plan.experts,
+                              hits: plan.hits,
+                              misses: 0,
+                              nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+        return views
+    }
+
+    /// Start a routed-expert read and return before it finishes.
+    ///
+    /// `fetchRoutedExperts` starts the read and waits for it in one step, so
+    /// the GPU has nothing queued while the bytes land — and a verify block
+    /// spends about as long reading experts as it spends computing with them
+    /// (docs/mtp/18-M4.6-RESULTS.md §2). A block knows every tile's experts as
+    /// soon as the routing is grouped, so it can issue the next tile's read
+    /// before encoding this one and let the two overlap.
+    ///
+    /// The plan is made by the caller and therefore already owns its slots; the
+    /// caller is responsible for keeping the next plan off the slots a read in
+    /// flight is writing into (`avoidingSlots`).
+    public func startRoutedExpertFetch(plan: RoutedExpertFetchPlan) throws
+        -> RoutedExpertFetchHandle {
+        try ensureLayerOpened(plan.layer)
+        let streamer = streamersQueue.sync { streamersBox.streamers[plan.layer]! }
+        let handle = RoutedExpertFetchHandle()
+        let layer = plan.layer
+        let experts = plan.experts
+        let hits = plan.hits
+        let misses = plan.misses.count
+        let cachePlan = plan.cachePlan
+        let telemetry = self.telemetry
+        // Nothing to read: the slots are already right, and hopping to a queue
+        // to discover that costs more than the work.
+        if misses == 0 {
+            let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+            let buffers = try streamer.executeExpertCachePlan(cachePlan)
+            telemetry.recordFetch(layer: layer, experts: experts, hits: hits, misses: 0,
+                                  nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+            handle.complete(.success(Self.makeExpertViews(buffers,
+                                                          layer: layer,
+                                                          experts: experts)))
+            return handle
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+            do {
+                let buffers = try streamer.executeExpertCachePlan(cachePlan)
+                telemetry.recordFetch(
+                    layer: layer, experts: experts, hits: hits, misses: misses,
+                    nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+                handle.complete(.success(Self.makeExpertViews(buffers,
+                                                              layer: layer,
+                                                              experts: experts)))
+            } catch {
+                handle.complete(.failure(error))
+            }
+        }
+        return handle
+    }
+
     public func fetchRoutedExperts(plan: RoutedExpertFetchPlan) async throws -> [TensorView] {
         try ensureLayerOpened(plan.layer)
         let streamer = streamersQueue.sync { streamersBox.streamers[plan.layer]! }
-        return try await withCheckedThrowingContinuation { continuation in
+        let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        let views: [TensorView] = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
                     let buffers = try streamer.executeExpertCachePlan(plan.cachePlan)
@@ -121,15 +285,27 @@ extension Model {
                 }
             }
         }
+        telemetry.recordFetch(layer: plan.layer,
+                              experts: plan.experts,
+                              hits: plan.hits,
+                              misses: plan.misses.count,
+                              nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+        return views
     }
 
     public func fetchRoutedExperts(layer: Int, experts: [Int]) async throws -> [TensorView] {
         try ensureLayerOpened(layer)
         let streamer = streamersQueue.sync { streamersBox.streamers[layer]! }
-        return try await withCheckedThrowingContinuation { continuation in
+        let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+        // `loadExpertsCached` plans and executes in one step, so the hit count
+        // is only observable from inside the streamer.
+        nonisolated(unsafe) var observedHits = 0
+        let views: [TensorView] = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {
                 do {
-                    let buffers = try streamer.loadExpertsCached(experts: experts)
+                    let plan = streamer.planExpertsCached(experts: experts)
+                    observedHits = plan.hits
+                    let buffers = try streamer.executeExpertCachePlan(plan)
                     continuation.resume(returning: Self.makeExpertViews(
                         buffers,
                         layer: layer,
@@ -139,6 +315,12 @@ extension Model {
                 }
             }
         }
+        telemetry.recordFetch(layer: layer,
+                              experts: experts,
+                              hits: observedHits,
+                              misses: experts.count - observedHits,
+                              nanos: clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start)
+        return views
     }
 
     private static func makeExpertViews(
@@ -158,5 +340,38 @@ extension Model {
                 shape: (UInt32(layer), UInt32(experts[index]), 0, 0),
                 dtype: GTurboFormatV1.DType.u32.rawValue)
         }
+    }
+}
+
+public enum RoutedExpertFetchError: Error, Equatable, CustomStringConvertible {
+    case completedWithoutResult
+
+    public var description: String {
+        "routed expert fetch handle was signalled without a result"
+    }
+}
+
+/// A routed-expert read that has been issued but not waited for.
+///
+/// Deliberately not an `async` task: the caller is a synchronous encode loop
+/// that wants the read running against the GPU work it is about to submit, and
+/// a semaphore says that in one line. `wait()` is called exactly once.
+public final class RoutedExpertFetchHandle: @unchecked Sendable {
+    private let semaphore = DispatchSemaphore(value: 0)
+    private var result: Result<[TensorView], Error>?
+
+    fileprivate init() {}
+
+    fileprivate func complete(_ result: Result<[TensorView], Error>) {
+        self.result = result
+        semaphore.signal()
+    }
+
+    public func wait() throws -> [TensorView] {
+        semaphore.wait()
+        guard let result else {
+            throw RoutedExpertFetchError.completedWithoutResult
+        }
+        return try result.get()
     }
 }

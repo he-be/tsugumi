@@ -20,6 +20,20 @@ public final class InstructionTranscriptDocumentController {
         }
     }
 
+    /// A finished turn rendered above the live prompt/response pair. The
+    /// response is final, so it renders through the Markdown renderer once at
+    /// rebuild time.
+    public struct CompletedTurn: Equatable, Sendable {
+        public let prompt: String
+        public let response: String
+
+        public init(prompt: String, response: String) {
+            self.prompt = prompt
+            self.response = response
+        }
+    }
+
+    public private(set) var history: [CompletedTurn] = []
     public private(set) var prompt = ""
     public private(set) var response = ""
     public private(set) var isFinalized = false
@@ -63,6 +77,7 @@ public final class InstructionTranscriptDocumentController {
     @discardableResult
     public func synchronize(
         storage: NSMutableAttributedString,
+        history: [CompletedTurn] = [],
         prompt: String,
         response: String,
         isTerminal: Bool,
@@ -73,7 +88,8 @@ public final class InstructionTranscriptDocumentController {
             response: response,
             isTerminal: isTerminal,
             requested: showsPrefillPlaceholder)
-        let needsRebuild = prompt != self.prompt
+        let needsRebuild = history != self.history
+            || prompt != self.prompt
             || !response.hasPrefix(self.response)
             || (isFinalized && !isTerminal)
             || displaysPrefillPlaceholder != self.showsPrefillPlaceholder
@@ -81,9 +97,11 @@ public final class InstructionTranscriptDocumentController {
         var mutation: Mutation = .none
         if needsRebuild
             || storage.length == 0
-                && (!prompt.isEmpty || !response.isEmpty || displaysPrefillPlaceholder) {
+                && (!history.isEmpty || !prompt.isEmpty || !response.isEmpty
+                    || displaysPrefillPlaceholder) {
             rebuild(
                 storage: storage,
+                history: history,
                 prompt: prompt,
                 response: response,
                 showsPrefillPlaceholder: displaysPrefillPlaceholder)
@@ -97,6 +115,7 @@ public final class InstructionTranscriptDocumentController {
             mutation = .appended
         }
 
+        self.history = history
         self.prompt = prompt
         self.response = response
         self.showsPrefillPlaceholder = displaysPrefillPlaceholder
@@ -133,11 +152,33 @@ public final class InstructionTranscriptDocumentController {
 
     private func rebuild(
         storage: NSMutableAttributedString,
+        history: [CompletedTurn],
         prompt: String,
         response: String,
         showsPrefillPlaceholder: Bool
     ) {
         let document = NSMutableAttributedString()
+        for turn in history {
+            if !turn.prompt.isEmpty {
+                document.append(NSAttributedString(
+                    string: "You\n",
+                    attributes: Self.userLabelAttributes()))
+                document.append(NSAttributedString(
+                    string: turn.prompt,
+                    attributes: Self.promptAttributes()))
+                document.append(NSAttributedString(
+                    string: "\n\n",
+                    attributes: Self.promptAttributes()))
+            }
+            document.append(NSAttributedString(
+                string: "Answer\n",
+                attributes: Self.assistantLabelAttributes()))
+            document.append(renderer.render(turn.response).attributedString)
+            document.append(NSAttributedString(
+                string: "\n\n",
+                attributes: Self.responseAttributes()))
+        }
+        let hasLiveTurn = !prompt.isEmpty || !response.isEmpty || showsPrefillPlaceholder
         if !prompt.isEmpty {
             document.append(NSAttributedString(
                 string: "You\n",
@@ -149,9 +190,11 @@ public final class InstructionTranscriptDocumentController {
                 string: "\n\n",
                 attributes: Self.promptAttributes()))
         }
-        document.append(NSAttributedString(
-            string: "Answer\n",
-            attributes: Self.assistantLabelAttributes()))
+        if hasLiveTurn {
+            document.append(NSAttributedString(
+                string: "Answer\n",
+                attributes: Self.assistantLabelAttributes()))
+        }
         assistantRange = NSRange(location: document.length, length: 0)
         document.append(NSAttributedString(
             string: response,

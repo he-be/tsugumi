@@ -47,6 +47,38 @@ public indirect enum JSONValue: Codable, Equatable, Sendable {
         }
     }
 
+    /// Tool-call arguments for **Ornith's** template, which writes
+    /// `args_value | string if args_value is string else args_value | tojson`.
+    ///
+    /// A string parameter is written raw and round-trips already. Everything
+    /// else goes through swift-jinja's `tojson`, which is `JSONEncoder()`
+    /// without `.withoutEscapingSlashes` — so it writes `\/` for every `/`
+    /// (`Jinja/Filters.swift:1089`). The model then reads its own last call
+    /// back as `\/\/ fog` where it wrote `// fog`, copies that into the next
+    /// `oldText`, and the edit cannot match the file. That was measured, four
+    /// failed edits in a row (pi session `01a02a00-…`, 2026-08-22).
+    ///
+    /// So the JSON is spelled **here**, by the encoder this repository owns,
+    /// and handed over as a string — the branch the template writes raw. The
+    /// bytes are the JSON the template meant to write, minus Foundation's
+    /// escape. Key order inside a free-form value is still the encoder's
+    /// (§12 DEV-15): `JSONValue.object` is a Swift dictionary and has no order
+    /// to preserve.
+    public func jinjaToolArgumentsValue() throws -> any Sendable {
+        guard case .object(let arguments) = self else {
+            return try jinjaSendableValue()
+        }
+        var rendered: [String: any Sendable] = [:]
+        for (key, value) in arguments {
+            if case .string(let text) = value {
+                rendered[key] = text
+            } else {
+                rendered[key] = try value.encoded()
+            }
+        }
+        return rendered
+    }
+
     public func jinjaSendableValue() throws -> any Sendable {
         switch self {
         case .object(let value):

@@ -1,0 +1,28 @@
+```python
+from collections import OrderedDict
+from typing import TypeVar, Generic, Optional
+
+# Define TypeVars for generic implementation
+K = TypeVar('K')
+V = TypeVar('V')
+
+class LRUCache(Generic[K, V]):
+    """
+    A Least Recently Used (LRU) cache implementation using an OrderedDict.
+    
+    This cache has a fixed capacity. When the capacity is reached, the 
+    least recently accessed item is removed to make room for new items.
+    """
+
+    def __init__(self, capacity: int):
+        """
+        Initialize the LRU cache with a fixed capacity.
+
+        Args:
+            capacity (int): The maximum number of items the cache can hold.
+        
+        Raises:
+            ValueError: If capacity is less than or equal to 0.
+        """
+        if capacity <= 0:
+            raise ValueError

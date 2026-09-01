@@ -13,16 +13,18 @@ public enum DequantInt8GemvRef {
     public static func apply(
         weightRows: [Quantization.Int8AffineRow],
         x: [Float],
-        n: Int
+        n: Int,
+        groupSize: Int = Quantization.groupSize
     ) -> [Float] {
         precondition(!weightRows.isEmpty)
         precondition(x.count == n)
-        precondition(n % Quantization.groupSize == 0)
+        precondition(n % groupSize == 0)
 
         let m = weightRows.count
         var y = [Float](repeating: 0, count: m)
         for row in 0..<m {
-            let wRow = Quantization.dequantizeInt8Affine(weightRows[row], n: n)
+            let wRow = Quantization.dequantizeInt8Affine(weightRows[row], n: n,
+                                                         groupSize: groupSize)
             var dot: Float = 0
             wRow.withUnsafeBufferPointer { pw in
                 x.withUnsafeBufferPointer { px in

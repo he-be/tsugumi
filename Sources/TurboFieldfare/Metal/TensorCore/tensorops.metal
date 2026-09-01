@@ -5,7 +5,27 @@ using namespace metal;
 #include <MetalPerformancePrimitives/MetalPerformancePrimitives.h>
 using namespace mpp::tensor_ops;
 
-constant constexpr uint kW4A8GroupSize = 64;
+#ifndef TURBO_AFFINE_GROUP_SIZE
+#define TURBO_AFFINE_GROUP_SIZE 64
+#endif
+constant constexpr uint kW4A8GroupSize = TURBO_AFFINE_GROUP_SIZE;
+
+// Affine zero point -- see the note in dequant_int4.metal. `TURBO_AFFINE_SYMMETRIC`
+// is a whole-model compile-time constant (`MetalContext.affineScheme`); when it
+// is set the bias arrays do not exist and the bindings alias the scales.
+#ifndef TURBO_AFFINE_SYMMETRIC
+#define TURBO_AFFINE_SYMMETRIC 0
+#endif
+
+static inline float w4a8_int4_bias(device const bfloat* biases, uint index,
+                                     float scale) {
+#if TURBO_AFFINE_SYMMETRIC
+    return -8.0f * scale;
+#else
+    return float(biases[index]);
+#endif
+}
+
 constant constexpr int kMPPAffineTileM = 64;
 constant constexpr int kMPPAffineTileN = 32;
 constant constexpr int kMPPAffineTileK = 64;
@@ -71,7 +91,7 @@ kernel void mpp_prefill_affine_threadgroup_f16(
                     ? uint(packed & 0x0fu)
                     : uint(packed >> 4);
                 const float scale = float(scales[globalN * groupsPerRow + group]);
-                const float bias = float(biases[globalN * groupsPerRow + group]);
+                const float bias = w4a8_int4_bias(biases, globalN * groupsPerRow + group, scale);
                 weightTile[linear] = half(fma(float(q), scale, bias));
             } else {
                 weightTile[linear] = half(0.0f);

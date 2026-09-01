@@ -43,10 +43,34 @@ public struct AppRunnerDiagnostics: Equatable, Sendable {
     }
 }
 
+/// What one request's speculative loop did: proposals and acceptances, for
+/// the HUD only — accepted tokens are tokens the target itself drew, so this
+/// says how the wall clock was spent, never what the answer was.
+public struct AppSpeculativeDiagnostics: Equatable, Sendable {
+    public var blockTokens: Int
+    public var proposed: Int
+    public var accepted: Int
+
+    public init(blockTokens: Int, proposed: Int, accepted: Int) {
+        self.blockTokens = blockTokens
+        self.proposed = proposed
+        self.accepted = accepted
+    }
+
+    public var acceptanceRate: Double {
+        proposed > 0 ? Double(accepted) / Double(proposed) : 0
+    }
+}
+
 public struct AppDiagnostics: Equatable, Sendable {
     public var generatedTokens: Int
     public var stopReason: AppStopReason
     public var promptTokenCount: Int?
+    /// Prompt tokens the session served from its cache instead of
+    /// recomputing (exact-extension for Ornith, LCP for Gemma).
+    public var cachedPromptTokens: Int?
+    /// Present only when the MTP loop actually ran.
+    public var speculative: AppSpeculativeDiagnostics?
     public var prefillSeconds: Double?
     public var timeToFirstTokenSeconds: Double?
     public var decodeSeconds: Double
@@ -76,6 +100,8 @@ public struct AppDiagnostics: Equatable, Sendable {
     public init(generatedTokens: Int,
                 stopReason: AppStopReason,
                 promptTokenCount: Int? = nil,
+                cachedPromptTokens: Int? = nil,
+                speculative: AppSpeculativeDiagnostics? = nil,
                 prefillSeconds: Double? = nil,
                 timeToFirstTokenSeconds: Double?,
                 decodeSeconds: Double,
@@ -87,6 +113,8 @@ public struct AppDiagnostics: Equatable, Sendable {
         self.generatedTokens = generatedTokens
         self.stopReason = stopReason
         self.promptTokenCount = promptTokenCount
+        self.cachedPromptTokens = cachedPromptTokens
+        self.speculative = speculative
         self.prefillSeconds = prefillSeconds
         self.timeToFirstTokenSeconds = timeToFirstTokenSeconds
         self.decodeSeconds = decodeSeconds
@@ -102,6 +130,9 @@ public struct AppTokenEvent: Equatable, Sendable {
     public var index: Int
     public var textDelta: String
     public var elapsedDecodeSeconds: Double
+    /// Thought-channel text this event carries. Kept apart from `textDelta`
+    /// so the UI can render reasoning as reasoning instead of answer text.
+    public var reasoningDelta: String = ""
 }
 
 public enum AppInferenceEvent: Equatable, Sendable {

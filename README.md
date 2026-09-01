@@ -11,8 +11,8 @@
 
 <p align="center">
   <img alt="Swift 6.2" src="https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white">
-  <img alt="Metal 4" src="https://img.shields.io/badge/Metal-4-5E5CE6">
-  <img alt="macOS 26 or later" src="https://img.shields.io/badge/macOS-26%2B-000000?logo=apple&logoColor=white">
+  <img alt="Metal 3.2 or later" src="https://img.shields.io/badge/Metal-3.2%2B-5E5CE6">
+  <img alt="macOS 15 or later" src="https://img.shields.io/badge/macOS-15%2B-000000?logo=apple&logoColor=white">
   <a href="LICENSE"><img alt="Apache 2.0 license" src="https://img.shields.io/badge/License-Apache%202.0-2ea44f"></a>
 </p>
 
@@ -69,7 +69,7 @@ your prompt, and press **Generate**.
 | Memory          | ~2 GB of weights and 4K KV cache                                                                                         |
 | Storage         | About 14.3 GB for the installed text-only model                                                                          |
 | Hardware        | Apple Silicon Mac; 8 GB of RAM                                                                                            |
-| Platform        | macOS 26, Metal 4, Swift 6.2                                                                                             |
+| Platform        | macOS 15 or newer, Metal 3.2 (Metal 4 tensor kernels on macOS 26), Swift 6.2                                             |
 | M2 measured decode | [5.1-6.3 tok/s](docs/BENCHMARKS.md#m2-measured-decode) on an 8 GB M2 MacBook Air |
 | M5 measured decode | [31-35 tok/s](docs/BENCHMARKS.md#m5-measured-decode) on a 24 GB M5 Pro |
 | Community Reports | [Here](docs/COMMUNITY_BENCHMARKS.md#community-results) |
@@ -100,12 +100,19 @@ The Swift package exposes six products:
 ### Requirements
 
 - An Apple Silicon Mac; the validated target is an 8 GB M2 MacBook Air
-- macOS 26 with Metal 4
+- macOS 15 (Sequoia) or newer
 - Xcode 26 and Swift 6.2 or newer
 - Enough free storage for the ~14.3 GB model installation
 - An internet connection for the first model install
 
-The package is arm64-only. Older macOS and Metal versions are not supported.
+The package is arm64-only. macOS 14 and earlier are not supported.
+
+macOS 26 additionally enables the Metal 4 / MSL 4.0 tensor kernels: the
+MetalPerformancePrimitives prefill matmul and the tensor-ops prefill attention
+path. On macOS 15 the shader library is compiled as MSL 3.2, those kernels are
+compiled out by their `__HAVE_TENSOR__` guard, and the runtime falls back to
+the portable prefill kernels. Decode is unaffected; prefill on macOS 15 is
+slower than the published macOS 26 numbers.
 
 ### Prompting the model
 
@@ -113,9 +120,11 @@ The Mac app treats what you type as an instruction and handles Gemma's chat
 formatting automatically. Just describe the task and include any context the
 model needs.
 
-Generation defaults to temperature `0.2`, Top-K `64`, and Top-P `0.95`. Set
-temperature to `0` for deterministic greedy output. The model can still repeat
-itself or give incorrect answers, so check important results.
+Generation defaults to temperature `1.0`, Top-K `64`, and Top-P `0.95`, which
+are the values Gemma 4 recommends. Set temperature to `0` for deterministic
+greedy output, but expect repetition: below the recommended temperature this
+model can fall into a loop and never finish an answer. The model can still
+repeat itself or give incorrect answers, so check important results.
 
 TurboFieldfare is text-only. The app and CLI support user and model messages
 plus optional system guidance; they do not expose or execute tools. The
@@ -198,6 +207,22 @@ swift run -c release TurboFieldfareRepack \
 The runtime accepts only a completed `.gturbo` directory with a final
 `manifest.json`.
 
+Repack a checkpoint that is already staged on disk in its distributed form —
+the safetensors shards plus `model.safetensors.index.json`, `config.json` and
+the tokenizer files — instead of streaming it:
+
+```bash
+swift run -c release TurboFieldfareRepack \
+  --output scratch/gemma4-qat.gturbo \
+  --source-snapshot scratch/qat-aligned-snapshot
+```
+
+Nothing is downloaded in this mode: the shards are read in place with `pread`.
+The snapshot still has to be one this build pins. Its
+`model.safetensors.index.json` digest selects the source and supplies the
+revision recorded in the manifest and the install receipt, and an unrecognised
+digest is rejected.
+
 Verify an existing installation without loading the model:
 
 ```bash
@@ -226,6 +251,62 @@ This formats messages in the same way as the Mac app. The CLI response limit
 is set with `--max-new`, which defaults to 1,024 tokens. The Mac app can
 generate until the selected context window is full.
 
+#### Images
+
+A model installed with a vision tower (`--include-vision`, or `--add-vision` on
+an existing install) accepts images on the last user turn:
+
+```bash
+swift run -c release TurboFieldfareCLI \
+  --model scratch/gemma4.gturbo \
+  --messages-file messages.json \
+  --image photo.jpg
+```
+
+`--image` is repeatable and `--messages-file` also accepts a list of content
+parts, which is how an image is placed between paragraphs of a turn:
+
+```json
+[
+  {"role": "user", "content": [
+    {"type": "text", "text": "What is on the second shelf?"},
+    {"type": "image", "path": "shelf.jpg"}
+  ]}
+]
+```
+
+Each image costs up to `--image-tokens` (70, 140, or 280; default 280) prompt
+tokens — the actual number follows the image's aspect ratio — plus about 1.4 s
+of GPU time before the first token. Images need chunked prefill (`--prefill on`,
+the default) and a model that carries the tower; both are checked before
+anything runs. Writing `<|image|>` into the text is an error rather than a
+silently ignored token.
+
+The [local server](docs/OPENAI_SERVER.md#images) takes the same images as
+OpenAI-style `image_url` content parts holding a `data:` URI.
+
+#### Speculative decoding (MTP)
+
+A model installed with the drafter section (`--include-draft`, or `--add-draft`
+on an existing install) can predict several tokens per step:
+
+```bash
+swift run -c release TurboFieldfareCLI \
+  --model scratch/gemma4.gturbo \
+  --messages-file messages.json \
+  --draft-block-size 4
+```
+
+A small drafter proposes the next few tokens, one verify pass checks them all,
+and only the tokens the target model itself would have drawn are kept — so the
+answer is the answer of the non-speculative run and only the wall clock moves.
+The gain follows how predictable the text is: about **1.4x** on code and on
+image descriptions, about **1.0x** on Japanese prose, where the drafter is
+rarely right. It needs chunked prefill and a repetition penalty of 1.0, and it
+is off unless asked for. The [local server](docs/OPENAI_SERVER.md#speculative-decoding-mtp)
+takes the same flag. Measurements and the accepted trade-offs are in
+[`RESULTS_MTP.md`](RESULTS_MTP.md).
+
 Common generation options include `--max-context`, `--temperature`, `--top-k`,
 `--top-p`, `--repetition-penalty`, `--seed`, and repeatable `--stop` strings.
 Runtime options include `--expert-cache-slots`, `--expert-cache-policy`,
@@ -251,12 +332,17 @@ swift build -c release --product TurboFieldfareServer
 ```
 
 It listens on `http://127.0.0.1:8080/v1` and supports Chat Completions,
-streaming, function tools, and single-prefix prompt reuse. The client must
+streaming, function tools, `image_url` content parts holding a `data:` URI,
+speculative decoding (`--draft-block-size`), and single-prefix prompt reuse for
+text-only turns. The client must
 authorize and run every tool call. Keep the server on loopback; it has no
 remote authentication or TLS.
 
 See [Local server](docs/OPENAI_SERVER.md) for a test request, Python and
-OpenCode setup, prompt reuse, tool handling, and the supported API subset.
+OpenCode setup, image limits, prompt reuse, tool handling, and the supported API
+subset. A machine-specific runbook for this M3 Pro — the three context/slot
+combinations that fit, what to check before starting, and how to read the log —
+is in [`docs/SERVER_RUNBOOK.md`](docs/SERVER_RUNBOOK.md) (Japanese).
 
 ## Test and contribute
 

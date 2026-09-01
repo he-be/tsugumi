@@ -4,6 +4,14 @@ import Testing
 @testable import TurboFieldfare
 @testable import TurboFieldfareServerCore
 
+/// C2 (CONFORMANCE §1): the reuse rule against conversations a real client
+/// actually sent.
+///
+/// `PromptCacheLCPTests` states SPEC §7 on invented token arrays; this file
+/// puts the same claims behind the captured OpenCode session, so the numbers
+/// come from a prompt with a system turn, tool declarations, and a tool call
+/// in it. The claims are still only ever about how many tokens two sequences
+/// share — never "this shape hits".
 @Suite("Server prompt cache")
 struct ServerPromptCacheTests {
     private let domain = ServerPromptCacheDomain(
@@ -15,189 +23,146 @@ struct ServerPromptCacheTests {
         fp16RingEnabled: true,
         templateSHA256: "template")
 
-    @Test func textContinuationUsesActualGeneratedHistoryAndOnlyPrefillsSuffix() async throws {
+    /// The turn a coding agent spends most of its life in: the assistant asked
+    /// for a tool, the client sends the result back, and everything in front of
+    /// the result is already in the KV.
+    @Test func CACHE_1_captured_tool_result_resumes_from_the_whole_kv() async throws {
         let tokenizer = try await GFTokenizer.load()
-        let initial = request(messages: [
-            GFTokenizer.Message(role: .user, content: "first"),
-        ])
-        let initialPrompt = tokenizer.encode(
-            try tokenizer.applyChatTemplate(initial.messages),
-            addBOS: false)
-        let generated = tokenizer.encode("answer", addBOS: false)
-        let kvBacked = initialPrompt + generated
-        var cache = ServerPromptCache()
-        cache.publish(
-            domain: domain,
-            request: initial,
-            content: "answer",
-            calls: [],
-            result: rawResult(
-                prompt: initialPrompt,
-                kvBacked: kvBacked,
-                boundary: tokenizer.endOfTurnID,
-                reason: .endOfTurn))
-
-        let continuation = request(messages: initial.messages + [
-            GFTokenizer.Message(role: .assistant, content: "answer"),
-            GFTokenizer.Message(role: .user, content: "second"),
-        ])
-        let rendered = tokenizer.encode(
-            try tokenizer.applyChatTemplate(continuation.messages),
-            addBOS: false)
-        let match = cache.match(
-            domain: domain,
-            request: continuation,
-            renderedPromptIDs: rendered,
-            tokenizer: tokenizer)
-
-        guard case .hit(let effective, let cached) = match else {
-            Issue.record("expected text continuation hit")
-            return
-        }
-        let bridge = tokenizer.encodeTextContinuation(userContent: "second")
-        #expect(cached == kvBacked.count)
-        #expect(effective == kvBacked + bridge)
-        #expect(!rendered.prefix(kvBacked.count).elementsEqual(kvBacked))
-        #expect(effective[cached] == tokenizer.endOfTurnID)
-    }
-
-    @Test func capturedOpenCodeToolResultUsesFrozenToolBoundary() async throws {
-        let tokenizer = try await GFTokenizer.load()
+        let renderer = ServerPromptRenderer(tokenizer: tokenizer)
         let initial = try validatedFixture("opencode-1.15.11-initial.json")
         let continuation = try validatedFixture("opencode-1.15.11-tool-result.json")
-        let initialPrompt = try tokenizer.encodeToolChat(
-            messages: initial.messages,
-            tools: initial.tools)
-        let assistant = continuation.messages[initial.messages.count]
-        let prefix = try tokenizer.encodeToolChat(
-            messages: initial.messages + [assistant],
-            tools: initial.tools)
-        let callStart = try #require(prefix.lastIndex(of: tokenizer.toolCallStartID))
-        let callEnd = try #require(prefix.lastIndex(of: tokenizer.toolCallEndID))
-        let generatedCall = Array(prefix[callStart...callEnd])
-        let kvBacked = initialPrompt + generatedCall
-        let historicalCall = try #require(assistant.toolCalls.first)
-        let parsedCall = ParsedToolCall(
-            id: historicalCall.id,
-            name: historicalCall.name,
-            arguments: historicalCall.arguments,
-            argumentsJSON: try historicalCall.arguments.encoded())
-        var cache = ServerPromptCache()
-        cache.publish(
-            domain: domain,
-            request: initial,
-            content: "",
-            calls: [parsedCall],
-            result: rawResult(
-                prompt: initialPrompt,
-                kvBacked: kvBacked,
-                boundary: tokenizer.toolResponseID,
-                reason: .toolCalls))
-        let rendered = try tokenizer.encodeToolChat(
-            messages: continuation.messages,
-            tools: continuation.tools)
 
-        let match = cache.match(
+        // What the KV held when the tool call finished: the prompt it was
+        // generated from, plus the call itself.
+        let initialPrompt = try renderer.promptIDs(initial)
+        let assistant = continuation.messages[initial.messages.count]
+        let withCall = try renderer.promptIDs(request(
+            messages: initial.messages + [assistant], tools: initial.tools))
+        let callStart = try #require(withCall.lastIndex(of: tokenizer.toolCallStartID))
+        let callEnd = try #require(withCall.lastIndex(of: tokenizer.toolCallEndID))
+        let kvBacked = initialPrompt + Array(withCall[callStart...callEnd])
+
+        var cache = ServerPromptCache()
+        cache.publish(domain: domain, request: initial, result: rawResult(kvBacked: kvBacked))
+
+        let rendered = try renderer.promptIDs(continuation)
+        // INV-1 stated on a real session: the redraw covers the whole KV.
+        #expect(commonPrefixLength(kvBacked, rendered) == kvBacked.count)
+
+        guard case .hit(let effective, let cached, _) = cache.match(
             domain: domain,
             request: continuation,
             renderedPromptIDs: rendered,
-            tokenizer: tokenizer)
-
-        guard case .hit(let effective, let cached) = match else {
-            Issue.record("expected captured OpenCode tool-result hit")
+            maximumRewind: 2048) else {
+            Issue.record("expected the captured tool result to resume")
             return
         }
-        let bridge = try tokenizer.encodeToolResultContinuation(
-            cachedMessages: initial.messages,
-            assistant: assistant,
-            incomingMessages: continuation.messages,
-            tools: continuation.tools)
         #expect(cached == kvBacked.count)
-        #expect(effective == kvBacked + bridge)
-        #expect(bridge.first == tokenizer.toolResponseID)
-        #expect(!rendered.prefix(kvBacked.count).elementsEqual(kvBacked))
+        #expect(effective == rendered)
+        // Only the tool response and the turn it opens are prefilled again.
+        #expect(effective.count - cached == rendered.count - kvBacked.count)
     }
 
-    @Test func mismatchedLineageDomainAndUnsafeStopsMiss() async throws {
+    /// The same session with the user's next message sent alongside the tool
+    /// result — one request, two new turns. Nothing about the rule changes.
+    @Test func CACHE_1_a_tool_result_plus_a_user_turn_resumes_the_same_way() async throws {
         let tokenizer = try await GFTokenizer.load()
-        let initial = request(messages: [
-            GFTokenizer.Message(role: .user, content: "first"),
-        ])
-        let prompt = tokenizer.encode(
-            try tokenizer.applyChatTemplate(initial.messages),
-            addBOS: false)
+        let renderer = ServerPromptRenderer(tokenizer: tokenizer)
+        let initial = try validatedFixture("opencode-1.15.11-initial.json")
+        let resultTurn = try validatedFixture("opencode-1.15.11-tool-result.json")
+
+        let initialPrompt = try renderer.promptIDs(initial)
+        let assistant = resultTurn.messages[initial.messages.count]
+        let withCall = try renderer.promptIDs(request(
+            messages: initial.messages + [assistant], tools: initial.tools))
+        let callStart = try #require(withCall.lastIndex(of: tokenizer.toolCallStartID))
+        let callEnd = try #require(withCall.lastIndex(of: tokenizer.toolCallEndID))
+        let kvBacked = initialPrompt + Array(withCall[callStart...callEnd])
+
         var cache = ServerPromptCache()
+        cache.publish(domain: domain, request: initial, result: rawResult(kvBacked: kvBacked))
 
-        for reason in [StopReason.stopString, .eos] {
-            cache.publish(
-                domain: domain,
-                request: initial,
-                content: "answer",
-                calls: [],
-                result: rawResult(
-                    prompt: prompt,
-                    kvBacked: prompt,
-                    boundary: tokenizer.eosID,
-                    reason: reason))
-            #expect(cache.entry == nil)
-        }
+        let withUserTurn = request(
+            messages: resultTurn.messages
+                + [GFTokenizer.Message(role: .user, content: "and now run the tests")],
+            tools: resultTurn.tools)
+        let rendered = try renderer.promptIDs(withUserTurn)
 
-        cache.publish(
+        guard case .hit(_, let cached, _) = cache.match(
             domain: domain,
-            request: initial,
-            content: "answer",
-            calls: [],
-            result: rawResult(
-                prompt: prompt,
-                kvBacked: prompt + tokenizer.encode("answer", addBOS: false),
-                boundary: tokenizer.endOfTurnID,
-                reason: .endOfTurn))
-        let changed = request(messages: [
-            GFTokenizer.Message(role: .user, content: "changed"),
-            GFTokenizer.Message(role: .assistant, content: "answer"),
-            GFTokenizer.Message(role: .user, content: "second"),
-        ])
-        let rendered = tokenizer.encode(
-            try tokenizer.applyChatTemplate(changed.messages),
-            addBOS: false)
-        #expect(cache.match(
-            domain: domain,
-            request: changed,
+            request: withUserTurn,
             renderedPromptIDs: rendered,
-            tokenizer: tokenizer) == .miss)
+            maximumRewind: 2048) else {
+            Issue.record("expected the tool result plus user turn to resume")
+            return
+        }
+        #expect(cached == kvBacked.count)
     }
 
-    @Test func tailCompletedStopStringDoesNotPublishPrefix() async throws {
+    /// The lineage guard, which is the one thing that is *not* a fact about the
+    /// conversation: the same token ids mean something else under a different
+    /// model, runtime, or template, and the rows behind them describe it.
+    @Test func CACHE_1_a_different_lineage_is_not_the_same_prefix() async throws {
         let tokenizer = try await GFTokenizer.load()
-        let initial = request(messages: [
-            GFTokenizer.Message(role: .user, content: "first"),
-        ])
-        let prompt = tokenizer.encode(
-            try tokenizer.applyChatTemplate(initial.messages),
-            addBOS: false)
-        var matcher = StreamingStopMatcher(stops: ["🌳stop"])
-        #expect(matcher.push("answer 🌳") == "answer ")
-        #expect(matcher.push("stop") == "")
-        #expect(matcher.isStopped)
+        let renderer = ServerPromptRenderer(tokenizer: tokenizer)
+        let initial = try validatedFixture("opencode-1.15.11-initial.json")
+        let prompt = try renderer.promptIDs(initial)
 
         var cache = ServerPromptCache()
-        cache.publish(
-            domain: domain,
-            request: initial,
-            content: "answer ",
-            calls: [],
-            result: rawResult(
-                prompt: prompt,
-                kvBacked: prompt,
-                boundary: tokenizer.endOfTurnID,
-                reason: .endOfTurn),
-            stopStringFiltered: matcher.isStopped)
+        cache.publish(domain: domain, request: initial,
+                      result: rawResult(kvBacked: prompt))
+
+        var otherTemplate = domain
+        otherTemplate = ServerPromptCacheDomain(
+            modelID: domain.modelID,
+            sourceSnapshotHash: domain.sourceSnapshotHash,
+            runtimeProfileHash: domain.runtimeProfileHash,
+            maximumContext: domain.maximumContext,
+            kvStorage: domain.kvStorage,
+            fp16RingEnabled: domain.fp16RingEnabled,
+            templateSHA256: "a different template")
+        #expect(cache.match(domain: otherTemplate,
+                            request: initial,
+                            renderedPromptIDs: prompt + [7],
+                            maximumRewind: 2048) == .miss)
+    }
+
+    /// An entry is only usable if the tokens it names are exactly the rows the
+    /// KV holds. A result that cannot say that publishes nothing.
+    @Test func an_entry_records_exactly_the_rows_the_kv_holds() async throws {
+        let tokenizer = try await GFTokenizer.load()
+        let renderer = ServerPromptRenderer(tokenizer: tokenizer)
+        let initial = try validatedFixture("opencode-1.15.11-initial.json")
+        let prompt = try renderer.promptIDs(initial)
+
+        var cache = ServerPromptCache()
+        cache.publish(domain: domain, request: initial, result: rawResult(kvBacked: prompt))
+        #expect(cache.entry?.tokenIDs == prompt)
+        #expect(cache.entry?.kvPosition == prompt.count)
+
+        var inconsistent = rawResult(kvBacked: prompt)
+        inconsistent = RawDecodeResult(
+            prefillTokens: inconsistent.prefillTokens,
+            cachedPromptTokens: 0,
+            computedPrefillTokens: inconsistent.computedPrefillTokens,
+            prefillSeconds: 0,
+            newTokens: 1,
+            decodeSeconds: 0,
+            timeToFirstTokenSeconds: 0,
+            reason: .endOfTurn,
+            kvPosition: prompt.count - 3,
+            kvBackedTokenIDs: prompt,
+            uncommittedBoundaryTokenIDs: [])
+        cache.publish(domain: domain, request: initial, result: inconsistent)
         #expect(cache.entry == nil)
     }
 
+    // MARK: - plumbing
+
     private func request(
         messages: [GFTokenizer.Message],
-        tools: [GFTokenizer.FunctionDefinition] = []
+        tools: [GFTokenizer.FunctionDefinition] = [],
+        enableThinking: Bool = false
     ) -> ValidatedChatRequest {
         ValidatedChatRequest(
             messages: messages,
@@ -205,26 +170,23 @@ struct ServerPromptCacheTests {
             stream: false,
             includeUsage: false,
             generationConfig: GenerationConfig(maxNewTokens: 16, temperature: 0),
-            maximumCompletionTokens: 16)
+            maximumCompletionTokens: 16,
+            enableThinking: enableThinking)
     }
 
-    private func rawResult(
-        prompt: [Int32],
-        kvBacked: [Int32],
-        boundary: Int32,
-        reason: StopReason
-    ) -> RawDecodeResult {
+    private func rawResult(kvBacked: [Int32]) -> RawDecodeResult {
         RawDecodeResult(
-            prefillTokens: prompt.count,
+            prefillTokens: kvBacked.count,
             cachedPromptTokens: 0,
-            computedPrefillTokens: prompt.count,
+            computedPrefillTokens: kvBacked.count,
             prefillSeconds: 0,
             newTokens: 1,
             decodeSeconds: 0,
-            reason: reason,
+            timeToFirstTokenSeconds: 0,
+            reason: .endOfTurn,
             kvPosition: kvBacked.count,
             kvBackedTokenIDs: kvBacked,
-            uncommittedBoundaryTokenIDs: [boundary])
+            uncommittedBoundaryTokenIDs: [])
     }
 
     private func validatedFixture(_ name: String) throws -> ValidatedChatRequest {
@@ -232,11 +194,6 @@ struct ServerPromptCacheTests {
             forResource: name,
             withExtension: nil,
             subdirectory: "Fixtures"))
-        let request = try JSONDecoder().decode(
-            OpenAIChatRequest.self,
-            from: Data(contentsOf: url))
-        return try OpenAIRequestValidator.validate(
-            request,
-            modelID: "gemma-4-26b-a4b-it")
+        return try ChatRequestParser.parse(try Data(contentsOf: url))
     }
 }

@@ -1,0 +1,6 @@
+
+[stop=maxTokens prefill=46tok new=192tok decode=5.88s tok/s=32.672]
+[load=0.740s layerVerify=0.000s/30layers prefill=1.560s ttft=1.560s peak=4.85GB rss=3.95GB]
+[expert prefill hit=0.0% 0/2028 io=1.164s | decode hit=74.5% 26111/35054 io=3.640s]
+[decode/tok io=0.00ms cb1=0.00ms cb2=0.00ms head=0.00ms]
+[mtp bs=3 rounds=73 accept=1.616/2 tok/round=2.630 draft=0.478s verify=5.389s accepted=9,10,54]

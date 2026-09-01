@@ -1,0 +1,17 @@
+
+=== MTP verify pass + KV rewind (docs/mtp 04-PHASES M4) ===
+  model    gemma4-qat.gturbo
+  prompt   302 tok, block k=4, rounds=12, vision 1 img/260 soft, thinking
+  probe    warm cache, 144 positions per phase
+  cache    32 slots/layer, lfu
+  cost: decode=48.8 ms/tok  |  k=1 49 ms/block = 0.96 decode (52.9/48.3 ms/tok)  |  k=2 65 ms/block = 1.34 decode (48.3/48.2 ms/tok)  |  k=3 86 ms/block = 1.78 decode (48.2/48.1 ms/tok)  |  k=4 111 ms/block = 2.32 decode (48.1/48.0 ms/tok)  |  k=6 170 ms/block = 3.53 decode (48.0/48.1 ms/tok)  |  k=8 219 ms/block = 4.55 decode (48.1/48.1 ms/tok)
+  decode hit=73.9% miss=9022 io=4.17s (28.94 ms/pos)
+  k=1    hit=77.5% miss=7791 io=3.28s (22.80 ms/pos)
+  k=2    hit=73.4% miss=7400 io=2.80s (19.42 ms/pos)
+  k=3    hit=70.1% miss=7295 io=3.02s (20.95 ms/pos)
+  k=4    hit=67.5% miss=7148 io=3.59s (24.94 ms/pos)
+  k=6    hit=63.6% miss=6966 io=4.34s (30.17 ms/pos)
+  k=8    hit=60.8% miss=6582 io=3.89s (27.00 ms/pos)
+  expert io: decode hit=74.9% 289356/386574 io=44.67s  |  prefill hit=16.1% 6543/40729 io=19.06s
+
+no cases ran (verify block)

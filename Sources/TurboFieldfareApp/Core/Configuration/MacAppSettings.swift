@@ -1,18 +1,19 @@
 import Foundation
 
 struct MacAppSettings: Codable, Equatable, Sendable {
-    static let fileName = "mac-app-settings.json"
-    static let currentVersion = 1
+    static let currentVersion = 2
 
     var version: Int = currentVersion
-    var contextTokens: Int = AppContextLengthOption.fourK.tokens
-    var expertCacheSlots: Int = 16
-    var temperature: Double = 0.2
+    var contextTokens: Int = AppContextLengthOption.thirtyTwoK.tokens
+    var expertCacheSlots: Int = 32
+    var temperature: Double = 1.0
     var topKEnabled: Bool = true
     var topK: Int = 64
     var topPEnabled: Bool = true
     var topP: Double = 0.95
     var prefillEnabled: Bool = true
+    var mtpEnabled: Bool = true
+    var thinkingEnabled: Bool = false
     var newlineShortcut: AppNewlineShortcut = .return
     var showPromptExamples: Bool = true
     var sentPromptBehavior: AppSentPromptBehavior = .keep
@@ -27,20 +28,24 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         case topPEnabled
         case topP
         case prefillEnabled
+        case mtpEnabled
+        case thinkingEnabled
         case newlineShortcut
         case showPromptExamples
         case sentPromptBehavior
     }
 
     init(version: Int = currentVersion,
-         contextTokens: Int = AppContextLengthOption.fourK.tokens,
-         expertCacheSlots: Int = 16,
-         temperature: Double = 0.2,
+         contextTokens: Int = AppContextLengthOption.thirtyTwoK.tokens,
+         expertCacheSlots: Int = 32,
+         temperature: Double = 1.0,
          topKEnabled: Bool = true,
          topK: Int = 64,
          topPEnabled: Bool = true,
          topP: Double = 0.95,
          prefillEnabled: Bool = true,
+         mtpEnabled: Bool = true,
+         thinkingEnabled: Bool = false,
          newlineShortcut: AppNewlineShortcut = .return,
          showPromptExamples: Bool = true,
          sentPromptBehavior: AppSentPromptBehavior = .keep) {
@@ -53,9 +58,22 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         self.topPEnabled = topPEnabled
         self.topP = topP
         self.prefillEnabled = prefillEnabled
+        self.mtpEnabled = mtpEnabled
+        self.thinkingEnabled = thinkingEnabled
         self.newlineShortcut = newlineShortcut
         self.showPromptExamples = showPromptExamples
         self.sentPromptBehavior = sentPromptBehavior
+    }
+
+    /// The adopted operating point for one checkpoint: the official sampler,
+    /// MTP on, 32 slots, chunked prefill, 32K context, and the thought
+    /// channel as each family recommends it.
+    static func defaults(for kind: AppModelKind) -> MacAppSettings {
+        MacAppSettings(
+            temperature: kind.officialTemperature,
+            topK: kind.officialTopK,
+            topP: kind.officialTopP,
+            thinkingEnabled: kind.thinkingDefault)
     }
 
     init(from decoder: Decoder) throws {
@@ -69,6 +87,9 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         topPEnabled = try container.decode(Bool.self, forKey: .topPEnabled)
         topP = try container.decode(Double.self, forKey: .topP)
         prefillEnabled = try container.decode(Bool.self, forKey: .prefillEnabled)
+        mtpEnabled = try container.decodeIfPresent(Bool.self, forKey: .mtpEnabled) ?? true
+        thinkingEnabled = try container.decodeIfPresent(
+            Bool.self, forKey: .thinkingEnabled) ?? false
         newlineShortcut = try container.decodeIfPresent(
             AppNewlineShortcut.self,
             forKey: .newlineShortcut) ?? .return
@@ -91,13 +112,19 @@ struct MacAppSettings: Codable, Equatable, Sendable {
 }
 
 enum MacAppSettingsFileStore {
+    /// One file per installed model, beside the model directory: the two
+    /// checkpoints keep different samplers and thinking defaults, so a shared
+    /// file would let one model's settings leak into the other.
     static func fileURL(forModelDirectory modelDirectory: URL) -> URL {
-        modelDirectory.standardizedFileURL
+        let directory = modelDirectory.standardizedFileURL
+        let name = "mac-app-settings-\(directory.lastPathComponent).json"
+        return directory
             .deletingLastPathComponent()
-            .appendingPathComponent(MacAppSettings.fileName, isDirectory: false)
+            .appendingPathComponent(name, isDirectory: false)
     }
 
     static func loadOrCreate(forModelDirectory modelDirectory: URL,
+                             defaults: MacAppSettings = MacAppSettings(),
                              fileManager: FileManager = .default) -> MacAppSettings {
         let fileURL = fileURL(forModelDirectory: modelDirectory)
         if fileManager.fileExists(atPath: fileURL.path) {
@@ -111,7 +138,7 @@ enum MacAppSettingsFileStore {
             }
         }
 
-        let settings = MacAppSettings()
+        let settings = defaults
         try? save(settings, forModelDirectory: modelDirectory, fileManager: fileManager)
         return settings
     }

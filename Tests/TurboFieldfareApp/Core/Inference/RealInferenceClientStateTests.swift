@@ -1,6 +1,9 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import Testing
 import TurboFieldfare
+import UniformTypeIdentifiers
 @testable import TurboFieldfareAppCore
 
 /// Model-free state coverage for the real client: load failure surfaces
@@ -73,29 +76,129 @@ import TurboFieldfare
         #expect(RealInferenceSession.forceLogitsHead(for: request))
     }
 
-    @Test func generationConfigCarriesDocumentedSamplingPolicy() {
+    @Test func validatedChatRequestCarriesDocumentedSamplingPolicy() throws {
         let request = AppGenerationRequest(
             modelDirectory: URL(fileURLWithPath: "/tmp/model.gturbo"),
             prompt: "hello")
 
-        let config = RealInferenceSession.generationConfig(for: request)
-        #expect(config.temperature == 0.2)
-        #expect(config.topK == 64)
-        #expect(config.topP == 0.95)
-        #expect(config.repetitionPenalty == 1)
+        let validated = try RealInferenceSession.validatedChatRequest(
+            for: request, kind: .gemmaQATSym)
+        #expect(validated.generationConfig.temperature == 1.0)
+        #expect(validated.generationConfig.topK == 64)
+        #expect(validated.generationConfig.topP == 0.95)
+        #expect(validated.generationConfig.repetitionPenalty == 1)
+        #expect(validated.messages.count == 1)
+        #expect(validated.messages.first?.content == "hello")
+        #expect(!validated.enableThinking)
+        #expect(validated.vision == nil)
+        #expect(validated.cachePrompt)
     }
 
-    @Test func tokenizerDirectoryCacheReloadsOnlyWhenModelDirectoryChanges() {
-        var cache = TokenizerDirectoryCache()
-        let first = URL(fileURLWithPath: "/tmp/first.gturbo")
-        let second = URL(fileURLWithPath: "/tmp/second.gturbo")
+    @Test func validatedChatRequestCarriesThinkingToggle() throws {
+        let request = AppGenerationRequest(
+            modelDirectory: URL(fileURLWithPath: "/tmp/model.gturbo"),
+            prompt: "hello",
+            enableThinking: true)
 
-        #expect(cache.shouldReload(for: first))
-        cache.markLoaded(for: first)
-        #expect(!cache.shouldReload(for: first))
-        #expect(cache.shouldReload(for: second))
-        cache.clear()
-        #expect(cache.shouldReload(for: first))
+        let validated = try RealInferenceSession.validatedChatRequest(
+            for: request, kind: .ornith)
+        #expect(validated.enableThinking)
+    }
+
+    /// MSG-5: assistant turns are redrawn with their reasoning so the
+    /// template output extends the generated token sequence and the prompt
+    /// cache hits with thinking on.
+    @Test func validatedChatRequestRedrawsHistoryWithReasoning() throws {
+        let request = AppGenerationRequest(
+            modelDirectory: URL(fileURLWithPath: "/tmp/model.gturbo"),
+            history: [
+                AppChatTurn(role: .user, text: "q1"),
+                AppChatTurn(role: .assistant, text: "a1", reasoningText: "r1"),
+            ],
+            prompt: "q2")
+
+        let validated = try RealInferenceSession.validatedChatRequest(
+            for: request, kind: .ornith)
+        #expect(validated.messages.count == 3)
+        #expect(validated.messages[0].role == .user)
+        #expect(validated.messages[0].content == "q1")
+        #expect(validated.messages[0].reasoningContent == nil)
+        #expect(validated.messages[1].role == .assistant)
+        #expect(validated.messages[1].content == "a1")
+        #expect(validated.messages[1].reasoningContent == "r1")
+        #expect(validated.messages[2].role == .user)
+        #expect(validated.messages[2].content == "q2")
+        #expect(validated.messages[2].reasoningContent == nil)
+        #expect(validated.vision == nil)
+    }
+
+    @Test func validatedChatRequestOmitsEmptyReasoningFromRedraw() throws {
+        let request = AppGenerationRequest(
+            modelDirectory: URL(fileURLWithPath: "/tmp/model.gturbo"),
+            history: [
+                AppChatTurn(role: .user, text: "q1"),
+                AppChatTurn(role: .assistant, text: "a1"),
+            ],
+            prompt: "q2")
+
+        let validated = try RealInferenceSession.validatedChatRequest(
+            for: request, kind: .gemmaQATSym)
+        #expect(validated.messages[1].reasoningContent == nil)
+    }
+
+    @Test func validatedChatRequestRefusesHistoryImagesWithoutVision() {
+        let request = AppGenerationRequest(
+            modelDirectory: URL(fileURLWithPath: "/tmp/model.gturbo"),
+            history: [
+                AppChatTurn(role: .user, text: "look",
+                            imagePaths: ["/tmp/image.png"]),
+                AppChatTurn(role: .assistant, text: "seen"),
+            ],
+            prompt: "next")
+
+        #expect(throws: AppInferenceError.self) {
+            _ = try RealInferenceSession.validatedChatRequest(
+                for: request, kind: .ornith)
+        }
+    }
+
+    @Test func validatedChatRequestCollectsImagesAcrossTurns() throws {
+        let first = try writeTestPNG(named: "history-image")
+        let second = try writeTestPNG(named: "live-image")
+        defer {
+            try? FileManager.default.removeItem(at: first)
+            try? FileManager.default.removeItem(at: second)
+        }
+        let request = AppGenerationRequest(
+            modelDirectory: URL(fileURLWithPath: "/tmp/model.gturbo"),
+            history: [
+                AppChatTurn(role: .user, text: "what is this",
+                            imagePaths: [first.path]),
+                AppChatTurn(role: .assistant, text: "a bird"),
+            ],
+            prompt: "and this",
+            imagePaths: [second.path])
+
+        let validated = try RealInferenceSession.validatedChatRequest(
+            for: request, kind: .gemmaQATSym)
+        let vision = try #require(validated.vision)
+        #expect(vision.images.count == 2)
+        #expect(vision.messages.count == 3)
+        #expect(vision.messages[0].parts == [.image, .text("what is this")])
+        #expect(vision.messages[1].parts == [.text("a bird")])
+        #expect(vision.messages[2].parts == [.image, .text("and this")])
+    }
+
+    @Test func validatedChatRequestRefusesImagesWithoutVision() {
+        let request = AppGenerationRequest(
+            modelDirectory: URL(fileURLWithPath: "/tmp/model.gturbo"),
+            prompt: "hello",
+            imagePaths: ["/tmp/image.png"])
+
+        #expect(throws: AppInferenceError.self) {
+            _ = try RealInferenceSession.validatedChatRequest(
+                for: request, kind: .ornith)
+        }
     }
 
     @Test func generateWithoutLoadedModelFailsWithoutPartialDiagnostics() async throws {
@@ -167,19 +270,19 @@ import TurboFieldfare
         #expect(failure == .modelNotFound("/nonexistent/model.gturbo"))
     }
 
-    @Test func prefillFailureDiagnosticsMarksUnsupportedModeAndReason() {
-        let config = PrefillRuntimeConfig.production(chunkTokens: 32)
+    @Test func mtpDegradesToOffWhenNothingIsInstalled() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("no-draft-\(UUID().uuidString).gturbo")
+        try FileManager.default.createDirectory(at: directory,
+                                                withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data("{\"arch\": {}}".utf8).write(
+            to: directory.appendingPathComponent("manifest.json"))
 
-        let diagnostics = RealInferenceSession.prefillFailureDiagnostics(
-            config: config,
-            kvStorageMode: .fp16,
-            reason: "chunked prefill synthetic unsupported diagnostic")
-
-        #expect(diagnostics.requestedMode == .chunked)
-        #expect(diagnostics.executedMode == .unsupported)
-        #expect(diagnostics.chunkCompleteness == .unsupported)
-        #expect(diagnostics.kvStorageMode == .fp16)
-        #expect(diagnostics.unsupportedReason?.contains("synthetic unsupported") == true)
+        #expect(RealInferenceSession.resolvedDraftBlockSize(
+            kind: .gemmaQATSym, modelDirectory: directory, requested: true) == 0)
+        #expect(RealInferenceSession.resolvedDraftBlockSize(
+            kind: .gemmaQATSym, modelDirectory: directory, requested: false) == 0)
     }
 
     @Test func cancelWhenIdleIsNoOp() {
@@ -191,6 +294,28 @@ import TurboFieldfare
     @Test func unloadWhenIdleIsSafe() async {
         let client = RealInferenceClient()
         await client.unload()
+    }
+
+    /// A real PNG on disk, synthesised so the attachment decoder has an
+    /// actual container to open.
+    private func writeTestPNG(named name: String) throws -> URL {
+        let space = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        let context = try #require(CGContext(
+            data: nil, width: 8, height: 8,
+            bitsPerComponent: 8, bytesPerRow: 8 * 4, space: space,
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(red: 0.2, green: 0.6, blue: 0.9, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        let image = try #require(context.makeImage())
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(
+            data, UTType.png.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(destination, image, nil)
+        CGImageDestinationFinalize(destination)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(name)-\(UUID().uuidString).png")
+        try (data as Data).write(to: url)
+        return url
     }
 }
 

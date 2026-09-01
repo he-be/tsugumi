@@ -1,40 +1,47 @@
 import Foundation
 import TurboFieldfare
 
-public struct OpenAIErrorEnvelope: Codable, Equatable, Sendable {
-    public struct Detail: Codable, Equatable, Sendable {
-        public let message: String
-        public let type: String
-        public let param: String?
-        public let code: String
-    }
+public struct OpenAIImageURL: Codable, Equatable, Sendable {
+    public let url: String
+    /// OpenAI's resolution hint. Accepted and ignored: the soft-token count
+    /// follows the image's aspect ratio here (PLAN_VISION §2-1), so there is
+    /// nothing for `low`/`high` to select. Rejecting it would break clients that
+    /// send the field by default.
+    public let detail: String?
 
-    public let error: Detail
-
-    public init(message: String, param: String? = nil, code: String,
-                type: String = "invalid_request_error") {
-        error = Detail(message: message,
-                       type: type,
-                       param: param,
-                       code: code)
+    public init(url: String, detail: String? = nil) {
+        self.url = url
+        self.detail = detail
     }
 }
 
-public struct OpenAITextPart: Codable, Equatable, Sendable {
+public struct OpenAIContentPart: Codable, Equatable, Sendable {
     public let type: String
     public let text: String?
+    public let imageURL: OpenAIImageURL?
+
+    enum CodingKeys: String, CodingKey {
+        case type, text
+        case imageURL = "image_url"
+    }
+
+    public init(type: String, text: String? = nil, imageURL: OpenAIImageURL? = nil) {
+        self.type = type
+        self.text = text
+        self.imageURL = imageURL
+    }
 }
 
 public enum OpenAIMessageContent: Codable, Equatable, Sendable {
     case text(String)
-    case parts([OpenAITextPart])
+    case parts([OpenAIContentPart])
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         if let text = try? container.decode(String.self) {
             self = .text(text)
         } else {
-            self = .parts(try container.decode([OpenAITextPart].self))
+            self = .parts(try container.decode([OpenAIContentPart].self))
         }
     }
 
@@ -46,18 +53,56 @@ public enum OpenAIMessageContent: Codable, Equatable, Sendable {
         }
     }
 
-    func textValue() throws -> String {
+    /// The parts of this body, in order, with each image resolved to bytes.
+    ///
+    /// `imageIndex` is the running per-request image number so the error
+    /// messages can name which image was refused; it is advanced by one per
+    /// image part.
+    func resolvedParts(policy: ServerImagePolicy,
+                       imageIndex: inout Int,
+                       images: inout [ServerImageAttachment]) throws -> [GFTokenizer.ContentPart] {
         switch self {
         case .text(let text):
-            return text
+            return [.text(text)]
         case .parts(let parts):
-            guard parts.allSatisfy({ $0.type == "text" && $0.text != nil }) else {
-                throw ServerRequestError.invalid(
-                    message: "only text content parts are supported",
-                    param: "messages",
-                    code: "unsupported_content")
+            var resolved: [GFTokenizer.ContentPart] = []
+            for part in parts {
+                switch part.type {
+                case "text":
+                    guard let text = part.text else {
+                        throw ServerRequestError.invalid(
+                            message: "text content part is missing \"text\"",
+                            param: "messages",
+                            code: "unsupported_content")
+                    }
+                    resolved.append(.text(text))
+                case "image_url":
+                    guard let imageURL = part.imageURL else {
+                        throw ServerRequestError.invalid(
+                            message: "image_url content part is missing \"image_url\"",
+                            param: "messages",
+                            code: "unsupported_content")
+                    }
+                    guard images.count < policy.maxImagesPerRequest else {
+                        throw ServerRequestError.invalid(
+                            message: "a request may attach at most "
+                                + "\(policy.maxImagesPerRequest) images",
+                            param: "messages",
+                            code: "too_many_images")
+                    }
+                    images.append(try ServerImageDecoder.attachment(fromImageURL: imageURL.url,
+                                                                    policy: policy,
+                                                                    index: imageIndex))
+                    imageIndex += 1
+                    resolved.append(.image)
+                default:
+                    throw ServerRequestError.invalid(
+                        message: "unsupported content part type \(part.type)",
+                        param: "messages",
+                        code: "unsupported_content")
+                }
             }
-            return parts.compactMap(\.text).joined()
+            return resolved
         }
     }
 }
@@ -79,11 +124,17 @@ public struct OpenAIChatMessage: Codable, Equatable, Sendable {
     public let toolCalls: [OpenAIToolCall]?
     public let toolCallID: String?
     public let name: String?
+    /// MSG-5: the thinking that produced a finished assistant turn, handed
+    /// back by the client. Until it was read here it was dropped as an unknown
+    /// key (R1), which is why a redraw of a reasoning turn lost the whole
+    /// thought block and the common prefix stopped at the turn's first token.
+    public let reasoningContent: String?
 
     enum CodingKeys: String, CodingKey {
         case role, content, name
         case toolCalls = "tool_calls"
         case toolCallID = "tool_call_id"
+        case reasoningContent = "reasoning_content"
     }
 }
 
@@ -96,79 +147,6 @@ public struct OpenAIFunctionDefinition: Codable, Equatable, Sendable {
 public struct OpenAITool: Codable, Equatable, Sendable {
     public let type: String
     public let function: OpenAIFunctionDefinition
-}
-
-public enum OpenAIStop: Codable, Equatable, Sendable {
-    case one(String)
-    case many([String])
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.singleValueContainer()
-        if let one = try? container.decode(String.self) {
-            self = .one(one)
-        } else {
-            self = .many(try container.decode([String].self))
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
-        switch self {
-        case .one(let value): try container.encode(value)
-        case .many(let value): try container.encode(value)
-        }
-    }
-
-    var values: [String] {
-        switch self {
-        case .one(let value): [value]
-        case .many(let value): value
-        }
-    }
-}
-
-public struct OpenAIStreamOptions: Codable, Equatable, Sendable {
-    public let includeUsage: Bool?
-
-    enum CodingKeys: String, CodingKey {
-        case includeUsage = "include_usage"
-    }
-}
-
-public struct OpenAIChatRequest: Codable, Equatable, Sendable {
-    public let model: String
-    public let messages: [OpenAIChatMessage]
-    public let stream: Bool?
-    public let streamOptions: OpenAIStreamOptions?
-    public let temperature: Float?
-    public let topP: Float?
-    public let maxTokens: Int?
-    public let maxCompletionTokens: Int?
-    public let stop: OpenAIStop?
-    public let seed: UInt64?
-    public let tools: [OpenAITool]?
-    public let toolChoice: JSONValue?
-    public let parallelToolCalls: Bool?
-    public let topK: Int?
-    public let repetitionPenalty: Float?
-    public let n: Int?
-    public let logprobs: Bool?
-    public let presencePenalty: Float?
-    public let frequencyPenalty: Float?
-
-    enum CodingKeys: String, CodingKey {
-        case model, messages, stream, temperature, stop, seed, tools, n, logprobs
-        case streamOptions = "stream_options"
-        case topP = "top_p"
-        case maxTokens = "max_tokens"
-        case maxCompletionTokens = "max_completion_tokens"
-        case toolChoice = "tool_choice"
-        case parallelToolCalls = "parallel_tool_calls"
-        case topK = "top_k"
-        case repetitionPenalty = "repetition_penalty"
-        case presencePenalty = "presence_penalty"
-        case frequencyPenalty = "frequency_penalty"
-    }
 }
 
 public struct OpenAIUsage: Codable, Equatable, Sendable {
@@ -224,32 +202,131 @@ public struct OpenAIModelList: Codable, Equatable, Sendable {
     public let data: [Model]
 }
 
-public enum ServerRequestError: Error, Equatable, Sendable {
-    case invalid(message: String, param: String?, code: String)
-    case unknownModel
-    case queueFull
 
-    public var envelope: OpenAIErrorEnvelope {
-        switch self {
-        case .invalid(let message, let param, let code):
-            OpenAIErrorEnvelope(message: message, param: param, code: code)
-        case .unknownModel:
-            OpenAIErrorEnvelope(message: "requested model is not available",
-                                param: "model", code: "model_not_found")
-        case .queueFull:
-            OpenAIErrorEnvelope(message: "generation queue is full",
-                                code: "queue_full")
-        }
+/// The image side of a validated request: the turns as parts, and the bytes.
+///
+/// Present only when the request actually carries an image. Its presence is what
+/// turns off the prompt cache and switches rendering to the multimodal template,
+/// so a text-only request keeps every byte of its old path.
+public struct ValidatedVisionRequest: Sendable {
+    public let messages: [GFTokenizer.MultimodalMessage]
+    public let images: [ServerImageAttachment]
+
+    public init(messages: [GFTokenizer.MultimodalMessage],
+                images: [ServerImageAttachment]) {
+        self.messages = messages
+        self.images = images
     }
 }
 
 public struct ValidatedChatRequest: Sendable {
+    /// The text projection of the conversation. When `vision != nil` the image
+    /// parts are *not* in here — rendering goes through `vision.messages`
+    /// instead, and the prompt cache (which keys on this array) is off.
     public let messages: [GFTokenizer.Message]
     public let tools: [GFTokenizer.FunctionDefinition]
+    /// GEN-2 / DEV-16: what the declared tool schemas lost on the way into the
+    /// prompt, in declaration order. Never an error — the server logs these.
+    /// This is the *declaration* side; what the grammar could not constrain is
+    /// a separate list on the constraint, because the two degrade
+    /// independently.
+    public let toolSchemaSimplifications: [String]
     public let stream: Bool
     public let includeUsage: Bool
     public let generationConfig: GenerationConfig
+    /// REQ-max-tokens. **-1 means unlimited** (whatever the context has left
+    /// after the prompt) and 0 means prefill only; both are values the client
+    /// may send, so this is not a plain positive count.
     public let maximumCompletionTokens: Int
+    public let vision: ValidatedVisionRequest?
+    /// What this request asked the thought channel to do, after the process
+    /// default. Whether it is actually rendered is a second question the
+    /// template answers (`ServerModelSession`): a request that declares tools
+    /// goes through the tool-calling template, which pins thinking off.
+    public let enableThinking: Bool
+
+    /// The conversation as the tool template takes it: the roles and tool
+    /// metadata of `messages`, with the bodies of `vision.messages` when the
+    /// request carried pictures. The two are built in lockstep by the
+    /// validator, so they are joined by position.
+    public var toolChatMessages: [GFTokenizer.ToolChatMessage] {
+        guard let multimodal = vision?.messages, multimodal.count == messages.count else {
+            return messages.map(GFTokenizer.ToolChatMessage.init)
+        }
+        return zip(messages, multimodal).map { message, parts in
+            GFTokenizer.ToolChatMessage(role: message.role,
+                                        parts: parts.parts,
+                                        toolCalls: message.toolCalls,
+                                        toolCallID: message.toolCallID,
+                                        name: message.name,
+                                        reasoningContent: message.reasoningContent)
+        }
+    }
+
+    /// R5: the name the client asked for, written back into the response
+    /// unexamined. A single-model server has nothing to check it against.
+    public let model: String
+    /// REQ-tool-choice, all four shapes (GEN-4). The two that force a call —
+    /// `required` and a named function — are only ever carried here with a
+    /// tool the grammar can actually pin (the parser refuses the rest).
+    public let toolChoice: ChatToolChoice
+    /// REQ-response-format (GEN-3). What the answer must be shaped like, for
+    /// the grammar stage to turn into a constraint. `text` is no constraint.
+    public let responseFormat: ChatResponseFormat
+    public let parallelToolCalls: Bool
+    /// REQ-cache-prompt. Whether this request may read from or write to the
+    /// prompt cache (CACHE-5).
+    public let cachePrompt: Bool
+    /// REQ-reasoning-effort, verbatim. Only `"none"` has a meaning here
+    /// (thinking off); every other value rides through to the template
+    /// unexamined, as the reference implementation does.
+    public let reasoningEffort: String?
+    /// REQ-template-kwargs, verbatim.
+    public let chatTemplateKwargs: [String: JSONValue]
+    /// REQ-reasoning-budget. -1 is unlimited, 0 disables the thought channel.
+    public let reasoningBudgetTokens: Int
+    public let reasoningFormat: ReasoningFormat
+    public let timingsPerToken: Bool
+
+    public init(messages: [GFTokenizer.Message],
+                tools: [GFTokenizer.FunctionDefinition],
+                toolSchemaSimplifications: [String] = [],
+                stream: Bool,
+                includeUsage: Bool,
+                generationConfig: GenerationConfig,
+                maximumCompletionTokens: Int,
+                vision: ValidatedVisionRequest? = nil,
+                enableThinking: Bool = false,
+                model: String = "",
+                toolChoice: ChatToolChoice = .auto,
+                responseFormat: ChatResponseFormat = .text,
+                parallelToolCalls: Bool = true,
+                cachePrompt: Bool = true,
+                reasoningEffort: String? = nil,
+                chatTemplateKwargs: [String: JSONValue] = [:],
+                reasoningBudgetTokens: Int = -1,
+                reasoningFormat: ReasoningFormat = .auto,
+                timingsPerToken: Bool = false) {
+        self.messages = messages
+        self.tools = tools
+        self.toolSchemaSimplifications = toolSchemaSimplifications
+        self.stream = stream
+        self.includeUsage = includeUsage
+        self.generationConfig = generationConfig
+        self.maximumCompletionTokens = maximumCompletionTokens
+        self.vision = vision
+        self.enableThinking = enableThinking
+        self.model = model
+        self.toolChoice = toolChoice
+        self.responseFormat = responseFormat
+        self.parallelToolCalls = parallelToolCalls
+        self.cachePrompt = cachePrompt
+        self.reasoningEffort = reasoningEffort
+        self.chatTemplateKwargs = chatTemplateKwargs
+        self.reasoningBudgetTokens = reasoningBudgetTokens
+        self.reasoningFormat = reasoningFormat
+        self.timingsPerToken = timingsPerToken
+    }
 }
 
 private enum OpenAIToolName {
@@ -276,85 +353,21 @@ private enum OpenAIToolName {
     }
 }
 
-public enum OpenAIRequestValidator {
-    public static func validate(_ request: OpenAIChatRequest,
-                                modelID: String) throws -> ValidatedChatRequest {
-        guard request.model == modelID else { throw ServerRequestError.unknownModel }
-        guard request.n == nil || request.n == 1 else {
-            throw invalid("only n=1 is supported", "n", "unsupported_value")
-        }
-        guard request.logprobs != true else {
-            throw invalid("logprobs are not supported", "logprobs", "unsupported_value")
-        }
-        guard request.presencePenalty == nil || request.presencePenalty == 0 else {
-            throw invalid("presence_penalty must be zero", "presence_penalty", "unsupported_value")
-        }
-        guard request.frequencyPenalty == nil || request.frequencyPenalty == 0 else {
-            throw invalid("frequency_penalty must be zero", "frequency_penalty", "unsupported_value")
-        }
-        guard request.parallelToolCalls != false else {
-            throw invalid("parallel_tool_calls=false is not supported",
-                          "parallel_tool_calls", "unsupported_value")
-        }
-
-        let temperature = request.temperature ?? 0.2
-        guard temperature >= 0, temperature <= 2 else {
-            throw invalid("temperature must be between 0 and 2",
-                          "temperature", "invalid_value")
-        }
-        let topP = request.topP ?? 0.95
-        guard topP > 0, topP <= 1 else {
-            throw invalid("top_p must be greater than 0 and at most 1",
-                          "top_p", "invalid_value")
-        }
-        let topK = request.topK ?? 64
-        guard (1...256).contains(topK) else {
-            throw invalid("top_k must be between 1 and 256", "top_k", "invalid_value")
-        }
-        let repetitionPenalty = request.repetitionPenalty ?? 1
-        guard repetitionPenalty > 0 else {
-            throw invalid("repetition_penalty must be positive",
-                          "repetition_penalty", "invalid_value")
-        }
-        let maximum = request.maxCompletionTokens ?? request.maxTokens ?? 4096
-        guard maximum > 0 else {
-            throw invalid("maximum completion tokens must be positive",
-                          request.maxCompletionTokens != nil ? "max_completion_tokens" : "max_tokens",
-                          "invalid_value")
-        }
-
-        let includeTools: Bool
-        switch request.toolChoice {
-        case nil, .some(.string("auto")):
-            includeTools = true
-        case .some(.string("none")):
-            includeTools = false
-        case .some(.string("required")):
-            throw invalid("tool_choice=required is not supported",
-                          "tool_choice", "unsupported_value")
-        default:
-            throw invalid("named tool choices are not supported",
-                          "tool_choice", "unsupported_value")
-        }
-
-        let tools = try (includeTools ? request.tools ?? [] : []).map(validateTool)
-        let messages = try validateMessages(request.messages)
-        let config = GenerationConfig(maxNewTokens: maximum,
-                                      temperature: temperature,
-                                      topK: topK,
-                                      topP: topP,
-                                      repetitionPenalty: repetitionPenalty,
-                                      seed: request.seed,
-                                      stopStrings: request.stop?.values ?? [])
-        return ValidatedChatRequest(messages: messages,
-                                    tools: tools,
-                                    stream: request.stream ?? false,
-                                    includeUsage: request.streamOptions?.includeUsage ?? false,
-                                    generationConfig: config,
-                                    maximumCompletionTokens: maximum)
+/// SPEC §5 and the tool half of §6: everything about a request that is not a
+/// row of the §4 table.
+///
+/// What used to live here as well — the per-parameter `guard`s of
+/// `OpenAIRequestValidator` — is `ChatRequestSchema` now. This type only knows
+/// about message and tool shapes.
+public enum ChatMessageValidator {
+    /// One declared tool the template can render, and what adapting its schema
+    /// cost (GEN-2 / DEV-16).
+    struct ValidatedTool {
+        let definition: GFTokenizer.FunctionDefinition
+        let simplifications: [String]
     }
 
-    private static func validateTool(_ tool: OpenAITool) throws -> GFTokenizer.FunctionDefinition {
+    static func validateTool(_ tool: OpenAITool) throws -> ValidatedTool {
         guard tool.type == "function" else {
             throw invalid("only function tools are supported", "tools", "unsupported_tool")
         }
@@ -363,59 +376,38 @@ public enum OpenAIRequestValidator {
             throw invalid(OpenAIToolName.validationMessage(for: name),
                           "tools", "invalid_tool_name")
         }
-        guard tool.function.parameters.objectValue != nil else {
-            throw invalid("tool parameters must be an object schema",
-                          "tools", "invalid_tool_schema")
-        }
-        try validateSchemaKeys(tool.function.parameters)
-        let parameters = try GemmaToolSchema.adapted(
-            tool.function.parameters, toolName: name)
-        guard (try? parameters.jinjaSendableValue()) != nil else {
-            throw invalid("tool schema contains a number that cannot be represented exactly",
-                          "tools", "invalid_tool_schema")
-        }
-        return GFTokenizer.FunctionDefinition(name: name,
-                                              description: tool.function.description ?? "",
-                                              parameters: parameters)
+        // GEN-2: the schema's *content* is never a refusal — not its keywords,
+        // not its parameter names, not its numbers. Everything the declaration
+        // cannot render comes back simplified, with a note (DEV-16). The two
+        // entry checks that used to stand here (`validateSchemaKeys` and the
+        // `jinjaSendableValue` guard) are what that line abolishes; the drops
+        // that replace them are inside `GemmaToolSchema`.
+        let adapted = GemmaToolSchema.adapted(tool.function.parameters, toolName: name)
+        return ValidatedTool(
+            definition: GFTokenizer.FunctionDefinition(
+                name: name,
+                description: tool.function.description ?? "",
+                parameters: adapted.schema),
+            simplifications: adapted.simplifications)
     }
 
-    private static func validateSchemaKeys(_ schema: JSONValue) throws {
-        switch schema {
-        case .object(let object):
-            for (schemaKey, value) in object {
-                if schemaKey == "properties" {
-                    guard case .object(let definitions) = value else {
-                        throw invalid("tool schema properties must be an object",
-                                      "tools", "invalid_tool_schema")
-                    }
-                    for (key, definition) in definitions {
-                        guard GemmaToolCallParser.isRepresentableObjectKey(key) else {
-                            throw invalid(
-                                "tool parameter names may contain only letters, numbers, _, -, ., and $",
-                                "tools",
-                                "invalid_tool_schema")
-                        }
-                        try validateSchemaKeys(definition)
-                    }
-                } else {
-                    try validateSchemaKeys(value)
-                }
-            }
-        case .array(let values):
-            for value in values {
-                try validateSchemaKeys(value)
-            }
-        default:
-            break
-        }
+    struct ValidatedMessages {
+        let messages: [GFTokenizer.Message]
+        let vision: ValidatedVisionRequest?
     }
 
-    private static func validateMessages(_ input: [OpenAIChatMessage]) throws -> [GFTokenizer.Message] {
+    static func validateMessages(
+        _ input: [OpenAIChatMessage],
+        imagePolicy: ServerImagePolicy
+    ) throws -> ValidatedMessages {
         guard !input.isEmpty else {
             throw invalid("messages must not be empty", "messages", "invalid_message")
         }
         var knownCalls: [String: (name: String, resolved: Bool)] = [:]
         var result: [GFTokenizer.Message] = []
+        var multimodal: [GFTokenizer.MultimodalMessage] = []
+        var images: [ServerImageAttachment] = []
+        var imageIndex = 0
         var sawConversationMessage = false
         for message in input {
             guard let role = GFTokenizer.Role(rawValue: message.role) else {
@@ -430,7 +422,22 @@ public enum OpenAIRequestValidator {
             } else {
                 sawConversationMessage = true
             }
-            let content = try message.content?.textValue()
+            let parts = try message.content?.resolvedParts(policy: imagePolicy,
+                                                           imageIndex: &imageIndex,
+                                                           images: &images)
+            let turnImages = parts?.reduce(into: 0) { $0 += ($1 == .image ? 1 : 0) } ?? 0
+            guard turnImages == 0 || role == .user else {
+                throw invalid("images may only appear in user turns",
+                              "messages", "unsupported_content")
+            }
+            multimodal.append(GFTokenizer.MultimodalMessage(
+                role: role, parts: parts ?? [], reasoningContent: message.reasoningContent))
+            let content = parts.map { parts in
+                parts.compactMap { part -> String? in
+                    if case .text(let text) = part { return text }
+                    return nil
+                }.joined()
+            }
             let calls: [GFTokenizer.HistoricalToolCall] = try (message.toolCalls ?? []).map { call in
                 guard role == .assistant, call.type == "function",
                       !call.id.isEmpty, knownCalls[call.id] == nil else {
@@ -477,9 +484,15 @@ public enum OpenAIRequestValidator {
                                               content: content,
                                               toolCalls: calls,
                                               toolCallID: message.toolCallID,
-                                              name: message.name))
+                                              name: message.name,
+                                              reasoningContent: message.reasoningContent))
         }
-        return result
+        guard !images.isEmpty else {
+            return ValidatedMessages(messages: result, vision: nil)
+        }
+        return ValidatedMessages(
+            messages: result,
+            vision: ValidatedVisionRequest(messages: multimodal, images: images))
     }
 
     private static func invalid(_ message: String,

@@ -8,11 +8,20 @@ final class MockInferenceClient: AppInferenceClient, @unchecked Sendable {
     var tokenDelayNanos: UInt64
     var failureMessage: String?
     var prefillSteps: Int = 3
+    /// When set, streamed once as a reasoning delta before the answer text.
+    var reasoning: String?
 
     private let lock = NSLock()
     private var activeTask: Task<Void, Never>?
     private var activeGenerationID: UUID?
+    private var requestLog: [AppGenerationRequest] = []
     private let memorySampler: AppMemorySampler
+
+    var capturedRequests: [AppGenerationRequest] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestLog
+    }
 
     init(response: String = "This is a lightweight mock response streaming through the TurboFieldfare Mac shell.",
          tokenDelayNanos: UInt64 = 35_000_000,
@@ -44,6 +53,7 @@ final class MockInferenceClient: AppInferenceClient, @unchecked Sendable {
             }
             memorySampler.resetPeak()
             _ = memorySampler.sample()
+            requestLog.append(request)
             let generationID = UUID()
             let task = Task { [self] in
                 await run(request: request, generationID: generationID, continuation: continuation)
@@ -110,6 +120,14 @@ final class MockInferenceClient: AppInferenceClient, @unchecked Sendable {
             continuation.yield(.prefillProgress(done: step + 1, total: prefillSteps))
         }
         prefillEndDate = Date()
+
+        if let reasoning {
+            continuation.yield(.token(AppTokenEvent(
+                index: 0,
+                textDelta: "",
+                elapsedDecodeSeconds: 0,
+                reasoningDelta: reasoning)))
+        }
 
         for (index, piece) in pieces.enumerated() {
             let decodeStart = prefillEndDate ?? start

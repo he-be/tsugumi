@@ -7,8 +7,8 @@ import Testing
 struct OpenAIValidationTests {
     @Test func capturedOpenCodeInitialRequestValidates() throws {
         let request = try fixture("opencode-1.15.11-initial.json")
-        let validated = try OpenAIRequestValidator.validate(
-            request, modelID: "gemma-4-26b-a4b-it")
+        let validated = try ChatRequestParser.parse(
+            request)
         #expect(validated.stream)
         #expect(validated.includeUsage)
         #expect(validated.tools.count == 1)
@@ -17,8 +17,8 @@ struct OpenAIValidationTests {
 
     @Test func capturedOpenCodeToolResultValidates() throws {
         let request = try fixture("opencode-1.15.11-tool-result.json")
-        let validated = try OpenAIRequestValidator.validate(
-            request, modelID: "gemma-4-26b-a4b-it")
+        let validated = try ChatRequestParser.parse(
+            request)
         #expect(validated.messages.count == 4)
         #expect(validated.messages[2].toolCalls.count == 1)
         #expect(validated.messages[3].toolCallID == "call_0123456789abcdef01234567")
@@ -26,21 +26,32 @@ struct OpenAIValidationTests {
 
     @Test func capturedOpenCodePromptFits16KWith4096Completion() async throws {
         let request = try fixture("opencode-1.15.11-tool-result.json")
-        let validated = try OpenAIRequestValidator.validate(
-            request, modelID: "gemma-4-26b-a4b-it")
+        let validated = try ChatRequestParser.parse(
+            request)
         let tokenizer = try await GFTokenizer.load()
         let ids = try tokenizer.encodeToolChat(
             messages: validated.messages, tools: validated.tools)
         #expect(ids.count <= 16_384 - 4_096)
     }
 
-    @Test func requiredToolChoiceIsRejected() throws {
-        let data = Data(#"""
+    /// GEN-4: `required` used to be a 501 placeholder for the grammar. The
+    /// grammar exists, so the choice is carried — but only when there is a
+    /// tool to force, because an empty grammar would answer a contract
+    /// parameter with a free-form completion (R4).
+    @Test func GEN_4_required_tool_choice_is_carried_when_a_tool_is_declared() throws {
+        let withTool = Data(#"""
+        {"model":"m","messages":[{"role":"user","content":"x"}],
+         "tool_choice":"required",
+         "tools":[{"type":"function","function":{"name":"lookup","parameters":{
+           "type":"object","properties":{"q":{"type":"string"}}}}}]}
+        """#.utf8)
+        #expect(try ChatRequestParser.parse(withTool).toolChoice == .required)
+
+        let withoutTools = Data(#"""
         {"model":"m","messages":[{"role":"user","content":"x"}],"tool_choice":"required"}
         """#.utf8)
-        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
         #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(request, modelID: "m")
+            try ChatRequestParser.parse(withoutTools)
         }
     }
 
@@ -66,8 +77,7 @@ struct OpenAIValidationTests {
           }]
         }
         """#.utf8)
-        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
-        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        let validated = try ChatRequestParser.parse(data)
         #expect(validated.tools.first?.name == "resolve-library-id")
         #expect(validated.messages[1].toolCalls.first?.name == "resolve-library-id")
     }
@@ -84,9 +94,8 @@ struct OpenAIValidationTests {
               }]
             }
             """#.utf8)
-            let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
-            do {
-                _ = try OpenAIRequestValidator.validate(request, modelID: "m")
+                do {
+                _ = try ChatRequestParser.parse(data)
                 Issue.record("invalid tool name was accepted: \(invalid)")
             } catch let error as ServerRequestError {
                 #expect(error.envelope.error.code == "invalid_tool_name")
@@ -103,9 +112,28 @@ struct OpenAIValidationTests {
           {"role":"user","content":"hello"}
         ]}
         """#.utf8)
-        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
-        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        let validated = try ChatRequestParser.parse(data)
         #expect(validated.messages.map(\.role) == [.system, .developer, .user])
+    }
+
+    /// MSG-5: the thinking a client hands back with a finished assistant turn
+    /// is an input, not just an output. INV-1 cannot hold without it — the
+    /// thought block was in the KV when that turn was generated, so a redraw
+    /// that drops it diverges from the tokens the model produced.
+    @Test func MSG_5_reasoning_content_reaches_the_assistant_turn() throws {
+        let data = Data(#"""
+        {"model":"m","messages":[
+          {"role":"user","content":"What is the capital of France?"},
+          {"role":"assistant","content":"Paris.",
+           "reasoning_content":"The user is asking about France."},
+          {"role":"user","content":"And of Italy?"}
+        ]}
+        """#.utf8)
+        let validated = try ChatRequestParser.parse(data)
+        #expect(validated.messages.map(\.reasoningContent)
+            == [nil, "The user is asking about France.", nil])
+        #expect(validated.toolChatMessages.map(\.reasoningContent)
+            == [nil, "The user is asking about France.", nil])
     }
 
     @Test func rejectsLateDeveloperGuidance() throws {
@@ -115,9 +143,8 @@ struct OpenAIValidationTests {
           {"role":"developer","content":"late"}
         ]}
         """#.utf8)
-        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
         #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(request, modelID: "m")
+            try ChatRequestParser.parse(data)
         }
     }
 
@@ -174,8 +201,7 @@ struct OpenAIValidationTests {
           }]
         }
         """#.utf8)
-        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
-        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        let validated = try ChatRequestParser.parse(data)
         let call = try #require(validated.messages[1].toolCalls.first)
         #expect(try call.arguments.encoded().contains(#""id":\#(expected)"#))
         let tokenizer = try await GFTokenizer.load()
@@ -206,11 +232,8 @@ struct OpenAIValidationTests {
           }]
         }
         """#.utf8)
-        let rejected = try JSONDecoder().decode(
-            OpenAIChatRequest.self,
-            from: unrepresentableHistory)
         #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(rejected, modelID: "m")
+            try ChatRequestParser.parse(unrepresentableHistory)
         }
     }
 
@@ -235,8 +258,7 @@ struct OpenAIValidationTests {
           }]
         }
         """#.utf8)
-        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
-        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        let validated = try ChatRequestParser.parse(data)
         let tokenizer = try await GFTokenizer.load()
         _ = try tokenizer.encodeToolChat(
             messages: validated.messages,
@@ -275,8 +297,7 @@ struct OpenAIValidationTests {
           }]
         }
         """#.utf8)
-        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
-        let validated = try OpenAIRequestValidator.validate(request, modelID: "m")
+        let validated = try ChatRequestParser.parse(data)
         let tool = try #require(validated.tools.first)
         let properties = try #require(tool.parameters.objectValue?["properties"]?.objectValue)
         let scope = try #require(properties["scope"]?.objectValue)
@@ -303,12 +324,14 @@ struct OpenAIValidationTests {
           }
         }
         """#.utf8))
-        let adapted = try GemmaToolSchema.adapted(typeArray, toolName: "lookup")
+        let result = GemmaToolSchema.adapted(typeArray, toolName: "lookup")
+        let adapted = result.schema
         let name = adapted.objectValue?["properties"]?.objectValue?["name"]?.objectValue
+        #expect(result.simplifications.isEmpty)
         #expect(name?["type"] == .string("string"))
         #expect(name?["nullable"] == .bool(true))
         #expect(name?["minLength"] == .integer(2))
-        #expect(try GemmaToolSchema.adapted(adapted, toolName: "lookup") == adapted)
+        #expect(GemmaToolSchema.adapted(adapted, toolName: "lookup").schema == adapted)
 
         let anyOf = try JSONDecoder().decode(JSONValue.self, from: Data(#"""
         {
@@ -321,7 +344,7 @@ struct OpenAIValidationTests {
           }
         }
         """#.utf8))
-        let anyOfAdapted = try GemmaToolSchema.adapted(anyOf, toolName: "lookup")
+        let anyOfAdapted = GemmaToolSchema.adapted(anyOf, toolName: "lookup").schema
         let limit = anyOfAdapted.objectValue?["properties"]?.objectValue?["limit"]?.objectValue
         #expect(limit?["type"] == .string("integer"))
         #expect(limit?["nullable"] == .bool(true))
@@ -340,7 +363,7 @@ struct OpenAIValidationTests {
           }
         }
         """#.utf8))
-        let nestedAdapted = try GemmaToolSchema.adapted(nestedOneOf, toolName: "lookup")
+        let nestedAdapted = GemmaToolSchema.adapted(nestedOneOf, toolName: "lookup").schema
         let item = nestedAdapted.objectValue?["properties"]?.objectValue?["names"]?
             .objectValue?["items"]?.objectValue
         #expect(item?["type"] == .string("string"))
@@ -349,44 +372,75 @@ struct OpenAIValidationTests {
         #expect(item?["oneOf"] == nil)
     }
 
-    @Test func unsupportedToolSchemaUnionsFailClosed() throws {
-        let schemas = [
-            #"{"type":"object","properties":{"v":{"anyOf":[{"type":"string"},{"type":"object"}]}}}"#,
-            #"{"type":"object","properties":{"args":{"anyOf":[{"type":"string"},{"type":"object","properties":{},"additionalProperties":true}]}}}"#,
-            #"{"type":"object","properties":{"v":{"oneOf":[{"type":"integer"},{"type":"number"}]}}}"#,
-            #"{"type":"object","properties":{"v":{"allOf":[{"type":"string"}]}}}"#,
-            #"{"type":"object","properties":{"v":{"description":"missing"}}}"#,
-            #"{"type":"object","properties":{"v":{"type":["string","number"]}}}"#,
-            #"{"type":"object","properties":{"v":{"type":["string","null"],"nullable":false}}}"#,
-            #"{"type":"object","properties":{"v":true}}"#,
+    /// GEN-2 / DEV-16: these eight all used to be a 400 `invalid_tool_schema`
+    /// at the door. None of them is any more — the element the declaration
+    /// cannot render is dropped or simplified toward what it can, and the
+    /// simplification is recorded instead of refused. The whole point is that
+    /// one unrenderable line at the edge of a client's schema no longer takes
+    /// the entire request down.
+    @Test func GEN_2_unrepresentable_tool_schemas_are_simplified_not_refused() throws {
+        let cases: [(schema: String, simplification: String?)] = [
+            (#"{"type":"object","properties":{"v":{"anyOf":[{"type":"string"},{"type":"object"}]}}}"#,
+             "unrepresentable-union: tools.unsafe.parameters.properties.v"),
+            (#"{"type":"object","properties":{"args":{"anyOf":[{"type":"string"},{"type":"object","properties":{},"additionalProperties":true}]}}}"#,
+             "unrepresentable-union: tools.unsafe.parameters.properties.args"),
+            (#"{"type":"object","properties":{"v":{"oneOf":[{"type":"integer"},{"type":"number"}]}}}"#,
+             "unrepresentable-union: tools.unsafe.parameters.properties.v"),
+            (#"{"type":"object","properties":{"v":{"allOf":[{"type":"string"}]}}}"#,
+             "unrepresentable-all-of: tools.unsafe.parameters.properties.v"),
+            // An untyped schema is legal JSON Schema meaning "any value", so
+            // nothing was given up and nothing is recorded.
+            (#"{"type":"object","properties":{"v":{"description":"missing"}}}"#, nil),
+            (#"{"type":"object","properties":{"v":{"type":["string","number"]}}}"#,
+             "unrepresentable-type-union: tools.unsafe.parameters.properties.v"),
+            (#"{"type":"object","properties":{"v":{"type":["string","null"],"nullable":false}}}"#,
+             "nullable-conflict: tools.unsafe.parameters.properties.v"),
+            (#"{"type":"object","properties":{"v":true}}"#,
+             "unrepresentable-schema: tools.unsafe.parameters.properties.v"),
+            (#"{"type":"object","properties":{"v":{"type":"widget"}}}"#,
+             "unknown-type: tools.unsafe.parameters.properties.v (widget)"),
+            (#"{"type":"object","properties":{"v":{"type":"array","items":[{"type":"string"}]}}}"#,
+             "unrepresentable-items: tools.unsafe.parameters.properties.v.items"),
         ]
-        for encoded in schemas {
+        for (encoded, simplification) in cases {
             let schema = try JSONDecoder().decode(JSONValue.self, from: Data(encoded.utf8))
-            do {
-                _ = try GemmaToolSchema.adapted(schema, toolName: "unsafe")
-                Issue.record("unsupported schema was accepted: \(encoded)")
-            } catch let error as ServerRequestError {
-                #expect(error.envelope.error.code == "invalid_tool_schema")
-                #expect(error.envelope.error.param == "tools")
+            let result = GemmaToolSchema.adapted(schema, toolName: "unsafe")
+            // Whatever was given up, what comes back is still a declaration
+            // the template can render.
+            #expect(result.schema.objectValue?["type"] == .string("object"), "\(encoded)")
+            #expect((try? result.schema.jinjaSendableValue()) != nil, "\(encoded)")
+            if let simplification {
+                #expect(result.simplifications == [simplification], "\(encoded)")
+            } else {
+                #expect(result.simplifications.isEmpty, "\(encoded)")
             }
         }
     }
 
-    @Test func semanticsChangingNullableSchemasFailClosed() throws {
-        let schemas = [
-            #"{"type":["object","null"],"properties":{}}"#,
-            #"{"type":"object","properties":{"v":{"oneOf":[{"type":["string","null"]},{"type":"null"}]}}}"#,
-            #"{"type":"object","properties":{"v":{"oneOf":[{"type":"string","const":"same"},{"type":"string","const":"same"}]}}}"#,
+    /// GEN-2 again, for the three that are accepted with a *changed meaning*
+    /// rather than a dropped keyword. Those are exactly the ones worth
+    /// recording, because the declaration now says something the request did
+    /// not.
+    @Test func GEN_2_semantics_changing_schemas_are_recorded() throws {
+        let cases = [
+            (#"{"type":["object","null"],"properties":{}}"#,
+             "unrepresentable-parameters: tools.unsafe.parameters"),
+            (#"{"type":"object","properties":{"v":{"oneOf":[{"type":["string","null"]},{"type":"null"}]}}}"#,
+             "overlapping-one-of: tools.unsafe.parameters.properties.v"),
+            (#"{"type":"object","properties":{"v":{"oneOf":[{"type":"string","const":"same"},{"type":"string","const":"same"}]}}}"#,
+             "overlapping-one-of: tools.unsafe.parameters.properties.v"),
         ]
-        for encoded in schemas {
+        for (encoded, simplification) in cases {
             let schema = try JSONDecoder().decode(JSONValue.self, from: Data(encoded.utf8))
-            #expect(throws: ServerRequestError.self) {
-                try GemmaToolSchema.adapted(schema, toolName: "unsafe")
-            }
+            let result = GemmaToolSchema.adapted(schema, toolName: "unsafe")
+            #expect(result.simplifications.contains(simplification), "\(encoded)")
         }
     }
 
-    @Test func ambiguousParameterKeysFailValidation() throws {
+    /// GEN-2: a parameter name the tool-call dialect cannot write is dropped
+    /// from the declaration — so the model is never invited to use a key the
+    /// parser could not read back — and the request goes through.
+    @Test func GEN_2_ambiguous_parameter_keys_are_dropped_not_refused() throws {
         let data = Data(#"""
         {
           "model":"m",
@@ -397,25 +451,47 @@ struct OpenAIValidationTests {
               "name":"lookup",
               "parameters":{
                 "type":"object",
-                "allOf":[{
-                  "type":"object",
-                  "properties":{"bad:key":{"type":"string"}}
-                }]
+                "properties":{"bad:key":{"type":"string"},"good":{"type":"string"}},
+                "required":["bad:key","good"]
               }
             }
           }]
         }
         """#.utf8)
-        let request = try JSONDecoder().decode(OpenAIChatRequest.self, from: data)
-        #expect(throws: ServerRequestError.self) {
-            try OpenAIRequestValidator.validate(request, modelID: "m")
-        }
+        let request = try ChatRequestParser.parse(data)
+        let parameters = try #require(request.tools.first?.parameters.objectValue)
+        #expect(parameters["properties"]?.objectValue?.keys.sorted() == ["good"])
+        #expect(parameters["required"] == .array([.string("good")]))
+        #expect(request.toolSchemaSimplifications
+            == ["unrepresentable-key: tools.lookup.parameters.properties.bad:key"])
     }
 
-    private func fixture(_ name: String) throws -> OpenAIChatRequest {
+    /// DEV-16: the record travels with the request, so the server can log what
+    /// the declaration gave up. It is a separate list from the grammar's
+    /// approximations because the two degrade independently.
+    @Test func DEV_16_tool_schema_simplifications_reach_the_request() throws {
+        let data = Data(#"""
+        {
+          "model":"m",
+          "messages":[{"role":"user","content":"lookup"}],
+          "tools":[
+            {"type":"function","function":{"name":"a","parameters":{
+              "type":"object","properties":{"v":{"allOf":[{"type":"string"}]}}}}},
+            {"type":"function","function":{"name":"b","parameters":{
+              "type":"object","properties":{"w":{"type":"string"}}}}}
+          ]
+        }
+        """#.utf8)
+        let request = try ChatRequestParser.parse(data)
+        #expect(request.tools.count == 2)
+        #expect(request.toolSchemaSimplifications
+            == ["unrepresentable-all-of: tools.a.parameters.properties.v"])
+    }
+
+    private func fixture(_ name: String) throws -> Data {
         let url = try #require(Bundle.module.url(
             forResource: name, withExtension: nil, subdirectory: "Fixtures"))
-        return try JSONDecoder().decode(OpenAIChatRequest.self, from: Data(contentsOf: url))
+        return try Data(contentsOf: url)
     }
 }
 
@@ -563,29 +639,65 @@ struct ServerArgumentTests {
         #expect(arguments.port == 8080)
         #expect(arguments.maxContext == 16_384)
         #expect(arguments.queueLimit == 4)
-        #expect(arguments.promptCacheMode == .singlePrefix)
-        #expect(arguments.expertCacheSlots == 16)
+        #expect(arguments.expertCacheSlots == 32)
         #expect(arguments.expertCachePolicy == .lfu)
         #expect(arguments.prefillPolicy == .chunked)
-        #expect(arguments.prefillChunkTokens == 128)
+        #expect(arguments.prefillChunkTokens == 2048)
         #expect(arguments.rdadvisePolicy == .off)
+        #expect(arguments.draftBlockSize == 0)
     }
 
-    @Test func parsesSinglePrefixModeAndRejectsUnknownMode() throws {
+    @Test func parsesDraftBlockSizeAndRejectsUnsupportedWidths() throws {
         let arguments = try ServerArguments.parse([
             "--model", "model.gturbo",
-            "--prompt-cache-mode", "single-prefix",
+            "--draft-block-size", "4",
         ])
-        #expect(arguments.promptCacheMode == .singlePrefix)
-        let rollback = try ServerArguments.parse([
+        #expect(arguments.draftBlockSize == 4)
+        let off = try ServerArguments.parse([
             "--model", "model.gturbo",
-            "--prompt-cache-mode", "off",
+            "--draft-block-size", "0",
         ])
-        #expect(rollback.promptCacheMode == .off)
+        #expect(off.draftBlockSize == 0)
+        // A one-token block is not speculation, and the ceiling is the block
+        // the verify path was built for (03-DESIGN D7).
+        for width in ["1", "\(SpeculativeBlock.maxTokens + 1)", "-1", "four"] {
+            #expect(throws: ServerArgumentError.self) {
+                try ServerArguments.parse([
+                    "--model", "model.gturbo",
+                    "--draft-block-size", width,
+                ])
+            }
+        }
+    }
+
+    // The context-length flag moved to the reference implementation's spelling
+    // and its enumeration became a rounding rule (FLAG-1 / FLAG-2); both live
+    // in `ServerContextSizeFlagTests`.
+
+    @Test func draftBlockSizeRequiresChunkedPrefill() throws {
         #expect(throws: ServerArgumentError.self) {
             try ServerArguments.parse([
                 "--model", "model.gturbo",
-                "--prompt-cache-mode", "many",
+                "--prefill", "off",
+                "--draft-block-size", "4",
+            ])
+        }
+        // The same run without speculation stays legal.
+        let plain = try ServerArguments.parse([
+            "--model", "model.gturbo",
+            "--prefill", "off",
+        ])
+        #expect(plain.prefillPolicy == .off)
+        #expect(plain.draftBlockSize == 0)
+    }
+
+    /// FLAG-4: the process flag is gone. Reuse is decided per request
+    /// (`cache_prompt`, CACHE-5), so an unknown flag is an unknown flag.
+    @Test func FLAG_4_prompt_cache_mode_is_no_longer_a_flag() throws {
+        #expect(throws: ServerArgumentError.self) {
+            try ServerArguments.parse([
+                "--model", "model.gturbo",
+                "--prompt-cache-mode", "single-prefix",
             ])
         }
     }
@@ -635,11 +747,16 @@ struct ServerArgumentTests {
         }
     }
 
+    // FLAG-2: a slot count between the steps is rounded down now, not refused
+    // (`ServerExpertCacheSlotFlagTests`); zero is still not a slot count. The
+    // prefill chunk width keeps its enumeration — FLAG-2 covers the context
+    // size and the slots, and nothing else.
     @Test(arguments: [
-        ["--expert-cache-slots", "12"],
+        ["--expert-cache-slots", "0"],
         ["--expert-cache-policy", "mru"],
         ["--prefill", "maybe"],
-        ["--prefill-chunk-tokens", "256"],
+        ["--prefill-chunk-tokens", "96"],
+        ["--prefill-chunk-tokens", "4096"],
         ["--rdadvise", "eager"],
     ])
     func rejectsUnsupportedRuntimeValues(flag: [String]) throws {

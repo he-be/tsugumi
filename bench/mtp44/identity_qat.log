@@ -1,0 +1,7 @@
+resident                           groups= 74,488,832 mismatch=          0 (  0.00%)  bias share= 9.85%
+draft                              groups=  6,557,696 mismatch=  1,924,670 ( 29.35%)  bias share= 5.55%
+packed experts                     groups=713,687,040 mismatch=          0 (  0.00%)  bias share=10.00%
+  行内 exponent span (17,389,056 行):  0:5.7666%  1:90.4022%  2:3.4537%  3:0.3157%  4:0.0518%  5:0.0097%  6:0.0001%  7:0.0001%  8:0.0000%   9 ビット符号で可逆になる行 99.9382%
+resident                           groups= 37,413,376 mismatch= 14,202,207 ( 37.96%)  bias share= 5.53%
+packed experts                     groups=356,843,520 mismatch=123,669,478 ( 34.66%)  bias share= 5.56%
+  行内 exponent span (17,032,704 行):  0:18.9433%  1:78.9444%  2:2.0421%  3:0.0647%  4:0.0048%  5:0.0006%   9 ビット符号で可逆になる行 99.9946%

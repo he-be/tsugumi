@@ -1,0 +1,25 @@
+# 採点基準 v2 のゴールタスク画像 16 枚 (docs/mtp/42-N3-SCORING-V2.md §1)。
+# 選び方: $TF_SAMPLE_IMGS を名前順に並べ、100KB 超の写真だけを残したプール 46 枚から
+#   round(i * 46 / 16), i = 0..15 で等間隔に拾う (2026-08-20 に凍結)。
+#   10〜17KB のロゴ類 4 枚 (05_m.jpg / 1f343e20728dce53.jpg / de2c9795.png /
+#   Shiba_inu_taiki.jpg) はキャプション課題の代表にならないので除外している。
+# 画像そのものはリポジトリ外 (~/Pictures/sample_imgs)。この台帳が版管理される実体で、
+# bench/mtp_goal_ab.py は起動時に md5 を突き合わせ、1 つでも違えば走らない。
+# v1 の 8 枚は失われており、絶対値の連続性は無い (docs/mtp/40-HANDOFF.md §3)。
+pool_index	md5	bytes	name
+0	1c624f33c638665a1cb54749cae4fbad	8155133	NO_FUSION_0401_001.png
+3	853e4081d5bf277282eedcdba7d55ff9	10649559	NO_FUSION_0401_007.png
+6	8d124fa5d73b5aa0ac5ae9c3e6e0014f	14430554	NO_FUSION_0404_004.png
+9	d7571f457b3834cf6cd30e2fbb16209c	11352103	NO_FUSION_0524_013.png
+12	9000acca590bfcceffe591b97847d70e	9042128	NO_FUSION_0606_028.png
+14	eb52b5486f6df600db8fd48fa983d6a1	10751114	NO_FUSION_0607_025.png
+17	d23e811c853231426c6fea9f81afddb8	11150587	NO_FUSION_0627_012.png
+20	16547cc34949b3333291f0227ef190d0	8054552	NO_FUSION_0627_015.png
+23	382dab3f21792826e4e96709800bb5d5	8037385	NO_FUSION_0712_002.png
+26	a8db757674fbd127ad8d44870bcd379e	4847717	NO_FUSION_0722_002.png
+29	59bd2d38e7a59256ee653e91774c705c	9955376	NO_FUSION_0728_007.png
+32	13148a9534be4b737ad6b9d091a7d3c2	6693847	NO_FUSION_0731_002.png
+34	b68f88aa67289b04621915fd64eed3d8	7473960	NO_FUSION_0804_002.png
+37	c16683d3e298b0c2663fa5614b7e6eec	6313595	NO_FUSION_0804_005.png
+40	07ed849e992fc76373eecac7745028fe	7683785	NO_FUSION_0804_009.png
+43	f925710ef9fadf38ccf9bab88afd0ad6	7708457	NO_FUSION_0804_012.png

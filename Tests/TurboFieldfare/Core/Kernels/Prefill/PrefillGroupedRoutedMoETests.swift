@@ -1,3 +1,4 @@
+import Dispatch
 import Metal
 import Testing
 @testable import TurboFieldfare
@@ -112,70 +113,90 @@ import TurboFieldfareValidationSupport
     }
 
     static func makeSyntheticExpertPool(numExperts: Int, d: Int, f: Int) -> SyntheticExpertPool {
-        var allBytes: [UInt8] = []
-        var offsets: MoEExpertOffsets?
-        var stride = 0
-        for expert in 0..<numExperts {
-            var bytes: [UInt8] = []
-            let gateWOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 0),
-                                  to: &bytes,
-                                  component: .packed)
-            let gateSOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 0),
-                                  to: &bytes,
-                                  component: .scales)
-            let gateBOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 0),
-                                  to: &bytes,
-                                  component: .biases)
-
-            let upWOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 1),
-                                  to: &bytes,
-                                  component: .packed)
-            let upSOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 1),
-                                  to: &bytes,
-                                  component: .scales)
-            let upBOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: f, cols: d, expert: expert, role: 1),
-                                  to: &bytes,
-                                  component: .biases)
-
-            let downWOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: d, cols: f, expert: expert, role: 2),
-                                  to: &bytes,
-                                  component: .packed)
-            let downSOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: d, cols: f, expert: expert, role: 2),
-                                  to: &bytes,
-                                  component: .scales)
-            let downBOff = UInt32(bytes.count)
-            Self.appendProjection(rows: Self.syntheticRows(rows: d, cols: f, expert: expert, role: 2),
-                                  to: &bytes,
-                                  component: .biases)
-
-            let currentOffsets = MoEExpertOffsets(gateWOff: gateWOff,
-                                                  gateSOff: gateSOff,
-                                                  gateBOff: gateBOff,
-                                                  upWOff: upWOff,
-                                                  upSOff: upSOff,
-                                                  upBOff: upBOff,
-                                                  downWOff: downWOff,
-                                                  downSOff: downSOff,
-                                                  downBOff: downBOff)
-            if offsets == nil {
-                offsets = currentOffsets
-                stride = bytes.count
-            } else {
-                #expect(stride == bytes.count)
-                #expect(offsets!.gateWOff == currentOffsets.gateWOff)
-                #expect(offsets!.downBOff == currentOffsets.downBOff)
+        precondition(numExperts > 0, "a pool needs at least one expert")
+        // Experts are synthesized independently and the widest caller wants
+        // 24 of them at 704x704x3, which is most of this suite's wall clock in
+        // a debug build. Build them concurrently and concatenate in expert
+        // order; the bytes are the ones the serial build produced.
+        var perExpertBytes = [[UInt8]](repeating: [], count: numExperts)
+        var perExpertOffsets = [MoEExpertOffsets](repeating: Self.zeroExpertOffsets,
+                                                  count: numExperts)
+        perExpertBytes.withUnsafeMutableBufferPointer { bytesSlots in
+            perExpertOffsets.withUnsafeMutableBufferPointer { offsetSlots in
+                // Each index is written by exactly one iteration.
+                nonisolated(unsafe) let bytesBase = bytesSlots.baseAddress!
+                nonisolated(unsafe) let offsetsBase = offsetSlots.baseAddress!
+                DispatchQueue.concurrentPerform(iterations: numExperts) { expert in
+                    let built = Self.syntheticExpert(expert: expert, d: d, f: f)
+                    (bytesBase + expert).pointee = built.bytes
+                    (offsetsBase + expert).pointee = built.offsets
+                }
             }
-            allBytes.append(contentsOf: bytes)
         }
-        return SyntheticExpertPool(bytes: allBytes, offsets: offsets!, stride: stride)
+
+        let offsets = perExpertOffsets[0]
+        let stride = perExpertBytes[0].count
+        for expert in 1..<numExperts {
+            #expect(stride == perExpertBytes[expert].count)
+            #expect(offsets.gateWOff == perExpertOffsets[expert].gateWOff)
+            #expect(offsets.downBOff == perExpertOffsets[expert].downBOff)
+        }
+
+        var allBytes: [UInt8] = []
+        allBytes.reserveCapacity(stride * numExperts)
+        for expert in 0..<numExperts {
+            allBytes.append(contentsOf: perExpertBytes[expert])
+        }
+        return SyntheticExpertPool(bytes: allBytes, offsets: offsets, stride: stride)
+    }
+
+    static let zeroExpertOffsets = MoEExpertOffsets(gateWOff: 0, gateSOff: 0, gateBOff: 0,
+                                                    upWOff: 0, upSOff: 0, upBOff: 0,
+                                                    downWOff: 0, downSOff: 0, downBOff: 0)
+
+    /// One expert's bytes, in the layout `makeSyntheticExpertPool` concatenates.
+    /// Nothing here records an expectation, so it is safe off the test's task.
+    static func syntheticExpert(expert: Int, d: Int, f: Int)
+        -> (bytes: [UInt8], offsets: MoEExpertOffsets)
+    {
+        var bytes: [UInt8] = []
+        // Each projection is quantized once and then emitted as its three
+        // component-major regions. Quantizing per component instead would
+        // redo the same work three times, and the widest caller builds
+        // this pool at 24 x 704 x 704.
+        let gate = Self.quantizedRows(rows: f, cols: d, expert: expert, role: 0)
+        let gateWOff = UInt32(bytes.count)
+        Self.appendQuantized(gate, to: &bytes, component: .packed)
+        let gateSOff = UInt32(bytes.count)
+        Self.appendQuantized(gate, to: &bytes, component: .scales)
+        let gateBOff = UInt32(bytes.count)
+        Self.appendQuantized(gate, to: &bytes, component: .biases)
+
+        let up = Self.quantizedRows(rows: f, cols: d, expert: expert, role: 1)
+        let upWOff = UInt32(bytes.count)
+        Self.appendQuantized(up, to: &bytes, component: .packed)
+        let upSOff = UInt32(bytes.count)
+        Self.appendQuantized(up, to: &bytes, component: .scales)
+        let upBOff = UInt32(bytes.count)
+        Self.appendQuantized(up, to: &bytes, component: .biases)
+
+        let down = Self.quantizedRows(rows: d, cols: f, expert: expert, role: 2)
+        let downWOff = UInt32(bytes.count)
+        Self.appendQuantized(down, to: &bytes, component: .packed)
+        let downSOff = UInt32(bytes.count)
+        Self.appendQuantized(down, to: &bytes, component: .scales)
+        let downBOff = UInt32(bytes.count)
+        Self.appendQuantized(down, to: &bytes, component: .biases)
+
+        return (bytes, MoEExpertOffsets(gateWOff: gateWOff,
+                                        gateSOff: gateSOff,
+                                        gateBOff: gateBOff,
+                                        upWOff: upWOff,
+                                        upSOff: upSOff,
+                                        upBOff: upBOff,
+                                        downWOff: downWOff,
+                                        downSOff: downSOff,
+                                        downBOff: downBOff))
     }
 
     enum ProjectionComponent {
@@ -184,10 +205,16 @@ import TurboFieldfareValidationSupport
         case biases
     }
 
-    static func appendProjection(rows: [[Float]],
-                                         to bytes: inout [UInt8],
-                                         component: ProjectionComponent) {
-        let quantized = rows.map { Quantization.quantizeInt4Affine($0) }
+    static func quantizedRows(rows: Int, cols: Int, expert: Int, role: Int)
+        -> [Quantization.Int4AffineRow]
+    {
+        Self.syntheticRows(rows: rows, cols: cols, expert: expert, role: role)
+            .map { Quantization.quantizeInt4Affine($0) }
+    }
+
+    static func appendQuantized(_ quantized: [Quantization.Int4AffineRow],
+                                to bytes: inout [UInt8],
+                                component: ProjectionComponent) {
         switch component {
         case .packed:
             for row in quantized {
@@ -222,10 +249,6 @@ import TurboFieldfareValidationSupport
         }
     }
 
-    static func readU16(_ bytes: [UInt8], _ offset: Int) -> UInt16 {
-        UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)
-    }
-
     static func cpuSyntheticRoutePartials(routes: PrefillMoEGroupedRoutes,
                                                   hidden: [Float16],
                                                   hiddenStride: Int,
@@ -233,57 +256,90 @@ import TurboFieldfareValidationSupport
                                                   topK: Int,
                                                   d: Int,
                                                   f: Int) -> [Float16] {
+        // Every pair reads one token and writes its own `d`-wide slice, so the
+        // pairs never overlap. The widest caller is 32 pairs over 704x704,
+        // which is tens of seconds of scalar INT4 work in a debug build on one
+        // core; spreading the pairs keeps the arithmetic of each dot product
+        // exactly as it was.
+        let pairs = routes.sortedPairs
+        let offsets = pool.offsets
+        let stride = pool.stride
         var out = [Float16](repeating: -99, count: routes.queryCount * topK * d)
-        for pair in routes.sortedPairs {
-            let expertBase = Int(pair.expert) * pool.stride
-            let xBase = Int(pair.token) * hiddenStride
-            let x = (0..<d).map { Float(hidden[xBase + $0]) }
-            var act = [Float16](repeating: 0, count: f)
-            for row in 0..<f {
-                let gate = Self.cpuInt4Dot(bytes: pool.bytes,
-                                           base: expertBase,
-                                           wOff: Int(pool.offsets.gateWOff),
-                                           sOff: Int(pool.offsets.gateSOff),
-                                           bOff: Int(pool.offsets.gateBOff),
-                                           row: row,
-                                           n: d,
-                                           x: x)
-                let up = Self.cpuInt4Dot(bytes: pool.bytes,
-                                         base: expertBase,
-                                         wOff: Int(pool.offsets.upWOff),
-                                         sOff: Int(pool.offsets.upSOff),
-                                         bOff: Int(pool.offsets.upBOff),
-                                         row: row,
-                                         n: d,
-                                         x: x)
-                act[row] = Float16(MoeRef.geluTanh([gate])[0] * up)
-            }
-            let actFloat = act.map { Float($0) }
-            let outBase = (Int(pair.token) * topK + Int(pair.rank)) * d
-            for row in 0..<d {
-                let value = Self.cpuInt4Dot(bytes: pool.bytes,
-                                            base: expertBase,
-                                            wOff: Int(pool.offsets.downWOff),
-                                            sOff: Int(pool.offsets.downSOff),
-                                            bOff: Int(pool.offsets.downBOff),
-                                            row: row,
-                                            n: f,
-                                            x: actFloat)
-                out[outBase + row] = Float16(value)
+        pool.bytes.withUnsafeBufferPointer { poolBytes in
+            out.withUnsafeMutableBufferPointer { outBuffer in
+                // The pool is read-only here, and each pair writes its own
+                // `d`-wide slice of the output.
+                nonisolated(unsafe) let bytes = poolBytes.baseAddress!
+                nonisolated(unsafe) let output = outBuffer.baseAddress!
+                DispatchQueue.concurrentPerform(iterations: pairs.count) { index in
+                    let pair = pairs[index]
+                    let expertBase = Int(pair.expert) * stride
+                    let xBase = Int(pair.token) * hiddenStride
+                    let x = (0..<d).map { Float(hidden[xBase + $0]) }
+                    x.withUnsafeBufferPointer { xValues in
+                        let xBuffer = xValues.baseAddress!
+                        var gates = [Float](repeating: 0, count: f)
+                        var ups = [Float](repeating: 0, count: f)
+                        for row in 0..<f {
+                            gates[row] = Self.cpuInt4Dot(bytes: bytes,
+                                                         base: expertBase,
+                                                         wOff: Int(offsets.gateWOff),
+                                                         sOff: Int(offsets.gateSOff),
+                                                         bOff: Int(offsets.gateBOff),
+                                                         row: row,
+                                                         n: d,
+                                                         x: xBuffer)
+                            ups[row] = Self.cpuInt4Dot(bytes: bytes,
+                                                       base: expertBase,
+                                                       wOff: Int(offsets.upWOff),
+                                                       sOff: Int(offsets.upSOff),
+                                                       bOff: Int(offsets.upBOff),
+                                                       row: row,
+                                                       n: d,
+                                                       x: xBuffer)
+                        }
+                        // `geluTanh` is elementwise, so one call over the whole
+                        // row vector is the per-element call it replaced.
+                        let activated = MoeRef.geluTanh(gates)
+                        let act = (0..<f).map { Float(Float16(activated[$0] * ups[$0])) }
+                        act.withUnsafeBufferPointer { actValues in
+                            let actBuffer = actValues.baseAddress!
+                            let outBase = (Int(pair.token) * topK + Int(pair.rank)) * d
+                            for row in 0..<d {
+                                let value = Self.cpuInt4Dot(bytes: bytes,
+                                                            base: expertBase,
+                                                            wOff: Int(offsets.downWOff),
+                                                            sOff: Int(offsets.downSOff),
+                                                            bOff: Int(offsets.downBOff),
+                                                            row: row,
+                                                            n: f,
+                                                            x: actBuffer)
+                                (output + outBase + row).pointee = Float16(value)
+                            }
+                        }
+                    }
+                }
             }
         }
         return out
     }
 
-    static func cpuInt4Dot(bytes: [UInt8],
+    static func readU16(_ bytes: UnsafePointer<UInt8>, _ offset: Int) -> UInt16 {
+        UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)
+    }
+
+    /// Takes raw pointers rather than arrays: at 704x704 the bounds check and
+    /// the un-inlined `Array` subscript of a debug build dominate this loop.
+    static func cpuInt4Dot(bytes: UnsafePointer<UInt8>,
                                    base: Int,
                                    wOff: Int,
                                    sOff: Int,
                                    bOff: Int,
                                    row: Int,
                                    n: Int,
-                                   x: [Float]) -> Float {
-        let groups = n / Quantization.groupSize
+                                   x: UnsafePointer<Float>) -> Float {
+        let groupSize = Quantization.groupSize
+        let groups = n / groupSize
         let rowBytes = n / 2
         let wRow = base + wOff + row * rowBytes
         let sRow = base + sOff + row * groups * MemoryLayout<UInt16>.stride
@@ -292,8 +348,8 @@ import TurboFieldfareValidationSupport
         for group in 0..<groups {
             let scale = Quantization.bf16ToFloat(Self.readU16(bytes, sRow + group * 2))
             let bias = Quantization.bf16ToFloat(Self.readU16(bytes, bRow + group * 2))
-            for k in 0..<Quantization.groupSize {
-                let col = group * Quantization.groupSize + k
+            for k in 0..<groupSize {
+                let col = group * groupSize + k
                 let packed = bytes[wRow + col / 2]
                 let q = (k & 1) == 0 ? Float(packed & 0x0F) : Float(packed >> 4)
                 acc += (q * scale + bias) * x[col]

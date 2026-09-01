@@ -1,0 +1,36 @@
+thought way to merge two sorted lists.
+
+### The Python Function
+
+Here is the most efficient way to merge two sorted lists using the **Two-Pointer Technique**.
+
+```python
+def merge_sorted_lists(list1, list2):
+    """
+    Merges two sorted lists into a single sorted list.
+    """
+    merged_list = []
+    i = 0  # Pointer for list1
+    j = 0  # Pointer for list2
+
+    # Traverse both lists while there are elements in both
+    while i < len(list1) and j < len(list2):
+        if list1[i] < list2[j]:
+            merged_list.append(list1[i])
+            i += 1
+        else:
+            merged_list.append(list2[j])
+            j += 1
+
+    # If there are remaining elements in list1, append them
+    while i < len(list1):
+        merged_list.append(list1[i])
+        i += 1
+
+    # If there are remaining elements in list2, append them
+    while j < len(list2):
+        
+[stop=maxTokens prefill=16tok new=256tok decode=15.22s tok/s=16.816]
+[load=0.675s layerVerify=5.441s/30layers prefill=6.094s ttft=6.094s peak=4.51GB rss=2.59GB]
+[expert prefill hit=0.0% 0/1488 io=0.342s | decode hit=72.5% 44377/61200 io=7.137s]
+[decode/tok io=27.93ms cb1=0.72ms cb2=0.36ms head=4.07ms]

@@ -11,6 +11,18 @@ struct AttentionSplitGeometry: Sendable, Equatable {
 }
 
 
+/// Dispatch shape of the block-rows split-KV path (`Attention.encodeRows`).
+struct AttentionRowsGeometry: Sendable, Equatable {
+    /// Union range the chunks are cut over: `[kvStart, startPosition + rows)`.
+    let kvStart: UInt32
+    let effectiveLength: Int
+    let numChunks: Int
+    let chunkLength: Int
+    /// Pass-1 threadgroups (`numQHeads * numChunks`) and their width.
+    let partialThreadgroups: Int
+    let partialThreadsPerGroup: Int
+}
+
 /// Swift wrapper for sliding-window and full-causal decode attention.
 ///
 /// The kernels assume a single decoded query token (`M_q = 1`) and a
@@ -59,6 +71,23 @@ final class Attention {
     private let mPartial: MTLBuffer
     private let dPartial: MTLBuffer
     private let oPartial: MTLBuffer
+
+    private struct RowsScratch {
+        let m: MTLBuffer
+        let d: MTLBuffer
+        let o: MTLBuffer
+    }
+    private struct RowsPipelineKey: Hashable {
+        let headDim: UInt32
+        let numQHeads: UInt32
+        let numKVHeads: UInt32
+        let numChunks: UInt32
+        let ringCapacity: UInt32
+    }
+    // Both are first-use caches for the block-rows path; `Attention` is used
+    // from the one thread that encodes a layer, like the partial scratch above.
+    private var rowsScratchStorage: RowsScratch?
+    private var rowsPipelineCache: [RowsPipelineKey: MTLComputePipelineState] = [:]
 
     init(context: MetalContext) throws {
         self.ctx = context
@@ -219,6 +248,176 @@ final class Attention {
                     preferGQASWA: false)
     }
 
+
+    // MARK: - Speculative block rows (docs/mtp/25-M5.6-RESULTS.md)
+
+    /// Widest block the rows path takes. One SIMD group per row and a 256-thread
+    /// ceiling put the bound at 8, which is `SpeculativeVerifier.maxTokens`.
+    static let maxRows = 8
+    /// Split factor ceiling for the rows path. `chunkCount` never returns more
+    /// than 16 today; pinning it bounds the partial scratch at
+    /// 8 rows x 16 heads x 16 chunks x 512 floats = 4 MB.
+    static let rowsMaxChunks = 16
+
+    /// Chunking for a block of `rows` queries at `startPosition`. `window == 0`
+    /// means full attention. The chunks are cut over the *union* of the rows'
+    /// ranges — row 0 has the earliest window start, the last row the latest
+    /// history end — and the kernel clamps each row to its own range inside.
+    static func rowsGeometry(rows: Int,
+                             startPosition: Int,
+                             window: UInt32,
+                             numQHeads: UInt32) -> AttentionRowsGeometry {
+        let firstSeqLen = UInt32(startPosition + 1)
+        let lastSeqLen = UInt32(startPosition + rows)
+        let kvStart = (window != 0 && firstSeqLen > window) ? firstSeqLen - window : 0
+        let effectiveLength = Int(lastSeqLen - kvStart)
+        let numChunks = max(1, min(rowsMaxChunks, effectiveLength))
+        let chunkLength = (effectiveLength + numChunks - 1) / numChunks
+        return AttentionRowsGeometry(kvStart: kvStart,
+                                     effectiveLength: effectiveLength,
+                                     numChunks: numChunks,
+                                     chunkLength: chunkLength,
+                                     partialThreadgroups: Int(numQHeads) * numChunks,
+                                     partialThreadsPerGroup: rows * 32)
+    }
+
+    /// Attention for a speculative block's `rows` query rows in one dispatch
+    /// pair. Row `r` attends to `[kvStart_r, startPosition + r + 1)`, which is
+    /// exactly what `encodeSWA`/`encodeFull` compute one row at a time — this
+    /// walks the KV range once for the whole block instead of `rows` times
+    /// (docs/mtp/24-M5.5-RESULTS.md §7-1).
+    ///
+    /// `q` and `out` are `[rows, numQHeads, headDim]`; the offsets point at row 0.
+    /// `window == 0` selects full attention (no lower bound).
+    func encodeRows(commandBuffer: MTLCommandBuffer,
+                    q: MTLBuffer, qOffset: Int = 0,
+                    k: MTLBuffer, kOffset: Int = 0,
+                    v: MTLBuffer, vOffset: Int = 0,
+                    out: MTLBuffer, outOffset: Int = 0,
+                    headDim: UInt32,
+                    numQHeads: UInt32,
+                    numKVHeads: UInt32,
+                    rows: Int,
+                    startPosition: Int,
+                    window: UInt32,
+                    scale: Float,
+                    ringCapacity: UInt32 = 0) {
+        precondition(rows >= 1 && rows <= Self.maxRows,
+                     "rows \(rows) outside 1...\(Self.maxRows)")
+        precondition(numQHeads % numKVHeads == 0,
+                     "numQHeads must be a multiple of numKVHeads for GQA")
+        precondition(headDim % 32 == 0 && headDim <= UInt32(Self.maxHeadDim),
+                     "head_dim \(headDim) must be a multiple of 32 and <= \(Self.maxHeadDim)")
+        precondition(Int(numQHeads) <= Self.maxQHeads,
+                     "numQHeads \(numQHeads) exceeds split-KV scratch (max \(Self.maxQHeads))")
+        precondition(startPosition >= 0, "startPosition must be non-negative")
+        precondition(ringCapacity == 0 || window != 0,
+                     "FP16 KV ring is only valid for SWA attention")
+
+        let geometry = Self.rowsGeometry(rows: rows,
+                                         startPosition: startPosition,
+                                         window: window,
+                                         numQHeads: numQHeads)
+        let scratch = rowsScratch()
+        let partialPSO = rowsPartialPipeline(headDim: headDim,
+                                             numQHeads: numQHeads,
+                                             numKVHeads: numKVHeads,
+                                             numChunks: geometry.numChunks,
+                                             ringCapacity: ringCapacity)
+
+        guard let p1 = commandBuffer.makeComputeCommandEncoder() else { return }
+        p1.setComputePipelineState(partialPSO)
+        p1.setBuffer(q, offset: qOffset, index: 0)
+        p1.setBuffer(k, offset: kOffset, index: 1)
+        p1.setBuffer(v, offset: vOffset, index: 2)
+        p1.setBuffer(scratch.m, offset: 0, index: 3)
+        p1.setBuffer(scratch.d, offset: 0, index: 4)
+        p1.setBuffer(scratch.o, offset: 0, index: 5)
+        var hd = headDim, nq = numQHeads, nkv = numKVHeads
+        var sl = UInt32(startPosition + 1), ks = geometry.kvStart
+        var cl = UInt32(geometry.chunkLength), nc = UInt32(geometry.numChunks)
+        var sc = scale, win = window
+        p1.setBytes(&hd,  length: MemoryLayout<UInt32>.size, index: 6)
+        p1.setBytes(&nq,  length: MemoryLayout<UInt32>.size, index: 7)
+        p1.setBytes(&nkv, length: MemoryLayout<UInt32>.size, index: 8)
+        p1.setBytes(&sl,  length: MemoryLayout<UInt32>.size, index: 9)
+        p1.setBytes(&ks,  length: MemoryLayout<UInt32>.size, index: 10)
+        p1.setBytes(&cl,  length: MemoryLayout<UInt32>.size, index: 11)
+        p1.setBytes(&nc,  length: MemoryLayout<UInt32>.size, index: 12)
+        p1.setBytes(&sc,  length: MemoryLayout<Float>.size,  index: 13)
+        p1.setBytes(&win, length: MemoryLayout<UInt32>.size, index: 14)
+        p1.dispatchThreadgroups(
+            MTLSize(width: geometry.partialThreadgroups, height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: geometry.partialThreadsPerGroup,
+                                           height: 1, depth: 1))
+        p1.endEncoding()
+
+        // The partial scratch is the decode layout with a leading row axis, so
+        // the decode combine merges it unchanged at grid width rows * heads.
+        guard let p2 = commandBuffer.makeComputeCommandEncoder() else { return }
+        let combinePSO = combinePipeline(headDim: headDim,
+                                         numQHeads: numQHeads,
+                                         numKVHeads: numKVHeads,
+                                         numChunks: geometry.numChunks)
+        p2.setComputePipelineState(combinePSO)
+        p2.setBuffer(scratch.m, offset: 0, index: 0)
+        p2.setBuffer(scratch.d, offset: 0, index: 1)
+        p2.setBuffer(scratch.o, offset: 0, index: 2)
+        p2.setBuffer(out, offset: outOffset, index: 3)
+        var hd2 = headDim, nc2 = UInt32(geometry.numChunks)
+        p2.setBytes(&hd2, length: MemoryLayout<UInt32>.size, index: 4)
+        p2.setBytes(&nc2, length: MemoryLayout<UInt32>.size, index: 5)
+        let combineTGWidth = min(Self.threadsPerGroup,
+                                 Int(combinePSO.maxTotalThreadsPerThreadgroup))
+        p2.dispatchThreadgroups(
+            MTLSize(width: rows * Int(numQHeads), height: 1, depth: 1),
+            threadsPerThreadgroup: MTLSize(width: combineTGWidth, height: 1, depth: 1))
+        p2.endEncoding()
+    }
+
+    /// Partial scratch for the rows path, allocated on first use so a run that
+    /// never verifies a block (MTP off) does not pay the 4 MB.
+    private func rowsScratch() -> RowsScratch {
+        if let existing = rowsScratchStorage { return existing }
+        let entries = Self.maxRows * Self.maxQHeads * Self.rowsMaxChunks
+        guard let m = ctx.device.makeBuffer(length: entries * MemoryLayout<Float>.size,
+                                            options: .storageModeShared),
+              let d = ctx.device.makeBuffer(length: entries * MemoryLayout<Float>.size,
+                                            options: .storageModeShared),
+              let o = ctx.device.makeBuffer(length: entries * Self.maxHeadDim * MemoryLayout<Float>.size,
+                                            options: .storageModeShared) else {
+            preconditionFailure("attention rows split-KV scratch allocation failed")
+        }
+        let scratch = RowsScratch(m: m, d: d, o: o)
+        rowsScratchStorage = scratch
+        return scratch
+    }
+
+    private func rowsPartialPipeline(headDim: UInt32,
+                                     numQHeads: UInt32,
+                                     numKVHeads: UInt32,
+                                     numChunks: Int,
+                                     ringCapacity: UInt32) -> MTLComputePipelineState {
+        let key = RowsPipelineKey(headDim: headDim,
+                                  numQHeads: numQHeads,
+                                  numKVHeads: numKVHeads,
+                                  numChunks: UInt32(numChunks),
+                                  ringCapacity: ringCapacity)
+        if let cached = rowsPipelineCache[key] { return cached }
+        do {
+            let pso = try Self.specializedPipeline(ctx,
+                                                   "attention_rows_partial",
+                                                   headDim: headDim,
+                                                   numQHeads: numQHeads,
+                                                   numKVHeads: numKVHeads,
+                                                   numChunks: UInt32(numChunks),
+                                                   ringCapacity: ringCapacity == 0 ? nil : ringCapacity)
+            rowsPipelineCache[key] = pso
+            return pso
+        } catch {
+            preconditionFailure("failed to build rows attention pipeline: \(error)")
+        }
+    }
 
     /// Two-pass split-KV (Flash-Decoding) dispatch shared by SWA and full
     /// attention — they differ only by `kvStart`. Pass 1 fans the head's

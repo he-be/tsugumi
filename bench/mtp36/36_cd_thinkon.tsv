@@ -1,0 +1,4 @@
+task	bs	slot	temperature	status	new	decode	tok_s	load	ttft	peak	stop	accept	rounds	draft	verify	tok_per_round	decode_hit	decode_experts	decode_io	ms_per_tok	step_ms	draft_per_round_ms	drafts	drafts_total	d_ms	outside_s	outside_per_round_ms	accepted_hist	rounds_from_hist	a1	a2	a3	speedup	process_seconds
+image	0	head_base	0.0	OK	192.0	9.46	20.286	0.789	4.304	4.94	maxTokens						82.0	45840.0	4.007	49.27083333333334													1.0	16.10639645899937
+image	4	mid	0.0	OK	192.0	7.37	26.035	0.787	4.316	4.96	maxTokens	1.616	73.0	0.712	6.649	2.63	77.0	41300.0	5.182	38.385416666666664	91.08219178082192	9.753424657534246	219.0	219.0	3.2511415525114153	0.009000000000000341	0.12328767123288137	20,14,13,26	73	0.726027397260274	0.7358490566037735	0.6666666666666666	1.2833974169377895	14.027907874999073
+image	0	tail_base	0.0	OK	192.0	9.67	19.86	0.766	4.358	4.92	maxTokens						82.0	45840.0	4.185	50.36458333333333													0.979000295770482	16.37676245900002

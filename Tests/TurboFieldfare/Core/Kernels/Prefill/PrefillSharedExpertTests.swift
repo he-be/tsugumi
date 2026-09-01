@@ -303,6 +303,82 @@ import TurboFieldfareValidationSupport
                                     cols: UInt32(cols))
     }
 
+    /// The INT4 block runs the whole chunk through one QMM per projection when
+    /// the staging buffers are wide enough, and falls back to a GEMV per token
+    /// when they are not. Both paths have to produce the same block: the
+    /// batched one is what prefill actually runs, and the fallback is what every
+    /// other caller still gets.
+    @Test func int4BatchedBlockMatchesPerTokenFallback() throws {
+        var rng = SeedTree(0x4B10).key("prefill-shared-expert-int4-batch")
+        let ctx = try MetalContext()
+        let prefill = try PrefillSharedExpert(context: ctx, weightBits: 4)
+
+        let x = (0..<(Self.rows * Self.xStride)).map { _ in Float(rng.uniform(-0.4, 0.4)) }
+        let gate = Self.int4Projection(ctx, rows: Self.f, cols: Self.d, rng: &rng)
+        let up = Self.int4Projection(ctx, rows: Self.f, cols: Self.d, rng: &rng)
+        let down = Self.int4Projection(ctx, rows: Self.d, cols: Self.f, rng: &rng)
+        let yElements = Self.rows * Self.d
+
+        func run(scratchRows: Int) throws -> [Float] {
+            guard let xBuf = Fp16Buffer.make(ctx.device, values: x),
+                  let y = Fp16Buffer.make(ctx.device, count: yElements),
+                  let scratchGate = Fp16Buffer.make(ctx.device, count: scratchRows * Self.f),
+                  let scratchUp = Fp16Buffer.make(ctx.device, count: scratchRows * Self.f),
+                  let scratchAct = Fp16Buffer.make(ctx.device, count: scratchRows * Self.f) else {
+                Issue.record("buffer allocation failed")
+                return []
+            }
+            let cb = ctx.queue.makeCommandBuffer()!
+            try prefill.encodeBlock(commandBuffer: cb,
+                                    x: xBuf,
+                                    y: y,
+                                    gate: gate,
+                                    up: up,
+                                    down: down,
+                                    scratchGate: scratchGate,
+                                    scratchUp: scratchUp,
+                                    scratchAct: scratchAct,
+                                    queryCount: Self.rows,
+                                    d: Self.d,
+                                    intermediate: Self.f,
+                                    xStrideElements: Self.d,
+                                    yStrideElements: Self.d)
+            cb.commit()
+            cb.waitUntilCompleted()
+            #expect(cb.error == nil)
+            return Fp16Buffer.read(y, count: yElements)
+        }
+
+        let batched = try run(scratchRows: Self.rows)
+        let perToken = try run(scratchRows: 1)
+        #expect(batched.count == yElements)
+        let error = RelError.compute(actual: batched, reference: perToken)
+        #expect(error < Tolerance.quantInt4 * 4, "int4 batched vs per-token rel=\(error)")
+    }
+
+    private static func int4Projection(_ ctx: MetalContext,
+                                       rows: Int,
+                                       cols: Int,
+                                       rng: inout SplitMix64) -> SharedExpertInt8Proj {
+        let values = (0..<rows).map { _ in (0..<cols).map { _ in Float(rng.uniform(-0.4, 0.4)) } }
+        let quantized = values.map { Quantization.quantizeInt4Affine($0) }
+        let packed = quantized.flatMap(\.packed)
+        let scales = quantized.flatMap(\.scales)
+        let biases = quantized.flatMap(\.biases)
+        return SharedExpertInt8Proj(
+            weights: ctx.device.makeBuffer(bytes: packed,
+                                           length: packed.count,
+                                           options: .storageModeShared)!,
+            scales: ctx.device.makeBuffer(bytes: scales,
+                                          length: scales.count * MemoryLayout<UInt16>.stride,
+                                          options: .storageModeShared)!,
+            biases: ctx.device.makeBuffer(bytes: biases,
+                                          length: biases.count * MemoryLayout<UInt16>.stride,
+                                          options: .storageModeShared)!,
+            rows: UInt32(rows),
+            cols: UInt32(cols))
+    }
+
     private static func assertPaddingUnchanged(_ values: [Float16]) {
         for row in 0..<rows {
             for col in d..<yStride {

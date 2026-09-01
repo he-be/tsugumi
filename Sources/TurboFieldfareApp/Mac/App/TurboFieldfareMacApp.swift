@@ -29,7 +29,8 @@ struct TurboFieldfareMacApp: App {
     init() {
         _model = State(initialValue: AppModel(
             client: DecodeServiceInferenceClient(),
-            settingsPersistenceEnabled: true))
+            settingsPersistenceEnabled: true,
+            chatStore: .defaultStore))
     }
 
     var body: some Scene {

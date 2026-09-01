@@ -1,7 +1,49 @@
 #include <metal_stdlib>
 using namespace metal;
 
-constant constexpr uint kMoEGroupSize = 64;
+#ifndef TURBO_AFFINE_GROUP_SIZE
+#define TURBO_AFFINE_GROUP_SIZE 64
+#endif
+constant constexpr uint kMoEGroupSize = TURBO_AFFINE_GROUP_SIZE;
+
+// Affine zero point -- see the note in dequant_int4.metal. `TURBO_AFFINE_SYMMETRIC`
+// is a whole-model compile-time constant (`MetalContext.affineScheme`); when it
+// is set the bias arrays do not exist and the bindings alias the scales.
+#ifndef TURBO_AFFINE_SYMMETRIC
+#define TURBO_AFFINE_SYMMETRIC 0
+#endif
+
+static inline float moe_int4_bias(device const bfloat* biases, uint index,
+                                     float scale) {
+#if TURBO_AFFINE_SYMMETRIC
+    return -8.0f * scale;
+#else
+    return float(biases[index]);
+#endif
+}
+
+/// `acc + scale * dot + bias * sum` for one group, where `dot` is the group's
+/// integer-weighted activation sum and `sum` its plain activation sum.
+///
+/// The two schemes run the *same* two FMAs in the same order, and `sym`'s
+/// `bias` is `-8 * scale` computed in FP32. That product is exact -- BF16
+/// stores `-8 * scale` without rounding, so converting it back gives the same
+/// float the affine model loaded -- which makes the whole pipeline **bit
+/// identical** to the affine one on a checkpoint that satisfies the identity.
+/// Folding the zero point into `dot` instead would save nothing (`gate/up` is
+/// on the bandwidth floor, so the FMA is free) and would cost that property.
+static inline float moe_int4_accumulate(float acc, float scale, float bias,
+                                           float dot, float sum) {
+    acc = fma(scale, dot, acc);
+    return fma(bias, sum, acc);
+}
+// Vectorized INT4 block geometry — see the note in dequant_int4.metal.
+// A block is a fixed 128 bytes (32 lanes x 4 bytes); the group size decides how
+// many affine groups that spans and how many lanes cover one group.
+constant constexpr uint kMoEGroupsPerBlock = 256u / kMoEGroupSize;
+constant constexpr uint kMoELanesPerGroup  = kMoEGroupSize / 8u;
+constant constexpr uint kMoETailLanes      = kMoEGroupSize / 2u;
+
 constant constexpr uint kMaxStreamedExperts = 8;
 constant constexpr float kGeluSqrt2OverPi = 0.7978845608028654f;
 constant constexpr float kGeluCubicCoeff = 0.044715f;
@@ -15,6 +57,12 @@ constant uint FC_MOE_D [[function_constant(0)]];
 constant uint FC_MOE_F [[function_constant(1)]];
 constant uint FC_MOE_TOP_K [[function_constant(2)]];
 constant bool FC_MOE_USE_FC [[function_constant(3)]];
+// Which activation phase 1 folds into the gate/up product. Gemma 4 is
+// `gelu_pytorch_tanh` and never defines this constant, so its pipelines compile
+// exactly the code they compiled before; Qwen3.5-MoE is SiLU
+// (`docs/qwen35moe/03-DESIGN.md` §4-1 — the routed-expert kernels are reused
+// whole and this is the one line that differs).
+constant bool FC_MOE_ACT_SILU [[function_constant(4)]];
 
 static inline uint router_fc_num_experts(constant uint& num_experts) {
     return (is_function_constant_defined(FC_ROUTER_USE_FC) &&
@@ -50,6 +98,10 @@ static inline uint moe_fc_top_k(constant uint& top_k) {
             is_function_constant_defined(FC_MOE_TOP_K)) ? FC_MOE_TOP_K : top_k;
 }
 
+static inline bool moe_fc_act_is_silu() {
+    return is_function_constant_defined(FC_MOE_ACT_SILU) && FC_MOE_ACT_SILU;
+}
+
 static inline float gelu_pytorch_tanh(float x) {
     const float x3 = x * x * x;
     float inner = kGeluSqrt2OverPi * (x + kGeluCubicCoeff * x3);
@@ -57,6 +109,12 @@ static inline float gelu_pytorch_tanh(float x) {
     // equivalent to the saturated result at FP32 precision.
     inner = clamp(inner, -20.0f, 20.0f);
     return 0.5f * x * (1.0f + tanh(inner));
+}
+
+// The gate half's activation. The branch is on a function constant, so each
+// pipeline compiles one arm and neither family pays for the other's.
+static inline float moe_gate_activation(float x) {
+    return moe_fc_act_is_silu() ? (x / (1.0f + exp(-x))) : gelu_pytorch_tanh(x);
 }
 
 struct ExpertOffsets {
@@ -99,17 +157,56 @@ static inline void router_gemv_gemma4_body(
     device const bfloat* s_row = scales + uint(e) * n_groups;
     device const bfloat* b_row = biases + uint(e) * n_groups;
 
+    // One step is a fixed 64 elements (32 lanes x 2 INT8 weights), so the group
+    // size decides how many groups a step spans and how many lanes share one
+    // scale. At group 64 this is one group per step and `g == st`, which is the
+    // geometry this kernel was originally written for.
+    const uint groups_per_step = 64u / kMoEGroupSize;
+    const uint lanes_per_group = 32u / groups_per_step;
+    const uint steps = DD / 64u;
+
     float acc = 0.0f;
-    for (uint g = 0; g < n_groups; ++g) {
+    for (uint st = 0; st < steps; ++st) {
+        const uint g = st * groups_per_step + lane / lanes_per_group;
         const float s = float(s_row[g]);
         const float b = float(b_row[g]);
-        const uint idx = g * kMoEGroupSize + lane * 2u;
+        const uint idx = st * 64u + lane * 2u;
         const float q0 = float(uint(W_row[idx]));
         const float q1 = float(uint(W_row[idx + 1u]));
         const float x0 = float(hidden[idx]) * float(effective_scale[idx]);
         const float x1 = float(hidden[idx + 1u]) * float(effective_scale[idx + 1u]);
         acc = fma(s, q0 * x0 + q1 * x1, acc);
         acc = fma(b, x0 + x1, acc);
+    }
+    acc = simd_sum(acc);
+    if (lane == 0) out_logits[e] = acc;
+}
+
+// BF16 router (QAT checkpoints leave `router.proj.weight` unquantized). There
+// is no group structure, so this body is independent of the affine group size.
+static inline void router_gemv_gemma4_bf16_body(
+    device const bfloat* W,
+    device const half* hidden,
+    device const bfloat* effective_scale,
+    device float* out_logits,
+    constant uint& num_experts,
+    constant uint& D,
+    uint rows_per_tg,
+    uint tg_idx,
+    uint sg_idx,
+    uint lane
+) {
+    const uint NE = router_fc_num_experts(num_experts);
+    const uint DD = router_fc_d(D);
+    const uint e = tg_idx * rows_per_tg + sg_idx;
+    if (e >= NE) return;
+
+    device const bfloat* W_row = W + uint(e) * DD;
+    float acc = 0.0f;
+    for (uint i = lane; i < DD; i += 32u) {
+        acc = fma(float(W_row[i]),
+                  float(hidden[i]) * float(effective_scale[i]),
+                  acc);
     }
     acc = simd_sum(acc);
     if (lane == 0) out_logits[e] = acc;
@@ -132,15 +229,62 @@ kernel void router_gemv_gemma4_r4(
                             out_logits, num_experts, D, 4, tg_idx, sg_idx, lane);
 }
 
-kernel void router_topk_select_k8(
-    device const float* logits [[buffer(0)]],
-    device const bfloat* per_expert_scale [[buffer(1)]],
-    device uint* out_indices [[buffer(2)]],
-    device half* out_weights [[buffer(3)]],
+kernel void router_gemv_gemma4_bf16_r4(
+    device const bfloat* W [[buffer(0)]],
+    device const half* hidden [[buffer(1)]],
+    device const bfloat* effective_scale [[buffer(2)]],
+    device float* out_logits [[buffer(3)]],
     constant uint& num_experts [[buffer(4)]],
-    uint tid [[thread_position_in_threadgroup]]
+    constant uint& D [[buffer(5)]],
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint sg_idx [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]
 ) {
-    if (tid != 0) return;
+    router_gemv_gemma4_bf16_body(W, hidden, effective_scale, out_logits,
+                                 num_experts, D, 4, tg_idx, sg_idx, lane);
+}
+
+// Two routers over the same activation in one dispatch.
+//
+// Decode's read-ahead runs layer L+1's router over layer L's `normed`
+// alongside L's own router, which is two GEMV dispatches over the *same*
+// hidden vector (docs/qwen35moe/28-PREFETCH-IDEAS.md §3-4 (b)). The rows are
+// independent, so one grid of 2 * NE rows does both: the low half is this
+// layer's router, the high half the preview's, and each still owns a simdgroup
+// so the reduction order — and the choice on a near-tie — is the one the
+// single-router kernel produces.
+kernel void router_gemv_gemma4_bf16_pair_r4(
+    device const bfloat* W [[buffer(0)]],
+    device const half* hidden [[buffer(1)]],
+    device const bfloat* effective_scale [[buffer(2)]],
+    device float* out_logits [[buffer(3)]],
+    constant uint& num_experts [[buffer(4)]],
+    constant uint& D [[buffer(5)]],
+    device const bfloat* W_preview [[buffer(6)]],
+    device float* out_preview [[buffer(7)]],
+    uint tg_idx [[threadgroup_position_in_grid]],
+    uint sg_idx [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    const uint NE = router_fc_num_experts(num_experts);
+    const uint row = tg_idx * 4u + sg_idx;
+    if (row >= 2u * NE) return;
+    const bool preview = row >= NE;
+    router_gemv_gemma4_bf16_body(preview ? W_preview : W,
+                                 hidden, effective_scale,
+                                 preview ? out_preview : out_logits,
+                                 num_experts, D,
+                                 4, (row - (preview ? NE : 0u)) / 4u,
+                                 (row - (preview ? NE : 0u)) % 4u, lane);
+}
+
+static inline void router_topk_select_k8_body(
+    device const float* logits,
+    device const bfloat* per_expert_scale,
+    device uint* out_indices,
+    device half* out_weights,
+    constant uint& num_experts
+) {
     const uint NE = router_fc_num_experts(num_experts);
     uint top_idx[8];
     float top_score[8];
@@ -184,6 +328,67 @@ kernel void router_topk_select_k8(
     }
 }
 
+kernel void router_topk_select_k8(
+    device const float* logits [[buffer(0)]],
+    device const bfloat* per_expert_scale [[buffer(1)]],
+    device uint* out_indices [[buffer(2)]],
+    device half* out_weights [[buffer(3)]],
+    constant uint& num_experts [[buffer(4)]],
+    uint tid [[thread_position_in_threadgroup]]
+) {
+    if (tid != 0) return;
+    router_topk_select_k8_body(logits, per_expert_scale, out_indices,
+                               out_weights, num_experts);
+}
+
+// The same two kernels with the block's rows in the grid's second dimension.
+//
+// A speculative verify block used to dispatch the decode router once per row,
+// which is 8 encoders a layer and 240 a block — nearly all of the `post` stage
+// was the dispatches, not the 720 KB of router weights
+// (docs/mtp/27-M7-RESULTS.md §5). Each row keeps its own threadgroup and its
+// own lane layout, so a row's dot product is summed in exactly the order the
+// per-row dispatch summed it and the expert choice cannot move.
+kernel void router_gemv_gemma4_bf16_rows(
+    device const bfloat* W [[buffer(0)]],
+    device const half* hidden [[buffer(1)]],
+    device const bfloat* effective_scale [[buffer(2)]],
+    device float* out_logits [[buffer(3)]],
+    constant uint& num_experts [[buffer(4)]],
+    constant uint& D [[buffer(5)]],
+    constant uint& hidden_stride_elements [[buffer(6)]],
+    uint2 tgid [[threadgroup_position_in_grid]],
+    uint sg_idx [[simdgroup_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    const uint NE = router_fc_num_experts(num_experts);
+    router_gemv_gemma4_bf16_body(W,
+                                 hidden + tgid.y * hidden_stride_elements,
+                                 effective_scale,
+                                 out_logits + tgid.y * NE,
+                                 num_experts, D, 4, tgid.x, sg_idx, lane);
+}
+
+kernel void router_topk_select_k8_rows(
+    device const float* logits [[buffer(0)]],
+    device const bfloat* per_expert_scale [[buffer(1)]],
+    device uint* out_indices [[buffer(2)]],
+    device half* out_weights [[buffer(3)]],
+    constant uint& num_experts [[buffer(4)]],
+    uint2 tgid [[threadgroup_position_in_grid]],
+    uint2 tid [[thread_position_in_threadgroup]]
+) {
+    if (tid.x != 0 || tid.y != 0) return;
+    const uint NE = router_fc_num_experts(num_experts);
+    const uint top_k = 8u;
+    router_topk_select_k8_body(logits + tgid.y * NE,
+                               per_expert_scale,
+                               out_indices + tgid.y * top_k,
+                               out_weights + tgid.y * top_k,
+                               num_experts);
+}
+
+
 // Each SIMD computes one affine INT4 row. Four adjacent groups are loaded as
 // aligned 32-bit chunks; remaining groups use one byte per lane.
 static inline float moe_int4_gemv_row_simd_dev_vec(
@@ -202,13 +407,13 @@ static inline float moe_int4_gemv_row_simd_dev_vec(
     device const bfloat* b_row = B + uint(row) * n_groups;
 
     float acc = 0.0f;
-    const uint full_blocks = n_groups / 4;
+    const uint full_blocks = n_groups / kMoEGroupsPerBlock;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
         const uint w4 = *((device const uint*)(W_row + byte_base));
-        const uint g = blk * 4u + (lane >> 3);
+        const uint g = blk * kMoEGroupsPerBlock + lane / kMoELanesPerGroup;
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = moe_int4_bias(b_row, g, s);
         const uint elem = byte_base * 2u;
         const half4 xa = *((device const half4*)(x + elem));
         const half4 xb = *((device const half4*)(x + elem + 4u));
@@ -229,9 +434,11 @@ static inline float moe_int4_gemv_row_simd_dev_vec(
         acc = fma(s, dot, acc);
         acc = fma(b, sum, acc);
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
+    for (uint g = full_blocks * kMoEGroupsPerBlock; g < n_groups; ++g) {
+        // Only the first kMoETailLanes lanes hold a byte of this group.
+        if (lane >= kMoETailLanes) break;
         const float s = float(s_row[g]);
-        const float b = float(b_row[g]);
+        const float b = moe_int4_bias(b_row, g, s);
         const uint8_t byte = W_row[g * (kMoEGroupSize / 2) + lane];
         const float x0 = float(x[g * kMoEGroupSize + lane * 2u]);
         const float x1 = float(x[g * kMoEGroupSize + lane * 2u + 1u]);
@@ -268,18 +475,18 @@ static inline float2 moe_int4_gate_up_rows_simd_dev_vec_u16load(
 
     float g_acc = 0.0f;
     float u_acc = 0.0f;
-    const uint full_blocks = n_groups / 4;
+    const uint full_blocks = n_groups / kMoEGroupsPerBlock;
     for (uint blk = 0; blk < full_blocks; ++blk) {
         const uint byte_base = blk * 128u + lane * 4u;
         device const ushort* gp = (device const ushort*)(gW_row + byte_base);
         device const ushort* up = (device const ushort*)(uW_row + byte_base);
         const uint gw4 = uint(gp[0]) | (uint(gp[1]) << 16);
         const uint uw4 = uint(up[0]) | (uint(up[1]) << 16);
-        const uint g = blk * 4u + (lane >> 3);
+        const uint g = blk * kMoEGroupsPerBlock + lane / kMoELanesPerGroup;
         const float gs = float(gS_row[g]);
-        const float gb = float(gB_row[g]);
+        const float gb = moe_int4_bias(gB_row, g, gs);
         const float us = float(uS_row[g]);
-        const float ub = float(uB_row[g]);
+        const float ub = moe_int4_bias(uB_row, g, us);
         const uint elem = byte_base * 2u;
         const half4 xa = *((device const half4*)(x + elem));
         const half4 xb = *((device const half4*)(x + elem + 4u));
@@ -309,16 +516,16 @@ static inline float2 moe_int4_gate_up_rows_simd_dev_vec_u16load(
         u_dot = fma(float(ub2 & 0x0Fu), e4, u_dot); u_dot = fma(float(ub2 >> 4), e5, u_dot);
         u_dot = fma(float(ub3 & 0x0Fu), e6, u_dot); u_dot = fma(float(ub3 >> 4), e7, u_dot);
 
-        g_acc = fma(gs, g_dot, g_acc);
-        g_acc = fma(gb, sum, g_acc);
-        u_acc = fma(us, u_dot, u_acc);
-        u_acc = fma(ub, sum, u_acc);
+        g_acc = moe_int4_accumulate(g_acc, gs, gb, g_dot, sum);
+        u_acc = moe_int4_accumulate(u_acc, us, ub, u_dot, sum);
     }
-    for (uint g = full_blocks * 4u; g < n_groups; ++g) {
+    for (uint g = full_blocks * kMoEGroupsPerBlock; g < n_groups; ++g) {
+        // Only the first kMoETailLanes lanes hold a byte of this group.
+        if (lane >= kMoETailLanes) break;
         const float gs = float(gS_row[g]);
-        const float gb = float(gB_row[g]);
+        const float gb = moe_int4_bias(gB_row, g, gs);
         const float us = float(uS_row[g]);
-        const float ub = float(uB_row[g]);
+        const float ub = moe_int4_bias(uB_row, g, us);
         const uint8_t gbv = gW_row[g * (kMoEGroupSize / 2) + lane];
         const uint8_t ubv = uW_row[g * (kMoEGroupSize / 2) + lane];
         const float x0 = float(x[g * kMoEGroupSize + lane * 2u]);
@@ -328,10 +535,8 @@ static inline float2 moe_int4_gate_up_rows_simd_dev_vec_u16load(
         g_dot = fma(float(uint(gbv >> 4)), x1, g_dot);
         float u_dot = fma(float(uint(ubv & 0x0Fu)), x0, 0.0f);
         u_dot = fma(float(uint(ubv >> 4)), x1, u_dot);
-        g_acc = fma(gs, g_dot, g_acc);
-        g_acc = fma(gb, sum, g_acc);
-        u_acc = fma(us, u_dot, u_acc);
-        u_acc = fma(ub, sum, u_acc);
+        g_acc = moe_int4_accumulate(g_acc, gs, gb, g_dot, sum);
+        u_acc = moe_int4_accumulate(u_acc, us, ub, u_dot, sum);
     }
     return float2(simd_sum(g_acc), simd_sum(u_acc));
 }
@@ -365,7 +570,7 @@ static inline void moe_phase1_gate_up_act_u16load_body(
 
     const float2 gu = moe_int4_gate_up_rows_simd_dev_vec_u16load(
         gW, gS, gB, uW, uS, uB, x, f, D, lane);
-    if (lane == 0) acts[slot * F + f] = half(gelu_pytorch_tanh(gu.x) * gu.y);
+    if (lane == 0) acts[slot * F + f] = half(moe_gate_activation(gu.x) * gu.y);
 }
 
 static inline void moe_phase1_gate_up_act_subset_u16load_body(
@@ -401,7 +606,7 @@ static inline void moe_phase1_gate_up_act_subset_u16load_body(
 
     const float2 gu = moe_int4_gate_up_rows_simd_dev_vec_u16load(
         gW, gS, gB, uW, uS, uB, x, f, D, lane);
-    if (lane == 0) acts[slot * F + f] = half(gelu_pytorch_tanh(gu.x) * gu.y);
+    if (lane == 0) acts[slot * F + f] = half(moe_gate_activation(gu.x) * gu.y);
 }
 
 kernel void moe_phase1_gate_up_act_u16load(

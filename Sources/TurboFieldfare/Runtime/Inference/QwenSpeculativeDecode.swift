@@ -1,0 +1,569 @@
+import Foundation
+import Metal
+
+/// Width-2 speculative decoding with the grafted MTP head
+/// (`docs/qwen35moe/36-MTP-DECODE.md`).
+///
+/// One pass of the loop:
+///
+///   1. the head drafts `d`, the token it thinks follows the one just emitted
+///      (`QwenMTPDrafter`);
+///   2. the body runs **two rows in one pass** — the emitted token and `d` —
+///      through the same T-row path the prompt uses;
+///   3. one pass over the 508 MB `lm_head` scores both rows
+///      (`QwenLMHeadChainInt8.encodeGreedyDecodeRows`);
+///   4. row 0's argmax is the real next token. If `d` matched it, row 1's
+///      argmax is real too and the pass emitted **two** tokens; otherwise row 1
+///      is discarded.
+///
+/// Why width 2 and not 4: the verify pass's cost grows with the **union** of
+/// the experts its rows route to, not with the number of rows — 1.55x for two
+/// rows, 2.43x for four — while the acceptance chain pays a whole drafter pass
+/// per extra token and returns 78.7%, then 41.5%, then 14.2%
+/// (`33-MTP-ACCEPTANCE.md` §2-2, §3-1). Three is a wash on paper and four
+/// loses.
+///
+/// **Greedy only, and the output must be identical to the non-speculative
+/// loop.** That is the correctness statement this path is checked by: a
+/// rejected draft leaves nothing behind (`kv.rewind` for the ten attention
+/// layers, the snapshot for the thirty recurrent ones), so the token stream is
+/// a function of the model, not of what the head guessed.
+public struct QwenSpeculativeStats: Sendable {
+    /// Verify passes run.
+    public var passes = 0
+    /// Passes whose draft matched — the ones that emitted two tokens.
+    public var accepted = 0
+    /// Tokens the loop emitted.
+    public var tokens = 0
+    /// Seconds inside the drafter (its own command buffers, host time).
+    public var draftSeconds: Double = 0
+    /// Seconds inside the verify pass, snapshot and restore included.
+    public var verifySeconds: Double = 0
+    /// How the drafter's own seconds split, and the GPU time inside them
+    /// (`QwenMTPDrafter.DraftProfile`). `38-MTP-VERIFY-PATH.md` §7-2 left this
+    /// stage unmetered; the three regions are the head's own structure — the
+    /// catch-up rows, the last row's first command buffer (embed through the
+    /// router, joined for the readback) and its tail (MoE and the 508 MB head).
+    public var draftGPUSeconds: Double = 0
+    public var draftCatchUpSeconds: Double = 0
+    public var draftPreRouterSeconds: Double = 0
+    public var draftTailSeconds: Double = 0
+    public var draftCatchUpGPUSeconds: Double = 0
+    public var draftPreRouterGPUSeconds: Double = 0
+    public var draftTailGPUSeconds: Double = 0
+    public var draftRows = 0
+    public var draftCatchUpRows = 0
+    public var draftBuffers = 0
+
+    /// Seconds spent moving the recurrent state around a rejected row.
+    ///
+    /// **Zero by construction, and printed anyway.** The speculative row writes
+    /// a shadow buffer and acceptance is a pointer swap, so there is no copy to
+    /// time (`33-MTP-ACCEPTANCE.md` §3-6 (a)). A non-zero value here would mean
+    /// the loop had fallen back to blitting 61.4 MiB a pass.
+    public var snapshotSeconds: Double = 0
+
+    /// P1 as this run saw it. The measurement in `33` §2-1 is the same
+    /// quantity computed off-policy in float32; this one is on-policy and
+    /// quantized.
+    public var acceptanceRate: Double {
+        passes == 0 ? 0 : Double(accepted) / Double(passes)
+    }
+    /// Tokens per verify pass — `a(k=2)` measured rather than derived.
+    public var acceptanceLength: Double {
+        passes == 0 ? 0 : Double(tokens) / Double(passes)
+    }
+}
+
+extension QwenForwardRunner {
+
+    public enum SpeculativeError: Error, CustomStringConvertible {
+        case noHead
+
+        public var description: String {
+            switch self {
+            case .noHead:
+                return "speculative decoding needs an MTP head; "
+                    + "build one with Scripts/qwen35/build_mtp_sidecar.py"
+            }
+        }
+    }
+
+    /// Load the sidecar and build the drafter. Idempotent.
+    public func attachMTPHead(directory: String = QwenMTPSidecar.defaultDirectory) throws {
+        if mtpDrafter != nil { return }
+        let sidecar = try QwenMTPSidecar(directory: directory, device: ctx.device)
+        // The MoE kernels take one `MoEExpertOffsets` for all eight blobs, so a
+        // sidecar laid out differently from the body's `packed_experts` would
+        // read plausible bytes with the wrong meaning.
+        try sidecar.checkExpertLayout(matches: model.routedExpertOffsets(layer: 0))
+        mtpDrafter = try QwenMTPDrafter(sidecar: sidecar,
+                                        context: ctx,
+                                        model: model,
+                                        config: cfg,
+                                        rms: rms,
+                                        int8: int8,
+                                        qwen: qwen,
+                                        attention: attention,
+                                        moe: moe,
+                                        head: head,
+                                        embed: embed,
+                                        unitFeatureScale: unitFeatureScale,
+                                        unitExpertScale: unitExpertScale,
+                                        scoredVocab: scoredVocab,
+                                        maxContext: maxContext,
+                                        rmsEps: rmsEps)
+    }
+
+    public var hasMTPHead: Bool { mtpDrafter != nil }
+
+    /// Negative control: throw every draft away, so the loop still runs the
+    /// width-2 verify pass and the rollback but can never accept.
+    ///
+    /// A speculative loop that only ever agrees with itself is not evidence
+    /// (`PLAN_VISION.md` §6-3). With this on, the emitted stream is produced by
+    /// row 0 alone — the same rows, the same rollback, one token per pass — so
+    /// **a difference against this arm is the accept path, and a difference
+    /// between this arm and plain decode is the T-row kernels.** The two
+    /// questions are separated by one environment variable.
+    public static let forceReject =
+        ProcessInfo.processInfo.environment["TF_QWEN_MTP_FORCE_REJECT"] == "1"
+
+    /// Second negative control: run the loop with **width 1** — no draft, one
+    /// row per pass — but still through the T-row chunk path.
+    ///
+    /// This separates the two things that could make a speculative step slow.
+    /// A decode step costs 50 ms/tok on the per-token kernels
+    /// (`27-PHASE6-THROUGHPUT.md` §2); if one row through the chunk path costs
+    /// the same, then everything above it is the price of the second row, which
+    /// is what `33` §3-7 measured as 1.27x. If one row already costs much more,
+    /// the chunk path is simply the wrong machinery for two rows and the
+    /// speculative arithmetic never gets a chance.
+    public static let noDraft =
+        ProcessInfo.processInfo.environment["TF_QWEN_MTP_NO_DRAFT"] == "1"
+
+    /// Which routed-expert kernels the verify pass runs on, independently of
+    /// what the prompt used.
+    ///
+    /// **Per-pair, against the prompt's default.** The tiled path won at 512
+    /// rows and every width `24-PREFILL-MOE-PATH.md` measured, but a 64-row
+    /// GEMM tile carrying two rows throws away 97% of itself: measured on the
+    /// coding task, the verify pass costs 153.9 ms tiled and 117.9 ms per-pair
+    /// (`36-MTP-DECODE.md` §4-2).
+    public static let verifyRoutedPath: PrefillRoutedPath =
+        ProcessInfo.processInfo.environment["TF_QWEN_MTP_VERIFY_MOE"]
+            .flatMap(PrefillRoutedPath.init(rawValue:)) ?? .perPair
+
+    /// Keep the prompt's command-buffer structure in the verify pass. The
+    /// control arm for the compaction (`36-MTP-DECODE.md` §4-2).
+    public static let wideCommandBuffers =
+        ProcessInfo.processInfo.environment["TF_QWEN_MTP_WIDE_CB"] == "1"
+
+    /// Run the verify pass's full-attention layers on the split-KV rows kernel
+    /// (`QwenForwardRunner.chunkRowsAttention`). **On by default**; the control
+    /// arm puts the query-blocked prompt kernel back, which is the arm
+    /// `36-MTP-DECODE.md` measured and the one the long-context loss came from
+    /// (`38-MTP-VERIFY-PATH.md` §3).
+    public static let rowsAttention =
+        ProcessInfo.processInfo.environment["TF_QWEN_MTP_ROWS_ATTN"] != "0"
+
+    /// The same contract as `runCompletion`, with the MTP head in the loop.
+    ///
+    /// **Greedy (`sampling` nil): the token stream is identical to the
+    /// non-speculative loop's**, which is the correctness statement this path
+    /// has always been checked by. **Sampled: the output *distribution* is
+    /// identical**, which is the strongest statement available once the draw is
+    /// random — and it is not free, it is the reason the accept rule below is
+    /// `u <= p(d)/q(d)` and not `d == argmax p`
+    /// (`docs/qwen35moe/42-SAMPLING.md` §2-2). Requirement S2 says MTP stays on
+    /// whatever else is on, so there is no third option where sampling turns
+    /// speculation off.
+    public func runCompletionMTP(
+        promptTokens: [Int32],
+        maxNewTokens: Int,
+        chunkWidth: Int = 512,
+        stopTokens: Set<Int32> = [],
+        constraint: (any GenerationConstraint)? = nil,
+        cachedPromptTokens: Int = 0,
+        sampling: GenerationConfig? = nil,
+        shouldStop: () -> Bool = { false },
+        onPrefill: ((Int, Double) -> Void)? = nil,
+        onToken: ((Int, Int32) throws -> Void)? = nil,
+        onStats: ((QwenSpeculativeStats) -> Void)? = nil
+    ) throws -> QwenGreedyRun {
+        guard let drafter = mtpDrafter else { throw SpeculativeError.noHead }
+        samplingConfig = sampling
+        defer { samplingConfig = nil }
+        let sampler = sampling == nil ? nil : try sampler()
+        let sampledLogits = sampling == nil ? nil : try samplingLogitsBuffer()
+        precondition(!promptTokens.isEmpty, "the prompt must have at least one token")
+        precondition(cachedPromptTokens == kv.position,
+                     "a resumed run must name the state it is continuing "
+                     + "(cached \(cachedPromptTokens), state \(kv.position))")
+        // One more than the non-speculative bound: a verify pass writes the
+        // drafted row before it is known to be real (`41-PROMPT-CACHE.md` §3-2).
+        precondition(kv.position + promptTokens.count + maxNewTokens + 1 <= maxContext,
+                     "prompt + generation exceeds maxContext \(maxContext)")
+
+        let D = hiddenSize
+        let rowBytes = D * MemoryLayout<Float16>.size
+        // The chunk scratch the prompt already built is wide enough for two
+        // rows; `runChunkLayers` sizes every dispatch from `tokens.count`, so a
+        // second, narrower context would only cost memory.
+        let verify = try prefillContext(width: 2)
+        let (normed, rowTokens) = try verifyBuffers()
+        try state.ensureShadow(device: ctx.device)
+
+        // GEN-7 over two rows. The gate is the same object the per-token loop
+        // builds, asked the same question in the same order: a row's argmax is
+        // put to it only after every token before it has been accepted, so the
+        // constraint never sees a speculative position out of turn
+        // (`docs/qwen35moe/40-MTP-GRAMMAR.md` §2).
+        let gate = constraint.map {
+            ConstraintGate(constraint: $0, endOfGenerationTokenIDs: stopTokens)
+        }
+        var stats = QwenSpeculativeStats()
+        let startedAt = DispatchTime.now()
+        let firstToken = try prefill(tokens: promptTokens, chunkWidth: chunkWidth)
+        // The prompt's last row, already through `model.norm` — the head chain
+        // left it in `normalizedHidden` and nothing has run since.
+        memcpy(normed.contents(), head.normalizedHidden.contents(), rowBytes)
+        let prefillSeconds = Self.seconds(since: startedAt)
+        onPrefill?(promptTokens.count, prefillSeconds)
+
+        let decodeStart = DispatchTime.now()
+        var produced: [Int32] = []
+        var reason: StopReason = .maxTokens
+        var timeToFirstToken: Double = 0
+
+        /// The token that has been emitted but not yet fed to the body.
+        ///
+        /// The prompt's last row is still in `head.normalizedHidden` here — the
+        /// `memcpy` above copied it, it did not move it — so a refusal on the
+        /// first token rescores the default row, exactly as `runCompletion`
+        /// does.
+        var pending = sampling == nil
+            ? try constrained(firstToken, gate: gate, position: 0)
+            : try sampledDraw(row: .target, position: 0, gate: gate).token
+        /// The body position whose hidden sits in row `hiddenRow` of `normed`.
+        var lastPosition = kv.position - 1
+        var hiddenRow = 0
+        /// Positions the head still owes its cache a `(k, v)` for, oldest first.
+        var catchUp: [QwenMTPDrafter.Row] = []
+
+        func emit(_ token: Int32) throws -> Bool {
+            produced.append(token)
+            stats.tokens += 1
+            if produced.count == 1 { timeToFirstToken = Self.seconds(since: startedAt) }
+            // Before the callback, as in `runCompletion`: the state this
+            // token leaves the constraint in is what the caller's own decoder
+            // reads (GEN-6) and what the next draw is judged by.
+            try gate?.accept(token)
+            try onToken?(produced.count - 1, token)
+            if stopTokens.contains(token) { reason = .endOfTurn; return false }
+            if shouldStop() { reason = .stopString; return false }
+            if produced.count >= maxNewTokens { return false }
+            return true
+        }
+
+        var running = try emit(pending)
+        while running {
+            try Task.checkCancellation()
+
+            // --- 1. draft ----------------------------------------------------
+            let draftStart = DispatchTime.now()
+            var draft: Int32 = 0
+            /// The distribution the draft was drawn from. Empty under greedy,
+            /// where the accept rule is equality and no `q` exists.
+            var q = QwenCategorical(ids: [], weights: [])
+            if !Self.noDraft {
+                let rows = catchUp + [QwenMTPDrafter.Row(
+                    hiddenOffset: hiddenRow * rowBytes,
+                    token: pending,
+                    position: lastPosition)]
+                let gpuBefore = drafter.gpuSeconds
+                let draftLogits = sampledLogits.map {
+                    (buffer: $0, offset: samplingLogitsOffset(.draft))
+                }
+                draft = try stage(.draft) {
+                    try drafter.draft(baseNormed: normed, rows: rows, logits: draftLogits)
+                }
+                noteStageGPU(.draft, drafter.gpuSeconds - gpuBefore)
+                if let sampler, let sampledLogits, let config = sampling {
+                    try runSync("draft softmax") { cb in
+                        sampler.encodeProbabilities(
+                            commandBuffer: cb,
+                            logits: sampledLogits,
+                            logitsOffset: self.samplingLogitsOffset(.draft),
+                            rows: 1,
+                            destinationRow: SamplingRow.draft.rawValue)
+                    }
+                    // The mask, when there is one, is filled here and reused by
+                    // `p` below: the gate accepts nothing between the two.
+                    q = try sampler.categorical(row: SamplingRow.draft.rawValue,
+                                                config: config, gate: gate,
+                                                position: produced.count)
+                    guard !q.isEmpty else {
+                        throw GenerationConstraintError.noAllowedToken(position: produced.count)
+                    }
+                    draft = q.draw(u: QwenSampler.uniform(config: config,
+                                                          position: produced.count,
+                                                          stream: SamplingStream.draft.rawValue))
+                }
+            }
+            // The control feeds the body a token the head did not pick, so row
+            // 1 is certain to be rejected. Any token that is not row 0's argmax
+            // would do; the body still has to run it, so it has to be a real id.
+            if Self.forceReject { draft = draft == 0 ? 1 : 0 }
+            catchUp.removeAll(keepingCapacity: true)
+            stats.draftSeconds += Self.seconds(since: draftStart)
+
+            // --- 2. verify ---------------------------------------------------
+            let verifyStart = DispatchTime.now()
+            let start = kv.position
+            let savedPath = prefillRoutedPath
+            prefillRoutedPath = Self.verifyRoutedPath
+            compactChunkCommandBuffers = !Self.wideCommandBuffers
+            chunkRowsAttention = Self.rowsAttention
+            // The cross-layer read-ahead, for the verify pass only: the prompt
+            // reads one tile ahead inside a layer already, and a verify pass
+            // has exactly one tile a layer (`39-RESIDENCY-COMMIT.md`).
+            chunkExpertPrefetch = true
+            // Row 1 is the guess: its recurrent state goes to the shadow so
+            // that rejecting it is doing nothing at all.
+            // Width 1 needs no shadow: there is no speculative row to discard.
+            speculativeLastRow = !Self.noDraft
+            try runChunkLayers(Self.noDraft ? [pending] : [pending, draft],
+                               scratch: verify)
+            speculativeLastRow = false
+            compactChunkCommandBuffers = false
+            chunkRowsAttention = false
+            chunkExpertPrefetch = false
+            prefillRoutedPath = savedPath
+            let lm = try model.qwenLMHead
+            let finalNorm = model.finalNorm
+            try stage(.head) {
+            try runSync("mtp verify head") { cb in
+                verify.rms.encodeBF16W(commandBuffer: cb,
+                                       x: verify.hidden,
+                                       weight: finalNorm.buffer,
+                                       weightOffset: Int(finalNorm.offset),
+                                       out: normed,
+                                       t: Self.noDraft ? 1 : 2,
+                                       d: UInt32(D), eps: self.rmsEps)
+                let rows = Self.noDraft ? 1 : 2
+                if let sampledLogits {
+                    self.head.encodeLogitsDecodeRows(
+                        commandBuffer: cb,
+                        hiddenNormed: normed,
+                        weights: lm.buffer, weightsOffset: Int(lm.offset),
+                        scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
+                        biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
+                        outTokens: rowTokens,
+                        logits: sampledLogits,
+                        logitsOffset: self.samplingLogitsOffset(.target),
+                        rows: rows,
+                        d: UInt32(D),
+                        vocab: UInt32(self.scoredVocab))
+                    sampler?.encodeProbabilities(
+                        commandBuffer: cb,
+                        logits: sampledLogits,
+                        logitsOffset: self.samplingLogitsOffset(.target),
+                        rows: rows)
+                } else {
+                    self.head.encodeGreedyDecodeRows(
+                        commandBuffer: cb,
+                        hiddenNormed: normed,
+                        weights: lm.buffer, weightsOffset: Int(lm.offset),
+                        scales: lm.buffer, scalesOffset: Int(lm.scaleOffset),
+                        biases: lm.buffer, biasesOffset: Int(lm.biasOffset),
+                        outTokens: rowTokens,
+                        rows: rows,
+                        d: UInt32(D),
+                        vocab: UInt32(self.scoredVocab))
+                }
+            }
+            }
+            let ids = rowTokens.contents().bindMemory(to: UInt32.self, capacity: 2)
+            let row0Draw = Int32(bitPattern: ids[0])
+            let row1Draw = Int32(bitPattern: ids[1])
+            stats.passes += 1
+            // The verify clock stops here. A rescore below is a second read of
+            // the 508 MB table and belongs to the token it redraws, not to the
+            // pass — the same split `runCompletion` makes between the
+            // prompt's last head pass and the constraint that follows it.
+            stats.verifySeconds += Self.seconds(since: verifyStart)
+
+            // --- 3. GEN-7, then accept or roll back ---------------------------
+            // Row 0 first, and row 1 only after row 0 has been emitted: the
+            // constraint is a sequential machine, and asking it about a
+            // position whose predecessor it has not accepted would be asking a
+            // different question than the per-token loop asks.
+            // Two accept rules, one loop.
+            //
+            // **Greedy** (`sampling` nil): `draft == y0`, compared against the
+            // **constrained** draw, which is the token actually emitted. A
+            // guess that matched it is a guess the body ran with the right
+            // input, whether or not the mask moved the draw
+            // (`docs/qwen35moe/40-MTP-GRAMMAR.md` §2-2).
+            //
+            // **Sampled**: `u <= p(d)/q(d)`, and on a rejection the token comes
+            // from the normalized residual `(p - q)+` rather than from `p`
+            // itself (`42-SAMPLING.md` §2-2). Emitting `argmax p` here — or
+            // even a fresh draw from `p` — would bias the output: the draft
+            // already consumed part of the mass, and the residual is exactly
+            // what is left of it. The check that this holds is
+            // `QwenSamplerCheck.swift`'s 200,000-draw case, whose negative
+            // control is the greedy rule used under sampling (total variation
+            // 0.5 from `p`).
+            let y0: Int32
+            var acceptedDraft = false
+            if let config = sampling, let sampler {
+                // The mask `q` filled is still the right one: the gate has
+                // accepted nothing since (§2-3).
+                let p = try sampler.categorical(row: SamplingRow.target.rawValue,
+                                                config: config, gate: gate,
+                                                reuseMask: gate != nil,
+                                                position: produced.count)
+                guard !p.isEmpty else {
+                    throw GenerationConstraintError.noAllowedToken(position: produced.count)
+                }
+                func targetDraw() -> Int32 {
+                    p.draw(u: QwenSampler.uniform(config: config,
+                                                  position: produced.count,
+                                                  stream: SamplingStream.target.rawValue))
+                }
+                if Self.noDraft || Self.forceReject {
+                    // Both controls emit from `p` on the **target** stream, so
+                    // their token stream is the non-speculative loop's at the
+                    // same seed — which is what makes a difference against
+                    // either arm mean what `36-MTP-DECODE.md` says it means.
+                    y0 = targetDraw()
+                } else {
+                    let pd = p.probability(of: draft)
+                    let qd = q.probability(of: draft)
+                    let u = QwenSampler.uniform(config: config,
+                                                position: produced.count,
+                                                stream: SamplingStream.accept.rawValue)
+                    if qd > 0, u <= Swift.min(1, pd / qd) {
+                        acceptedDraft = true
+                        y0 = draft
+                    } else {
+                        let residual = p.residual(minus: q)
+                        // An empty residual means `p` is nowhere above `q`,
+                        // which makes rejection a probability-zero event; the
+                        // draw from `p` is a fallback that FP rounding might
+                        // reach and that stays inside the target's support.
+                        y0 = residual.isEmpty
+                            ? targetDraw()
+                            : residual.draw(u: QwenSampler.uniform(
+                                config: config,
+                                position: produced.count,
+                                stream: SamplingStream.residual.rawValue))
+                    }
+                }
+            } else {
+                y0 = try constrained(row0Draw, gate: gate,
+                                     position: produced.count,
+                                     hidden: (normed, 0))
+                acceptedDraft = !Self.noDraft && draft == y0
+            }
+            if acceptedDraft {
+                stats.accepted += 1
+                // Both rows stand. The skipped position still owes the head a
+                // `(k, v)`; it is the row that consumed `pending`.
+                // Row 1's recurrent state was written to the shadow; taking it
+                // is two pointer swaps.
+                state.adoptShadow()
+                catchUp.append(QwenMTPDrafter.Row(hiddenOffset: 0,
+                                                  token: y0,
+                                                  position: start))
+                lastPosition = start + 1
+                hiddenRow = 1
+                pending = row1Draw
+                running = try emit(y0)
+                if running {
+                    // Row 1's distribution is conditioned on the token just
+                    // emitted, so its mask is a fresh one — the gate accepted
+                    // `y0` inside `emit`.
+                    let y1: Int32
+                    if let config = sampling, let sampler {
+                        let pNext = try sampler.categorical(
+                            row: SamplingRow.speculative.rawValue,
+                            config: config, gate: gate,
+                            position: produced.count)
+                        guard !pNext.isEmpty else {
+                            throw GenerationConstraintError.noAllowedToken(
+                                position: produced.count)
+                        }
+                        y1 = pNext.draw(u: QwenSampler.uniform(
+                            config: config,
+                            position: produced.count,
+                            stream: SamplingStream.target.rawValue))
+                    } else {
+                        y1 = try constrained(row1Draw, gate: gate,
+                                             position: produced.count,
+                                             hidden: (normed, rowBytes))
+                    }
+                    pending = y1
+                    running = try emit(y1)
+                }
+            } else {
+                // Nothing to undo on the recurrent side: row 1's state went to
+                // the shadow and the state itself still holds row 0's. The
+                // attention layers only need their cursor moved back.
+                if !Self.noDraft { kv.rewind(to: start + 1) }
+                lastPosition = start
+                hiddenRow = 0
+                pending = y0
+                running = try emit(y0)
+            }
+        }
+
+        let dp = drafter.profile
+        stats.draftGPUSeconds = dp.totalGPU
+        stats.draftCatchUpSeconds = dp.catchUpWall
+        stats.draftPreRouterSeconds = dp.preRouterWall
+        stats.draftTailSeconds = dp.tailWall
+        stats.draftCatchUpGPUSeconds = dp.catchUpGPU
+        stats.draftPreRouterGPUSeconds = dp.preRouterGPU
+        stats.draftTailGPUSeconds = dp.tailGPU
+        stats.draftRows = dp.rows
+        stats.draftCatchUpRows = dp.catchUpRows
+        stats.draftBuffers = drafter.commandBuffers
+        onStats?(stats)
+        return QwenGreedyRun(tokens: produced,
+                             promptTokens: promptTokens.count,
+                             cachedPromptTokens: cachedPromptTokens,
+                             prefillSeconds: prefillSeconds,
+                             decodeSeconds: Self.seconds(since: decodeStart),
+                             timeToFirstTokenSeconds: timeToFirstToken,
+                             reason: reason,
+                             kvPosition: kv.position)
+    }
+
+    /// The two buffers the verify pass and the drafter share. Allocated on
+    /// first use, so a non-speculative run never has them.
+    private func verifyBuffers() throws -> (MTLBuffer, MTLBuffer) {
+        let rows = QwenLMHeadChainInt8.maxHiddenRows
+        if verifyNormedBuffer == nil {
+            guard let normed = ctx.device.makeBuffer(
+                      length: rows * hiddenSize * MemoryLayout<Float16>.size,
+                      options: .storageModeShared),
+                  let tokens = ctx.device.makeBuffer(
+                      length: rows * MemoryLayout<UInt32>.size,
+                      options: .storageModeShared) else {
+                throw MetalError.noDevice
+            }
+            normed.label = "qwen.verifyNormed"
+            tokens.label = "qwen.verifyTokens"
+            verifyNormedBuffer = normed
+            verifyTokensBuffer = tokens
+        }
+        return (verifyNormedBuffer!, verifyTokensBuffer!)
+    }
+
+    private static func seconds(since start: DispatchTime) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds &- start.uptimeNanoseconds) / 1e9
+    }
+}

@@ -11,6 +11,8 @@ import Metal
 
     private func makeManager(maxContext: Int,
                              fp16RingEnabled: Bool = false,
+                             maxPrefillChunkTokens: Int = 128,
+                             maxSpeculativeBlockTokens: Int = 0,
                              fp16RingCapacityOverride: Int? = nil) throws -> (MetalContext, KVCacheManager) {
         let ctx = try MetalContext()
         let kv = try KVCacheManager(device: ctx.device,
@@ -18,7 +20,8 @@ import Metal
                                     maxContext: maxContext,
                                     fp16RingEnabled: fp16RingEnabled,
                                     slidingWindow: config.slidingWindow,
-                                    maxPrefillChunkTokens: 128,
+                                    maxPrefillChunkTokens: maxPrefillChunkTokens,
+                                    maxSpeculativeBlockTokens: maxSpeculativeBlockTokens,
                                     fp16RingCapacityOverride: fp16RingCapacityOverride)
         return (ctx, kv)
     }
@@ -85,6 +88,23 @@ import Metal
         #expect(kv.keyBuffer(layer: 5, validTokenCount: 0).length == 4096 * 2048)
     }
 
+    /// A wide prefill chunk has to fit inside the ring alongside the sliding
+    /// window, so the ring grows with it — 2048-token chunks cost 3072 rows per
+    /// SWA layer instead of 1152, which is the memory the chunk width buys its
+    /// expert-I/O savings with.
+    @Test func fp16Ring_widensWithThePrefillChunk() throws {
+        let (_, kv) = try makeManager(maxContext: 4096,
+                                      fp16RingEnabled: true,
+                                      maxPrefillChunkTokens: 2048)
+
+        #expect(kv.capacity(layer: 0) == 3072)
+        #expect(kv.ringCapacity(layer: 0) == 3072)
+        #expect(kv.keyBuffer(layer: 0, validTokenCount: 0).length == 3072 * 4096)
+        // Full-attention layers are linear either way: the chunk width does not
+        // touch them.
+        #expect(kv.capacity(layer: 5) == 4096)
+    }
+
     @Test func fp16Ring_shortSessionCapsSWAToMaxContext() throws {
         let (_, kv) = try makeManager(maxContext: 256,
                                       fp16RingEnabled: true)
@@ -147,6 +167,63 @@ import Metal
         #expect(kv.position == 31)
         kv.advance()
         #expect(kv.position == 32)
+    }
+
+    /// The speculative-block headroom check is a precondition on the ring, not
+    /// a request for more of it: the block writes into rows the prefill chunk
+    /// already paid for. The narrowest chunk width the front ends accept (32)
+    /// still clears the widest block (8).
+    @Test func speculativeBlockHeadroom_doesNotChangeCapacity() throws {
+        let (_, plain) = try makeManager(maxContext: 4096,
+                                         fp16RingEnabled: true,
+                                         maxPrefillChunkTokens: 32)
+        let (_, speculative) = try makeManager(maxContext: 4096,
+                                               fp16RingEnabled: true,
+                                               maxPrefillChunkTokens: 32,
+                                               maxSpeculativeBlockTokens: 8)
+        #expect(plain.capacity(layer: 0) == 1056)
+        #expect(speculative.capacity(layer: 0) == plain.capacity(layer: 0))
+        #expect(speculative.capacity(layer: 0) >= config.slidingWindow + 8)
+    }
+
+    /// The speculative rewind (`docs/mtp/03-DESIGN.md` D4). Only the cursor
+    /// moves; a row rewritten afterwards has to land on the same physical slot
+    /// the discarded one used, which is what makes "write k, keep a" safe.
+    @Test func rewind_movesOnlyTheCursor() throws {
+        let (_, kv) = try makeManager(maxContext: 128)
+        kv.advance(by: 40)
+        let slotBefore = kv.kSlot(layer: 0, position: 37)
+
+        kv.rewind(to: 37)
+        #expect(kv.position == 37)
+        #expect(kv.kSlot(layer: 0, position: 37).offset == slotBefore.offset)
+        #expect(kv.kSlot(layer: 0, position: 37).buffer === slotBefore.buffer)
+
+        kv.advance(by: 3)
+        #expect(kv.position == 40)
+    }
+
+    @Test func rewind_toSameOrZeroIsAllowed() throws {
+        let (_, kv) = try makeManager(maxContext: 128)
+        kv.advance(by: 12)
+        kv.rewind(to: 12)
+        #expect(kv.position == 12)
+        kv.rewind(to: 0)
+        #expect(kv.position == 0)
+    }
+
+    /// Rewinding across a ring wrap has to keep the slot map intact too: the
+    /// map is `position % capacity` with no state of its own, so the rewritten
+    /// row reuses the wrapped slot rather than a fresh one.
+    @Test func rewind_survivesARingWrap() throws {
+        let (_, kv) = try makeManager(maxContext: 128,
+                                      fp16RingEnabled: true,
+                                      fp16RingCapacityOverride: 32)
+        kv.advance(by: 36)
+        #expect(kv.kSlot(layer: 0, position: 35).offset == 3 * 4096)
+        kv.rewind(to: 34)
+        #expect(kv.position == 34)
+        #expect(kv.kSlot(layer: 0, position: 35).offset == 3 * 4096)
     }
 
     @Test func reset_clearsPosition() throws {

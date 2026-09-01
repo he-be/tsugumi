@@ -1,0 +1,111 @@
+=== P-1: does Metal wire a `bytesNoCopy` buffer, or the mapping it came from? ===
+47 §6/§7. Kernels, shape and group size are 43/44's; the bytes are the
+shipped checkpoint's. Inference path untouched.
+
+  model               scratch/gemma4-qat-sym.gturbo
+  layer file          layer_00.bin 429916160 B = 26240 pages
+  hw.pagesize         16384
+  expertStride        3358720 B = 205 pages, remainder 0
+  experts / layer     128
+  step footprint      8 experts = 26.87 MB
+  PASS threshold      wired delta at commit ~= 27 MB, FAIL ~= 430 MB
+  experts used        ranks 0,16,32,48,64,80,96,112
+
+  system wired noise over 1 s of idle: 6 pages (0.1 MB)
+
+--- MAP_PRIVATE/r -----------------------------------------------
+  per-expert (128 buffers)
+    buffers           created 128, named by the command buffer 8
+    COLD pass         faulted 1640 / 1640 / 1640 / 1640 / 1640 pg of 26240   (8 experts = 1640 pg, whole layer = 26240 pg)
+                      = 26.9 MB / 26.9 MB / 26.9 MB / 26.9 MB / 26.9 MB   from a baseline of 0/0/0/0/0 pg resident
+                      wall 17.7 ms / 15.6 ms / 16.3 ms / 15.8 ms / 15.7 ms
+    in-flight wired   peak over base, 5 trials: +111 / +0 / +0 / +0 / +0 pg   (max      1.8 MB)
+    in-flight region  resident +0 / +0 / +0 / +0 / +0 pg   user_wired 0 / 0 / 0 / 0 / 0   samples 345/334/351/311/312
+    materialised      anonymous 1640 / 1640 / 1640 / 1640 / 1640 pg   dirty 1640 / 1640 / 1640 / 1640 / 1640 pg   of 26240
+                      = 26.9 MB / 26.9 MB / 26.9 MB / 26.9 MB / 26.9 MB turned anonymous (private, not droppable)
+    regions/share     1/1/1/1/1, share_mode [1]
+    per-pass wall     0.250 ms / 0.245 ms / 0.244 ms / 0.250 ms / 0.250 ms   (110.3 GB/s over 8 experts)
+  per-layer (1 buffer)
+    buffers           created 1, named by the command buffer 1
+    COLD pass         faulted 26240 / 26240 / 26240 / 26240 / 26240 pg of 26240   (8 experts = 1640 pg, whole layer = 26240 pg)
+                      = 429.9 MB / 429.9 MB / 429.9 MB / 429.9 MB / 429.9 MB   from a baseline of 0/0/0/0/0 pg resident
+                      wall 209.3 ms / 212.5 ms / 211.5 ms / 220.2 ms / 212.8 ms
+    in-flight wired   peak over base, 5 trials: +0 / +0 / +0 / +0 / +0 pg   (max      0.0 MB)
+    in-flight region  resident +0 / +0 / +0 / +0 / +0 pg   user_wired 0 / 0 / 0 / 0 / 0   samples 996/955/1013/987/980
+    materialised      anonymous 26240 / 26240 / 26240 / 26240 / 26240 pg   dirty 26240 / 26240 / 26240 / 26240 / 26240 pg   of 26240
+                      = 429.9 MB / 429.9 MB / 429.9 MB / 429.9 MB / 429.9 MB turned anonymous (private, not droppable)
+    regions/share     1/1/1/1/1, share_mode [5]
+    per-pass wall     0.252 ms / 0.250 ms / 0.253 ms / 0.250 ms / 0.252 ms   (107.6 GB/s over 8 experts)
+
+--- MAP_PRIVATE/rw ----------------------------------------------
+  per-expert (128 buffers)
+    buffers           created 128, named by the command buffer 8
+    COLD pass         faulted 1640 / 1640 / 1640 / 1640 / 1640 pg of 26240   (8 experts = 1640 pg, whole layer = 26240 pg)
+                      = 26.9 MB / 26.9 MB / 26.9 MB / 26.9 MB / 26.9 MB   from a baseline of 0/0/0/0/0 pg resident
+                      wall 19.1 ms / 15.2 ms / 16.4 ms / 16.0 ms / 16.1 ms
+    in-flight wired   peak over base, 5 trials: +0 / +0 / +0 / +0 / +4667 pg   (max     76.5 MB)
+    in-flight region  resident +0 / +0 / +0 / +0 / +0 pg   user_wired 0 / 0 / 0 / 0 / 0   samples 325/338/322/331/336
+    materialised      anonymous 1640 / 1640 / 1640 / 1640 / 1640 pg   dirty 1640 / 1640 / 1640 / 1640 / 1640 pg   of 26240
+                      = 26.9 MB / 26.9 MB / 26.9 MB / 26.9 MB / 26.9 MB turned anonymous (private, not droppable)
+    regions/share     1/1/1/1/1, share_mode [1]
+    per-pass wall     0.247 ms / 0.246 ms / 0.248 ms / 0.249 ms / 0.249 ms   (109.0 GB/s over 8 experts)
+  per-layer (1 buffer)
+    buffers           created 1, named by the command buffer 1
+    COLD pass         faulted 26240 / 26240 / 26240 / 26240 / 26240 pg of 26240   (8 experts = 1640 pg, whole layer = 26240 pg)
+                      = 429.9 MB / 429.9 MB / 429.9 MB / 429.9 MB / 429.9 MB   from a baseline of 0/0/0/0/0 pg resident
+                      wall 212.2 ms / 214.3 ms / 212.9 ms / 211.2 ms / 211.8 ms
+    in-flight wired   peak over base, 5 trials: +0 / +20072 / +0 / +0 / +0 pg   (max    328.9 MB)
+    in-flight region  resident +0 / +0 / +0 / +0 / +0 pg   user_wired 0 / 0 / 0 / 0 / 0   samples 1015/965/972/1000/994
+    materialised      anonymous 26240 / 26240 / 26240 / 26240 / 26240 pg   dirty 26240 / 26240 / 26240 / 26240 / 26240 pg   of 26240
+                      = 429.9 MB / 429.9 MB / 429.9 MB / 429.9 MB / 429.9 MB turned anonymous (private, not droppable)
+    regions/share     1/1/1/1/1, share_mode [5]
+    per-pass wall     0.257 ms / 0.251 ms / 0.251 ms / 0.254 ms / 0.252 ms   (107.1 GB/s over 8 experts)
+
+--- MAP_SHARED/r ------------------------------------------------
+  per-expert (128 buffers)
+    buffers           created 128, named by the command buffer 8
+    COLD pass         faulted 1640 / 1640 / 1640 / 1640 / 1640 pg of 26240   (8 experts = 1640 pg, whole layer = 26240 pg)
+                      = 26.9 MB / 26.9 MB / 26.9 MB / 26.9 MB / 26.9 MB   from a baseline of 0/0/0/0/0 pg resident
+                      wall 19.3 ms / 12.4 ms / 13.1 ms / 13.4 ms / 13.0 ms
+    in-flight wired   peak over base, 5 trials: +0 / +0 / +0 / +0 / +4660 pg   (max     76.3 MB)
+    in-flight region  resident +0 / +0 / +0 / +0 / +0 pg   user_wired 0 / 0 / 0 / 0 / 0   samples 1570/1565/1571/1570/1575
+    materialised      anonymous 0 / 0 / 0 / 0 / 0 pg   dirty 0 / 0 / 0 / 0 / 0 pg   of 26240
+                      = 0.0 MB / 0.0 MB / 0.0 MB / 0.0 MB / 0.0 MB turned anonymous (private, not droppable)
+    regions/share     1/1/1/1/1, share_mode [5]
+    per-pass wall     0.242 ms / 0.241 ms / 0.242 ms / 0.242 ms / 0.242 ms   (111.3 GB/s over 8 experts)
+  per-layer (1 buffer)
+    buffers           created 1, named by the command buffer 1
+    COLD pass         faulted 26240 / 26240 / 26240 / 26240 / 26240 pg of 26240   (8 experts = 1640 pg, whole layer = 26240 pg)
+                      = 429.9 MB / 429.9 MB / 429.9 MB / 429.9 MB / 429.9 MB   from a baseline of 0/0/0/0/0 pg resident
+                      wall 163.2 ms / 165.1 ms / 163.0 ms / 163.7 ms / 163.0 ms
+    in-flight wired   peak over base, 5 trials: +0 / +0 / +0 / +0 / +0 pg   (max      0.0 MB)
+    in-flight region  resident +0 / +0 / +0 / +0 / +0 pg   user_wired 0 / 0 / 0 / 0 / 0   samples 917/956/916/935/923
+    materialised      anonymous 0 / 0 / 0 / 0 / 0 pg   dirty 0 / 0 / 0 / 0 / 0 pg   of 26240
+                      = 0.0 MB / 0.0 MB / 0.0 MB / 0.0 MB / 0.0 MB turned anonymous (private, not droppable)
+    regions/share     1/1/1/1/1, share_mode [5]
+    per-pass wall     0.250 ms / 0.261 ms / 0.248 ms / 0.254 ms / 0.250 ms   (108.2 GB/s over 8 experts)
+
+--- pread into private slots (today's path) ------------------
+    COLD fetch        5.4 ms / 4.9 ms / 5.0 ms / 5.0 ms / 5.1 ms   = 4.99 GB/s / 5.51 GB/s / 5.34 GB/s / 5.40 GB/s / 5.26 GB/s
+    WARM fetch        1.05 ms / 1.21 ms / 1.02 ms / 1.03 ms / 1.17 ms   = 25.56 GB/s / 22.12 GB/s / 26.37 GB/s / 26.14 GB/s / 22.99 GB/s
+    per expert        cold 0.610 ms, warm 0.127 ms
+    private bytes     26.9 MB of slots, held for the whole run
+
+--- P-4: F_RDADVISE ahead of the mmap path (MAP_SHARED, per-expert) 
+  issue+run
+    total             5.2 ms / 6.5 ms / 7.1 ms / 7.1 ms / 7.4 ms   = 5.19 GB/s / 4.11 GB/s / 3.81 GB/s / 3.80 GB/s / 3.64 GB/s
+    of which run      4.6 ms / 5.9 ms / 6.3 ms / 6.3 ms / 6.4 ms
+    resident after    1640 / 1640 / 1640 / 1640 / 1640 pg (asked for 1640)
+  advise, wait for residency, then run
+    total             6.9 ms / 7.2 ms / 7.2 ms / 7.2 ms / 7.1 ms   = 3.89 GB/s / 3.74 GB/s / 3.71 GB/s / 3.74 GB/s / 3.80 GB/s
+    of which wait     2.5 ms / 2.2 ms / 2.5 ms / 3.2 ms / 2.4 ms
+    of which run      4.4 ms / 5.0 ms / 4.7 ms / 4.0 ms / 4.7 ms
+    resident after    1640 / 1640 / 1640 / 1640 / 1640 pg (asked for 1640)
+
+--- the gate: cold cost of 8 experts, ABBA interleaved ------
+    pread, parallel, into private slots  n=10  median 5.55 ms (4.84 GB/s)  min 4.91  max 5.82
+        5.65 5.82 5.04 5.60 4.91 5.56 5.01 5.54 4.98 5.58
+    mmap + F_RDADVISE, bytesNoCopy       n=10  median 6.52 ms (4.12 GB/s)  min 5.80  max 7.47
+        6.12 7.47 5.80 6.93 5.86 7.10 6.34 6.70 6.13 6.79
+    ratio mmap/pread = 1.17x   (47 §7 P-3/P-4 gate: within 1.20x)  => PASS
+

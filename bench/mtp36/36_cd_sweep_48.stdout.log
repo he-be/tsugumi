@@ -1,0 +1,3 @@
+# mtp_cd_sweep: 15 runs planned (tasks=['prose', 'math', 'image'], bs=[0, 2, 3, 4], COOL_S=20s)
+[1/15] task=prose bs=0 slot=head_base FAIL "error: expert cache configuration exceeds this device's recommended Metal working set — resident 1.51 GB + vision 1.15 GB + experts 5.36 GB (48 slots) + kv 0.71 GB + prefill scratch 0.29 GB = 9.02 GB;"
+# cooldown 20s

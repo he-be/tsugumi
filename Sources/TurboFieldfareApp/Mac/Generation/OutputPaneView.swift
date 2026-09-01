@@ -6,6 +6,7 @@ import SwiftUI
 struct OutputPaneView: View {
     let model: AppModel
     @State private var responseCopyFeedbackID: UUID?
+    @State private var reasoningExpanded = false
 
     var body: some View {
         Group {
@@ -58,23 +59,106 @@ struct OutputPaneView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    /// Completed turns paired for display. `conversationTurns` is appended in
+    /// user/assistant pairs by the fold, but the pairing loop tolerates a
+    /// stray order rather than trapping on it.
+    private var completedTurns: [InstructionTranscriptDocumentController.CompletedTurn] {
+        var turns: [InstructionTranscriptDocumentController.CompletedTurn] = []
+        var pendingPrompt: String?
+        for turn in model.conversationTurns {
+            switch turn.role {
+            case .user:
+                pendingPrompt = turn.text
+            case .assistant:
+                turns.append(InstructionTranscriptDocumentController.CompletedTurn(
+                    prompt: pendingPrompt ?? "", response: turn.text))
+                pendingPrompt = nil
+            }
+        }
+        if let pendingPrompt {
+            turns.append(InstructionTranscriptDocumentController.CompletedTurn(
+                prompt: pendingPrompt, response: ""))
+        }
+        return turns
+    }
+
     private var transcript: some View {
-        IncrementalTranscriptView(
-            prompt: model.outputPromptText,
-            output: model.outputText,
-            mailbox: model.generationTranscriptMailbox,
-            isTerminal: !model.isRunning,
-            showsPrefillPlaceholder: model.isRunning
-                && model.outputResponsePlainText.isEmpty)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .overlay(alignment: .topTrailing) {
-                if !model.isRunning && !model.outputResponsePlainText.isEmpty {
-                    copyResponseButton
-                        .padding(8)
+        VStack(alignment: .leading, spacing: 8) {
+            if !model.outputReasoningText.isEmpty {
+                reasoningSection
+            }
+            IncrementalTranscriptView(
+                history: completedTurns,
+                prompt: model.outputPromptText,
+                output: model.outputText,
+                mailbox: model.selectedChatTranscriptMailbox,
+                isTerminal: !model.isSelectedChatGenerating,
+                showsPrefillPlaceholder: model.isSelectedChatGenerating
+                    && model.outputResponsePlainText.isEmpty
+                    && model.outputReasoningText.isEmpty)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .overlay(alignment: .topTrailing) {
+                    if !model.isSelectedChatGenerating && !model.outputResponsePlainText.isEmpty {
+                        copyResponseButton
+                            .padding(8)
+                    }
+                }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 20)
+    }
+
+    /// The thought channel, kept apart from the answer. While the model is
+    /// still thinking (no answer text yet) the tail streams live; once the
+    /// answer starts it collapses to a disclosure.
+    private var reasoningSection: some View {
+        let isThinkingLive = model.isSelectedChatGenerating
+            && model.outputResponsePlainText.isEmpty
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                reasoningExpanded.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "brain")
+                        .font(.caption)
+                    Text(isThinkingLive ? "Thinking…" : "Thought process")
+                        .font(.caption.weight(.medium))
+                    Image(systemName: reasoningExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if reasoningExpanded || isThinkingLive {
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        // Live: only the tail, so per-token layout cost stays
+                        // bounded however long the model thinks.
+                        Text(isThinkingLive
+                             ? ReasoningLivePresentation.liveTail(
+                                of: model.outputReasoningText)
+                             : model.outputReasoningText)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Color.clear.frame(height: 1).id("reasoning-tail")
+                    }
+                    .frame(maxHeight: isThinkingLive ? 160 : 280)
+                    .onChange(of: model.outputReasoningText) {
+                        guard isThinkingLive else { return }
+                        proxy.scrollTo("reasoning-tail", anchor: .bottom)
+                    }
+                }
+                .padding(10)
+                .background {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.6))
                 }
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 20)
+        }
     }
 
     private var copyResponseButton: some View {
@@ -256,6 +340,7 @@ private struct LoadingModelText: View {
 }
 
 private struct IncrementalTranscriptView: NSViewRepresentable {
+    var history: [InstructionTranscriptDocumentController.CompletedTurn] = []
     var prompt: String
     var output: String
     var mailbox: GenerationTranscriptMailbox?
@@ -267,6 +352,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         weak var scrollView: NSScrollView?
         weak var textView: NSTextView?
         var mailbox: GenerationTranscriptMailbox?
+        var history: [InstructionTranscriptDocumentController.CompletedTurn] = []
         var prompt = ""
         var isTerminal = false
         var showsPrefillPlaceholder = false
@@ -287,6 +373,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         }
 
         func synchronize(
+            history: [InstructionTranscriptDocumentController.CompletedTurn],
             prompt: String,
             output: String,
             mailbox: GenerationTranscriptMailbox?,
@@ -294,6 +381,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             showsPrefillPlaceholder: Bool
         ) {
             self.mailbox = mailbox
+            self.history = history
             self.prompt = prompt
             self.isTerminal = isTerminal
             self.showsPrefillPlaceholder = showsPrefillPlaceholder
@@ -384,6 +472,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
             storage.beginEditing()
             let update = documentController.synchronize(
                 storage: storage,
+                history: history,
                 prompt: prompt,
                 response: response,
                 isTerminal: isTerminal,
@@ -448,6 +537,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         context.coordinator.attach(scrollView: scrollView, textView: textView)
         context.coordinator.synchronize(
+            history: history,
             prompt: prompt,
             output: output,
             mailbox: mailbox,
