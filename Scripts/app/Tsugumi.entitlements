@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Developer ID + hardened runtime で署名するときの entitlements。
+  ad-hoc 署名では使わない (make_app.sh は識別名を渡したときだけ付ける)。
+
+  App Sandbox は入れていない。アプリは launchd に plist を渡して decode service
+  を起こし、~/Library/Application Support/Tsugumi にモデルとチャットを直接書く。
+  どちらもサンドボックスの中では通らないので、Mac App Store ではなく
+  Developer ID + zip/DMG が現実的な配布経路になる。
+
+  下の 2 つは Metal のシェーダを実行時に compile するために置いてある。
+  MetalContext は .metal のソースから makeLibrary(source:) でライブラリを作る。
+  実機で外して確かめること — 外しても通るなら外す。
+-->
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+</dict>
+</plist>

@@ -122,6 +122,18 @@ Metal をこのプロセスに持たせる)。初回は Swift Package Manager �
 (15.7 GB) がそのまま降ってくる。全ファイルが SHA-256 のピンと照合され、
 一致したものだけがインストール先に入る。あとは **Load Model** を選んで打ち始める。
 
+### .app にする
+
+チェックアウトの無い Mac に持っていくなら、バンドルを組む:
+
+```bash
+Scripts/app/make_app.sh --zip     # dist/Tsugumi.app と dist/Tsugumi-<版>.zip
+Scripts/app/verify_app.sh         # 構造・署名・リソース解決・launchd を見る
+```
+
+署名は既定で ad-hoc なので、受け取った側で隔離属性を外す必要がある。
+手順と、公証まわりの残作業は [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md)。
+
 ### 動作要件
 
 - Apple Silicon の Mac。狙いは普通の 16GB 機で、開発機は 18GB の M3 Pro

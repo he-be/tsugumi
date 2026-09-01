@@ -24,10 +24,17 @@ let package = Package(
             name: "MoEPackFormat",
             path: "Sources/MoEPackFormat"
         ),
+        // Finds SwiftPM resource bundles in the layout the shipped `.app`
+        // stores them in; shared by every target that carries resources.
+        .target(
+            name: "TsugumiBundleLocation",
+            path: "Sources/TsugumiBundleLocation"
+        ),
         .target(
             name: "Tsugumi",
             dependencies: [
                 "MoEPackFormat",
+                "TsugumiBundleLocation",
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "Hub", package: "swift-transformers"),
             ],
@@ -62,6 +69,7 @@ let package = Package(
             name: "TsugumiAppCore",
             dependencies: [
                 "Tsugumi",
+                "TsugumiBundleLocation",
                 "TsugumiRepackCore",
                 "TsugumiDecodeProtocol",
                 "TsugumiServerCore",
@@ -102,7 +110,8 @@ let package = Package(
         ),
         .executableTarget(
             name: "TsugumiMac",
-            dependencies: ["TsugumiAppCore", "TsugumiMacPresentation"],
+            dependencies: ["TsugumiAppCore", "TsugumiMacPresentation",
+                           "TsugumiBundleLocation"],
             path: "Sources/TsugumiApp/Mac",
             resources: [
                 .copy("Resources/tsugumi-app-icon.png"),

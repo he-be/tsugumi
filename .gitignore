@@ -38,6 +38,9 @@ Model/
 *.swp
 *~
 
+# 組み上げた .app と配布用の zip (Scripts/app/make_app.sh の出力)
+dist/
+
 # Logs / scratch
 *.log
 benchmark-results/

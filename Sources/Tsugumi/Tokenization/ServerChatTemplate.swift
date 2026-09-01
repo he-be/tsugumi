@@ -20,10 +20,10 @@ public enum ServerChatTemplate {
     private static let subdirectory = "Templates"
 
     private static let loaded: Result<String, GFTokenizerError> = {
-        guard let url = Bundle.module.url(forResource: resource,
-                                          withExtension: ext,
-                                          subdirectory: subdirectory)
-            ?? Bundle.module.url(forResource: resource, withExtension: ext) else {
+        guard let url = TsugumiResources.bundle.url(forResource: resource,
+                                                    withExtension: ext,
+                                                    subdirectory: subdirectory)
+            ?? TsugumiResources.bundle.url(forResource: resource, withExtension: ext) else {
             return .failure(.invalidChatTemplate(
                 "\(resource).\(ext) is missing from the package resources"))
         }

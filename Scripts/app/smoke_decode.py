@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Drive TsugumiDecodeService over its unix socket, like the Mac app does."""
 import json
+import os
+import pathlib
 import socket
 import struct
 import subprocess
@@ -8,8 +10,22 @@ import sys
 import time
 import uuid
 
-REPO = "/Users/mh/LLM/tsugumi"
-SERVICE = f"{REPO}/.build/release/TsugumiDecodeService"
+# 既定はこのチェックアウトの release ビルド。組み上げた .app の中の decode
+# service を叩くときは、その実行ファイルを環境変数で指す:
+#   TSUGUMI_DECODE_SERVICE=dist/Tsugumi.app/Contents/MacOS/TsugumiDecodeService
+# モデルは既定で scratch/ の中を見る (TSUGUMI_MODEL_DIR で差し替え)。名前は
+# .moepack を先に、無ければ改名前の .gturbo を使う。
+REPO = os.environ.get("TSUGUMI_REPO") or str(pathlib.Path(__file__).resolve().parents[2])
+SERVICE = os.environ.get("TSUGUMI_DECODE_SERVICE") or f"{REPO}/.build/release/TsugumiDecodeService"
+MODEL_DIR = os.environ.get("TSUGUMI_MODEL_DIR") or f"{REPO}/scratch"
+
+
+def installed_model(stem):
+    for extension in (".moepack", ".gturbo"):
+        candidate = f"{MODEL_DIR}/{stem}{extension}"
+        if os.path.exists(f"{candidate}/manifest.json"):
+            return candidate
+    return f"{MODEL_DIR}/{stem}.moepack"
 
 
 def send(sock, obj):
@@ -155,7 +171,7 @@ if __name__ == "__main__":
                              temperature=1.0, top_k=64, top_p=0.95,
                              thinking=False, images=[sys.argv[2]],
                              max_new=64))
-        session(f"{REPO}/scratch/gemma4-qat-sym.moepack", 8192, runs)
+        session(installed_model("gemma4-qat-sym"), 8192, runs)
     else:
         runs = [
             dict(label="ornith-think", prompt="1+1は?ひとことで。",
@@ -165,4 +181,4 @@ if __name__ == "__main__":
                  temperature=0.6, top_k=20, top_p=0.95, thinking=False,
                  max_new=64),
         ]
-        session(f"{REPO}/scratch/ornith-oq4e-g64.moepack", 8192, runs)
+        session(installed_model("ornith-oq4e-g64"), 8192, runs)

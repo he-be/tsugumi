@@ -16,7 +16,8 @@ public struct AppPromptPreset: Identifiable, Decodable, Sendable, Equatable {
     public static var secondary: [AppPromptPreset] { Array(all.dropFirst(3)) }
 
     private static func loadBundledPrompts() -> [AppPromptPreset] {
-        guard let url = Bundle.module.url(forResource: "app-prompts", withExtension: "json"),
+        guard let url = AppCoreResources.bundle.url(forResource: "app-prompts",
+                                                    withExtension: "json"),
               let data = try? Data(contentsOf: url),
               let prompts = try? JSONDecoder().decode([AppPromptPreset].self, from: data),
               prompts.count == 7,

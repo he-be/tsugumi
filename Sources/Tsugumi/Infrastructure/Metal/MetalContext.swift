@@ -241,8 +241,8 @@ public final class MetalContext: @unchecked Sendable {
 
     private static func shaderURL(module: String) -> URL? {
         guard let subdirectory = shaderSubdirectories[module] else { return nil }
-        return Bundle.module.url(forResource: module, withExtension: "metal",
-                                 subdirectory: subdirectory)
+        return TsugumiResources.bundle.url(forResource: module, withExtension: "metal",
+                                           subdirectory: subdirectory)
     }
 
     /// Highest Metal Shading Language version the running OS accepts.
