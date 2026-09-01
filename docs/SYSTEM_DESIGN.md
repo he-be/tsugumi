@@ -474,7 +474,7 @@ references lead to the supporting code and tests.
   decodes and patchifies; [`VisionPrompt`](../Sources/Tsugumi/Vision/VisionPrompt.swift)
   expands image placeholders and rejects literal media markers.
   [`VisionFixtures`](../Sources/TsugumiValidation/Support/Fixtures/VisionFixtures.swift)
-  reads the reference dumps produced by [`Scripts/vision/`](../Scripts/vision/README.md).
+  reads the reference dumps produced by `Scripts/vision/`.
 - **Metal library and fusions.** [`MetalContext`](../Sources/Tsugumi/Infrastructure/Metal/MetalContext.swift),
   [`tensorops.metal`](../Sources/Tsugumi/Metal/TensorCore/tensorops.metal),
   and [`fused.metal`](../Sources/Tsugumi/Metal/Fusions/fused.metal) show

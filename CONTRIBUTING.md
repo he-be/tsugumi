@@ -29,9 +29,9 @@ memory, macOS version, Swift version, and any protocol change.
 
 ## Benchmark reports
 
-Follow the [community benchmark protocol](docs/COMMUNITY_BENCHMARKS.md). Review
-all captured files before sharing them, and remove personal paths or unrelated
-process details.
+State the machine, the RAM, the macOS and Swift versions, the exact command,
+and the complete timing footer. Review all captured files before sharing them,
+and remove personal paths or unrelated process details.
 
 ## Pull requests
 

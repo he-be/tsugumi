@@ -61,9 +61,8 @@ its runtime settings at startup, so changing one means restarting the process.
    token over repeated runs.
 6. Restore the production defaults when the experiment ends.
 
-Use the [community benchmark protocol](COMMUNITY_BENCHMARKS.md) for a standard
-production result. A run with changed runtime controls is experimental and must
-name the changed setting.
+A run with changed runtime controls is experimental and must name the changed
+setting; a standard result keeps the production defaults.
 
 ## Read the results
 

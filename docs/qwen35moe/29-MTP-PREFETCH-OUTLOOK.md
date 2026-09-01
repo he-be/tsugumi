@@ -11,7 +11,7 @@ verify ブロックの世界でどう化けるか、そして MTP でしか出�
 [03 §6](03-DESIGN.md) / docs/mtp ([25](../mtp/25-M5.6-RESULTS.md) /
 [26](../mtp/26-M6-RESULTS.md) / [27](../mtp/27-M7-RESULTS.md) /
 [30](../mtp/30-M8-B-PREFETCH.md)) /
-[docs/serving/CONFORMANCE.md](../serving/CONFORMANCE.md) の実測か、
+docs/serving/CONFORMANCE.md の実測か、
 そこからの**導出**である。実験は別コンテキストで行う (§5 が手順)。
 既定は変えない。判断はユーザー。
 
@@ -29,7 +29,7 @@ verify ブロックの世界でどう化けるか、そして MTP でしか出�
 | 3 | 判定が反転しうる手 | **スロット数。**verify の 1 層は 8k 本 (k=4 で最大 32) を同時に要求し、32 スロットでは実プランだけで席が埋まりうる。Gemma は MTP 下で 32→48 スロットが **23.6 → 28.9 t/s** だった ([mtp/27 §2](../mtp/27-M7-RESULTS.md))。28 §2 の「弱い」はトークン単位の勘定で、**ブロック単位では #28 (48 候補) の判断材料が変わる**。union の実分布は既存トレースから机上で出る (§5-1) |
 | 4 | 昇格する手 | **all-or-nothing の棄却外し (28 §3-2)。**union + 投機 N がスロット数を超える世界では `declined` はゼロでは済まない。partial プラン (置けるぶんだけ置く) が「計器を見てから」から「Phase 7 の設計要件」に昇格する見込み (§2) |
 | 5 | MTP でしか出ない手 | **ドラフトの陰。**ドラフト側は 256 エキスパート全常駐 (453 MB、[03 §6-2](03-DESIGN.md)) で **I/O がゼロ** — その GPU 時間 (mtp 層 + lm_head) の間、ホストと SSD は完全に暇である。ここが**トークン境界をまたぐ写像の最初の隠し場所**になる: 次ブロック先頭層の先行 commit、状態書き出しの回収、棄却プランの再試行 (§3-2)。token id 条件の事前分布も offline gate つきで在庫に入れる (§3-3) |
-| 6 | 28 §3-6 の訂正 | **「エージェント経路では MTP は効かない」は旧情報。**Gemma 側は 2026-08-22 に文法込みの投機 (位置ごとに文法込みで引き、採用のみ前進、巻き戻し無し) が緑になった ([CONFORMANCE](../serving/CONFORMANCE.md) GEN-14)。Qwen も部品は揃っている — マスクつき再畳み込み ([25](25-CLI-TOOLS.md)) が「文法込みで引く」そのもの (§4-1)。**ただし Phase 6 の手が不要になるわけではない**: 受理長はタスクで 2 倍動き (1.058〜2.346、[mtp/26 §2](../mtp/26-M6-RESULTS.md))、**a≈1 のタスクでは先読みだけが残る** (§4-2) |
+| 6 | 28 §3-6 の訂正 | **「エージェント経路では MTP は効かない」は旧情報。**Gemma 側は 2026-08-22 に文法込みの投機 (位置ごとに文法込みで引き、採用のみ前進、巻き戻し無し) が緑になった (CONFORMANCE GEN-14)。Qwen も部品は揃っている — マスクつき再畳み込み ([25](25-CLI-TOOLS.md)) が「文法込みで引く」そのもの (§4-1)。**ただし Phase 6 の手が不要になるわけではない**: 受理長はタスクで 2 倍動き (1.058〜2.346、[mtp/26 §2](../mtp/26-M6-RESULTS.md))、**a≈1 のタスクでは先読みだけが残る** (§4-2) |
 | 7 | 一番大きい未知 | **受理長 a。Ornith では 1 つも測っていない。**カーネルを 1 本も書かずに測れる: float32 参照器 ([14](14-REFERENCE.md)) に `mtp.*` を足し、実生成のトレース上で draft top-1 と本体 top-1 の一致率を CPU で取る (§3-4)。**Phase 7 の着手前に a の桁が出る** — a が 1.0 に張り付くなら Phase 7 の期待値そのものが消える。**→ 測る前に向きが出た ([30](30-MTP-HEAD-GRAFT.md))**: 同梱ヘッドは乱数初期化なので出荷版のままなら a ≈ 1。**その差し替えは済んだ** ([30 §6](30-MTP-HEAD-GRAFT.md))。**§3-4 の測定も済んだ** ([33](33-MTP-ACCEPTANCE.md)): **P1 = 78.70% / a = 2.344 (平均)** で中止線は上回る。ただし**取り分は「a 倍」ではない** — 検証費用が和集合で伸びるので運用幅は k=2。**幅 2 の 1 パスを実測すると 1.27〜1.30 倍で、取り分は +15〜29%** ([33 §3-7](33-MTP-ACCEPTANCE.md))。机上の帯 (+8.5〜11.5% / +6.4〜9.5%) は悲観しすぎだった |
 
 ---
@@ -201,7 +201,7 @@ thinking の中と外の分割は**未実施** (4 本とも `--thinking off`)。
 
 28 §3-6 の「ツール宣言のあるエージェント経路では MTP は効かない (文法 →
 投機オフ)」は **2026-08-21 までの Gemma の状態**で、翌日に直っている
-([CONFORMANCE](../serving/CONFORMANCE.md) GEN-14、2026-08-22 緑): 投機ループが
+(CONFORMANCE GEN-14、2026-08-22 緑): 投機ループが
 位置ごとに**文法込みで**引き (GEN-7 の棄却サンプリング)、採用したトークンだけ
 文法状態を進めるので**巻き戻しが要らない**。参照実装 (llama.cpp) も文法と投機を
 併用している。
@@ -212,7 +212,7 @@ Qwen 側は現状「投機は起動時に断る」([26 §4](26-PHASE8-SERVER.md)
 「文法込みで引く」に相当し、拒まれたトークン 1 個につきヘッド 1 回という
 費用構造も同じ。Phase 7 の受入条件に「tools 宣言つきでも投機が通る」を
 足すかは**ユーザー判断** (Gemma はこれを後追いで直す羽目になった —
-[CONFORMANCE](../serving/CONFORMANCE.md) の教訓はここで先取りできる)。
+CONFORMANCE の教訓はここで先取りできる)。
 
 ### 4-2. 変わらないもの
 
@@ -265,7 +265,7 @@ Phase 7 のコードを書く前に、1〜3 は全部出る。
 | Gemma: ブロック GPU busy 50 ms、k 行 router 1 dispatch | [mtp/25](../mtp/25-M5.6-RESULTS.md)。decode busy 25.7 ms は [mtp/24](../mtp/24-M5.5-RESULTS.md) |
 | Gemma: 受理長 1.058 / 1.885 / 2.346 (タスクで 2 倍) | [mtp/26 §2](../mtp/26-M6-RESULTS.md) |
 | Gemma: MTP 下の 32/48 スロット (23.6 / 28.9 t/s)、union 1 プラン、469→216 MB | [mtp/27](../mtp/27-M7-RESULTS.md) |
-| 文法込み投機 (GEN-14 緑、巻き戻し無し)、tools あり 9.8 / なし 16.8 tok/s (n=1) | [CONFORMANCE](../serving/CONFORMANCE.md) |
+| 文法込み投機 (GEN-14 緑、巻き戻し無し)、tools あり 9.8 / なし 16.8 tok/s (n=1) | CONFORMANCE |
 | Qwen サーバーは投機を起動時に断る (現状) | [26 §4](26-PHASE8-SERVER.md) |
 | 広い preview (`encodeRouterLogitsBF16` / `rankLogits`) と先読み計器 (`ExpertPrefetchStats`: issued / declined / reads / wait) | 本ブランチの作業木 (未コミット): `MoE.swift` / `QwenForwardRunner.swift` / `RunQwen.swift` — [28 §3-1 / §5-1](28-PREFETCH-IDEAS.md) の実装 |
 | k 行ブロックの router (GEMV + select を 1 dispatch ずつ) | `Sources/Tsugumi/Kernels/MoE/MoE.swift:348` (`encodeRouterGemma4BF16Rows`、Gemma M5.6 由来) |

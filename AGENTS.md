@@ -46,7 +46,7 @@ Before a model run, require macOS 15+, Swift 6.2+, enough disk, acceptable `memo
 
 Run package tests through `Scripts/test.sh`. Run only one app, CLI, or model-using test at a time.
 
-For performance results, build release once and follow the [community benchmark guide](docs/COMMUNITY_BENCHMARKS.md) exactly. Do not enable experimental controls or profiling.
+For performance results, build release once, keep the production defaults, and report the exact command. Do not enable experimental controls or profiling.
 
 Do not download a full checkpoint, duplicate the `.moepack` model, create a worktree, or purge caches just to run tests.
 
