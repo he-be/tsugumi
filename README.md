@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/tsugumi-logo-rounded.png" alt="Tsugumi のロゴ: セグメント化されたキャッシュリングの中のツグミ" width="280">
+  <img src="docs/assets/tsugumi.png" alt="Tsugumi のロゴ: 地面に立つツグミの横向きシルエット" width="280">
 </p>
 
 <h1 align="center">Tsugumi</h1>
