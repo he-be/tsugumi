@@ -1,7 +1,7 @@
 # 32. M8 果実 A の実装 — `down` を崖で 2 分割したら GPU は −7%、壁時計は動かない
 
 測定: 2026-08-19、M3 Pro 18GB / macOS 15.7.5 / Swift 6.3.3 / Xcode 26.6。
-対象モデル `scratch/gemma4-qat.gturbo` (drafter 同梱)、**48 スロット** (32 も §3)、8192 context。
+対象モデル `scratch/gemma4-qat.moepack` (drafter 同梱)、**48 スロット** (32 も §3)、8192 context。
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
 31-M8-A-ROWS-BENCH §7 の引き継ぎ (「`encodeStreamedRows` の `down` のエンコードを、
@@ -48,8 +48,8 @@ I/O が床でなくなったときに初めて表に出る種類の改善だか�
 ## 2. ゲート 1 (**実測**)
 
 ```bash
-TF_MTP_ROWS_DOWN_SPLIT=0 .build/release/TurboFieldfareCLI \
-  --model scratch/gemma4-qat.gturbo --messages-file bench/mtp_goal_prompt.json \
+TF_MTP_ROWS_DOWN_SPLIT=0 .build/release/TsugumiCLI \
+  --model scratch/gemma4-qat.moepack --messages-file bench/mtp_goal_prompt.json \
   --image sample_imgs/IMG_2112.JPG --image-tokens 280 --thinking on --temperature 0 \
   --max-new 120 --max-context 8192 --expert-cache-slots 48 \
   --verification trusted-install --draft-block-size 4
@@ -195,8 +195,8 @@ fetch が call の 58% で、GPU 側の改善は壁時計に出ない。
 
 | ファイル | 中身 |
 | --- | --- |
-| `Sources/TurboFieldfare/Kernels/Prefill/MoE/PrefillGroupedRoutedMoE.swift` | `encodeStreamedRows` の `down` を 2 分割。`rowsDownSplitRowCount` (既定 2)、`TF_MTP_ROWS_DOWN_SPLIT` / `..._NOCAP` (§3 の対照) / `..._DEBUG` (§4 の計器) |
-| `Sources/TurboFieldfareKernelCheck/MoERowsBench.swift` | 行数の混合を持つタイルを測れるように (`rowCounts` + バケットの述語)。タイル幅 4/6/8/16 × 3 方式の表 (§4) |
-| `Tests/TurboFieldfare/Core/Kernels/Prefill/PrefillGroupedRoutedMoETests+Execution.swift` | `rowsSplitDownMatchesSingleDispatch` (§6) |
+| `Sources/Tsugumi/Kernels/Prefill/MoE/PrefillGroupedRoutedMoE.swift` | `encodeStreamedRows` の `down` を 2 分割。`rowsDownSplitRowCount` (既定 2)、`TF_MTP_ROWS_DOWN_SPLIT` / `..._NOCAP` (§3 の対照) / `..._DEBUG` (§4 の計器) |
+| `Sources/TsugumiKernelCheck/MoERowsBench.swift` | 行数の混合を持つタイルを測れるように (`rowCounts` + バケットの述語)。タイル幅 4/6/8/16 × 3 方式の表 (§4) |
+| `Tests/Tsugumi/Core/Kernels/Prefill/PrefillGroupedRoutedMoETests+Execution.swift` | `rowsSplitDownMatchesSingleDispatch` (§6) |
 
 **カーネル (`prefill.metal`) には手を入れていない。**

@@ -42,7 +42,7 @@ D は**フォーマットの変更を必要としない**。
 | | 値 | 効く理由 |
 | --- | ---: | --- |
 | `hw.pagesize` | **16,384** | `mmap` / `bytesNoCopy` の粒度 |
-| `GTurboFormatV1.alignmentBytes` | **16,384** | **ページサイズと一致している** |
+| `MoEPackFormatV1.alignmentBytes` | **16,384** | **ページサイズと一致している** |
 | `expertStride` (sym) | 3,358,720 | **= 205 ページちょうど**、余り 0 |
 | blob の位置 | `physicalRank × expertStride` | ⇒ **全 blob がページ境界から始まり、ページ数が整数** |
 
@@ -121,8 +121,8 @@ OS が回収するには圧縮か swap が要る。D 後はほぼ全部が clean
 ## 6. プローブの設計 — カーネルではなく**バッファの出どころ**だけを振る
 
 44 が「形状を固定して重みの形式だけを振った」のと同じ形にする。
-**計器は `TurboFieldfareKernelCheck --mmap-residency-probe` (新規フラグ 1 つ)、
-推論経路 (`Sources/TurboFieldfare/`) は無改変。**
+**計器は `TsugumiKernelCheck --mmap-residency-probe` (新規フラグ 1 つ)、
+推論経路 (`Sources/Tsugumi/`) は無改変。**
 
 `packed_experts/layer_00.bin` を `mmap` し、`e × expertStride` の位置・長さ
 `expertStride` で `bytesNoCopy` の MTLBuffer を 128 個作る。カーネルは
@@ -181,11 +181,11 @@ OS が回収するには圧縮か swap が要る。D 後はほぼ全部が clean
 
 | | |
 | --- | --- |
-| 置き換え対象 | `Sources/TurboFieldfare/Infrastructure/Streaming/PreadExpertStreamer.swift` (fd は `:109`、スロット確保は `:149`、並列発行は `:345`、`pread` は `:554`) |
-| 呼び出し側 | `Sources/TurboFieldfare/Runtime/Inference/ModelExpertIO.swift` (fetch API と計器。`io` の計時は `:194-203` ほか) |
-| 先読み | `Sources/TurboFieldfare/Runtime/Inference/ExpertPrefetch.swift`、`Infrastructure/Streaming/RDAdvice.swift:34` (`F_RDADVISE`) |
-| レイアウト | `Sources/TurboFieldfareFormat/GTurboPackedExpertsLayoutV1.swift` (`offset = physicalRank × expertStride`、`stride % 16384 == 0` を validator が強制) |
-| 計器 | `Sources/TurboFieldfareKernelCheck/` (44 の `BpwProbe.swift` が「独自 MTLLibrary で production のカーネルを写す」前例) |
+| 置き換え対象 | `Sources/Tsugumi/Infrastructure/Streaming/PreadExpertStreamer.swift` (fd は `:109`、スロット確保は `:149`、並列発行は `:345`、`pread` は `:554`) |
+| 呼び出し側 | `Sources/Tsugumi/Runtime/Inference/ModelExpertIO.swift` (fetch API と計器。`io` の計時は `:194-203` ほか) |
+| 先読み | `Sources/Tsugumi/Runtime/Inference/ExpertPrefetch.swift`、`Infrastructure/Streaming/RDAdvice.swift:34` (`F_RDADVISE`) |
+| レイアウト | `Sources/MoEPackFormat/MoEPackPackedExpertsLayoutV1.swift` (`offset = physicalRank × expertStride`、`stride % 16384 == 0` を validator が強制) |
+| 計器 | `Sources/TsugumiKernelCheck/` (44 の `BpwProbe.swift` が「独自 MTLLibrary で production のカーネルを写す」前例) |
 
 ## 11. これが当たると、ロードマップが書き換わる
 

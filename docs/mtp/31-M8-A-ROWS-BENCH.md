@@ -42,7 +42,7 @@
 
 ## 2. 計器 (**実測**、`--moe-rows-bench`)
 
-`Sources/TurboFieldfareKernelCheck/MoERowsBench.swift` (新規)。既にある
+`Sources/TsugumiKernelCheck/MoERowsBench.swift` (新規)。既にある
 `--rows-bench` (dense 側の `dequant_int4_gemv_rows_simd`) と同じ作りで、対象を
 routed の 2 本にしたもの。
 
@@ -53,8 +53,8 @@ routed の 2 本にしたもの。
 - `FC_MOE_ROWS_CAP` (function constant 16) を自由に指定できる
 
 ```bash
-swift build -c release --product TurboFieldfareKernelCheck
-.build/release/TurboFieldfareKernelCheck --moe-rows-bench --group-size 32 \
+swift build -c release --product TsugumiKernelCheck
+.build/release/TsugumiKernelCheck --moe-rows-bench --group-size 32 \
   --moe-rows-bench-iterations 200
 ```
 
@@ -172,7 +172,7 @@ I/O が床なので、GPU を削っても出にくい。**48 スロット側が�
 やることは 1 つ。`encodeStreamedRows` の `down` のエンコードを、行数で 2 つに
 分けて 2 回呼ぶ形にする。
 
-- **場所**: `Sources/TurboFieldfare/Kernels/Prefill/MoE/PrefillGroupedRoutedMoE.swift`
+- **場所**: `Sources/Tsugumi/Kernels/Prefill/MoE/PrefillGroupedRoutedMoE.swift`
   の `encodeStreamedRows` (`:690-770`)。今は `blocks` を 1 本作って
   `encode(rowsDownCappedPSO[widestBlock] ?? rowsDownPSO, ...)` を 1 回呼んでいる
 - **分け方**: `blocks` を `rowCount <= 2` と `rowCount >= 3` の 2 つに割り、
@@ -197,8 +197,8 @@ I/O が床なので、GPU を削っても出にくい。**48 スロット側が�
 
 | ファイル | 中身 |
 | --- | --- |
-| `Sources/TurboFieldfareKernelCheck/MoERowsBench.swift` | **新規。**`--moe-rows-bench` の本体。合成エキスパート blob、引数バッファ、2 段の別々のエンコード、r スイープと (cap, r) グリッド |
-| `Sources/TurboFieldfareKernelCheck/main.swift` | `--moe-rows-bench` / `--moe-rows-bench-iterations` の受け口 |
+| `Sources/TsugumiKernelCheck/MoERowsBench.swift` | **新規。**`--moe-rows-bench` の本体。合成エキスパート blob、引数バッファ、2 段の別々のエンコード、r スイープと (cap, r) グリッド |
+| `Sources/TsugumiKernelCheck/main.swift` | `--moe-rows-bench` / `--moe-rows-bench-iterations` の受け口 |
 
 **カーネルと production の経路には手を入れていない。**
 

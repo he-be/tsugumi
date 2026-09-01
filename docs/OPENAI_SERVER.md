@@ -1,6 +1,6 @@
 # Local OpenAI-compatible server
 
-`TurboFieldfareServer` exposes a local Chat Completions API for one installed
+`TsugumiServer` exposes a local Chat Completions API for one installed
 model. It binds to `127.0.0.1` without authentication or TLS. Do not expose it
 through a proxy or tunnel.
 
@@ -17,19 +17,19 @@ its Metal working set, and the measured numbers.
 
 ## Start the server
 
-First, install the model with the Mac app or `TurboFieldfareRepack`. Then check
-that no other TurboFieldfare model process is running:
+First, install the model with the Mac app or `TsugumiRepack`. Then check
+that no other Tsugumi model process is running:
 
 ```bash
-pgrep -fl 'TurboFieldfareServer|TurboFieldfareMac|TurboFieldfareDecodeService|TurboFieldfareCLI|TurboFieldfarePackageTests|swiftpm-testing-helper|mlx_lm|mlx-lm'
+pgrep -fl 'TsugumiServer|TsugumiMac|TsugumiDecodeService|TsugumiCLI|TsugumiPackageTests|swiftpm-testing-helper|mlx_lm|mlx-lm'
 ```
 
 If the command prints a match, do not start the server.
 
 ```bash
-swift build -c release --product TurboFieldfareServer
-.build/release/TurboFieldfareServer \
-  --model scratch/gemma4.gturbo \
+swift build -c release --product TsugumiServer
+.build/release/TsugumiServer \
+  --model scratch/gemma4.moepack \
   --port 8080 \
   --ctx-size 16384
 ```
@@ -68,8 +68,8 @@ The server accepts the same runtime flags as the CLI, with the same values and
 defaults. See [Runtime controls](RUNTIME_CONTROLS.md) for what each one does.
 
 ```bash
-.build/release/TurboFieldfareServer \
-  --model scratch/gemma4.gturbo \
+.build/release/TsugumiServer \
+  --model scratch/gemma4.moepack \
   --expert-cache-slots 32 \
   --expert-cache-policy lru \
   --prefill on \
@@ -105,8 +105,8 @@ If the model was installed with the drafter section (`--include-draft`, or
 prediction:
 
 ```bash
-.build/release/TurboFieldfareServer \
-  --model scratch/gemma4-qat-sym.gturbo \
+.build/release/TsugumiServer \
+  --model scratch/gemma4-qat-sym.moepack \
   --expert-cache-slots 32 \
   --draft-block-size 4
 ```
@@ -169,8 +169,8 @@ empty `content`.
 
 ```bash
 # no reasoning at all
-.build/release/TurboFieldfareServer \
-  --model scratch/gemma4-qat-sym.gturbo \
+.build/release/TsugumiServer \
+  --model scratch/gemma4-qat-sym.moepack \
   --reasoning-budget 0
 ```
 
@@ -242,9 +242,9 @@ OpenCode:
 {
   "$schema": "https://opencode.ai/config.json",
   "provider": {
-    "turbofieldfare": {
+    "tsugumi": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "TurboFieldfare",
+      "name": "Tsugumi",
       "options": {
         "baseURL": "http://127.0.0.1:8080/v1",
         "apiKey": "local"
@@ -263,14 +263,14 @@ OpenCode:
 }
 ```
 
-Select `turbofieldfare/gemma-4-26b-a4b-it` in OpenCode.
+Select `tsugumi/gemma-4-26b-a4b-it` in OpenCode.
 
 Pi uses its `openai-completions` adapter:
 
 ```json
 {
   "providers": {
-    "turbofieldfare": {
+    "tsugumi": {
       "baseUrl": "http://127.0.0.1:8080/v1",
       "api": "openai-completions",
       "apiKey": "local",
@@ -306,7 +306,7 @@ Keep the client context setting at or below the server's `-c/--ctx-size`.
 
 A model installed with a vision tower accepts images as `image_url` content
 parts on user messages. Install the tower with
-`TurboFieldfareRepack --add-vision --input-gturbo <model.gturbo>`; a model
+`TsugumiRepack --add-vision --input-moepack <model.moepack>`; a model
 without one answers image requests with HTTP 400 and `vision_not_installed`.
 
 ```bash

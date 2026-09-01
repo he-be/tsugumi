@@ -114,7 +114,7 @@ decode 1 トークンあたりの routed expert fetch は `numLayers × topK`:
 - **動画・音声。**`<|video_pad|>` / `<|audio_pad|>` は**明示的に拒否する** (黙って壊れない)
 - **YaRN による 1M 文脈拡張。**`rope_type: default` のまま
 - **Gemma 4 経路の性能変更。**共有コードに手を入れるときは Gemma のベンチを取り直す
-- **2 つのモデルの同時ロード。**`.gturbo` は 1 プロセス 1 モデルのまま
+- **2 つのモデルの同時ロード。**`.moepack` は 1 プロセス 1 モデルのまま
 - **ANE への退避** (`aneSharedExpert` フラグは今も死んでいる。omlx の ANE prefill 経路も追わない)
 - **他の Qwen3.5 サイズへの一般化。**35B-A3B のこの形だけを見る
 - **Mac アプリの UI 対応。**ビルドが壊れないことだけ守る (PLAN_VISION と同じ扱い)

@@ -1,7 +1,7 @@
 # 27. M7 の結果 — 32 スロット (16GB Mac) の verify
 
 測定: 2026-08-19、M3 Pro 18GB / macOS 15.7.5 / Swift 6.3.3。
-対象モデル `scratch/gemma4-qat.gturbo` (drafter 同梱)。触ったファイルは §8。
+対象モデル `scratch/gemma4-qat.moepack` (drafter 同梱)。触ったファイルは §8。
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
 M6 までの数字は全部 **80 スロット**で取っている。本書の運用点は
@@ -207,7 +207,7 @@ decode と同じ) はそのまま残る。dispatch は **240 → 60**。
 
 | 試したこと | 期待 | 結果 |
 | --- | --- | --- |
-| 重みを 2 回の 16bit ロード → **1 回の 32bit ロード** (`.gturbo` の sub-tensor は実際には 16B 整列、§9) | ロード命令が半分 | **不変** |
+| 重みを 2 回の 16bit ロード → **1 回の 32bit ロード** (`.moepack` の sub-tensor は実際には 16B 整列、§9) | ロード命令が半分 | **不変** |
 | **1 simdgroup が出力 2 行**を持つ (活性化のロードが半分。k=4 では活性化 8 ロード対重み 1 ロード) | ロード量 −40% | **不変** |
 | int4 の展開を**行ループの外に巻き上げ** (k=4 で展開 64 回 → 16 回) | 命令数 −30% | **不変** (コンパイラが既にやっていた) |
 
@@ -307,8 +307,8 @@ router の畳み込みは**行ごとの threadgroup とレーン配置を保つ*
 
 ```bash
 # 32 スロット (demo の設定) の交互 A/B
-TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_GPU_PROFILE=1 .build/release/TurboFieldfareCLI \
-  --model scratch/gemma4-qat.gturbo --messages-file bench/mtp_goal_prompt.json \
+TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_GPU_PROFILE=1 .build/release/TsugumiCLI \
+  --model scratch/gemma4-qat.moepack --messages-file bench/mtp_goal_prompt.json \
   --image sample_imgs/IMG_2112.JPG --image-tokens 280 --thinking on --temperature 0 \
   --max-new 200 --max-context 8192 --expert-cache-slots 32 \
   --verification trusted-install --draft-block-size 4
@@ -330,12 +330,12 @@ TF_MTP_ROWS_LAYER_PLAN=0 TF_MTP_ROWS_RESIDENT_FIRST=0 TF_MTP_ROWS_ROUTER_FOLD=0
 
 | ファイル | 中身 |
 | --- | --- |
-| `Sources/TurboFieldfare/Runtime/Inference/RealForwardRunner.swift` | 層 union の 1 プラン (`startLayerFetches`)、常駐先頭のソートキーとタイル切れ目、router の畳み込み呼び出し、3 つの env スイッチ |
-| `Sources/TurboFieldfare/Runtime/Inference/ModelExpertIO.swift` | `RoutedExpertFetchPlan.slice`、`routedExpertResidency` |
-| `Sources/TurboFieldfare/Infrastructure/Streaming/PreadExpertStreamer.swift` | `residentExperts` (スロットを取らない常駐の問い合わせ) |
-| `Sources/TurboFieldfare/Kernels/Prefill/MoE/PrefillMoEGrouping.swift` | `tileBreakAfterGroup` (タイルの切れ目の強制) |
-| `Sources/TurboFieldfare/Metal/MoE/moe.metal` | `router_gemv_gemma4_bf16_rows` / `router_topk_select_k8_rows`、選択の本体を inline 関数に |
-| `Sources/TurboFieldfare/Kernels/MoE/MoE.swift` | `encodeRouterGemma4BF16Rows`、rows 用 PSO、router logits を k 行ぶんに |
-| `Tests/TurboFieldfare/Core/Kernels/MoE/RouterRowsTests.swift` | 新規 4 本。畳んだ router と行ループの**ビット一致** (汎用形 / 本番の specialized 形 / 競り合い / k=1) |
-| `Tests/TurboFieldfare/Core/Kernels/Prefill/PrefillMoEGroupingTests.swift` | 新規 2 本 (切れ目の位置、範囲外の切れ目は無効) |
-| `Tests/TurboFieldfare/Core/Infrastructure/Streaming/PreadExpertStreamerTests+CachePlanning.swift` | 新規 1 本 (プランのスライスが層のプランを分割していること、スライス実行で同じバイトが載ること) |
+| `Sources/Tsugumi/Runtime/Inference/RealForwardRunner.swift` | 層 union の 1 プラン (`startLayerFetches`)、常駐先頭のソートキーとタイル切れ目、router の畳み込み呼び出し、3 つの env スイッチ |
+| `Sources/Tsugumi/Runtime/Inference/ModelExpertIO.swift` | `RoutedExpertFetchPlan.slice`、`routedExpertResidency` |
+| `Sources/Tsugumi/Infrastructure/Streaming/PreadExpertStreamer.swift` | `residentExperts` (スロットを取らない常駐の問い合わせ) |
+| `Sources/Tsugumi/Kernels/Prefill/MoE/PrefillMoEGrouping.swift` | `tileBreakAfterGroup` (タイルの切れ目の強制) |
+| `Sources/Tsugumi/Metal/MoE/moe.metal` | `router_gemv_gemma4_bf16_rows` / `router_topk_select_k8_rows`、選択の本体を inline 関数に |
+| `Sources/Tsugumi/Kernels/MoE/MoE.swift` | `encodeRouterGemma4BF16Rows`、rows 用 PSO、router logits を k 行ぶんに |
+| `Tests/Tsugumi/Core/Kernels/MoE/RouterRowsTests.swift` | 新規 4 本。畳んだ router と行ループの**ビット一致** (汎用形 / 本番の specialized 形 / 競り合い / k=1) |
+| `Tests/Tsugumi/Core/Kernels/Prefill/PrefillMoEGroupingTests.swift` | 新規 2 本 (切れ目の位置、範囲外の切れ目は無効) |
+| `Tests/Tsugumi/Core/Infrastructure/Streaming/PreadExpertStreamerTests+CachePlanning.swift` | 新規 1 本 (プランのスライスが層のプランを分割していること、スライス実行で同じバイトが載ること) |

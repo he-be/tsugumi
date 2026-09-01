@@ -18,7 +18,7 @@ self-reported and have not been reproduced here.
 
 ## Current pinning
 
-The pin lives in `Sources/TurboFieldfareRepack/Core/Remote/SupportedModelSource.swift`
+The pin lives in `Sources/TsugumiRepack/Core/Remote/SupportedModelSource.swift`
 (repo `mlx-community/gemma-4-26b-a4b-it-4bit`, revision `0d77464e…`, index
 SHA-256 `bf198c9f…`). The installer runs with `requireKnownSource: true`;
 `SourceFingerprint.knownFingerprints` contains exactly one entry. No document
@@ -84,7 +84,7 @@ carefully (split K/V, per-expert scales), so acceptance tests must decide.
 Unlike MTP, every difference is reachable from the existing architecture:
 
 1. **Parameterize group size (64 → 32).** `Quantization.groupSize = 64`
-   (`Sources/TurboFieldfare/Infrastructure/ModelIO/Quantization.swift:5`) is a
+   (`Sources/Tsugumi/Infrastructure/ModelIO/Quantization.swift:5`) is a
    global constant; it must become a model-level value carried through the
    manifest (`validateQuant` already compares against it per slot). The quantized
    kernels state `n % groupSize` preconditions (DequantInt4/8GEMV,

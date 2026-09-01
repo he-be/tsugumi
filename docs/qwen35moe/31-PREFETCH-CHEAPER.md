@@ -139,7 +139,7 @@ GPU ms/tok も全プロンプトで下がる (例: m 29.85 → 28.35、t4 33.97 
 | 同 (融合 `TF_QWEN_PREVIEW_FUSE=1`) | **全一致** |
 | 同 (先読み off) | **全一致** |
 | `--qwen-prefill` (n8w) | チャンク 512/8 × 経路 2 通りの **4 通り一致** |
-| `TurboFieldfareKernelCheck` | 既定 **69 本緑** / `--qwen` **63 本緑** |
+| `TsugumiKernelCheck` | 既定 **69 本緑** / `--qwen` **63 本緑** |
 | `swift test --no-parallel` | **1,350 件緑** |
 
 Gemma の経路 (`RealForwardRunner` / 既存の `MoE` encode の署名) には触っていない。

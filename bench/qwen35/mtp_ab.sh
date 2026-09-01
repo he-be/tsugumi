@@ -3,8 +3,8 @@
 # (`docs/qwen35moe/32-NVMAI-ADOPT.md` §5-1 の作法)。採点なので temp 0、
 # クールダウン 10 秒。
 set -e
-CLI=.build/release/TurboFieldfareCLI
-MODEL=scratch/ornith-oq4e-g64.gturbo
+CLI=.build/release/TsugumiCLI
+MODEL=scratch/ornith-oq4e-g64.moepack
 OUT=${OUT:-scratch/qwen35/mtp-ab}
 MAXNEW=${MAXNEW:-192}
 REPS=${REPS:-2}

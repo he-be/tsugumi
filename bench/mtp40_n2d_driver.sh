@@ -23,7 +23,7 @@ OUT="$ROOT/bench/logs/40_n2d"
 mkdir -p "$OUT"
 LOG="$OUT/driver.log"
 COOL_S="${COOL_S:-20}"
-MODEL="${MODEL:-scratch/gemma4-qat.gturbo}"
+MODEL="${MODEL:-scratch/gemma4-qat.moepack}"
 IMGDIR="${TF_SAMPLE_IMGS:-$HOME/Pictures/sample_imgs}"
 IMG="${TF_SWEEP_IMAGE:-$IMGDIR/NO_FUSION_0401_001.png}"   # 39 (N1) の画像 A
 MAXNEW="${MAXNEW:-192}"
@@ -41,7 +41,7 @@ prompt_for() {
 
 guard() {
   local found
-  found=$(pgrep -fl 'TurboFieldfare|llama-server|llama-bench|mlx' \
+  found=$(pgrep -fl 'Tsugumi|llama-server|llama-bench|mlx' \
           | grep -v -e pgrep -e '/bin/bash' -e '/bin/sh' -e '/bin/zsh' -e 'mtp40_n2')
   if [ -n "$found" ]; then
     say "ABORT: 他の推論プロセスが居る: $found"
@@ -55,7 +55,7 @@ run_one() {
   local p; p="$(prompt_for "$reg")"
   local -a cmd=(
     env TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_GPU_PROFILE=1
-    "$ROOT/.build/release/TurboFieldfareCLI"
+    "$ROOT/.build/release/TsugumiCLI"
     --model "$MODEL"
     --messages-file "$p"
     --image "$IMG" --image-tokens 280

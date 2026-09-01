@@ -99,7 +99,7 @@
 ### 1a. P2 の根拠 — footer の `decode/tok` 行を register × スロット数で並べる (**導出**)
 
 一次資料は `bench/mtp36/36_register/*.err` と `bench/mtp36/36_trace/*.err` の
-`[decode/tok io= cb1= cb2= head=]` 行 (`Sources/TurboFieldfareCLI/Run.swift:302-305`)。
+`[decode/tok io= cb1= cb2= head=]` 行 (`Sources/TsugumiCLI/Run.swift:302-305`)。
 `ms/tok` は同じ footer の `tok/s` の逆数である。**四則のみ、フィットは無い。**
 条件はすべて **bs=0 / temp 0 / thinking off / seed 1234 / 192 tok** (36 §11 と同一)。
 
@@ -130,12 +130,12 @@
 
 **ここで止めること** (**未確認**)。この 4 項は decode を分割し尽くしていない。
 `cb1` は待ち時間を引いた値であり
-(`Sources/TurboFieldfare/Runtime/Inference/RealForwardRunner.swift:2980` が
+(`Sources/Tsugumi/Runtime/Inference/RealForwardRunner.swift:2980` が
 `- waitNanos` している)、**4 項はいずれもホスト側の時間であって GPU busy の内訳ではない**。
 したがって **残り約 25 ms/tok が「カーネルの余地」だとは言えない** —
 GPU busy なのか、30 層ぶんのホスト往復の待ちなのか (22 §7 が置いた 20 ms がこれに当たる)、
 この footer では分解されていない。**分解するには `TF_PREFILL_GPU_PROFILE`
-(`Sources/TurboFieldfare/Runtime/Prefill/PrefillGPUProfile.swift:57`) か
+(`Sources/Tsugumi/Runtime/Prefill/PrefillGPUProfile.swift:57`) か
 counters (34 P2) が要る。だから P2 の優先度が上がる、という論法である。**
 
 **もう 1 つの限界。**投機オン (bs>0) の run ではこの 4 項が**全部 0.00 と出る**
@@ -195,7 +195,7 @@ turbo の 40.5 ms/tok) は**どちらも register が書かれていない**。
 | **N1** | **48 スロットの台帳。**`sudo sysctl iogpu.wired_limit_mb=14336` を戻してから、36 §6 の測定 3 (costProbe) と測定 4 (本番スイープ) を 48 スロットで回す。**同じ準備で「48 スロット・MTP off・register 明示の decode」も 1 本取る** | **半日** (回すだけ。コード変更ゼロ) | 3 つが同時に落ちる: (a) 35 §6(a) の入力が直り **A を閉じる/閉じない**が判定できる (36 §3d 脚注)、(b) `c(slots)` を 16/24/32 の外に伸ばしてよいかが決まる (36 §7-10 が禁じている外挿の代わり)、(c) **48 スロットの最適 bs** (36 §8d が「3〜4 に伸びるかもしれない」と書いた**未確認**) |
 | **N2** | **`decode/tok` の内訳を register × スロット数で並べる。**§1a で既存ログから 9 run ぶん出した。残りは (i) `TF_PREFILL_GPU_PROFILE` を有利/苦手の 2 register で回して**残り 25 ms/tok を GPU busy と待ちに割る**、(ii) 投機オン経路でも 4 項が出るように計器を通す | **半日** (既存ログの集計は済。GPU プロファイルは 2 run) | **P2 (counters) に進むかどうか。**残りが GPU busy なら 34 P2 の二択 (末尾繕い vs `mul_mm_id`) に進む根拠になる。待ちが主なら **counters を取っても答えは出ない** — 22 §7 の F (30 層のホスト往復 20 ms) の話に戻る |
 | **N3** | **採点基準 v2 を切る。**register 軸 (`language × format`、最低 2×2) を入れる。**v1 は凍結したまま触らない** (22 §5-5)。同時に P6 の未了を片付ける — 消えた 5 枚の復元 (復元元と md5 を `bench/logs/36_goal_images.md5` に追記)、md5 台帳の版管理、36 §9g の 3 規則 (隣接ペア / 3 反復以上 / 中央値・平均・分布) をドライバに入れる | **1 日** | **これが決まるまで、既定 bs も既定スロット数も P5 も動かせない** (36 §11e-4、§12f-3)。逆にこれが決まれば、以後の全比較が同じ土俵に乗る |
-| **N4** | **トレースに token id を 1 列足す。**`ExpertTelemetry.append` (`Sources/TurboFieldfare/Runtime/Inference/ExpertTelemetry.swift:186-198`) に 1 列。ついでに 36 §7-22 の穴 (`ja_bullets` と `en_prose` のトレース 2 本) を埋める | **半日** (コード 1 行 + 5 run + 既存 `an*.py` の読み口) | 36 が残した**唯一の機構的な未確認** — **なぜ日本語散文がルータを狭くするのか** (36 §12f の 3 候補: トークナイザの粒度 / 言語専門エキスパート / 語彙的反復)。**N3 の register 設計の根拠になる** — 差がトークン集合に還元できるなら、v2 の register はトークン分布で選べる |
+| **N4** | **トレースに token id を 1 列足す。**`ExpertTelemetry.append` (`Sources/Tsugumi/Runtime/Inference/ExpertTelemetry.swift:186-198`) に 1 列。ついでに 36 §7-22 の穴 (`ja_bullets` と `en_prose` のトレース 2 本) を埋める | **半日** (コード 1 行 + 5 run + 既存 `an*.py` の読み口) | 36 が残した**唯一の機構的な未確認** — **なぜ日本語散文がルータを狭くするのか** (36 §12f の 3 候補: トークナイザの粒度 / 言語専門エキスパート / 語彙的反復)。**N3 の register 設計の根拠になる** — 差がトークン集合に還元できるなら、v2 の register はトークン分布で選べる |
 | **N5** | **計器の食い違いの決着。**costProbe の c = 0.453 対 本番 0.264〜0.283 (36 §3d/§4e/§10d)。thinking で大半は説明されたが **costProbe だけ 1.6〜1.7 倍残っている**。残る候補はプロンプト長 (308 tok 対 4096 context) / 検証対象の列 (記録済み greedy 列 対 実ドラフト) / キャッシュ状態 / 1 回測り | **半日** | costProbe を**運用点の計器として使ってよいか**。使えるなら以後の c は本番スイープ (21 run / 20 秒クールダウン) ではなく probe 1 本で安く測れる。使えないなら **c は footer からしか取らない**と決める |
 | **N6** | **苦手な register でプリフェッチを測り直す** (34 の果実 B、30 で負けたもの)。`TF_MTP_EXPERT_PREFETCH` は既存。32 スロット × 英語箇条書きで交互 ABBA | **1 日** | 30 の敗因は「I/O 側に足して GPU 側が空いていない」(30 §5: 32 スロットのブロックは fetch に 60.7/94.2 ms) だった。**苦手な register では io が decode の 45%** (§1a) で条件が違う。**36 §12e-ii の Belady 余地 +6.79 pp が英語箇条書きにだけ在る**のも同じ側を指している |
 
@@ -320,12 +320,12 @@ register で違う)、P6 (N3 に吸収した)。
 
 | | ファイル |
 | --- | --- |
-| **N1** | **本番コードは触らない。**`sudo sysctl iogpu.wired_limit_mb=14336` (36 §8f)。ドライバは `bench/mtp_cd_sweep.py` を無改変で使う。出力は `bench/logs/36_cd_sweep_48.tsv` を**上書きせず**別名に (あの FAIL は 36 §8f の一次資料である)。MTP-off の 1 本は `TurboFieldfareCLI --draft-block-size 0`、footer を `.err` ごと保存 (36 §7-19) |
-| **N2** | **本番コードは原則触らない。**`TF_PREFILL_GPU_PROFILE` (`Sources/TurboFieldfare/Runtime/Prefill/PrefillGPUProfile.swift:57`) を立てて回すだけ。投機オン経路でも 4 項が出るようにするなら `Sources/TurboFieldfareCLI/Run.swift:302-305` と `Sources/TurboFieldfare/Runtime/Inference/RealForwardRunner.swift` の計上箇所 (`totalIoNanos` / `totalCb1Nanos` / `totalCb2Nanos` / `totalHead*Nanos`) — **verify ブロック経路を同じバケットに入れるかは設計判断**であり、入れるなら 36 §7-4 と同じ注記 (`io=` は壁時計ではない) を footer 側にも書くこと |
+| **N1** | **本番コードは触らない。**`sudo sysctl iogpu.wired_limit_mb=14336` (36 §8f)。ドライバは `bench/mtp_cd_sweep.py` を無改変で使う。出力は `bench/logs/36_cd_sweep_48.tsv` を**上書きせず**別名に (あの FAIL は 36 §8f の一次資料である)。MTP-off の 1 本は `TsugumiCLI --draft-block-size 0`、footer を `.err` ごと保存 (36 §7-19) |
+| **N2** | **本番コードは原則触らない。**`TF_PREFILL_GPU_PROFILE` (`Sources/Tsugumi/Runtime/Prefill/PrefillGPUProfile.swift:57`) を立てて回すだけ。投機オン経路でも 4 項が出るようにするなら `Sources/TsugumiCLI/Run.swift:302-305` と `Sources/Tsugumi/Runtime/Inference/RealForwardRunner.swift` の計上箇所 (`totalIoNanos` / `totalCb1Nanos` / `totalCb2Nanos` / `totalHead*Nanos`) — **verify ブロック経路を同じバケットに入れるかは設計判断**であり、入れるなら 36 §7-4 と同じ注記 (`io=` は壁時計ではない) を footer 側にも書くこと |
 | **N3** | `bench/mtp_goal_ab.py` に register 軸 (`--messages-file` を振る口。今は `--thinking on` と `--temperature 0` が `:83-84` にハードコード)。`bench/mtp_register_*.json` を採点資産に昇格。`bench/logs/36_goal_images.md5` に復元 5 枚を追記。冷温プロトコルは `Scripts/` に。**docs は 22 を書き換えず、v2 の文書を新規に切る** |
-| **N4** | `Sources/TurboFieldfare/Runtime/Inference/ExpertTelemetry.swift:186-198` の `append` に token id 1 列 (+ 呼び出し側 1 か所と `# ` ヘッダの schema 版)。読み口は `bench/mtp36/an*.py`。**再生器 `bench/expert_sim.py` は触らない** (36 §12a の 7 点一致がこの無改変に乗っている) |
-| **N5** | **本番コードは触らない。**`Sources/TurboFieldfareKernelCheck/VerifyBlockCheck.swift` の `costProbe` (`:651-779`) を長いプロンプト・深い KV で回す。位置数を変えるなら `CostProbePlan` (`:610-620`) の 1 行。ついでに `:630-632` の古いコメント (36 §7-4) |
-| **N6** | `Sources/TurboFieldfare/Runtime/Inference/ExpertPrefetch.swift` (env は既存、30 §8)。30 §7 の 2 つを潰すなら `RealForwardRunner.readRouterPreview` と `PreadExpertStreamer.planSpeculativeExperts`。**既定 (`TF_MTP_EXPERT_PREFETCH` オフ) は N3 が決まるまで触らない** |
+| **N4** | `Sources/Tsugumi/Runtime/Inference/ExpertTelemetry.swift:186-198` の `append` に token id 1 列 (+ 呼び出し側 1 か所と `# ` ヘッダの schema 版)。読み口は `bench/mtp36/an*.py`。**再生器 `bench/expert_sim.py` は触らない** (36 §12a の 7 点一致がこの無改変に乗っている) |
+| **N5** | **本番コードは触らない。**`Sources/TsugumiKernelCheck/VerifyBlockCheck.swift` の `costProbe` (`:651-779`) を長いプロンプト・深い KV で回す。位置数を変えるなら `CostProbePlan` (`:610-620`) の 1 行。ついでに `:630-632` の古いコメント (36 §7-4) |
+| **N6** | `Sources/Tsugumi/Runtime/Inference/ExpertPrefetch.swift` (env は既存、30 §8)。30 §7 の 2 つを潰すなら `RealForwardRunner.readRouterPreview` と `PreadExpertStreamer.planSpeculativeExperts`。**既定 (`TF_MTP_EXPERT_PREFETCH` オフ) は N3 が決まるまで触らない** |
 
 ---
 

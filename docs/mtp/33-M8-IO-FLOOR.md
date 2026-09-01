@@ -1,7 +1,7 @@
 # 33. M8 — I/O は 48 スロットですでに床ではない。§7 の順序は逆である
 
 測定: 2026-08-19、M3 Pro 18GB / macOS 15.7.5 / Swift 6.3.3 / Xcode 26.6。
-対象モデル `scratch/gemma4-qat.gturbo` (drafter 同梱)、32 / 48 / 64 スロット、8192 context。
+対象モデル `scratch/gemma4-qat.moepack` (drafter 同梱)、32 / 48 / 64 スロット、8192 context。
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
 32-M8-A-ROWS-SPLIT §7 の 2 本目 (「**`moe` をこれ以上削る前に、I/O を床から外す
@@ -51,7 +51,7 @@
 
 ```bash
 clang -O2 -o /tmp/io_depth_probe bench/io_depth_probe.c -lpthread
-/tmp/io_depth_probe scratch/gemma4-qat.gturbo/packed_experts 30 128
+/tmp/io_depth_probe scratch/gemma4-qat.moepack/packed_experts 30 128
 ```
 
 **分割は効かない** (**実測**、`NOCACHE=1 RDAHEAD=0`、GB/s):
@@ -119,7 +119,7 @@ DispatchQueue.concurrentPerform(iterations: plan.misses.count) { ... }
 
 ## 3. スロットスイープ (**実測**、冷たい ABBA)
 
-毎回**別モデルの 12 GB (`scratch/gemma4.gturbo/packed_experts`) を読んで
+毎回**別モデルの 12 GB (`scratch/gemma4.moepack/packed_experts`) を読んで
 ページキャッシュを流してから**回した。`--max-new 120`、bs=4、8192 context。
 
 | スロット | hit | io | t/s | ピーク |

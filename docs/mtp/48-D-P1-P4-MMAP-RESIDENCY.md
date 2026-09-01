@@ -2,9 +2,9 @@
 
 実測: 2026-08-20、M3 Pro 18 GiB / macOS 15.7.5、`iogpu.wired_limit_mb` = 14336。
 [47](47-D-MMAP-RESIDENCY-PROPOSAL.md) が置いた P-1〜P-4 を実行した。
-**推論経路 (`Sources/TurboFieldfare/`) は無改変。**計器は
-`TurboFieldfareKernelCheck --mmap-residency-probe` の新規フラグ 1 つ
-(`Sources/TurboFieldfareKernelCheck/MmapResidencyProbe.swift`)。
+**推論経路 (`Sources/Tsugumi/`) は無改変。**計器は
+`TsugumiKernelCheck --mmap-residency-probe` の新規フラグ 1 つ
+(`Sources/TsugumiKernelCheck/MmapResidencyProbe.swift`)。
 
 一次ログは `bench/mtp48/`。P-1〜P-3 は**反復 5 × 独立な 4 run = 片側 n=20**、
 ゲート (P-4) は ABBA を 5 invocation × 片側 n=50。統計は
@@ -320,8 +320,8 @@ P-4 の余白は 0.04 しかない (§5)。**倒す先はユーザーが決め�
 
 | | |
 | --- | --- |
-| 計器 | `TurboFieldfareKernelCheck --mmap-residency-probe` (`--mmap-probe-trials N`、`--mmap-probe-repeats N`、**`--mmap-probe-gate-only`**、`--mmap-probe-model <path>`) |
-| 実装 | `Sources/TurboFieldfareKernelCheck/MmapResidencyProbe.swift` (44 の `BpwProbe` を外部バッファから組めるように口を 1 つ足しただけ) |
+| 計器 | `TsugumiKernelCheck --mmap-residency-probe` (`--mmap-probe-trials N`、`--mmap-probe-repeats N`、**`--mmap-probe-gate-only`**、`--mmap-probe-model <path>`) |
+| 実装 | `Sources/TsugumiKernelCheck/MmapResidencyProbe.swift` (44 の `BpwProbe` を外部バッファから組めるように口を 1 つ足しただけ) |
 | P-1〜P-4 の全景 | `bench/mtp48/p1_p4_full_trials5_run{1..4}.log` |
 | **ゲート (clean)** | `bench/mtp48/gate_only_5_invocations.log` |
 | `wire_count` だけで測った失敗版 | `bench/mtp48/p1_wired_counter_only.log` |
@@ -414,7 +414,7 @@ production の触り方に当てると、**どの前提を置いても今の `io
 
 **まだ実装の判断をしない**という前提での提案である (47 §7 の最終行は
 「保留はユーザーの決定」と書いている)。計器は同じプローブ、
-**推論経路 (`Sources/TurboFieldfare/`) は引き続き無改変**。
+**推論経路 (`Sources/Tsugumi/`) は引き続き無改変**。
 
 ### P-5 (本命、1 日) — 4 腕
 

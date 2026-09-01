@@ -37,7 +37,7 @@
 ### 1-1. トークン列はランタイムの id をそのまま使う
 
 実タスク 4 本 ([27 §4](27-PHASE6-THROUGHPUT.md) と同じ `bench/qwen35/*.json`) を
-`.gturbo` の実物に流し、**生成した 192 トークンの id を落とす**。
+`.moepack` の実物に流し、**生成した 192 トークンの id を落とす**。
 そのために CLI へ `--dump-tokens <path>` を足した。
 
 **印字された本文を引き直すのでは駄目である。**最初はそうしていて、
@@ -344,7 +344,7 @@ routing を測ったものではない** (**未確認**)。ただし隣接 1.931
 ### 3-6. GDN の snapshot/restore の実費 — **16% の説明にはならない** (**実測(手元)**、2026-08-22)
 
 §3-8 の測定 2。**カーネルを 1 本も書かず、モデルも 1 バイトも載せずに**測った
-(`TurboFieldfareKernelCheck --qwen-state-bench`、n=20 の中央値、腕は交互
+(`TsugumiKernelCheck --qwen-state-bench`、n=20 の中央値、腕は交互
 [32 §5-1](32-NVMAI-ADOPT.md)、**独立した 2 run で再現**)。
 
 状態の実バイトは **state 62,914,560 + conv 1,474,560 = 64,389,120 B = 61.4 MiB**。
@@ -524,7 +524,7 @@ NVMAI と同じ現象を見ている保証が無い) は残る。**着手の判�
 
 ## 4. 参照器とランタイムの食い違い (**実測(手元)**)
 
-教師強制の副産物として、**CPU float32 参照器と `.gturbo` の実物が同じ
+教師強制の副産物として、**CPU float32 参照器と `.moepack` の実物が同じ
 192 トークンでどれだけ一致するか**が出た。Phase 3/4 は 55 トークンで
 全一致を確かめていた ([21](21-PHASE4-PREFILL.md)) が、その先は初めてである。
 
@@ -542,7 +542,7 @@ NVMAI と同じ現象を見ている保証が無い) は残る。**着手の判�
 
 **割れ方は「ある位置から先が総崩れ」ではない** (割れた後も 95〜99% 一致が続く)。
 量子化経路の違い (参照器は `oQ4e-g64-shisa` を float32 で、ランタイムは
-`.gturbo` を INT4/INT8 で) と、僅差の argmax が原因と読める。**未確認。**
+`.moepack` を INT4/INT8 で) と、僅差の argmax が原因と読める。**未確認。**
 
 ---
 
@@ -590,7 +590,7 @@ NVMAI と同じ現象を見ている保証が無い) は残る。**着手の判�
 | 事実 | 場所 |
 | --- | --- |
 | 受理率・受理長・pre/post・鎖の 4 通り | `Scripts/qwen35/mtp_acceptance.py` → `scratch/qwen35/mtp-a/*.{mtp_hidden,base_hidden}.json` (**実測(手元)**) |
-| トークン列 (プロンプト + 生成 192) | `.gturbo` を `--dump-tokens` で流したもの → `scratch/qwen35/mtp-a/*.tokens.json`。プロンプトは `chat_template.jinja` の再構成と id 完全一致 |
+| トークン列 (プロンプト + 生成 192) | `.moepack` を `--dump-tokens` で流したもの → `scratch/qwen35/mtp-a/*.tokens.json`。プロンプトは `chat_template.jinja` の再構成と id 完全一致 |
 | MTP ヘッドの重み | `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-shisa` (差し替え済み・焼き込み前、[30 §6](30-MTP-HEAD-GRAFT.md)) |
 | 幅 k のエキスパート和集合 (12.43 / 16.15 / 19.44) | `bench/qwen35_mtp_union.py` + `scratch/qwen35/phase6/trace-32lfu-m256.tsv` (**実測(手元)**、モデル再実行なし) |
 | NVMAI の和集合 12.68 (1.585x) と実測 0.85 倍、受理 57.4% | [32 §1-4](32-NVMAI-ADOPT.md) (**実測(NVMAI)**) |
@@ -599,4 +599,4 @@ NVMAI と同じ現象を見ている保証が無い) は残る。**着手の判�
 | Gemma の受理長 1.058 / 1.885 / 2.346 | [mtp/26 §2](../mtp/26-M6-RESULTS.md) |
 | shisa 公表の P1/P2/P3 と受理長 3.078 | [30 §2-1](30-MTP-HEAD-GRAFT.md) (**実測(上流)** = 公表値) |
 | MTP ブロックの算式と concat 順 | [03 §6-4](03-DESIGN.md) / [30 §4-2](30-MTP-HEAD-GRAFT.md) |
-| `--dump-tokens` | `Sources/TurboFieldfareCLI/Args.swift` / `RunQwen.swift` |
+| `--dump-tokens` | `Sources/TsugumiCLI/Args.swift` / `RunQwen.swift` |

@@ -12,7 +12,7 @@ import json, subprocess, time, urllib.request, urllib.error, base64, sys, os
 HOME = os.path.expanduser("~")
 BIN  = f"{HOME}/LLM/llama.cpp/build/bin/llama-server"
 MDIR = f"{HOME}/LLM/gemma-4-26B-A4B"
-PROJ = f"{HOME}/LLM/turbo-fieldfare"
+PROJ = f"{HOME}/LLM/tsugumi"
 SCR  = os.path.dirname(os.path.abspath(__file__))
 PORT = 8080
 URL  = f"http://127.0.0.1:{PORT}"

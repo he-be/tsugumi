@@ -11,8 +11,8 @@ run() {
   local adv="$1" blk="$2" pos="$3" label
   label=$([ "$adv" = 1 ] && echo adv || echo base)
   TF_EXPERT_MMAP=1 TF_EXPERT_MMAP_ADVISE="$adv" \
-  ./.build/release/TurboFieldfareCLI \
-    --model scratch/gemma4-qat-sym.gturbo --messages-file bench/math.json \
+  ./.build/release/TsugumiCLI \
+    --model scratch/gemma4-qat-sym.moepack --messages-file bench/math.json \
     --temperature 0 --max-new 256 --expert-cache-slots 32 \
     --verification trusted-install > /tmp/tf_adv.txt 2>&1
   { echo "### block=$blk pos=$pos arm=$label"

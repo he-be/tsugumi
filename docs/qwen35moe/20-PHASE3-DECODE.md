@@ -5,8 +5,8 @@
 参照と突き合わせた**。GPU を使い、**この計画で初めてモデルを載せて動かした**。
 
 ```
-swift run -c release TurboFieldfareKernelCheck \
-  --qwen-decode scratch/ornith-oq4e-g64.gturbo
+swift run -c release TsugumiKernelCheck \
+  --qwen-decode scratch/ornith-oq4e-g64.moepack
 ```
 
 | | |

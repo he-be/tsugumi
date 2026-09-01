@@ -2,7 +2,7 @@
 47 §6/§7. Kernels, shape and group size are 43/44's; the bytes are the
 shipped checkpoint's. Inference path untouched.
 
-  model               scratch/gemma4-qat-sym.gturbo
+  model               scratch/gemma4-qat-sym.moepack
   layer file          layer_00.bin 429916160 B = 26240 pages
   hw.pagesize         16384
   expertStride        3358720 B = 205 pages, remainder 0

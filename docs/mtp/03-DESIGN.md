@@ -14,7 +14,7 @@
 - `manifest.json` に optional な `draft` セクション + `flags.mtpDraft` +
   `versionMinor = 2` ゲート。vision と同じ「フラグとセクションは 1 つの事実を 2 回書く。
   片方だけなら invalid」検証に加え、**ターゲット arch との一致検査**を置く
-  (`GTurboManifestCodec.validateDraftSection`)。ドラフターは自前 KV を持たず
+  (`MoEPackManifestCodec.validateDraftSection`)。ドラフターは自前 KV を持たず
   層 28/29 の KV を読むので、head 構成・窓・RoPE 定数は自由変数ではない。
 - **int4 版 (236 MB) をそのまま採用する。**bf16 (839 MB) は持たない。再量子化もしない。
 - ロードは遅延。`Model.hasDraft` / `Model.draftWeights()` を `hasVisionTower` /
@@ -26,7 +26,7 @@
 
 ## D2. 追記インストール — `--add-draft`
 
-`--include-draft` (新規インストール時) と `--add-draft --input-gturbo <model>`
+`--include-draft` (新規インストール時) と `--add-draft --input-moepack <model>`
 (既存インストールへの追記) の 2 つ。後者は `VisionAppendInstaller.swift` の写像で、
 **236 MB だけ取得し、15 GB のコピーを起こさない**。
 

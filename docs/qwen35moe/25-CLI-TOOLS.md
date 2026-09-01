@@ -5,8 +5,8 @@
 **誰も呼んでいなかった**ので、実物のモデルに呼ばせた。
 
 ```
-.build/release/TurboFieldfareCLI \
-  --model scratch/ornith-oq4e-g64.gturbo \
+.build/release/TsugumiCLI \
+  --model scratch/ornith-oq4e-g64.moepack \
   --messages-file scratch/qwen35/tools-messages.json \
   --tools scratch/qwen35/tools.json --tool-choice required \
   --temperature 0 --top-k 0 --top-p 1
@@ -197,7 +197,7 @@ Gemma 4 にもツールの形式・パーサ・文法はあるが、**それは�
 ### 4-2. `--qwen-constrain` に 9 本 (実物、スタブ制約)
 
 ```
-.build/release/TurboFieldfareKernelCheck --qwen-constrain scratch/ornith-oq4e-g64.gturbo
+.build/release/TsugumiKernelCheck --qwen-constrain scratch/ornith-oq4e-g64.moepack
 ```
 
 **文法ではなくスタブを当てるのが要点である。**文法の判定はモデルが書く

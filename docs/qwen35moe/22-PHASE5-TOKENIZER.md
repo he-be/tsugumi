@@ -1,11 +1,11 @@
 # 22. Phase 5 — トークナイザとテンプレート、そして CLI が喋った (実測(手元)、2026-08-21)
 
 [04-PHASES.md](04-PHASES.md) 次の一手 **#19**。**Phase 5 の出口条件が通った** —
-`TurboFieldfareCLI --model … --messages-file …` が日本語でも英語でも答え、
+`TsugumiCLI --model … --messages-file …` が日本語でも英語でも答え、
 `<think>` は答えと別の流れに分かれる。
 
 ```
-./.build/release/TurboFieldfareCLI --model scratch/ornith-oq4e-g64.gturbo \
+./.build/release/TsugumiCLI --model scratch/ornith-oq4e-g64.moepack \
   --messages-file scratch/qwen35/ja.json --thinking on \
   --max-new 128 --temperature 0 --verification trusted-install
 ```
@@ -34,7 +34,7 @@
 分けるかで、**サーバー・アプリ・CLI の 111 か所**がその変更を受ける。
 
 **2 つ目: Gemma 側の検査は「よそのトークナイザを弾く」ためにある。**
-`verifyDecoderConfiguration` の存在理由は `TURBO_FIELDFARE_TOKENIZER_DIR` が
+`verifyDecoderConfiguration` の存在理由は `TSUGUMI_TOKENIZER_DIR` が
 どこでも指せることで、そこに ByteLevel を**通す**分岐を足すと、その検査は
 Gemma を守らなくなる。**片方の家族の正解はもう片方の家族の破損である。**
 
@@ -90,8 +90,8 @@ Gemma は `Sequence[Replace(▁→␣), ByteFallback, Fuse]` で、バイトな�
 どうし**なので、同じ場所で同じように間違うことは無い。
 
 ```
-swift run -c release TurboFieldfareKernelCheck \
-  --qwen-tokenizer scratch/ornith-oq4e-g64.gturbo \
+swift run -c release TsugumiKernelCheck \
+  --qwen-tokenizer scratch/ornith-oq4e-g64.moepack \
   --qwen-tokenizer-fixture scratch/qwen35/tokenizer-fixture.json
 ```
 

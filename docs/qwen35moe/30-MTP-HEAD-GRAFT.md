@@ -12,7 +12,7 @@ MTP 実装 PR を参考資料としてどう読むか、(4) **差し替えの実
 `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-shisa-baked` だけを使い、出荷版の乱数ヘッドは
 参照しない (2026-08-22 ユーザー指示)。**受理率は 1 つも測っていない** —
 引用する受理率はすべて外部の公表値で、本ランタイム上の値ではない。
-`.gturbo` と運用点の既定は 1 つも動かしていない (§6-6)。
+`.moepack` と運用点の既定は 1 つも動かしていない (§6-6)。
 
 ---
 
@@ -36,7 +36,7 @@ MTP 実装 PR を参考資料としてどう読むか、(4) **差し替えの実
 | 14 | 差し替えれば動くのか | **動かない。**移植はウェイトを正しくするだけで、**Qwen 側に MTP 推論経路がまだ無い** (`DraftRepackPlanner` は Gemma の密 MLP ドラフター用)。Phase 7 の作業量は変わらない (§7) |
 | 15 | 差し替えは済んだのか | **済んだ** (§6)。42/42 が 1:1 で写り、**読み直して 42 本すべてバイト一致**、index が参照するバイト 21,855,738,720 と `expertStride` 1,769,472 B は**不変**、量子化の赤リストは 0 本。増えたディスクは**差し替えシャード 503 MB だけ**で、元の 21.86 GB は 1 バイトも触っていない |
 | 16 | 本当に学習済みのものが乗ったのか | **乗った。**§1-2 で乱数の指紋とした **expert 間 std の CV が 0.69% → 9.46%** (up 0.73→7.17%、down 0.47→7.76%) で、本体の学習済み層 (4.07〜14.07%) と同じ桁。`mtp.norm.weight` は**定数 1.0234 から std 0.29657** になった (§6-4) |
-| 17 | `.gturbo` は作り直しが要るか | **要らない。**`RepackPlanner.classify` が `language_model.mtp.` を `.excludedDraft` に落とすので、**pack にヘッドは元から 1 バイトも入っていない**。`OrnithModelSource` の固定 digest も動かさない (§6-6) |
+| 17 | `.moepack` は作り直しが要るか | **要らない。**`RepackPlanner.classify` が `language_model.mtp.` を `.excludedDraft` に落とすので、**pack にヘッドは元から 1 バイトも入っていない**。`OrnithModelSource` の固定 digest も動かさない (§6-6) |
 
 ---
 
@@ -455,7 +455,7 @@ expert-0 (**4.2 MB**) を HTTP Range で取って毎回引き直せる。実行�
 - **変わった:** MTP ヘッドを読むものは、以降 `oQ4e-g64-shisa-baked` **だけ**を使う。
   出荷版の乱数ヘッドはもう参照しない。本体 (routed expert / vision / tokenizer) は
   ハードリンクで同一実体なので、**MTP 以外は 1 バイトも変わっていない。**
-- **変わらない (1): `.gturbo` は元から MTP を持っていない。**
+- **変わらない (1): `.moepack` は元から MTP を持っていない。**
   `RepackPlanner.classify` が `language_model.mtp.` を `.excludedDraft` に落とす
   (`RepackPlanner.swift:149`)。したがって差し替えても pack のバイトは変わらず、
   `OrnithModelSource` の固定 digest を動かす理由が無い — 動かせば
@@ -479,7 +479,7 @@ expert-0 (**4.2 MB**) を HTTP Range で取って毎回引き直せる。実行�
    運用幅が k=2 なので、この分岐は運用点では論点にならない。
 3. ~~**Qwen 側の MTP 推論経路が無い。**~~ **書いた** ([36](36-MTP-DECODE.md))。
    ヘッドは 503 MB の sidecar で GPU に載り、幅 2 の検証パスが回る。
-   `.gturbo` は 1 バイトも作り直していない — §6-6 の読みはそのまま生きた。
+   `.moepack` は 1 バイトも作り直していない — §6-6 の読みはそのまま生きた。
 
 **片づいたもの:** M0' (ヘッドの差し替え) は §6。shisa ヘッドの実体も取得した
 (`~/LLM/Ornith-1.5-35B-A3B-MTP-ONLY`)。
@@ -511,8 +511,8 @@ expert-0 (**4.2 MB**) を HTTP Range で取って毎回引き直せる。実行�
 | 差し替えの実行と 42 本の検算、expert 間 CV、往復誤差 (§6) | `Scripts/qwen35/graft_mtp_head.py` → `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-shisa/mtp_graft_manifest.json` (**実測(手元)**) |
 | 差し替え後の赤リスト 0 本・`expertStride`・区画別バイト・norm 規約 | `Scripts/qwen35/audit_checkpoint.py` → `scratch/qwen35/oq4e-g64-shisa-audit.json` (**実測(手元)**) |
 | `q_norm × 1/16` の焼き直し (`mtp` を含む 11 本、無損失) | `Scripts/qwen35/bake_snapshot.py` → `~/LLM/…-oQ4e-g64-shisa-baked/bake_manifest.json` (**実測(手元)**) |
-| `supportedGroupSizes = [32,64]` | `Sources/TurboFieldfare/Infrastructure/ModelIO/Quantization.swift:16` |
-| `language_model.mtp.` を同梱ドラフターとして分類 (= pack に入らない) / `switch_mlp` の gate-up-down 対応 | `Sources/TurboFieldfareRepack/Core/Planning/RepackPlanner.swift:149` + `:183` / `:171-176` |
+| `supportedGroupSizes = [32,64]` | `Sources/Tsugumi/Infrastructure/ModelIO/Quantization.swift:16` |
+| `language_model.mtp.` を同梱ドラフターとして分類 (= pack に入らない) / `switch_mlp` の gate-up-down 対応 | `Sources/TsugumiRepack/Core/Planning/RepackPlanner.swift:149` + `:183` / `:171-176` |
 | PR の状態・却下レビュー・`MTPModule` / `_unfuse_experts` / `rollback_state` / `MTPPromptCacheState` | [mlx-lm#1740](https://github.com/ml-explore/mlx-lm/pull/1740) (close 2026-08-21) / [#990](https://github.com/ml-explore/mlx-lm/pull/990) |
 | post-norm 80.30% / pre-norm 75.24% の A/B | #1740 の waybarrios コメント (下流 vllm-mlx#660) |
 | 元の指摘 | [ornith-ai/Ornith-1.5-35B-A3B discussion #10](https://huggingface.co/ornith-ai/Ornith-1.5-35B-A3B/discussions/10) |

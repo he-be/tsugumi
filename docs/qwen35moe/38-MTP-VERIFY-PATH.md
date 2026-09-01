@@ -32,7 +32,7 @@ route grouping と GPU +2.7 ms の prefill attention / block router」と書き�
 
 ## 1. 計器 — 段ごとの wall と GPU
 
-`QwenStageProfile` (`Sources/TurboFieldfare/Runtime/Inference/QwenStageProfile.swift`)。
+`QwenStageProfile` (`Sources/Tsugumi/Runtime/Inference/QwenStageProfile.swift`)。
 `TF_QWEN_STAGE_PROFILE=1` のときだけ働く。**decode ループと T 行チャンク経路を
 同じ切り方で**計る — そうしないと引き算ができない。
 
@@ -98,7 +98,7 @@ t4 要約 (プロンプト 2,698 tok)、64 トークン、腕は直列・クー�
 **固定の無駄が 21 ms 乗っている**という形をしている。
 
 原因は `PrefillAttention.encodeCausal` の投げ方である
-(`Sources/TurboFieldfare/Kernels/Attention/PrefillAttention.swift:155`)。
+(`Sources/Tsugumi/Kernels/Attention/PrefillAttention.swift:155`)。
 head_dim 512 の specialisation は 1 simdgroup に 2 クエリ、
 1 スレッドグループ 256 スレッド = 8 simdgroup なので **16 クエリ / スレッドグループ**、
 グリッドは `ceil(T/16) × numQHeads`。**T=1 でも T=2 でも 16 スレッドグループ**が
@@ -119,7 +119,7 @@ scalar QMM に落ちる) と**同じ種類の崖**が、attention にもう 1 �
 ## 3. 直したもの — split-KV の rows カーネルに差し替えた
 
 **新しいカーネルは 1 本も書いていない。**`Attention.encodeRows`
-(`Sources/TurboFieldfare/Kernels/Attention/Attention.swift:290`) が既にある —
+(`Sources/Tsugumi/Kernels/Attention/Attention.swift:290`) が既にある —
 Gemma の投機ブロック用に書かれた split-KV で、KV の範囲を最大 16 チャンクに割って
 `numQHeads × numChunks` のスレッドグループに配り、decode と同じ combine で
 log-sum-exp を畳む (`docs/mtp/24-M5.5-RESULTS.md` §7-1)。**decode が使っている
@@ -284,11 +284,11 @@ PASS  routed experts on the per-pair path, chunk 8 (3 chunks) — the same 41 to
 
 | 事実 | 場所 |
 | --- | --- |
-| 段ごとの計器 | `Sources/TurboFieldfare/Runtime/Inference/QwenStageProfile.swift` + `QwenForwardRunner.stage(_:_:)` (`TF_QWEN_STAGE_PROFILE=1`) |
+| 段ごとの計器 | `Sources/Tsugumi/Runtime/Inference/QwenStageProfile.swift` + `QwenForwardRunner.stage(_:_:)` (`TF_QWEN_STAGE_PROFILE=1`) |
 | 段ごとの実測 (t2 / t4 × base / 幅 1 / 幅 2 × 2 カーネル) | `bench/qwen35/mtp_stage_profile.sh` → `bench/qwen35/mtp38/*.footer` (**実測(手元)**) |
-| query-blocked の投げ方 (16 クエリ/スレッドグループ) | `Sources/TurboFieldfare/Kernels/Attention/PrefillAttention.swift` `encodeCausal` の `.qBlock` 分岐 |
-| 差し替え先の split-KV | `Sources/TurboFieldfare/Kernels/Attention/Attention.swift` `encodeRows` / `rowsGeometry` (`docs/mtp/24-M5.5-RESULTS.md` §7-1) |
-| 差し替えの本体と行ごとの投げ方 | `Sources/TurboFieldfare/Runtime/Inference/QwenPrefill.swift` `encodePrefillAttention` |
+| query-blocked の投げ方 (16 クエリ/スレッドグループ) | `Sources/Tsugumi/Kernels/Attention/PrefillAttention.swift` `encodeCausal` の `.qBlock` 分岐 |
+| 差し替え先の split-KV | `Sources/Tsugumi/Kernels/Attention/Attention.swift` `encodeRows` / `rowsGeometry` (`docs/mtp/24-M5.5-RESULTS.md` §7-1) |
+| 差し替えの本体と行ごとの投げ方 | `Sources/Tsugumi/Runtime/Inference/QwenPrefill.swift` `encodePrefillAttention` |
 | 腕の切り替え | `QwenForwardRunner.chunkRowsAttention` / `TF_QWEN_MTP_ROWS_ATTN` |
 | 3 腕の A/B | `bench/qwen35/mtp_ab.sh` (`ARMS="base mtp mtpqb"`) → `bench/qwen35/mtp38-ab/*.footer`、集計は `bench/qwen35/mtp38_report.py` (**実測(手元)**) |
 | 中立性の対照 | `TF_QWEN_MTP_FORCE_REJECT=1`、`bench/qwen35/mtp38/ctrl.*.json` |

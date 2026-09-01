@@ -260,7 +260,7 @@ prefill は §3-2 の読み先行を**使わない**ぶん直列のままであ�
 | `--qwen-prefill` (mmap) | チャンク 512 / 8 × 経路 2 通りの **4 通りすべて一致**、負例 5 本 |
 | `--qwen-prefill` (`TF_EXPERT_MMAP=0`) | 同上 |
 | `--qwen-decode` (先読み on、両腕) | **55 トークン全一致** |
-| `TurboFieldfareKernelCheck` (既定) | **69 本緑** / `--qwen` **63 本緑** |
+| `TsugumiKernelCheck` (既定) | **69 本緑** / `--qwen` **63 本緑** |
 | Gemma 4 の実測値 | §7-2 |
 | `swift test --no-parallel` | §7-1 |
 

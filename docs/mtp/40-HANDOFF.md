@@ -265,8 +265,8 @@ rows 2 本で −23%)。**実装の前に分子を 1 つ潰す** — rows 2 本�
 | --- | --- |
 | スイープ | `bench/mtp_cd_sweep.py` (温度・クールダウン 20s の既定を持つ) |
 | 採点条件 A/B | → 下の「採点 v2」。暖機 / クールダウン / ドリフト検定 / 共変量を持つ |
-| 費用曲線 | `.build/release/TurboFieldfareKernelCheck --verify-cost-only` |
-| ルーティング | `TurboFieldfareCLI --dump-expert-trace` + `bench/mtp36/an3.py` (`2^H`) |
+| 費用曲線 | `.build/release/TsugumiKernelCheck --verify-cost-only` |
+| ルーティング | `TsugumiCLI --dump-expert-trace` + `bench/mtp36/an3.py` (`2^H`) |
 | ブロック台帳 | `TF_PREFILL_HOST_PROFILE=1` |
 | GPU の段別 | `TF_PREFILL_GPU_PROFILE=1` (`=2` で層前半を 9 分割、**帰属専用**) |
 | **採点 v2** | `bench/mtp_goal_ab.py` (引数なしで 18 ペア / 約 40 分)。台帳 `bench/mtp_goal_v2_images.tsv` |
@@ -274,7 +274,7 @@ rows 2 本で −23%)。**実装の前に分子を 1 つ潰す** — rows 2 本�
 | **D の先読み** | **`TF_EXPERT_MMAP_ADVISE=1`** (`MmapExpertMapping.adviseMisses`。既定 off。**両腕に出る** — 片腕だけに出すと advise の取り分を D に数える)。ドライバは `bench/mtp52_{advise,pread_advise,single_arm,slot_sweep}.sh` |
 | **D の試作 (製品経路)** | **`TF_EXPERT_MMAP=1`** (`MmapExpertMapping.swift`。既定 off)。ドライバは **`bench/mtp51_mmap_ab.py`** (ABBA、ミス数と生成文 sha256 を毎 run 検定。`--draft-block-size` で MTP 条件) |
 | **mmap residency** | **`--mmap-residency-probe`** (`--mmap-probe-trials` / `--mmap-probe-repeats` / **`--mmap-probe-gate-only`** / `--mmap-probe-model`)。P-1〜P-4 を 1 本で回す |
-| **重みの形式** | **`--bpw-probe`** (形状を固定して affine / sym / sym8 / sym9 を振る。`--group-size 32`)。`bench/check_bias_identity.py <model.gturbo>` が格子側を検定する |
+| **重みの形式** | **`--bpw-probe`** (形状を固定して affine / sym / sym8 / sym9 を振る。`--group-size 32`)。`bench/check_bias_identity.py <model.moepack>` が格子側を検定する |
 | **スキームの入れ替え** | `TF_FORCE_AFFINE_SCHEME=sym\|affine` (**計器であって設定ではない**)。データを固定して導出だけ差し替える。45 §3a の切り分けはこれで付いた |
 | 集計 | `bench/mtp38_analyze.py` (register)、`bench/mtp39_analyze.py` (48 スロット)、`bench/mtp40{,b,c}_analyze.py` (N2)、`bench/mtp42_analyze.py` (N3) |
 | N2 のドライバ | `bench/mtp40_n2{,b,c,d}_driver.sh` (bs=0 / bs=2,3 / 細分 / bs=4) |

@@ -268,5 +268,5 @@ Phase 7 のコードを書く前に、1〜3 は全部出る。
 | 文法込み投機 (GEN-14 緑、巻き戻し無し)、tools あり 9.8 / なし 16.8 tok/s (n=1) | [CONFORMANCE](../serving/CONFORMANCE.md) |
 | Qwen サーバーは投機を起動時に断る (現状) | [26 §4](26-PHASE8-SERVER.md) |
 | 広い preview (`encodeRouterLogitsBF16` / `rankLogits`) と先読み計器 (`ExpertPrefetchStats`: issued / declined / reads / wait) | 本ブランチの作業木 (未コミット): `MoE.swift` / `QwenForwardRunner.swift` / `RunQwen.swift` — [28 §3-1 / §5-1](28-PREFETCH-IDEAS.md) の実装 |
-| k 行ブロックの router (GEMV + select を 1 dispatch ずつ) | `Sources/TurboFieldfare/Kernels/MoE/MoE.swift:348` (`encodeRouterGemma4BF16Rows`、Gemma M5.6 由来) |
+| k 行ブロックの router (GEMV + select を 1 dispatch ずつ) | `Sources/Tsugumi/Kernels/MoE/MoE.swift:348` (`encodeRouterGemma4BF16Rows`、Gemma M5.6 由来) |
 | 投機プランの all-or-nothing | `Infrastructure/Streaming/PreadExpertStreamer.swift:341` |

@@ -3,11 +3,11 @@
 **この計画で最初に GPU が回った。**[04-PHASES.md](04-PHASES.md) Phase 2 が本命と
 呼んでいた `qwen_delta_rule` ([03 §2-6](03-DESIGN.md)) を書き、CPU の参照 2 本に
 対して検証し、時間を測った。モデルは載せていない — 入力は**実物と同じ形の合成値**で、
-チェックポイントも `.gturbo` も要らない。
+チェックポイントも `.moepack` も要らない。
 
 ```bash
-swift run -c release TurboFieldfareKernelCheck --gdn              # 検証 15 本
-swift run -c release TurboFieldfareKernelCheck --gdn --gdn-bench  # 時間
+swift run -c release TsugumiKernelCheck --gdn              # 検証 15 本
+swift run -c release TsugumiKernelCheck --gdn --gdn-bench  # 時間
 ```
 
 ---
@@ -27,9 +27,9 @@ partial RoPE・LM head の specialization で、本カーネルはそのうち�
 
 | ファイル | 中身 |
 | --- | --- |
-| `Sources/TurboFieldfare/Metal/Qwen/gdn.metal` | `qwen_delta_rule_tb{16,32,48}`。幾何は omlx の `gated_delta_blocked_seq` を写した (Apache-2.0、参照のみ) |
-| `Sources/TurboFieldfare/Kernels/Qwen/GatedDeltaNet.swift` | 包み。`stateIn` と `stateOut` に同じバッファを渡してよい (各スレッドが自分の断片を書く前に読む) |
-| `Sources/TurboFieldfareKernelCheck/GatedDeltaNetCheck.swift` | 検証 15 本とマイクロベンチ |
+| `Sources/Tsugumi/Metal/Qwen/gdn.metal` | `qwen_delta_rule_tb{16,32,48}`。幾何は omlx の `gated_delta_blocked_seq` を写した (Apache-2.0、参照のみ) |
+| `Sources/Tsugumi/Kernels/Qwen/GatedDeltaNet.swift` | 包み。`stateIn` と `stateOut` に同じバッファを渡してよい (各スレッドが自分の断片を書く前に読む) |
+| `Sources/TsugumiKernelCheck/GatedDeltaNetCheck.swift` | 検証 15 本とマイクロベンチ |
 
 **Gemma 4 経路には 1 バイトも足していない。**`gdn` は `tensorops` と同じ扱いで、
 共通ライブラリ (`shaderModules`) には入れず `moduleLibrary` で単独に組む。

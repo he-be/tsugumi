@@ -220,7 +220,7 @@ MTP は効かない (文法 → 投機オフ)~~ — **これは旧情報で、[2
    m.json と t4 の 2 本。**ヒット率と GPU ms/tok を併記** (churn と固定費の監視)。
 4. **検査**: `--qwen-decode` 55 本全一致を**先読み on・両腕**で
    ([27 §7](27-PHASE6-THROUGHPUT.md) と同じゲート)。prefill 経路は触らないが
-   `--qwen-prefill` も 1 回。`TurboFieldfareKernelCheck --qwen` と
+   `--qwen-prefill` も 1 回。`TsugumiKernelCheck --qwen` と
    `swift test --no-parallel`。Gemma の経路に触れないこと
    (`RealForwardRunner` / `MoE` の既存 encode の署名を変えない)。
 5. **判定**: 反復 3 未満のセルに解釈を書かない。既定は変えず、
@@ -231,7 +231,7 @@ MTP は効かない (文法 → 投機オフ)~~ — **これは旧情報で、[2
 
 | 事実 | 場所 |
 | --- | --- |
-| select の k=8 固定 (`topK == maxStreamedExperts` の precondition) | `Sources/TurboFieldfare/Kernels/MoE/MoE.swift:43,211,264,322` |
+| select の k=8 固定 (`topK == maxStreamedExperts` の precondition) | `Sources/Tsugumi/Kernels/MoE/MoE.swift:43,211,264,322` |
 | GEMV は 256 logit 全部を Float で書く (`maxRouterRows × 256`、shared) | `MoE.swift:176-183` |
 | Qwen は per-expert scale に単位値 → 生 logit の順 = select の順 | `QwenForwardRunner.swift` `encodeRouter` (unitFeatureScale / unitExpertScale) |
 | preview は実 router と同じ CB に相乗り、join は元からある | `QwenForwardRunner.swift:799-803` |
@@ -240,5 +240,5 @@ MTP は効かない (文法 → 投機オフ)~~ — **これは旧情報で、[2
 | 投機プランは clock も use count も進めず、直近プランのスロットを守る | 同 `makeExpertCachePlan(speculative:)` |
 | residency 更新は fetch スレッド上、lock で直列 | `Infrastructure/Streaming/MmapExpertMapping.swift:200` |
 | miss 0 の fetch はキューに乗らずその場で完了 | `Runtime/Inference/ModelExpertIO.swift:231` |
-| footer の preview 統計 (rankMiss まで出る。prefetch の wait/declined は無い) | `Sources/TurboFieldfareCLI/RunQwen.swift:430-445` |
+| footer の preview 統計 (rankMiss まで出る。prefetch の wait/declined は無い) | `Sources/TsugumiCLI/RunQwen.swift:430-445` |
 | ベンチの prefetch A/B は off / n8 の 2 腕のみ | `bench/qwen35.sh` `cmd_prefetch` |

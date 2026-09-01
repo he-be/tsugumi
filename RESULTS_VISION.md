@@ -3,8 +3,8 @@
 実施: 2026-08-17 / M3 Pro 18GB / macOS 15.7.5 / `macos15-support` ブランチ
 commit `e4be236` + V6 の作業ツリー (Server の `image_url` 入口)
 Apple Swift 6.3.3 / target arm64-apple-macosx15.0
-モデル: `scratch/gemma4-qat.gturbo` (QAT / 15 GB + tower 1.15 GB、`--add-vision` で追記)
-**追記 (2026-08-21):** 同じ塔を `sym` バンドル (`scratch/gemma4-qat-sym.gturbo`) にも載せた。
+モデル: `scratch/gemma4-qat.moepack` (QAT / 15 GB + tower 1.15 GB、`--add-vision` で追記)
+**追記 (2026-08-21):** 同じ塔を `sym` バンドル (`scratch/gemma4-qat-sym.moepack`) にも載せた。
 塔のファイルは sha256 までここのものと同一で、`--vision-tower` の数値も一致する
 ([docs/mtp/45](docs/mtp/45-W2-SYM-ADOPTION.md) §9)。**本書の測定はすべて affine バンドルのものである。**
 プロトコル: PLAN §6 / PLAN_VISION §7 (`.build/release` 直叩き、footer 全文を記録)
@@ -33,7 +33,7 @@ Apple Swift 6.3.3 / target arm64-apple-macosx15.0
 ## 1. ゲート 1 — 参照実装との一致 (**実測**)
 
 ```
-$ ./.build/release/TurboFieldfareKernelCheck --vision-tower scratch/gemma4-qat.gturbo
+$ ./.build/release/TsugumiKernelCheck --vision-tower scratch/gemma4-qat.moepack
 PASS  121 cases (group sizes [64, 32] + vision)          exit 0   (11.9 s)
 ```
 
@@ -95,7 +95,7 @@ $ TEMP=0 MAXNEW=384 ./bench.sh ja        # 64 スロット / chunk 128 / trusted
 peak 7.02〜7.12 GB、decode hit 97.3〜99.2%、io/tok 1.7〜6.8 ms。
 
 **判定は合格だが、この表を「V6 で速くなった」と読んではいけない。**
-V6 の差分はサーバ側 (`TurboFieldfareServerCore`) と、テキスト経路が
+V6 の差分はサーバ側 (`TsugumiServerCore`) と、テキスト経路が
 **一度も呼ばない**新しい静的関数 1 本 (`VisionImagePreprocessor.pixelSize`、+22 行) だけである
 (`git diff --stat`: 変更 9 ファイル中、ランタイムはこの 1 ファイルのみ)。
 CLI の prefill / decode 経路には 1 行も触れていないので、
@@ -120,7 +120,7 @@ S=280 になる形を作るため、`sample_imgs/IMG_2114.JPG` を **1000×700**
 アスペクト比の関係で 260〜266 soft token にしかならない (PLAN_VISION §0-B-2)。
 
 ```
-$ ./.build/release/TurboFieldfareCLI --model scratch/gemma4-qat.gturbo \
+$ ./.build/release/TsugumiCLI --model scratch/gemma4-qat.moepack \
     --messages-file msg-image.json --image s280-1000x700.jpg \
     --temperature 0 --max-new 64 --max-context 16384 --verification trusted-install
 [stop=maxTokens prefill=309tok new=64tok decode=3.35s tok/s=19.103]
@@ -151,7 +151,7 @@ exit 0
 
 ## 5. ゲート 6 — Server (**実測**)
 
-`.build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo --port 8080
+`.build/release/TsugumiServer --model scratch/gemma4-qat.moepack --port 8080
 --max-context 16384 --verification full-sha256` に対して:
 
 | 検査 | 結果 |
@@ -168,7 +168,7 @@ exit 0
 ではなく「画像だから 0」であることが言える。
 
 413 側 (`image_too_large` / `too_many_images`) と本文サイズの上限は
-`Tests/TurboFieldfareServer/ServerImageRequestTests.swift` が HTTP 経由で固定している
+`Tests/TsugumiServer/ServerImageRequestTests.swift` が HTTP 経由で固定している
 (実サーバでの再確認は行っていない — **未確認**)。
 
 ---
@@ -183,7 +183,7 @@ exit 0
 | Server (画像 6 リクエスト) | `full-sha256` | 起動・応答 200 |
 
 > Server の終了コードは一度 1 に見えたが、**測り方の誤り**だった:
-> `pkill -f 'TurboFieldfareServer --model'` は起動用のシェル自身にも一致するので、
+> `pkill -f 'TsugumiServer --model'` は起動用のシェル自身にも一致するので、
 > シェルを殺していた。PID を捕まえて `kill -INT` した測定では exit 0 である。
 
 ---
@@ -195,8 +195,8 @@ issue の内訳は `PREFILL_THROUGHPUT.md` §7-7 の陳腐化 4 スイート
 (QAT ピン / prefill 2048 / 48 スロット / causalQBlock) と**完全に同じで、
 新しい失敗はない** (V5 の 784 → 803 は今回の +19)。
 
-`Tests/TurboFieldfareFormatCompatibility` の凍結フィクスチャ (manifest / layout /
-resident index の SHA-256) が通っている = `--include-vision` なしの `.gturbo` は
+`Tests/MoEPackFormatCompatibility` の凍結フィクスチャ (manifest / layout /
+resident index の SHA-256) が通っている = `--include-vision` なしの `.moepack` は
 現行とバイト一致する。`vision` は optional なので text-only の JSON にキー自体が現れない。
 
 ---
@@ -206,23 +206,23 @@ resident index の SHA-256) が通っている = `--include-vision` なしの `.
 PLAN_VISION §0-D-6 が「このリポジトリ内では直接試験できない」として V6 に送った項目。
 **vision 以前の commit `7b625f6`** (「routed MoE を expert 単位 GEMM に (231pp)」= 
 vision の作業が 1 行も入っていない最後のコミット) を一時 worktree に建て、
-そのビルドに vision 付きの `.gturbo` を食わせた。
+そのビルドに vision 付きの `.moepack` を食わせた。
 
 ```
-$ .../prevision/.build/release/TurboFieldfareCLI \
-    --model scratch/gemma4-qat.gturbo --prompt "The capital of France is" --max-new 8
+$ .../prevision/.build/release/TsugumiCLI \
+    --model scratch/gemma4-qat.moepack --prompt "The capital of France is" --max-new 8
 error: manifest.flags contains unknown key "visionTower"
 exit 1
 ```
 
 **対照 (この検査の検出力そのもの):** 同じバイナリで、`visionTower` フラグを持たない
-`scratch/gemma4.gturbo` (旧 4bit インストール) は**正常に生成して exit 0**。
+`scratch/gemma4.moepack` (旧 4bit インストール) は**正常に生成して exit 0**。
 拒否はフラグに対するものであって、「古いバイナリが何にでも失敗する」のではない。
 
 | バイナリ | モデル | flags | 結果 |
 | --- | --- | --- | --- |
-| `7b625f6` (vision 以前) | `gemma4-qat.gturbo` (vision あり) | `visionTower: true` | **exit 1**、`unknown key "visionTower"` |
-| `7b625f6` (vision 以前) | `gemma4.gturbo` (vision なし) | フラグなし | exit 0、生成成功 |
+| `7b625f6` (vision 以前) | `gemma4-qat.moepack` (vision あり) | `visionTower: true` | **exit 1**、`unknown key "visionTower"` |
+| `7b625f6` (vision 以前) | `gemma4.moepack` (vision なし) | フラグなし | exit 0、生成成功 |
 
 > メッセージの実文言は PLAN が予想した `unknown v1 flag` ではなく
 > `manifest.flags contains unknown key "visionTower"` である。意味は同じで、
@@ -235,8 +235,8 @@ worktree は検査後に `git worktree remove` で撤去した (作業ツリー�
 ## 9. ゲート 10 — `--add-vision` (**実測**、PLAN_VISION §0-E-5 の再掲)
 
 ```
-$ ./.build/release/TurboFieldfareRepack --add-vision --input-gturbo scratch/gemma4-qat.gturbo
-Added the vision tower to …/scratch/gemma4-qat.gturbo
+$ ./.build/release/TsugumiRepack --add-vision --input-moepack scratch/gemma4-qat.moepack
+Added the vision tower to …/scratch/gemma4-qat.moepack
 Tower: 356 tensors, 1145588832 bytes
 Source: google/gemma-4-26B-A4B-it-qat-q4_0-unquantized @ f1e06dc520982d9b9edd76859fdb7ab209449949
 Downloaded 1145588832 bytes

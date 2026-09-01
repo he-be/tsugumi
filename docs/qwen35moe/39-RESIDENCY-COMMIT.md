@@ -287,10 +287,10 @@ vision / draft の install fixture。本書の変更とは無関係。
 
 | 事実 | 場所 |
 | --- | --- |
-| ドラフタの 3 区間の計器 | `Sources/TurboFieldfare/MTP/QwenMTPDrafter.swift` `DraftProfile` → footer の `[mtp/draft …]` (**実測(手元)**) |
+| ドラフタの 3 区間の計器 | `Sources/Tsugumi/MTP/QwenMTPDrafter.swift` `DraftProfile` → footer の `[mtp/draft …]` (**実測(手元)**) |
 | `draft` の GPU 時間を段に載せる | `QwenForwardRunner.noteStageGPU` (ドラフタは自前のコマンドバッファを回すので) |
-| 検証パスの層またぎ先読み | `Sources/TurboFieldfare/Runtime/Inference/QwenPrefill.swift` `runChunkLayers` の `chunkPrefetch` / `readChunkPreviewExperts`、`TF_QWEN_MTP_PREFETCH` |
-| commit を待たない腕 | `Sources/TurboFieldfare/Infrastructure/Streaming/MmapExpertMapping.swift` `syncResidencyAsync` + `PreadExpertStreamer.executeExpertCachePlan`、`TF_EXPERT_MMAP_RESIDENCY_ASYNC` |
+| 検証パスの層またぎ先読み | `Sources/Tsugumi/Runtime/Inference/QwenPrefill.swift` `runChunkLayers` の `chunkPrefetch` / `readChunkPreviewExperts`、`TF_QWEN_MTP_PREFETCH` |
+| commit を待たない腕 | `Sources/Tsugumi/Infrastructure/Streaming/MmapExpertMapping.swift` `syncResidencyAsync` + `PreadExpertStreamer.executeExpertCachePlan`、`TF_EXPERT_MMAP_RESIDENCY_ASYNC` |
 | mmap の腕がバイトを読まないこと | `PreadExpertStreamer.expertCachePlanBuffers` (返すのはマッピングの view) |
 | 常駐の保証は `useResource` が出していること | [docs/mtp/49](../mtp/49-D-P5-RESIDENCY-SET.md) §2 の腕 B\* (`MoE.swift` は不変) |
 | 4 腕の A/B | `bench/qwen35/mtp_ab.sh` (`ARMS="base baseasync mtp mtpasync"`) → `bench/qwen35/mtp39-ab/*.footer`、集計は `bench/qwen35/mtp39_report.py` (**実測(手元)**) |

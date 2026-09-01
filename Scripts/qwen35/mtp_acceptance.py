@@ -26,7 +26,7 @@
 畳み直す (t1 で 192 中 9 位置が食い違った)。`--messages` を添えると、
 テンプレートを組み直したプロンプトが同じ id になるかも検算する。
 
-    .build/release/TurboFieldfareCLI --model scratch/ornith-oq4e-g64.gturbo \\
+    .build/release/TsugumiCLI --model scratch/ornith-oq4e-g64.moepack \\
         --messages-file bench/qwen35/t1-ja-explain.json --temperature 0 \\
         --repetition-penalty 1 --thinking off --max-new 192 \\
         --dump-tokens scratch/qwen35/mtp-a/t1.tokens.json …

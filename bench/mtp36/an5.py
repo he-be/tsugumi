@@ -1,8 +1,8 @@
 import sys
 from collections import defaultdict
-sys.path.insert(0,"/Users/mh/LLM/turbo-fieldfare/bench")
+sys.path.insert(0,"/Users/mh/LLM/tsugumi/bench")
 from expert_sim import read_trace, LayerCache
-BASE="/Users/mh/LLM/turbo-fieldfare/bench/logs/36_trace/%s.tsv"
+BASE="/Users/mh/LLM/tsugumi/bench/logs/36_trace/%s.tsv"
 CAND=list(range(8,97,2))
 for r in ["ja_prose","en_bullets","code"]:
     h,rec=read_trace(BASE%r)

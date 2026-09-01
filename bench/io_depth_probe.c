@@ -10,7 +10,7 @@
 // ones that matter and they were the ones missing.
 //
 //   clang -O2 -o /tmp/io_depth_probe bench/io_depth_probe.c -lpthread
-//   /tmp/io_depth_probe scratch/gemma4-qat.gturbo/packed_experts 30 128
+//   /tmp/io_depth_probe scratch/gemma4-qat.moepack/packed_experts 30 128
 //
 // argv: <packed_experts dir> [trials] [experts per layer].
 // NOCACHE=1 (default) sets F_NOCACHE so the numbers are the device, not the
@@ -98,7 +98,7 @@ static int cmp_d(const void *a, const void *b) {
 }
 
 int main(int argc, char **argv) {
-    const char *dir = argc > 1 ? argv[1] : "scratch/gemma4-qat.gturbo/packed_experts";
+    const char *dir = argc > 1 ? argv[1] : "scratch/gemma4-qat.moepack/packed_experts";
     int trials = argc > 2 ? atoi(argv[2]) : 40;
     const char *e_nc = getenv("NOCACHE"), *e_ra = getenv("RDAHEAD");
     int nocache = e_nc ? atoi(e_nc) : 1;

@@ -15,7 +15,7 @@
     `outside_s = decode - draft - verify` としてこれを毎行出す。
 
 このドライバはモデルを起動する以外の一切を担当する計器であり、
-turbo 本番 CLI (`TurboFieldfareCLI`) を子プロセスとして 1 実行 = 1 プロセスで
+turbo 本番 CLI (`TsugumiCLI`) を子プロセスとして 1 実行 = 1 プロセスで
 呼ぶだけである。`Sources/` はもちろん、他の `bench/*.py` にも触れない。
 
 軸:
@@ -36,7 +36,7 @@ turbo 本番 CLI (`TurboFieldfareCLI`) を子プロセスとして 1 実行 = 1 
 
 実行の作法:
   - 1 実行 = 1 プロセス (`subprocess.run`, capture_output=True, cwd=リポジトリルート)。
-  - 各実行の直前に `pgrep -fl 'TurboFieldfare|llama-server|llama-bench|mlx'` を
+  - 各実行の直前に `pgrep -fl 'Tsugumi|llama-server|llama-bench|mlx'` を
     確認し、自分以外の推論プロセスが居たら実行せず異常終了する。
   - 実行と実行の間に `COOL_S` (環境変数、既定 20) 秒スリープする
     (`bench/llamacpp_spec_sweep.py` の作法を流用。最後の実行の後はスリープしない)。
@@ -66,7 +66,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 # `bench/mtp_goal_ab.py` の FOOTER_PATTERNS をそのまま流用する。
-# 出典 (実物の footer 出力行): Sources/TurboFieldfareCLI/Run.swift
+# 出典 (実物の footer 出力行): Sources/TsugumiCLI/Run.swift
 #   L242 stop=/prefill=/new=/decode=/tok/s=
 #   L281 load=
 #   L284 ttft=
@@ -127,7 +127,7 @@ TASKS = {
 
 COOL_S = int(os.environ.get("COOL_S", "20"))
 
-INFERENCE_PROC_PATTERN = "TurboFieldfare|llama-server|llama-bench|mlx"
+INFERENCE_PROC_PATTERN = "Tsugumi|llama-server|llama-bench|mlx"
 
 
 def parse_footer(stderr: str) -> dict:
@@ -147,7 +147,7 @@ def check_no_other_inference_proc() -> None:
         ["pgrep", "-fl", INFERENCE_PROC_PATTERN],
         capture_output=True, text=True,
     )
-    # 監視シェル (`until pgrep -f 'TurboFieldfare…'` の類) は自分のコマンド
+    # 監視シェル (`until pgrep -f 'Tsugumi…'` の類) は自分のコマンド
     # ライン自体がパターンにマッチする自己言及的な偽陽性を出す。2026-08-19 に
     # これでスイープが 1 度止まったので、シェルと pgrep 自身を除く。
     # 残すのは実際に GPU を掴む実行ファイルだけ。
@@ -163,7 +163,7 @@ def check_no_other_inference_proc() -> None:
 def build_cmd(args, task: str, bs: int) -> list:
     task_cfg = TASKS[task]
     cmd = [
-        str(ROOT / ".build/release/TurboFieldfareCLI"),
+        str(ROOT / ".build/release/TsugumiCLI"),
         "--model", args.model,
         "--messages-file", str(ROOT / task_cfg["messages_file"]),
     ]
@@ -285,7 +285,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--model", default="scratch/gemma4-qat.gturbo")
+    parser.add_argument("--model", default="scratch/gemma4-qat.moepack")
     parser.add_argument("--tasks", nargs="*", default=list(TASKS.keys()),
                         choices=list(TASKS.keys()),
                         help="測るタスク (既定: prose math image の 3 本全部)")

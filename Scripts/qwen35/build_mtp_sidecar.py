@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """差し替え済み MTP ヘッドを、ランタイムが mmap できる sidecar に書き出す。
 
-**`.gturbo` には MTP が 1 バイトも入っていない** — `RepackPlanner.classify` が
+**`.moepack` には MTP が 1 バイトも入っていない** — `RepackPlanner.classify` が
 `language_model.mtp.` を `.excludedDraft` に落とすからで、これは
 [30 §6-6](../../docs/qwen35moe/30-MTP-HEAD-GRAFT.md) が「pack を作り直す理由が
 無い」と書いたとおりである。ヘッドを実機で回すのに 20 GB の repack をやり直す
@@ -15,13 +15,13 @@
                       並び** (gate w/s/b, up w/s/b, down w/s/b、ページ境界まで
                       padding) なので `Model.routedExpertOffsets` と 1:1 で合う
 
-`--gturbo` を渡すと、その manifest の `expertStride` と本体 layer 0 の blob 内
+`--moepack` を渡すと、その manifest の `expertStride` と本体 layer 0 の blob 内
 offset に**一致するか**を検算する (合わなければ書かずに落ちる)。
 
     scratch/mtp-venv/bin/python Scripts/qwen35/build_mtp_sidecar.py \\
         ~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-shisa-baked \\
         --out ~/LLM/ornith-mtp-head \\
-        --gturbo scratch/ornith-oq4e-g64.gturbo
+        --moepack scratch/ornith-oq4e-g64.moepack
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ def main() -> int:
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("checkpoint", help="差し替え済み・焼き込み済み (…-shisa-baked)")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--gturbo", help="expertStride と blob 内 offset を照合する")
+    ap.add_argument("--moepack", help="expertStride と blob 内 offset を照合する")
     args = ap.parse_args()
 
     root = Path(args.checkpoint).expanduser()
@@ -183,8 +183,8 @@ def main() -> int:
     stride = ((blob_cursor + PAGE - 1) // PAGE) * PAGE
     num_experts = arrays["gate"][0].shape[0]
 
-    if args.gturbo:
-        manifest = json.loads((Path(args.gturbo).expanduser()
+    if args.moepack:
+        manifest = json.loads((Path(args.moepack).expanduser()
                                / "manifest.json").read_text())
         if manifest["expertStride"] != stride:
             raise SystemExit(f"expertStride が本体 {manifest['expertStride']} と "
@@ -212,7 +212,7 @@ def main() -> int:
     print(f"  mtp_experts.bin {stride * num_experts:,} B  {num_experts} blob", flush=True)
 
     head = {
-        "format": "turbo-fieldfare-mtp-head-v1",
+        "format": "tsugumi-mtp-head-v1",
         "source": {
             "checkpoint": str(root),
             "graft": json.loads((root / "mtp_graft_manifest.json").read_text())

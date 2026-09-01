@@ -222,7 +222,7 @@ decode service が共有する production 既定である。
 ## 5. インストール (PLAN_QAT §5-1) — 合格 (**実測**)
 
 ```bash
-./.build/release/TurboFieldfareRepack --output scratch/gemma4-qat.gturbo \
+./.build/release/TsugumiRepack --output scratch/gemma4-qat.moepack \
   --source-snapshot scratch/qat-aligned-snapshot
 # exit 0 / 40.6s
 # Source revision: 745a97a754ed4b7713163c7d0e9c11da41809e0c

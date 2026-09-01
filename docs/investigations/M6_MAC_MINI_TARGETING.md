@@ -2,7 +2,7 @@
 
 作成: 2026-09-01
 対象機: **Mac mini (M6, 2026)** 16 GB / 256 GB、¥149,800、2026-09-22 発売
-現行機: **Apple M3 Pro 18 GB / macOS 15.7.5**（`turbofieldfare-m3pro-status.md`）
+現行機: **Apple M3 Pro 18 GB / macOS 15.7.5**（`tsugumi-m3pro-status.md`）
 
 表記は他の調査文書と同じ:
 
@@ -210,7 +210,7 @@ Irodori 15 §2 と同じく**重ねられる形かどうかを先に構造で確
   Swift なので GIL も効かない。持ち込まれるのは軸長上限と fp16 オーバーフロー（§3-3-3）のみで、
   S=280 の系列長なら上限には遠い。
 - Core ML 経路は macOS 15 で動くので **M6-5 は M6 を待つ理由がない**。
-  検証は `TurboFieldfareKernelCheck --vision-tower` の fixture（max 8e-2 / rms 2e-3）がそのまま使える。
+  検証は `TsugumiKernelCheck --vision-tower` の fixture（max 8e-2 / rms 2e-3）がそのまま使える。
 
 **MTP ドラフター — 取り下げ（M3 Pro でも M6 でも効かない）**
 
@@ -271,7 +271,7 @@ decode 31 tok/s の内訳のうち、GPU でも I/O でもない部分がここ�
 
 ### 5-2. SSD「2 倍」は本命になりうる（が 256 GB 構成が未確認）
 
-現状 decode の expert I/O は **12.5 ms/token**（Mac アプリ実測、`turbofieldfare-m3pro-status.md` §2-1）。
+現状 decode の expert I/O は **12.5 ms/token**（Mac アプリ実測、`tsugumi-m3pro-status.md` §2-1）。
 M3 Pro の SSD 実力（`F_NOCACHE` でページキャッシュを迂回、実測）:
 
 | パターン | スループット |
@@ -408,7 +408,7 @@ M2 mini のベースモデルは 30〜50% 低下、M4 mini は 2×128 GB 構成�
 
 手元の実測:
 
-- `turbofieldfare-m3pro-status.md` — M3 Pro の実機構成と Mac アプリ計装
+- `tsugumi-m3pro-status.md` — M3 Pro の実機構成と Mac アプリ計装
 - `docs/investigations/PREFILL_THROUGHPUT.md` — GPU 内訳、SSD プローブ、MPP の group-64 制限
 - `docs/BENCHMARKS.md` — M5 Pro decode、MLX 同一ホスト比較、M2 の decode 内訳
 - `RESULTS.md` — 48/64 スロットと `trusted-install` の効果

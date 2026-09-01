@@ -194,8 +194,8 @@ ttft が +0.62 s、decode が −1.7 s (255 tok を 10.0 → 8.4 s) で、
 
 ## 6. MTP (bs=4) — **別条件**
 
-`--draft-block-size 4` は `scratch/gemma4-qat-sym.gturbo` に drafter が入って
-いないので、**45 以前の affine インストール** (`scratch/gemma4-qat.gturbo`、
+`--draft-block-size 4` は `scratch/gemma4-qat-sym.moepack` に drafter が入って
+いないので、**45 以前の affine インストール** (`scratch/gemma4-qat.moepack`、
 expertStride 3,719,168 = 227 ページ) で回した。
 **§2/§2a の表と絶対値で並べてはいけない** (40 §4-11) — 重みの形式も、
 モデルも、経路 (ブロック) も違う。腕の内部比較としてだけ読む。
@@ -251,7 +251,7 @@ expertStride 3,719,168 = 227 ページ) で回した。
 | | |
 | --- | --- |
 | 計器 | **`TF_EXPERT_MMAP=1`** (`MmapExpertMapping.swift`。既定は今の `pread`) |
-| 実装 | `Sources/TurboFieldfare/Infrastructure/Streaming/MmapExpertMapping.swift` (新規)、`PreadExpertStreamer.swift` (ミスの実装だけ分岐)、`ModelExpertIO.swift` (set の取り出し)、`RealForwardRunner.swift` (`useResidencySet` 3 か所)、`TurboFieldfareCLI/Run.swift` (footer 1 行) |
+| 実装 | `Sources/Tsugumi/Infrastructure/Streaming/MmapExpertMapping.swift` (新規)、`PreadExpertStreamer.swift` (ミスの実装だけ分岐)、`ModelExpertIO.swift` (set の取り出し)、`RealForwardRunner.swift` (`useResidencySet` 3 か所)、`TsugumiCLI/Run.swift` (footer 1 行) |
 | ドライバ | **`bench/mtp51_mmap_ab.py`** (ABBA。毎 run ミス数と生成文 sha256 を検定する。`--draft-block-size` で MTP 条件) |
 | **本測定** | `bench/mtp51/mmap_ab_256_math_v2.log` (運用点)、`mmap_ab_256_story.log`、`mmap_ab_256_math_bs4_affine.log` (MTP、別条件) |
 | 予備測定 | `bench/mtp51/mmap_ab_256_math.log` (§0 のロック修正より前のビルド。数字は v2 と 1.3% 以内で一致する) |

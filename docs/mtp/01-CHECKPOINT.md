@@ -2,7 +2,7 @@
 
 リモート側の事実は 2026-08-17 に HF API / Range 取得 / 参照ソース取得で直接読んだもの
 (**実測**)。**M1 で再確認済み** ([11-M1-RESULTS.md](11-M1-RESULTS.md) §1) で、
-ピンは `Sources/TurboFieldfareRepack/Core/Remote/DraftModelSource.swift` が持つ。
+ピンは `Sources/TsugumiRepack/Core/Remote/DraftModelSource.swift` が持つ。
 
 ---
 
@@ -60,7 +60,7 @@ sliding 層で通常の SWA decode attention に潰れる。既存の decode att
 
 ## 4. ターゲットとの整合 (**実測**)
 
-`ArchConfig.gemma4_26B_A4B` (`Sources/TurboFieldfare/Infrastructure/ModelIO/ModelTypes.swift:78-107`)
+`ArchConfig.gemma4_26B_A4B` (`Sources/Tsugumi/Infrastructure/ModelIO/ModelTypes.swift:78-107`)
 と突き合わせた。ドラフターの要求はすべて既存の形に収まる。
 
 | 項目 | ターゲット | ドラフターの要求 | 判定 |

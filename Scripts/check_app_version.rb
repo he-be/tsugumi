@@ -20,8 +20,8 @@ require "shellwords"
 require "uri"
 
 ROOT = File.expand_path("..", __dir__)
-SOURCE = File.join(ROOT, "Sources/TurboFieldfareApp/MacPresentation/AboutPanelPresentation.swift")
-UPSTREAM_REPOSITORY = "drumih/turbo-fieldfare"
+SOURCE = File.join(ROOT, "Sources/TsugumiApp/MacPresentation/AboutPanelPresentation.swift")
+UPSTREAM_REPOSITORY = "he-be/tsugumi"
 
 # The releases worth comparing against are the ones this checkout publishes.
 # A fork that has not caught up with upstream is not "behind" on its own
@@ -54,7 +54,7 @@ def published_versions
   uri = URI(RELEASES_URL)
   request = Net::HTTP::Get.new(uri)
   request["Accept"] = "application/vnd.github+json"
-  request["User-Agent"] = "turbofieldfare-version-check"
+  request["User-Agent"] = "tsugumi-version-check"
   token = ENV["GITHUB_TOKEN"] || ENV["GH_TOKEN"]
   request["Authorization"] = "Bearer #{token}" if token && !token.empty?
 
@@ -112,7 +112,7 @@ if compare(compiled, floor) < 0
     app version #{compiled} is more than one release behind #{REPOSITORY} (latest #{latest})
 
     Update fallbackShortVersion in
-    Sources/TurboFieldfareApp/MacPresentation/AboutPanelPresentation.swift
+    Sources/TsugumiApp/MacPresentation/AboutPanelPresentation.swift
     so a clone build reports the version it actually corresponds to.
   MESSAGE
 end

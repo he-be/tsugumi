@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Caption the images in sample_imgs/ with the local TurboFieldfare CLI.
+"""Caption the images in sample_imgs/ with the local Tsugumi CLI.
 
 The counterpart to `sample_imgs/caption.py`, which asks a llama-swap server on
 another machine for the same captions from the same checkpoint. Neither run can
@@ -10,7 +10,7 @@ tower is *seeing* the image, not about matching text.
 Writes `sample_imgs/captions_<label>.json` and `.md` in the same shape
 `caption.py` writes, so its `--compare` mode can put the two side by side:
 
-    python3 Scripts/vision/caption_cli.py --model scratch/gemma4-qat.gturbo --label local-t02
+    python3 Scripts/vision/caption_cli.py --model scratch/gemma4-qat.moepack --label local-t02
     cd sample_imgs && uv run caption.py --compare compare_spec.tsv
 """
 
@@ -27,7 +27,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 IMAGES_DIR = REPO_ROOT / "sample_imgs"
-CLI = REPO_ROOT / ".build" / "release" / "TurboFieldfareCLI"
+CLI = REPO_ROOT / ".build" / "release" / "TsugumiCLI"
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic", ".heif"}
 
@@ -132,7 +132,7 @@ def caption_one(cli: Path, model: Path, image: Path, args, sampling: dict) -> di
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", required=True, help="path to a .gturbo with a vision tower")
+    parser.add_argument("--model", required=True, help="path to a .moepack with a vision tower")
     parser.add_argument("--label", default="local-t02",
                         help="output label; captions_<label>.json/.md")
     parser.add_argument("--sampling", default="t02", choices=sorted(SAMPLING_PRESETS))
@@ -173,7 +173,7 @@ def main() -> int:
         print(f"  caption: {preview}{'…' if len(entry['caption']) > 160 else ''}")
 
     payload = {
-        "model": "turbo-fieldfare/gemma4-26b-a4b-qat",
+        "model": "tsugumi/gemma4-26b-a4b-qat",
         "label": args.label,
         "sampling": sampling,
         "max_tokens": args.max_new,
@@ -185,7 +185,7 @@ def main() -> int:
     out_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     lines = [
-        "# 画像キャプション (TurboFieldfare CLI)",
+        "# 画像キャプション (Tsugumi CLI)",
         "",
         f"Label: `{args.label}`",
         f"Sampling: `temperature={sampling['temperature']}, "

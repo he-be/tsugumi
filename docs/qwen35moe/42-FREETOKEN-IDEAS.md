@@ -28,7 +28,7 @@ DeepSeek-V4-Flash / Qwen3.6-35B-A3B / GLM-5.2 級を消費者機で回す。
 | 3 | global expert cache | 公表値は大差 (miss 16% 対 41%) だが、**こちらには逆風の実測が既にある** ([31 §7](31-PREFETCH-CHEAPER.md): 層別 miss 分布に崖が無い = 層が均質なら均等割がほぼ最適)。`expert_sim.py` の流儀 ([27 §6-1](27-PHASE6-THROUGHPUT.md)) で **GPU 0 分**の白黒がつく。本命は予算の細い **Gemma 8 GB 側** (§3) |
 | 4 | KV ↔ スロットの弾力予算 | M3 Pro 運用点は 2.84 対 12.88 GB ([34 §2-3](34-PROMPT-CACHE-ESTIMATE.md)) で圧が無く**急がない**。§2 の写真プールが予算に入る日に一緒に (§4) |
 | 5 | CPU–GPU co-execution | FreeToken の核だが unified memory には**軸ごと存在しない**。翻訳して残るのは **miss した expert の decode GEMV を CPU にやらせ、ページ写像も residency commit も踏まない**案 — [04](04-PHASES.md) #31 (c) hit-fixup の変種であり独立の手ではない (§5) |
-| 6 | 写さないもの | full-layer double-buffered prefill (prefill は帯域の床 [28 §6](28-PREFETCH-IDEAS.md))、FTW 形式 (`.gturbo` が同型)、warming 無し起動 (既にそう)、機種別の自動キャリブレーション (「この 1 台」の方針と衝突) (§6) |
+| 6 | 写さないもの | full-layer double-buffered prefill (prefill は帯域の床 [28 §6](28-PREFETCH-IDEAS.md))、FTW 形式 (`.moepack` が同型)、warming 無し起動 (既にそう)、機種別の自動キャリブレーション (「この 1 台」の方針と衝突) (§6) |
 | 7 | コードとライセンス | **1 行も写さない** (ソース未読、ライセンス**未確認**)。写すのは論文が公表した機構の形だけ。コードを写す日が来たら先にライセンスを確認し `THIRD_PARTY_NOTICES.md` に足す |
 
 ---
@@ -42,7 +42,7 @@ DeepSeek-V4-Flash / Qwen3.6-35B-A3B / GLM-5.2 級を消費者機で回す。
 | KV ページ ↔ expert スロットの弾力配分 — safe point で再構築、リロード無し | `ExpertCacheBudget` (load 時に確定) | 条件が来るまで寝かせる (§4) |
 | 帯域適応の CPU–GPU co-execution | 対応する軸が無い (unified memory) | 方針だけ翻訳 (§5) |
 | full-layer double-buffered prefill — routing を待たず層 l+1 を丸ごと転送、無効化で 19〜26% 損 | prefill のタイル読み先行 ([27](27-PHASE6-THROUGHPUT.md)) | 写さない (§6) |
-| FTW 重み形式 / cold 起動 / pin 前の最終レイアウト直書き | `.gturbo` / 既に cold 起動 / mmap の世界 | 写さない (§6) |
+| FTW 重み形式 / cold 起動 / pin 前の最終レイアウト直書き | `.moepack` / 既に cold 起動 / mmap の世界 | 写さない (§6) |
 
 ## 2. 意味的境界の anchor — [41](41-PROMPT-CACHE.md) の「全部か無か」を「境界まで」に広げる
 
@@ -150,7 +150,7 @@ FreeToken の核 (帯域適応の CPU–GPU co-execution) は unified memory に
 | 機構 | 写さない理由 |
 | --- | --- |
 | full-layer double-buffered prefill | prefill は 6.2 GB/s で**デバイス帯域の床に居る** ([28 §6](28-PREFETCH-IDEAS.md))。現行 prefill も次タイルの先行取得を既に重ねている ([27](27-PHASE6-THROUGHPUT.md))。床に居る間は、routing への依存を切っても取れる泡が無い |
-| FTW 重み形式 | `.gturbo` が同型である (page-aligned・固定 stride・blob 単位の bind) |
+| FTW 重み形式 | `.moepack` が同型である (page-aligned・固定 stride・blob 単位の bind) |
 | warming 無しの cold 起動 / pin 前の最終レイアウト直書き | 前者は既にそう (スロットは touch されるまで非常駐)。後者は pread + pin の世界の話で、mmap に対応物が無い |
 | 機種ごとの帯域適応 (自動キャリブレーション) | 方針と衝突する — 本計画は**この 1 台**で速いことだけを狙う ([README](README.md))。Gemma 側の community 機に「提案値を出すだけ」の形はありうるが、既定は動かさない |
 

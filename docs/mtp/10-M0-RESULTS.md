@@ -1,7 +1,7 @@
 # 10. M0 の結果 — 速度上限とタスク別の受理上限
 
 測定: 2026-08-17、commit `e5205c3` + 診断 1 本 (§5)、M3 Pro 18GB / macOS 15.7.5。
-モデル `scratch/gemma4-qat.gturbo`。サンプリングは PLAN §6 の測定プロトコルどおり
+モデル `scratch/gemma4-qat.moepack`。サンプリングは PLAN §6 の測定プロトコルどおり
 **temp 1.0 / top-k 64 / top-p 0.95 固定**、`--seed 1`、Reasoning ON。
 
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
@@ -168,7 +168,7 @@ CLI は `--thinking on|off` を持つ (`Args.swift:319`)。
 
 ## 7. 入れた診断 (既定オフ)
 
-`Sources/TurboFieldfare/Runtime/Generation/AcceptanceProbe.swift` (新規) と
+`Sources/Tsugumi/Runtime/Generation/AcceptanceProbe.swift` (新規) と
 `RawCompletion.swift:282` の 3 行。`TF_ACCEPT_PROBE=<path>` が立っているときだけ、
 decode 1 step ごとに「抽選分布 (top-k 64 + top-p を `sample_topk64_final` と
 同じ規約で適用し再正規化) の最大確率・引いたトークンの確率と順位」を TSV に出す。

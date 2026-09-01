@@ -2,9 +2,9 @@
 
 実測: 2026-08-20、M3 Pro 18 GiB / macOS 15.7.5、`iogpu.wired_limit_mb` = 14336。
 [48 §13](48-D-P1-P4-MMAP-RESIDENCY.md) が置いた P-5 を実行した。
-**推論経路 (`Sources/TurboFieldfare/`) は無改変。**計器は
-`TurboFieldfareKernelCheck --mmap-p5-probe` の新規フラグ 1 つ
-(`Sources/TurboFieldfareKernelCheck/MmapP5FaultProbe.swift`)。
+**推論経路 (`Sources/Tsugumi/`) は無改変。**計器は
+`TsugumiKernelCheck --mmap-p5-probe` の新規フラグ 1 つ
+(`Sources/TsugumiKernelCheck/MmapP5FaultProbe.swift`)。
 
 一次ログは `bench/mtp48/p5_*.log`。本測定は**独立な 4 invocation × 片側 n=20 = n=80**
 (交互順を 2 種類)。統計は `bench/mtp48_p5_stats.py` が一次ログから出し直す
@@ -276,8 +276,8 @@ residency set は層ごと。**比ではなく **1 歩の壁時計**を今の
 
 | | |
 | --- | --- |
-| 計器 | `TurboFieldfareKernelCheck --mmap-p5-probe` (`--mmap-p5-rounds N`、`--mmap-p5-order palindrome\|rotate`、`--mmap-p5-only A\|B\|B*\|C\|D`、`--mmap-p5-experts N`、`--mmap-p5-pollute N`、`--mmap-p5-fixture-early`、`--mmap-probe-model <path>`) |
-| 実装 | `Sources/TurboFieldfareKernelCheck/MmapP5FaultProbe.swift` (43/44 の `BpwProbe` は無改変) |
+| 計器 | `TsugumiKernelCheck --mmap-p5-probe` (`--mmap-p5-rounds N`、`--mmap-p5-order palindrome\|rotate`、`--mmap-p5-only A\|B\|B*\|C\|D`、`--mmap-p5-experts N`、`--mmap-p5-pollute N`、`--mmap-p5-fixture-early`、`--mmap-probe-model <path>`) |
+| 実装 | `Sources/TsugumiKernelCheck/MmapP5FaultProbe.swift` (43/44 の `BpwProbe` は無改変) |
 | **本測定 (n=80)** | `bench/mtp48/p5_palindrome_run{1,2}.log`、`bench/mtp48/p5_rotate_run{1,2}.log` |
 | ページ数の掃引 (§4) | `bench/mtp48/p5_experts_{2,4,8,16}.log` |
 | §7 の 3 つの検定 | `p5_alone_{A,B,C}.log`、`p5_polluted_run1.log`、`p5_alone_A_fixture_early.log`、`p5_palindrome_fixture_early.log` |

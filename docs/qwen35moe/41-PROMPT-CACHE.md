@@ -219,7 +219,7 @@ greedy はいずれ分かれる。**キャッシュを持つ以上これは避�
 ### 7-1. `--qwen-resume` (新規、7 本・負例 1)
 
 ```
-.build/release/TurboFieldfareKernelCheck --qwen-resume scratch/ornith-oq4e-g64.gturbo
+.build/release/TsugumiKernelCheck --qwen-resume scratch/ornith-oq4e-g64.moepack
   PASS  1 要求で通したときの位置 — kv=30, prompt 19 + 生成 12 − 1
   PASS  接頭 18 を持ち越しても同じトークン — 12/12 tokens, cached=18 computed=1
   PASS  接頭 9 を持ち越しても同じトークン — 12/12 tokens, cached=9 computed=10

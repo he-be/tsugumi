@@ -17,16 +17,16 @@
 
 | ファイル | 中身 |
 | --- | --- |
-| `01_kernelcheck.log` | `TurboFieldfareKernelCheck` **69/69 PASS**。group 64/32 × affine/sym + vision。`../kernelcheck_both_schemes.log` とケース構成が一致 |
+| `01_kernelcheck.log` | `TsugumiKernelCheck` **69/69 PASS**。group 64/32 × affine/sym + vision。`../kernelcheck_both_schemes.log` とケース構成が一致 |
 | `02_repack_from_snapshot.log` | `--source-snapshot` からの repack。35.2 秒、`symmetric: 788175872 groups verified` |
 | `03_verify_install.log` | `--verify-install` 37 files / 14,299,490,432 B |
-| `04_install_hashes.log` | 出来たモデルが出荷済み `gemma4-qat-sym.gturbo` と **37 ファイル全部の sha256 一致** (repack は再現可能) |
+| `04_install_hashes.log` | 出来たモデルが出荷済み `gemma4-qat-sym.moepack` と **37 ファイル全部の sha256 一致** (repack は再現可能) |
 | `05_greedy_equivalence.log` | temp 0 / 256 tok / 32 スロット。**3 プロンプト 5 ペアすべてバイト一致**、decode hit も同一。`TF_FORCE_AFFINE_SCHEME=sym` の導出検定も一致 |
 | `06_ab_tps_32slots_rerun.log` | 運用点 (32 スロット) の A/B、3 往復・クールダウン 20 秒。**静穏時に取り直した本命の系列** |
 | `07_ab_rerun_analysis.log` | 上の中央値と差分 |
 | `08a_add_draft.log` / `08_mtp_ab.log` | sym target (group 32) × affine drafter (group 64) の同居。`--draft-block-size 4` で **バイト一致**、rounds/accept/accepted 分布まで同一 |
 | `09_long_prefill_ab.log` | prefill 702 tok の A/B。**tensor-core INT4 経路 (`MPPPrefillInt4QMM`) は `tokenCount >= 32` でしか発火しない**ので、短いプロンプトだけでは踏めない経路をここで踏んでいる |
-| `10_server_smoke.log` | `TurboFieldfareServer` に sym を載せた smoke (`/health`, `/v1/models`, `/v1/chat/completions`) |
+| `10_server_smoke.log` | `TsugumiServer` に sym を載せた smoke (`/health`, `/v1/models`, `/v1/chat/completions`) |
 | `11_swift_test_summary.log` | `Scripts/test.sh` 945 tests / 8 issues。**全部 "C2 prompt token invariants"** (既知の意図的な赤)。新規の破れなし |
 | `generations/` | 上の全生成の生出力 (footer 込み)。`gen_*` = 等価性、`rerun_*` = 静穏時 A/B、`mtp_*`、`long_*` |
 | `driver_equivalence.sh` / `driver_ab_rerun.sh` | 使ったドライバ (プロンプトはこの中にある) |
@@ -57,7 +57,7 @@
 - **通していない経路**: ストリーミングインストール (45 §6 の既知の限界で `affine` のまま)、
   vision タワー × `sym` (出荷済み sym モデルにタワーが無い)、Mac アプリの GUI。
 - MTP の検定に使った sym + drafter のモデルは検証用の複製で、**確認後に削除した**。
-  再現するには `--add-draft --input-gturbo <sym モデル>` (236 MB、約 66 秒)。
+  再現するには `--add-draft --input-moepack <sym モデル>` (236 MB、約 66 秒)。
 
 ## ついでに気づいたこと
 

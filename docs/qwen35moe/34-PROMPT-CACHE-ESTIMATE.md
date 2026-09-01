@@ -309,7 +309,7 @@ NVMAI の `uncommittedBoundaryTokenIDs`「常に 1 個」(32 §2) と**同じ形
 | `QwenServerSession.swift:196-205` | `max_tokens: 0` の早期出口も 0 固定 | 同上 |
 
 **壊してはいけない不変量**: SPEC RSP-1 / RSP-3 の
-`cache_n + prompt_n == usage.prompt_tokens` — `Tests/TurboFieldfareServer/ServerTimingsTests.swift:113-116`
+`cache_n + prompt_n == usage.prompt_tokens` — `Tests/TsugumiServer/ServerTimingsTests.swift:113-116`
 と `ServerTimingsWireTests.swift:161` が検査している。今の Qwen は
 `prompt_n = 全プロンプト長 / cache_n = 0` で偶然通っているだけなので、
 **`run.promptTokens` を「計算した分」に変えると同時に `cacheTokens` を入れないと落ちる。**
@@ -371,7 +371,7 @@ throw ではなく abort である** — サーバーが落ちる。位置込み
 | 7 | `QwenServerSession.swift:196-205, 370-383` | `cache_n` / `cachedTokens` / `prompt_n` の結線 (§3-2) | ~10 |
 | 8 | `ServerPromptCache.swift:179` | `publish` の overload | ~12 |
 | 9 | `QwenServerSession.load` | domain の組み立て (template SHA256 / runtime digest) | ~20 |
-| 10 | `Tests/TurboFieldfareServer/` | 一致判定・延長・全ミス・RSP-1 分割の検査 | ~60 |
+| 10 | `Tests/TsugumiServer/` | 一致判定・延長・全ミス・RSP-1 分割の検査 | ~60 |
 | | | **計** | **約 200 行** |
 
 **新規カーネル 0 本、`.metal` 0 行、Gemma の経路 0 行。**
@@ -432,7 +432,7 @@ ServerPromptCache.swift:239
 `ServerPromptCache.match` は**新しく描き直したプロンプト**と**前回の KV の
 トークン列**を突き合わせる。前回の assistant ターンは、
 **モデルが書いたバイトではなく、テンプレートが構造体から描き直したバイト**である。
-`scratch/ornith-oq4e-g64.gturbo/tokenizer/chat_template.jinja` を読むと、
+`scratch/ornith-oq4e-g64.moepack/tokenizer/chat_template.jinja` を読むと、
 そこに 3 つのずれの種がある:
 
 | 種 | テンプレートの行 | 何が起きるか |

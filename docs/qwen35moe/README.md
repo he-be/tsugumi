@@ -14,7 +14,7 @@ Gated DeltaNet (`qwen_delta_rule`) は 2048 トークン後の状態が **CPU fl
 (因果 `conv1d` + l2norm / 減衰ゲート / `RMSNormGated` / partial RoPE / 出力ゲート /
 shared ゲート / SiLU) も通り、**検査は 29 本すべて緑、うち 6 本は負例**
 ([17](17-PHASE2-KERNELS.md))。突き合わせ先は [14](14-REFERENCE.md) の float32 参照器
-(上流実装と相対 6.4e-07 / top-1 一致 100%)。`.gturbo` への repack は
+(上流実装と相対 6.4e-07 / top-1 一致 100%)。`.moepack` への repack は
 `--verify-install` が緑 (20.49 GB、[13](13-PHASE1-REPACK.md))。
 **本線は `oQ4e-g64`** — 同じ文章 4 本の平均 NLL が公式 MLX-4bit より 4 本とも低く、
 MTP と vision の実物も入っている ([16 §1](16-QUALITY.md))。
@@ -115,7 +115,7 @@ zero-centered なので +1)、**42/42 がバイト一致で書け、index が参
 乱数の指紋だった **expert 間 std の CV は 0.69% → 9.46%** になり、`mtp.fc` の尖度は
 3.05 → **504.89**。増えたディスクは差し替えシャード **503 MB** だけ
 (`~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-shisa-baked`)。**以降 MTP を読むものは
-これだけを使う。**`.gturbo` は元から `mtp.*` を持たない (repack が
+これだけを使う。**`.moepack` は元から `mtp.*` を持たない (repack が
 `.excludedDraft` に落とす) ので、**pack も固定 digest も動かしていない**。
 **そして受理率を測った** ([33](33-MTP-ACCEPTANCE.md)): 実タスク 4 本の生成 192
 トークンを float32 参照器に教師強制で通し、**深さ 1 の受理率 P1 = 69.31〜87.83%
@@ -134,7 +134,7 @@ pre/post-norm は**深さ 1 では区別がつかない** (2 勝 2 敗、±1.1 �
 運用点では論点にならない。**カーネルは 1 本も書いていない。**
 
 **そして実機で通しで回して決着させた** ([36](36-MTP-DECODE.md)): ヘッドを
-**503 MB の sidecar 1 枚**で GPU に載せ (`.gturbo` の repack は 0 回)、幅 2 の
+**503 MB の sidecar 1 枚**で GPU に載せ (`.moepack` の repack は 0 回)、幅 2 の
 検証パスと巻き戻しを書き、実タスクを 192 トークン生成した。**採る。ただし条件付き** —
 エージェント形のターン (短いプロンプト、コード修正 ×1.146 / ツール JSON ×1.199) で
 勝ち、コード生成 ×0.959、英語散文 ×0.941、**2,698 トークンの要約 ×0.843** で負ける。
@@ -259,7 +259,7 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 6 | [10-MLX4BIT-AUDIT.md](10-MLX4BIT-AUDIT.md) | **実測(手元)。**公式 MLX-4bit の検証、上流 bf16 との規約照合、減衰ゲート (`in_proj_a`) の感度測定 |
 | 7 | [11-OQ4E-G64-REBUILD.md](11-OQ4E-G64-REBUILD.md) | **実測(手元)。**oQ4e-mtp の取得と、非互換 248 本の 8-bit g64 打ち直し (`oQ4e-g64` の作成) |
 | 8 | [12-OQ4E-G64-AUDIT.md](12-OQ4E-G64-AUDIT.md) | **実測(手元)。**`oQ4e-g64` の規約照合 (norm / `conv1d` / router) と、2 候補を同じ物差しで並べた表、`q_norm` の焼き込み |
-| 9 | [13-PHASE1-REPACK.md](13-PHASE1-REPACK.md) | **実測(手元)。**`.gturbo` への repack と `--verify-install`、形式に足した 3 つのセクション、混在ビット幅という Phase 3 の宿題 |
+| 9 | [13-PHASE1-REPACK.md](13-PHASE1-REPACK.md) | **実測(手元)。**`.moepack` への repack と `--verify-install`、形式に足した 3 つのセクション、混在ビット幅という Phase 3 の宿題 |
 | 10 | [14-REFERENCE.md](14-REFERENCE.md) | **実測(手元)。**float32 の層ストリーミング参照器、逆量子化と算式の検証、実物の初回 forward と生成スモーク、fixtures |
 | 11 | [15-PHASE2-GDN.md](15-PHASE2-GDN.md) | **実測(手元)。**Gated DeltaNet カーネル (`qwen_delta_rule`)、3 精度での検証 15 本、TB の 3 通りと 30 層の時間 |
 | 12 | [16-QUALITY.md](16-QUALITY.md) | **実測(手元)。**2 候補の平均 NLL (本線の決定) と、`in_proj_a` の実活性再測 (未決着) |
@@ -284,7 +284,7 @@ macOS 15.7.5) で速いことだけを目的にし、互換性・移植性・他
 | 35 | [40-MTP-GRAMMAR.md](40-MTP-GRAMMAR.md) | **実測(手元)。**文法つきの MTP (再畳み込みに**行を渡す**だけで済んだ話、2 行への当て方と順序、受理判定を制約後の引きと比べる理由) と、サーバーの `--draft-block-size 2` (幅は 2 だけ・sidecar は起動時・`max_tokens` の 1 位置)、3 腕のトークン一致 55/55 と 63/63、実タスクの A/B (decode ×1.14)、`--qwen-constrain` の 6 本追加、**prompt cache が無いことがエージェントで一番効く**という残り |
 | 34 | [39-RESIDENCY-COMMIT.md](39-RESIDENCY-COMMIT.md) | **実測(手元)。**[38 §7](38-MTP-VERIFY-PATH.md) の残り 2 件を測って手を 2 本試した — ドラフタの 6.0 ms は**89% が GPU** (融合の上限は 0.64 ms/パス)、層またぎ先読みは**負け** (予測 router が幅 2 で +8.3 ms/パス、commit の通貨は回数)。採ったのは **`syncResidency` を背景の直列キューへ**投げる 1 手で、`io` 36.5 → 8.3 ms/パス、**4 タスク 4 腕すべて勝ち** (素の decode ×1.047〜1.124、MTP ×1.039〜1.083)。**set を捨てる腕は ×0.975〜0.986** と 27 §9-2 を再現するので、機序は「先回りが無駄」ではなく「スレッドが違う」。語彙切り詰めは id 分布で**着手前に潰した** |
 | 33 | [38-MTP-VERIFY-PATH.md](38-MTP-VERIFY-PATH.md) | **実測(手元)。**[37](37-MTP-POSTMORTEM-PLAN.md) の改善案 A を、着手前に段ごとの計器で検算した — **内訳は外れていた** (route grouping は 0.25 ms/パス、11 ms ではない)。真犯人は**プロンプト用 attention カーネルが幅 1〜2 で KV 全体を 16 スレッドグループに歩かせる**こと (文脈 +2,640 位置で decode +5.0 ms 対 T 行経路 +26.0 ms)。既存の split-KV に**行ごと**に差し替え (ブロック 1 発だと投機の中立性が 95/96 に落ちる)、**t4 ×0.802 → ×1.110**、5 本中 3 本が勝ち。**新カーネル 0 本。**A の残り 2 弾は取り下げ (§7-4) |
-| 32 | [36-MTP-DECODE.md](36-MTP-DECODE.md) | **実測(手元)。**MTP を実機で通した決着 — ヘッドの sidecar (`.gturbo` は無改造)、GPU 上の MTP ブロック、幅 2 の検証パスとコピー 0 回の巻き戻し、**強制棄却の対照が設計の誤りを捕まえた話** (§3-1)、費用の追い込み (コマンドバッファ本数は無罪、密射影のカーネルが犯人)、**実タスク 5 本の A/B (×1.199〜×0.843)**、[33 §3-7](33-MTP-ACCEPTANCE.md) の見積もりがどこで曲がったか |
+| 32 | [36-MTP-DECODE.md](36-MTP-DECODE.md) | **実測(手元)。**MTP を実機で通した決着 — ヘッドの sidecar (`.moepack` は無改造)、GPU 上の MTP ブロック、幅 2 の検証パスとコピー 0 回の巻き戻し、**強制棄却の対照が設計の誤りを捕まえた話** (§3-1)、費用の追い込み (コマンドバッファ本数は無罪、密射影のカーネルが犯人)、**実タスク 5 本の A/B (×1.199〜×0.843)**、[33 §3-7](33-MTP-ACCEPTANCE.md) の見積もりがどこで曲がったか |
 | 31 | [35-PREFILL-CHUNK-WIDTH.md](35-PREFILL-CHUNK-WIDTH.md) | **実測(手元)。**`QwenPrefill` が要求幅ではなく scratch の幅でプロンプトを切っていた — 1 プロセスで幅を変えると 2 本目以降が最初の幅で走る。**[21 §4](21-PHASE4-PREFILL.md) の「チャンク 8 (3 チャンク)」は空振りしていた**。直して初めて引き継ぎが本当に走り、通った。答えは 1 度も間違っていない |
 | 30 | [34-PROMPT-CACHE-ESTIMATE.md](34-PROMPT-CACHE-ESTIMATE.md) | **検討 (導出のみ)。**32 §2 の snapshot-restore 型 prompt cache の取り分を机上で — prefill の**床 1.30 秒**を含む正しい式、シナリオ別の取り分 (**最大 9.2 秒**)、1 エントリの費用 (KV 20 KiB/tok × 10 層 + GDN 61.41 MiB) と予算判定、**その場保持なら 0 バイト**、足りていないもの 5 つと実装規模、**再レンダの継ぎ目という一番大きい危険** |
 | 28 | [32-NVMAI-ADOPT.md](32-NVMAI-ADOPT.md) | **検討 + 実測(NVMAI)。**同じ Ornith 1.5 を動かす兄弟ランタイム `~/LLM/NVMAI` からの移植候補 — MTP の checkpoint/restore と損益分岐 (p > 0.585)、pre-final-norm の決着、snapshot-restore 型 prompt cache、decode の hit-fixup、interleaved A/B の作法 |

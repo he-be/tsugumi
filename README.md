@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/assets/turbofieldfare-logo-rounded.png" alt="TurboFieldfare logo: a fieldfare inside a segmented cache ring" width="280">
+  <img src="docs/assets/tsugumi-logo-rounded.png" alt="Tsugumi logo: a fieldfare inside a segmented cache ring" width="280">
 </p>
 
-<h1 align="center">TurboFieldfare</h1>
+<h1 align="center">Tsugumi</h1>
 
 <p align="center">
   <strong>Gemma 4 26B-A4B inference in about 2 GB of RAM</strong><br>
@@ -26,11 +26,11 @@
   <a href="docs/IMPLEMENTATION_REFERENCES.md">References</a>
 </p>
 
-![TurboFieldfare Mac app generating text with Gemma 4 26B-A4B](docs/assets/turbofieldfare-app.webp)
+![Tsugumi Mac app generating text with Gemma 4 26B-A4B](docs/assets/tsugumi-app.webp)
 
 Memory got expensive. So I gave a 26-billion-parameter model a ~2 GB budget.
 
-TurboFieldfare runs the instruction-tuned
+Tsugumi runs the instruction-tuned
 **[Gemma 4 26B-A4B](https://ai.google.dev/gemma/docs/core/model_card_4)**
 without loading the entire 14.3 GB model into memory. It keeps the shared
 1.35 GB core and FP16 KV cache in memory, then streams only the experts needed
@@ -38,7 +38,7 @@ for each token from SSD. This is what lets the model run on Macs with 8 GB of
 RAM.
 
 The runtime, streaming installer, CLI, and native Mac app are written in Swift
-and Metal. TurboFieldfare is model-specific rather than a wrapper around MLX or
+and Metal. Tsugumi is model-specific rather than a wrapper around MLX or
 llama.cpp. The curated [experiment record](docs/experiments/EXPERIMENT_INVENTORY.md)
 summarizes 103 measured results across kernels, caching, I/O, prefill, and
 decode.
@@ -46,17 +46,17 @@ decode.
 ## Try it
 
 ```bash
-git clone https://github.com/drumih/turbo-fieldfare.git
-cd turbo-fieldfare
+git clone https://github.com/he-be/tsugumi.git
+cd tsugumi
 swift build -c release
-.build/release/TurboFieldfareMac
+.build/release/TsugumiMac
 ```
 
 On the first run, Swift Package Manager downloads and builds the Swift packages
 required by the tokenizer. The complete release build includes the foreground
 Mac app and its sibling decode-service executable.
 
-When the app opens, choose **Download** and let TurboFieldfare fetch and repack
+When the app opens, choose **Download** and let Tsugumi fetch and repack
 the pinned model (about 15 GB). Once it is ready, choose **Load Model**, type
 your prompt, and press **Generate**.
 
@@ -80,22 +80,22 @@ See [community benchmark results](docs/COMMUNITY_BENCHMARKS.md#community-results
 from other Macs, or follow the
 [community benchmark guide](docs/COMMUNITY_BENCHMARKS.md) to add your own.
 
-## Using TurboFieldfare
+## Using Tsugumi
 
-TurboFieldfare provides a native Mac app, a command-line interface, and an
-experimental loopback OpenAI-compatible server. They use the same `.gturbo`
+Tsugumi provides a native Mac app, a command-line interface, and an
+experimental loopback OpenAI-compatible server. They use the same `.moepack`
 model directory, but only one model-owning product should run at a time.
 
 The Swift package exposes six products:
 
 | Product | Purpose |
 | --- | --- |
-| `TurboFieldfare` | Swift library containing the runtime and Metal kernels |
-| `TurboFieldfareMac` | Native Mac app for installation and generation |
-| `TurboFieldfareDecodeService` | One-shot local model and Metal owner used by the Mac app |
-| `TurboFieldfareCLI` | Command-line instruction chat and raw completion |
-| `TurboFieldfareServer` | Loopback OpenAI-compatible Chat Completions server |
-| `TurboFieldfareRepack` | Streaming model installer and install verifier |
+| `Tsugumi` | Swift library containing the runtime and Metal kernels |
+| `TsugumiMac` | Native Mac app for installation and generation |
+| `TsugumiDecodeService` | One-shot local model and Metal owner used by the Mac app |
+| `TsugumiCLI` | Command-line instruction chat and raw completion |
+| `TsugumiServer` | Loopback OpenAI-compatible Chat Completions server |
+| `TsugumiRepack` | Streaming model installer and install verifier |
 
 ### Requirements
 
@@ -126,7 +126,7 @@ greedy output, but expect repetition: below the recommended temperature this
 model can fall into a loop and never finish an answer. The model can still
 repeat itself or give incorrect answers, so check important results.
 
-TurboFieldfare is text-only. The app and CLI support user and model messages
+Tsugumi is text-only. The app and CLI support user and model messages
 plus optional system guidance; they do not expose or execute tools. The
 loopback server accepts function-tool declarations and returns
 model-produced tool calls for the client to authorize and execute. Images,
@@ -138,12 +138,12 @@ Clone the repository, then run the app from its root:
 
 ```bash
 swift build -c release
-.build/release/TurboFieldfareMac
+.build/release/TsugumiMac
 ```
 
 Build the complete package so the app and its sibling decode service are both
 available. When launched from this checkout, the app stores the model in
-`scratch/gemma4.gturbo`.
+`scratch/gemma4.moepack`.
 
 #### Install the model
 
@@ -152,12 +152,12 @@ and installed sizes. Choose **Download** to begin.
 
 The installer never materializes the full source checkpoint. It streams the
 required byte ranges from the pinned Hugging Face revision and repacks them
-directly into the `.gturbo` layout as they arrive. This avoids a second full
+directly into the `.moepack` layout as they arrive. This avoids a second full
 checkpoint on disk and keeps scratch memory bounded.
 
 The first installation transfers about 15 GB through bounded Hugging Face
 range requests. Network speed and Hugging Face response times vary, so it can
-take a while. The completed `.gturbo` installation occupies about 14.3 GB and
+take a while. The completed `.moepack` installation occupies about 14.3 GB and
 is accepted only after its manifest and file hashes have been validated.
 Installation does not load the model into memory.
 
@@ -177,21 +177,21 @@ and defaults.
 
 ### Command-line interface
 
-The CLI uses an existing `.gturbo` installation. If you installed the model
-through the Mac app, it is already available at `scratch/gemma4.gturbo`.
+The CLI uses an existing `.moepack` installation. If you installed the model
+through the Mac app, it is already available at `scratch/gemma4.moepack`.
 Otherwise, install it from the command line:
 
 ```bash
-swift run -c release TurboFieldfareRepack \
-  --output scratch/gemma4.gturbo \
+swift run -c release TsugumiRepack \
+  --output scratch/gemma4.moepack \
   --overwrite
 ```
 
 Continue a cancelled or interrupted download:
 
 ```bash
-swift run -c release TurboFieldfareRepack \
-  --output scratch/gemma4.gturbo \
+swift run -c release TsugumiRepack \
+  --output scratch/gemma4.moepack \
   --overwrite \
   --resume
 ```
@@ -199,12 +199,12 @@ swift run -c release TurboFieldfareRepack \
 Remove saved download state:
 
 ```bash
-swift run -c release TurboFieldfareRepack \
+swift run -c release TsugumiRepack \
   --discard-partial \
-  --output scratch/gemma4.gturbo
+  --output scratch/gemma4.moepack
 ```
 
-The runtime accepts only a completed `.gturbo` directory with a final
+The runtime accepts only a completed `.moepack` directory with a final
 `manifest.json`.
 
 Repack a checkpoint that is already staged on disk in its distributed form —
@@ -212,8 +212,8 @@ the safetensors shards plus `model.safetensors.index.json`, `config.json` and
 the tokenizer files — instead of streaming it:
 
 ```bash
-swift run -c release TurboFieldfareRepack \
-  --output scratch/gemma4-qat.gturbo \
+swift run -c release TsugumiRepack \
+  --output scratch/gemma4-qat.moepack \
   --source-snapshot scratch/qat-aligned-snapshot
 ```
 
@@ -226,9 +226,9 @@ digest is rejected.
 Verify an existing installation without loading the model:
 
 ```bash
-swift run -c release TurboFieldfareRepack \
+swift run -c release TsugumiRepack \
   --verify-install \
-  --input-gturbo scratch/gemma4.gturbo
+  --input-moepack scratch/gemma4.moepack
 ```
 
 #### Instruction chat
@@ -242,8 +242,8 @@ Put chat messages in a JSON array and pass it with `--messages-file`:
 ```
 
 ```bash
-swift run -c release TurboFieldfareCLI \
-  --model scratch/gemma4.gturbo \
+swift run -c release TsugumiCLI \
+  --model scratch/gemma4.moepack \
   --messages-file messages.json
 ```
 
@@ -257,8 +257,8 @@ A model installed with a vision tower (`--include-vision`, or `--add-vision` on
 an existing install) accepts images on the last user turn:
 
 ```bash
-swift run -c release TurboFieldfareCLI \
-  --model scratch/gemma4.gturbo \
+swift run -c release TsugumiCLI \
+  --model scratch/gemma4.moepack \
   --messages-file messages.json \
   --image photo.jpg
 ```
@@ -291,8 +291,8 @@ A model installed with the drafter section (`--include-draft`, or `--add-draft`
 on an existing install) can predict several tokens per step:
 
 ```bash
-swift run -c release TurboFieldfareCLI \
-  --model scratch/gemma4.gturbo \
+swift run -c release TsugumiCLI \
+  --model scratch/gemma4.moepack \
   --messages-file messages.json \
   --draft-block-size 4
 ```
@@ -315,7 +315,7 @@ the [production defaults](docs/RUNTIME_CONTROLS.md). Run the following command
 for the complete option list:
 
 ```bash
-swift run -c release TurboFieldfareCLI --help
+swift run -c release TsugumiCLI --help
 ```
 
 Generated text goes to standard output. Timing statistics go to standard error;
@@ -326,9 +326,9 @@ add `--quiet` to suppress that footer in scripts.
 Build the server and point it at an installed model:
 
 ```bash
-swift build -c release --product TurboFieldfareServer
-.build/release/TurboFieldfareServer \
-  --model scratch/gemma4.gturbo
+swift build -c release --product TsugumiServer
+.build/release/TsugumiServer \
+  --model scratch/gemma4.moepack
 ```
 
 It listens on `http://127.0.0.1:8080/v1` and supports Chat Completions,
@@ -354,7 +354,7 @@ Scripts/test.sh
 
 Before starting a model run, close memory-heavy apps and check
 `memory_pressure -Q`. If it reports little free memory, postpone the run. Run
-only one TurboFieldfare app, decode service, CLI, server, test, or other
+only one Tsugumi app, decode service, CLI, server, test, or other
 local-model process at a time.
 
 To contribute a comparable performance result, follow the
@@ -371,23 +371,23 @@ branch while those reads run, then combines the shared and routed outputs.
 Prompt prefill uses chunks of up to 128 tokens so one fetched expert can serve
 multiple rows. Generation repeats the routed layer loop one token at a time.
 The installer applies the same bounded-memory rule: it repacks remote ranges
-directly into `.gturbo` without staging a full shard or tensor.
+directly into `.moepack` without staging a full shard or tensor.
 
-For a video overview of TurboFieldfare, see Better Stack's
+For a video overview of Tsugumi, see Better Stack's
 [Local AI On Apple Silicon uses 7X Less RAM](https://youtu.be/vHhephsP6vU).
 
 For a visual introduction to the model architecture, see Maarten Grootendorst's
 [A Visual Guide to Gemma 4](https://newsletter.maartengrootendorst.com/p/a-visual-guide-to-gemma-4).
 
-[System design](docs/SYSTEM_DESIGN.md) explains the `.gturbo` layout, memory
+[System design](docs/SYSTEM_DESIGN.md) explains the `.moepack` layout, memory
 ownership, prefill, router handoff, `cb1`/`io`/`cb2` phases, Metal kernels, and
 correctness invariants.
 
 ## Status and scope
 
-TurboFieldfare currently includes:
+Tsugumi currently includes:
 
-- Remote streaming repack into the `.gturbo` model format
+- Remote streaming repack into the `.moepack` model format
 - Instruction-tuned Gemma 4 26B-A4B with verified text-only chat formatting
 - 4-bit MLX affine embedding, attention, shared-expert, and routed-expert
   weights, with an 8-bit router
@@ -414,7 +414,7 @@ instruction checkpoint on Apple Silicon Macs with at least 8 GB of RAM.
 
 ## Experiments and technical documentation
 
-The [experiments that shaped TurboFieldfare](docs/OPTIMIZATION_JOURNEY.md)
+The [experiments that shaped Tsugumi](docs/OPTIMIZATION_JOURNEY.md)
 explain the largest wins, the plausible ideas that failed, and the early
 results that reversed under stronger validation. The detailed
 [experiment record](docs/experiments/EXPERIMENT_INVENTORY.md) keeps all 103
@@ -425,13 +425,13 @@ Useful entry points:
 - [Local OpenAI-compatible server](docs/OPENAI_SERVER.md)
 - [System design](docs/SYSTEM_DESIGN.md)
 - [Benchmarks](docs/BENCHMARKS.md)
-- [The experiments that shaped TurboFieldfare](docs/OPTIMIZATION_JOURNEY.md)
+- [The experiments that shaped Tsugumi](docs/OPTIMIZATION_JOURNEY.md)
 - [Experiment inventory and summaries](docs/experiments/EXPERIMENT_INVENTORY.md)
 - [Implementation references](docs/IMPLEMENTATION_REFERENCES.md)
 
 ## License and model terms
 
-TurboFieldfare's source and documentation are licensed under the
+Tsugumi's source and documentation are licensed under the
 [Apache License 2.0](LICENSE).
 
 Model weights are not included. The installer downloads them separately from
@@ -439,7 +439,7 @@ the pinned Hugging Face checkpoint, and the weights remain governed by their
 source terms. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the model
 and Swift package license review.
 
-TurboFieldfare is an independent research project. It is not affiliated with,
+Tsugumi is an independent research project. It is not affiliated with,
 sponsored by, or endorsed by Google.
 
 ## Afterword and the project name
@@ -448,7 +448,7 @@ Thanks for checking out this project!
 
 My name is Andrey Mikhaylov. You can find me on
 [LinkedIn](https://www.linkedin.com/in/andrey-mikhaylov-ios-dev/).
-I am the author of TurboFieldfare and an iOS and Metal engineer. Most of my
+I am the author of Tsugumi and an iOS and Metal engineer. Most of my
 work is with images, video, and on-device AI.
 
 I dedicate this project to my wife, Sasha, the most supportive person I know.
@@ -456,7 +456,7 @@ She stands by me even through the hardest times. She loves wildlife, goes
 birdwatching, and volunteers with our local birding community. Because of her,
 I have also grown closer to birds and nature.
 
-TurboFieldfare is named after the fieldfare, a member of the thrush family and
+Tsugumi is named after the fieldfare, a member of the thrush family and
 my favourite bird. It is not the most noticeable or brightly coloured bird, but
 it definitely has a character and unique features of its own. I think the same
 is true of this project: it may not be the most practical, but I built it with

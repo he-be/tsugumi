@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Ornith のトークナイザの上流動作を JSON に落とす (Phase 5 の物差し)。
 
-`--qwen-tokenizer` (TurboFieldfareKernelCheck) が突き合わせる相手。
+`--qwen-tokenizer` (TsugumiKernelCheck) が突き合わせる相手。
 上流の `tokenizers` / `transformers` を**この機械で 1 度だけ**回して、
 
 - 語彙の数と特殊トークンの ID
@@ -14,7 +14,7 @@
 実装は別物である)。
 
     ~/LLM/venv/bin/python3 Scripts/qwen35/tokenizer_fixture.py \\
-        --tokenizer scratch/ornith-oq4e-g64.gturbo/tokenizer \\
+        --tokenizer scratch/ornith-oq4e-g64.moepack/tokenizer \\
         --out scratch/qwen35/tokenizer-fixture.json
 
 デコードの検体には**乱数の ID 列**も入れる。ByteLevel の BPE は 1 トークンが

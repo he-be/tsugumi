@@ -6,8 +6,8 @@ piece 復元を ByteLevel に切り替えた。[22 §4-2](22-PHASE5-TOKENIZER.md
 `tools` の JSON もここで再訪し、**記述が 1 つ間違っていたので訂正する** (§5-1)。
 
 ```
-swift run -c release TurboFieldfareKernelCheck \
-  --qwen-tools scratch/ornith-oq4e-g64.gturbo
+swift run -c release TsugumiKernelCheck \
+  --qwen-tools scratch/ornith-oq4e-g64.moepack
 ```
 
 | | |
@@ -86,11 +86,11 @@ Gemma と違う点が 3 つある:
 
 ## 2. GBNF — 生の文字列は「**閉じ札を含まない任意のテキスト**」
 
-`QwenToolCallGrammar` は `TurboFieldfare` 側に置いた (`ChatGrammarBuilder` は
+`QwenToolCallGrammar` は `Tsugumi` 側に置いた (`ChatGrammarBuilder` は
 サーバー側にある)。形式はチェックポイントのものであって HTTP 層のもの
 ではなく、**実物の語彙に当てるのは `KernelCheck`** だからである。
 サーバー側に残したのは要求の話 (`tool_choice` がどのツールを選ぶか、
-lazy かどうか、`response_format` との衝突) だけで、`TurboFieldfareServerCore`
+lazy かどうか、`response_format` との衝突) だけで、`TsugumiServerCore`
 は NIO を引くので `KernelCheck` からは触れない。
 
 規則の形:

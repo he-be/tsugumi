@@ -1,0 +1,115 @@
+import Testing
+import Metal
+@testable import Tsugumi
+
+@Suite struct PrefillChunkScratchTests {
+    @Test func gemma4T32LayoutMatchesTask7ScratchContract() {
+        let layout = PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 32)
+
+        #expect(layout.chunkTokens == 32)
+        #expect(layout.hiddenElements == 32 * 2816)
+        #expect(layout.normedElements == 32 * 2816)
+        #expect(layout.qElements == 32 * 8192)
+        #expect(layout.kStageElements == 32 * 2048)
+        #expect(layout.vStageElements == 32 * 2048)
+        #expect(layout.attentionOutputElements == 32 * 8192)
+        #expect(layout.denseXElements == 32 * 2816)
+        #expect(layout.routedXElements == 32 * 2816)
+        #expect(layout.routerXElements == 32 * 2816)
+        #expect(layout.h1Elements == 32 * 2816)
+        #expect(layout.h2Elements == 32 * 2816)
+        #expect(layout.routePartialElements == 32 * 8 * 2816)
+        #expect(layout.routeIDElements == 32 * 8)
+        #expect(layout.routeWeightElements == 32 * 8)
+        // The shared MLP stages the whole chunk, not one row.
+        #expect(layout.sharedExpertScratchElements == 32 * 2112)
+        #expect(layout.routedPairMicrobatchRows == 32)
+        // The tiled routed path stages a whole batch of route pairs, not one
+        // 32-row microbatch. A 32-token chunk can only produce 32 x topK pairs,
+        // so that is the cap here.
+        #expect(layout.routedGEMMBatchRows == 32 * 8)
+        #expect(layout.routedGateUpActElements == 3 * 32 * 8 * 704)
+        #expect(layout.routedDownOutputElements == 32 * 2816)
+
+        // The Task 7 worksheet put this at 4.5 MiB with a single-row shared-MLP
+        // staging buffer; batching that projection over the chunk adds
+        // 3 x 32 x 2112 FP16 (about 0.4 MiB at T32), and staging the routed
+        // GEMM's 256 pairs instead of 32 adds 3 x 224 x 704 FP16 (0.9 MiB).
+        let worksheetT32UpperBound = Int(6.0 * 1_048_576.0)
+        #expect(layout.totalPersistentBytes <= worksheetT32UpperBound)
+    }
+
+    @Test func layoutClampsChunkSizeToRuntimeBounds() {
+        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 0).chunkTokens == 1)
+        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 512).chunkTokens == 512)
+        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 2048).chunkTokens == 2048)
+        #expect(PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 4096).chunkTokens
+                == PrefillRuntimeConfig.maxChunkTokens)
+    }
+
+    /// The widest chunk is what the expert-cache budget has to leave room for,
+    /// so its scratch cost is pinned: `routePartials` alone is
+    /// `2048 x 8 x 2816` FP16 = 92 MB, and the whole layout stays under 300 MB.
+    @Test func widestChunkScratchStaysWithinBudgetedBound() {
+        let layout = PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 2048)
+
+        #expect(layout.routePartialElements == 2048 * 8 * 2816)
+        #expect(layout.sharedExpertScratchElements == 2048 * 2112)
+        #expect(layout.totalPersistentBytes > 250 * 1_048_576)
+        #expect(layout.totalPersistentBytes <= 300 * 1_048_576)
+
+        // 128-token chunk: the routed GEMM stages 1024 pairs (3 x 1024 x 704
+        // FP16 = 4.1 MiB), which is most of the difference from the 20 MiB this
+        // bound held before the tiled path existed.
+        let defaultLayout = PrefillChunkScratchLayout(config: .gemma4_26B_A4B, chunkTokens: 128)
+        #expect(defaultLayout.routedGEMMBatchRows == 128 * 8)
+        #expect(defaultLayout.totalPersistentBytes <= 24 * 1_048_576)
+    }
+
+    @Test func allocationUsesPrivateScratchAndSharedRouteMetadata() throws {
+        let ctx = try MetalContext()
+        let toy = ArchConfig(hiddenSize: 64,
+                             intermediateSize: 48,
+                             moeIntermediateSize: 16,
+                             numHeads: 4,
+                             numKVHeads: 2,
+                             numFullKVHeads: 1,
+                             headDim: 16,
+                             fullHeadDim: 32,
+                             vocabSize: 128,
+                             slidingWindow: 16,
+                             finalLogitSoftcap: 30.0,
+                             ropeTheta: 10_000,
+                             fullRopeTheta: 1_000_000,
+                             partialRotaryFactor: 0.25,
+                             numLayers: 2,
+                             numExperts: 8,
+                             topKExperts: 2,
+                             tieWordEmbeddings: true,
+                             attentionKEqV: true,
+                             fullAttentionLayerMask: [0, 1],
+                             hiddenActivation: "gelu_pytorch_tanh")
+        let layout = PrefillChunkScratchLayout(config: toy, chunkTokens: 4)
+
+        let scratch = try PrefillChunkScratchBuffers.allocate(device: ctx.device, layout: layout)
+
+        #expect(scratch.layout == layout)
+        #expect(scratch.hidden.length == layout.hiddenElements * MemoryLayout<Float16>.stride)
+        #expect(scratch.denseX.length == layout.denseXElements * MemoryLayout<Float16>.stride)
+        #expect(scratch.routedX.length == layout.routedXElements * MemoryLayout<Float16>.stride)
+        #expect(scratch.routerX.length == layout.routerXElements * MemoryLayout<Float16>.stride)
+        #expect(scratch.routePartials.length == layout.routePartialElements * MemoryLayout<Float16>.stride)
+        #expect(scratch.routeIDs.length == layout.routeIDElements * MemoryLayout<UInt32>.stride)
+        #expect(scratch.routeWeights.length == layout.routeWeightElements * MemoryLayout<Float16>.stride)
+        #expect(scratch.routedGateUpActScratch.length == layout.routedGateUpActElements * MemoryLayout<Float16>.stride)
+        #expect(scratch.routedDownScratch.length == layout.routedDownOutputElements * MemoryLayout<Float16>.stride)
+        #expect(scratch.hidden.storageMode == MTLStorageMode.private)
+        #expect(scratch.denseX.storageMode == MTLStorageMode.private)
+        #expect(scratch.routedX.storageMode == MTLStorageMode.private)
+        #expect(scratch.routerX.storageMode == MTLStorageMode.private)
+        #expect(scratch.routedGateUpActScratch.storageMode == MTLStorageMode.private)
+        #expect(scratch.routedDownScratch.storageMode == MTLStorageMode.private)
+        #expect(scratch.routeIDs.storageMode == MTLStorageMode.shared)
+        #expect(scratch.routeWeights.storageMode == MTLStorageMode.shared)
+    }
+}

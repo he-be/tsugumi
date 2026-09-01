@@ -107,7 +107,7 @@ if !Self.noDraft && draft == y0 { … }
 
 ## 3. トークンは動かない (**実測(手元)**)
 
-CLI、`scratch/ornith-oq4e-g64.gturbo`、temp 0、`--thinking on`、
+CLI、`scratch/ornith-oq4e-g64.moepack`、temp 0、`--thinking on`、
 `--dump-tokens` の id 同士を比較。**n=1 なので数字だけ置く**。
 
 | 検体 | 腕 | tok/s | `rescored` | 一致 |
@@ -134,7 +134,7 @@ CLI、`scratch/ornith-oq4e-g64.gturbo`、temp 0、`--thinking on`、
 ## 4. サーバー結線
 
 ```
-.build/release/TurboFieldfareServer --model scratch/ornith-oq4e-g64.gturbo \
+.build/release/TsugumiServer --model scratch/ornith-oq4e-g64.moepack \
   --model-id ornith-1.5-35b-a3b --port 8092 --ctx-size 32768 \
   --expert-cache-slots 32 --verification trusted-install --draft-block-size 2
 → … family=qwen3_5_moe context=32768 slots=32 expert_io=mmap mtp=2 …
@@ -207,7 +207,7 @@ CLI、`scratch/ornith-oq4e-g64.gturbo`、temp 0、`--thinking on`、
 ### 7-1. `--qwen-constrain` を 9 → 15 本に (負例 1 → 3)
 
 ```
-.build/release/TurboFieldfareKernelCheck --qwen-constrain scratch/ornith-oq4e-g64.gturbo
+.build/release/TsugumiKernelCheck --qwen-constrain scratch/ornith-oq4e-g64.moepack
   PASS  幅 2: 許可が全部なら参照と同じトークン — rescored=0, 8 tokens
   PASS  幅 2: accept は出たトークンを順に受け取る — accepted 8 of 8
   PASS  幅 2: 勝者を落とすと素の decode と同じ別トークンが出る — step 0 = 248058 (素の decode 248058), rescored=1
@@ -236,11 +236,11 @@ PASS  15 cases, 3 of them negative controls
 
 | 事実 | 場所 |
 | --- | --- |
-| 行を名指せる再畳み込み | `Sources/TurboFieldfare/Kernels/Qwen/QwenLMHeadChainInt8.swift` `encodeMaskedRescore(hiddenNormed:hiddenNormedOffset:)` |
-| 行を受け取る GEN-7 の口 | `Sources/TurboFieldfare/Runtime/Inference/QwenForwardRunner.swift` `constrained(_:gate:position:hidden:)` / `rescoreGreedy` |
-| 2 行への当て方と受理判定 | `Sources/TurboFieldfare/Runtime/Inference/QwenSpeculativeDecode.swift` (`SpeculativeError.constrained` は**消した**) |
-| サーバーの幅 2 | `Sources/TurboFieldfareServer/Core/QwenServerSession.swift` `validateFlags` / `load` の `attachMTPHead` / `runGreedyCompletionMTP` の分岐 |
-| 検査 | `Sources/TurboFieldfareKernelCheck/QwenConstrainCheck.swift` (`generateMTP`) |
+| 行を名指せる再畳み込み | `Sources/Tsugumi/Kernels/Qwen/QwenLMHeadChainInt8.swift` `encodeMaskedRescore(hiddenNormed:hiddenNormedOffset:)` |
+| 行を受け取る GEN-7 の口 | `Sources/Tsugumi/Runtime/Inference/QwenForwardRunner.swift` `constrained(_:gate:position:hidden:)` / `rescoreGreedy` |
+| 2 行への当て方と受理判定 | `Sources/Tsugumi/Runtime/Inference/QwenSpeculativeDecode.swift` (`SpeculativeError.constrained` は**消した**) |
+| サーバーの幅 2 | `Sources/TsugumiServer/Core/QwenServerSession.swift` `validateFlags` / `load` の `attachMTPHead` / `runGreedyCompletionMTP` の分岐 |
+| 検査 | `Sources/TsugumiKernelCheck/QwenConstrainCheck.swift` (`generateMTP`) |
 | CLI の 3 腕 | `--qwen-mtp` × `--tools`、対照は `TF_QWEN_MTP_FORCE_REJECT=1`。id は `scratch/qwen35/mtp40/*.json` (**実測(手元)**) |
 | サーバーの A/B | `/tmp/req.json` (t4 + tools + thinking) を `--draft-block-size 0` と `2` の 2 プロセスに (**実測(手元)**) |
 | 建て方と pi の設定 | [docs/SERVER_RUNBOOK.md](../SERVER_RUNBOOK.md) §8 |

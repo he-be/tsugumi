@@ -151,7 +151,7 @@ PLAN の見積り約 5 s に対して実測 4.0 s。差は、SHA-256 のパス�
 ### 3-2. メモリガードの動作 (**実測**)
 
 ```
-$ TurboFieldfareCLI ... --expert-cache-slots 112
+$ TsugumiCLI ... --expert-cache-slots 112
 error: expert cache configuration exceeds this device's recommended Metal
 working set — resident 1.35 GB + experts 11.29 GB (112 slots) + kv 0.32 GB
 = 12.96 GB; device recommends at most 12.88 GB.
@@ -420,7 +420,7 @@ Phase 1 の −5.4 s が Phase 2 の +2.4 s を吸収して、正味 −2.95 s�
 
 ```bash
 # 常用 (既定 64 スロット + 受領証を信頼)
-TurboFieldfareCLI --model scratch/gemma4.gturbo --messages-file bench/haiku.json \
+TsugumiCLI --model scratch/gemma4.moepack --messages-file bench/haiku.json \
   --verification trusted-install
 
 # スロット数のスイープ

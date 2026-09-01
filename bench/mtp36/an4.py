@@ -1,8 +1,8 @@
 import sys
 from collections import Counter, defaultdict
-sys.path.insert(0,"/Users/mh/LLM/turbo-fieldfare/bench")
+sys.path.insert(0,"/Users/mh/LLM/tsugumi/bench")
 from expert_sim import read_trace
-BASE="/Users/mh/LLM/turbo-fieldfare/bench/logs/36_trace/%s.tsv"
+BASE="/Users/mh/LLM/tsugumi/bench/logs/36_trace/%s.tsv"
 print("== overlap of topK8 at lag d (mean over layers/positions) ==")
 print(f"{'':12s}"+"".join(f"d={d}".rjust(7) for d in range(1,9)))
 S={}

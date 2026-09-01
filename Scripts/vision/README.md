@@ -50,7 +50,7 @@ scratch/vision-venv/bin/python Scripts/vision/dump_vision_fixtures.py
 ```
 
 Then, from Swift, `VisionFixtures.load()` reads them; the suites under
-`Tests/TurboFieldfare/Core/Vision/` skip silently when they are absent, so a
+`Tests/Tsugumi/Core/Vision/` skip silently when they are absent, so a
 clean checkout still passes `Scripts/test.sh`.
 
 ## Notes that are easy to get wrong

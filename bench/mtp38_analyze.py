@@ -3,9 +3,9 @@
 36 §11a (temp 0 / n=1) と並べる。四則と標本標準偏差のみ。"""
 import re, sys, math, statistics as st
 from collections import Counter, defaultdict
-sys.path.insert(0, "/Users/mh/LLM/turbo-fieldfare/bench")
+sys.path.insert(0, "/Users/mh/LLM/tsugumi/bench")
 
-OUT = "/Users/mh/LLM/turbo-fieldfare/bench/logs/38_reg_t1"
+OUT = "/Users/mh/LLM/tsugumi/bench/logs/38_reg_t1"
 CELLS = ["ja_prose", "ja_bullets", "en_prose", "en_bullets"]
 # 36 §11a の temp 0 / n=1 の値 (hit%, tok/s)
 T0 = {"ja_prose": (93.2, 25.30), "ja_bullets": (90.3, 23.53),

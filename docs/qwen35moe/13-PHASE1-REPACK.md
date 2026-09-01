@@ -1,13 +1,13 @@
-# 13. Phase 1 — `.gturbo` への repack (実測(手元)、2026-08-21)
+# 13. Phase 1 — `.moepack` への repack (実測(手元)、2026-08-21)
 
 [04-PHASES.md](04-PHASES.md) Phase 1 の出口を満たした。**GPU は使っていない。**
 入力は [12 §5](12-OQ4E-G64-AUDIT.md) の焼き込み済みスナップショット。
 
 ```
-.build/release/TurboFieldfareRepack --output scratch/ornith-oq4e-g64.gturbo \
+.build/release/TsugumiRepack --output scratch/ornith-oq4e-g64.moepack \
     --source-snapshot ~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-baked
-.build/release/TurboFieldfareRepack --verify-install \
-    --input-gturbo scratch/ornith-oq4e-g64.gturbo
+.build/release/TsugumiRepack --verify-install \
+    --input-moepack scratch/ornith-oq4e-g64.moepack
 ```
 
 ---
@@ -33,16 +33,16 @@
 という前提 ([02 §3](02-CHECKPOINTS.md)) が、実物で確認できた。
 
 外したもの: **vision 333 本 (893 MB)** と **MTP 42 本 (503 MB)**。
-どちらも `.gturbo` の別セクション ([03 §6](03-DESIGN.md)) に入るもので、Phase 7 / 9 の作業。
+どちらも `.moepack` の別セクション ([03 §6](03-DESIGN.md)) に入るもので、Phase 7 / 9 の作業。
 audit に `tensors_dropped_multimodal` / `tensors_dropped_inline_draft` として本数が残る。
 
 ## 3. 実装したこと
 
-**形式 (`TurboFieldfareFormat`)** — `arch` に 3 つ足した:
+**形式 (`MoEPackFormat`)** — `arch` に 3 つ足した:
 
 | 追加 | 中身 |
 | --- | --- |
-| `family` | `qwen3_5_moe`。**Gemma の manifest には書かない** (optional、`JSONEncoder` は nil を書かない) ので、既存の `.gturbo` のバイトは動かない |
+| `family` | `qwen3_5_moe`。**Gemma の manifest には書かない** (optional、`JSONEncoder` は nil を書かない) ので、既存の `.moepack` のバイトは動かない |
 | `layerKinds` | 層ごとの `full_attention` / `linear_attention`。既存の `fullAttentionLayerMask` は互換面として残し、**両者が食い違う manifest は弾く** — マスクしか知らない読み手が別のモデルを見ることになるため |
 | `linearAttention` | `numKeyHeads 16 / numValueHeads 32 / keyHeadDim 128 / valueHeadDim 128 / convKernelDim 4 / layerCount 30` |
 
@@ -62,7 +62,7 @@ audit に `tensors_dropped_multimodal` / `tensors_dropped_inline_draft` とし�
 - resident の並びに Qwen のスロット順を追加、router / shared expert のビット幅を両族の綴りから拾う
 - 焼き込み済みスナップショットの index digest を `SourceFingerprint` に pin
 
-**テスト:** 形式の検証 9 本 (`GTurboLinearAttentionManifestTests`、Gemma manifest に
+**テスト:** 形式の検証 9 本 (`MoEPackLinearAttentionManifestTests`、Gemma manifest に
 3 キーが出ないことの検査を含む) と、**1/10 スケールの合成 Qwen スナップショット**
 (`SyntheticQwenSnapshot`: 4 層のうち 3 層が線形、experts 2、MTP と vision 同梱) を
 planner に通す 5 本。パッケージテスト全体 **1265 件が緑**。
@@ -74,7 +74,7 @@ planner に通す 5 本。パッケージテスト全体 **1265 件が緑**。
 `packed_experts/layout.json` は層 × エキスパートに比例する
 (エキスパート 1 個あたり約 2.2 KB)。**Gemma 30×128 = 8.5 MB、Ornith 40×256 = 22.5 MB。**
 書き手・検証器・ランタイム読み手の 3 箇所にあった 16 MB の上限を
-`GTurboFormatV1.packedExpertsLayoutMaxBytes = 64 MB` に集約して上げた。
+`MoEPackFormatV1.packedExpertsLayoutMaxBytes = 64 MB` に集約して上げた。
 上限そのものは残す (信用しない入力の境界なので)。
 
 ### 4-2. ★ attention のビット幅が層ごとに違う

@@ -3,8 +3,8 @@
 # unconfirmed: the same cut on plain decode, on the width-1 T-row control, and
 # on the width-2 verify pass. One GPU process at a time, cooldown between runs.
 set -e
-CLI=.build/release/TurboFieldfareCLI
-MODEL=scratch/ornith-oq4e-g64.gturbo
+CLI=.build/release/TsugumiCLI
+MODEL=scratch/ornith-oq4e-g64.moepack
 OUT=${OUT:-scratch/qwen35/mtp38}
 TASK=${TASK:-t2-code}
 MAXNEW=${MAXNEW:-64}

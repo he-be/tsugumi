@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""`.gturbo` の INT4 コードそのものの分布を数える (docs/mtp/46 の §1)。
+"""`.moepack` の INT4 コードそのものの分布を数える (docs/mtp/46 の §1)。
 
-使い方: python3 check_code_entropy.py <model.gturbo> [layers]
+使い方: python3 check_code_entropy.py <model.moepack> [layers]
         (layers は "0" や "0,15,29"。省略で全 30 層)
 
 28-M8-PROPOSAL §5 は「エキスパートの zstd/LZ4 圧縮」を

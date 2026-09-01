@@ -2,18 +2,18 @@
 import PackageDescription
 
 let package = Package(
-    name: "TurboFieldfare",
+    name: "Tsugumi",
     platforms: [
         .macOS(.v15),
         .iOS(.v26),
     ],
     products: [
-        .library(name: "TurboFieldfare", targets: ["TurboFieldfare"]),
-        .executable(name: "TurboFieldfareRepack", targets: ["TurboFieldfareRepack"]),
-        .executable(name: "TurboFieldfareCLI", targets: ["TurboFieldfareCLI"]),
-        .executable(name: "TurboFieldfareMac", targets: ["TurboFieldfareMac"]),
-        .executable(name: "TurboFieldfareDecodeService", targets: ["TurboFieldfareDecodeService"]),
-        .executable(name: "TurboFieldfareServer", targets: ["TurboFieldfareServer"]),
+        .library(name: "Tsugumi", targets: ["Tsugumi"]),
+        .executable(name: "TsugumiRepack", targets: ["TsugumiRepack"]),
+        .executable(name: "TsugumiCLI", targets: ["TsugumiCLI"]),
+        .executable(name: "TsugumiMac", targets: ["TsugumiMac"]),
+        .executable(name: "TsugumiDecodeService", targets: ["TsugumiDecodeService"]),
+        .executable(name: "TsugumiServer", targets: ["TsugumiServer"]),
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
@@ -21,155 +21,155 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "TurboFieldfareFormat",
-            path: "Sources/TurboFieldfareFormat"
+            name: "MoEPackFormat",
+            path: "Sources/MoEPackFormat"
         ),
         .target(
-            name: "TurboFieldfare",
+            name: "Tsugumi",
             dependencies: [
-                "TurboFieldfareFormat",
+                "MoEPackFormat",
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "Hub", package: "swift-transformers"),
             ],
-            path: "Sources/TurboFieldfare",
+            path: "Sources/Tsugumi",
             resources: [
                 .copy("Metal"),
                 .copy("Templates"),
             ]
         ),
         .target(
-            name: "TurboFieldfareRepackCore",
-            dependencies: ["TurboFieldfareFormat"],
-            path: "Sources/TurboFieldfareRepack/Core"
+            name: "TsugumiRepackCore",
+            dependencies: ["MoEPackFormat"],
+            path: "Sources/TsugumiRepack/Core"
         ),
         .executableTarget(
-            name: "TurboFieldfareRepack",
-            dependencies: ["TurboFieldfareRepackCore"],
-            path: "Sources/TurboFieldfareRepack/Command"
+            name: "TsugumiRepack",
+            dependencies: ["TsugumiRepackCore"],
+            path: "Sources/TsugumiRepack/Command"
         ),
         .target(
-            name: "TurboFieldfareCLICore",
-            dependencies: ["TurboFieldfare"],
-            path: "Sources/TurboFieldfareCLI",
+            name: "TsugumiCLICore",
+            dependencies: ["Tsugumi"],
+            path: "Sources/TsugumiCLI",
             exclude: ["Command"]
         ),
         .executableTarget(
-            name: "TurboFieldfareCLI",
-            dependencies: ["TurboFieldfareCLICore"],
-            path: "Sources/TurboFieldfareCLI/Command"
+            name: "TsugumiCLI",
+            dependencies: ["TsugumiCLICore"],
+            path: "Sources/TsugumiCLI/Command"
         ),
         .target(
-            name: "TurboFieldfareAppCore",
+            name: "TsugumiAppCore",
             dependencies: [
-                "TurboFieldfare",
-                "TurboFieldfareRepackCore",
-                "TurboFieldfareDecodeProtocol",
-                "TurboFieldfareServerCore",
+                "Tsugumi",
+                "TsugumiRepackCore",
+                "TsugumiDecodeProtocol",
+                "TsugumiServerCore",
             ],
-            path: "Sources/TurboFieldfareApp/Core",
+            path: "Sources/TsugumiApp/Core",
             resources: [
                 .copy("Resources/app-prompts.json"),
             ]
         ),
         .target(
-            name: "TurboFieldfareMacPresentation",
-            dependencies: ["TurboFieldfareAppCore"],
-            path: "Sources/TurboFieldfareApp/MacPresentation"
+            name: "TsugumiMacPresentation",
+            dependencies: ["TsugumiAppCore"],
+            path: "Sources/TsugumiApp/MacPresentation"
         ),
         .target(
-            name: "TurboFieldfareDecodeProtocol",
-            path: "Sources/TurboFieldfareDecodeProtocol"
+            name: "TsugumiDecodeProtocol",
+            path: "Sources/TsugumiDecodeProtocol"
         ),
         .executableTarget(
-            name: "TurboFieldfareDecodeService",
-            dependencies: ["TurboFieldfareAppCore", "TurboFieldfareDecodeProtocol"],
-            path: "Sources/TurboFieldfareDecodeService"
+            name: "TsugumiDecodeService",
+            dependencies: ["TsugumiAppCore", "TsugumiDecodeProtocol"],
+            path: "Sources/TsugumiDecodeService"
         ),
         .target(
-            name: "TurboFieldfareServerCore",
+            name: "TsugumiServerCore",
             dependencies: [
-                "TurboFieldfare",
+                "Tsugumi",
                 .product(name: "NIOCore", package: "swift-nio"),
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
             ],
-            path: "Sources/TurboFieldfareServer/Core"
+            path: "Sources/TsugumiServer/Core"
         ),
         .executableTarget(
-            name: "TurboFieldfareServer",
-            dependencies: ["TurboFieldfareServerCore"],
-            path: "Sources/TurboFieldfareServer/Command"
+            name: "TsugumiServer",
+            dependencies: ["TsugumiServerCore"],
+            path: "Sources/TsugumiServer/Command"
         ),
         .executableTarget(
-            name: "TurboFieldfareMac",
-            dependencies: ["TurboFieldfareAppCore", "TurboFieldfareMacPresentation"],
-            path: "Sources/TurboFieldfareApp/Mac",
+            name: "TsugumiMac",
+            dependencies: ["TsugumiAppCore", "TsugumiMacPresentation"],
+            path: "Sources/TsugumiApp/Mac",
             resources: [
-                .copy("Resources/turbofieldfare-app-icon.png"),
+                .copy("Resources/tsugumi-app-icon.png"),
             ]
         ),
         .target(
-            name: "TurboFieldfareValidationSupport",
-            dependencies: ["TurboFieldfare"],
-            path: "Sources/TurboFieldfareValidation/Support"
+            name: "TsugumiValidationSupport",
+            dependencies: ["Tsugumi"],
+            path: "Sources/TsugumiValidation/Support"
         ),
         // Numeric self-check for the affine-INT4 kernels at each supported
         // group size. An executable rather than a test target because
         // `swift test` cannot run in the development environment.
         .executableTarget(
-            name: "TurboFieldfareKernelCheck",
-            dependencies: ["TurboFieldfare", "TurboFieldfareValidationSupport"],
-            path: "Sources/TurboFieldfareKernelCheck"
+            name: "TsugumiKernelCheck",
+            dependencies: ["Tsugumi", "TsugumiValidationSupport"],
+            path: "Sources/TsugumiKernelCheck"
         ),
         .testTarget(
-            name: "TurboFieldfareFormatTests",
-            dependencies: ["TurboFieldfareFormat"],
-            path: "Tests/TurboFieldfareFormat"
+            name: "MoEPackFormatTests",
+            dependencies: ["MoEPackFormat"],
+            path: "Tests/MoEPackFormat"
         ),
         .testTarget(
-            name: "TurboFieldfareFormatCompatibilityTests",
-            dependencies: ["TurboFieldfareFormat", "TurboFieldfare", "TurboFieldfareRepackCore"],
-            path: "Tests/TurboFieldfareFormatCompatibility",
+            name: "MoEPackFormatCompatibilityTests",
+            dependencies: ["MoEPackFormat", "Tsugumi", "TsugumiRepackCore"],
+            path: "Tests/MoEPackFormatCompatibility",
             resources: [.copy("Fixtures")]
         ),
         .testTarget(
-            name: "TurboFieldfareTestsCore",
+            name: "TsugumiTestsCore",
             dependencies: [
-                "TurboFieldfare",
-                "TurboFieldfareValidationSupport",
-                "TurboFieldfareRepackCore",
-                "TurboFieldfareCLICore",
+                "Tsugumi",
+                "TsugumiValidationSupport",
+                "TsugumiRepackCore",
+                "TsugumiCLICore",
                 .product(name: "Hub", package: "swift-transformers"),
             ],
-            path: "Tests/TurboFieldfare/Core"
+            path: "Tests/Tsugumi/Core"
         ),
         .testTarget(
-            name: "TurboFieldfareRepackTests",
-            dependencies: ["TurboFieldfareFormat", "TurboFieldfareRepackCore"],
-            path: "Tests/TurboFieldfareRepack/Core"
+            name: "TsugumiRepackTests",
+            dependencies: ["MoEPackFormat", "TsugumiRepackCore"],
+            path: "Tests/TsugumiRepack/Core"
         ),
         .testTarget(
-            name: "TurboFieldfareAppCoreTests",
-            dependencies: ["TurboFieldfareAppCore", "TurboFieldfare", "TurboFieldfareRepackCore", "TurboFieldfareDecodeProtocol"],
-            path: "Tests/TurboFieldfareApp/Core"
+            name: "TsugumiAppCoreTests",
+            dependencies: ["TsugumiAppCore", "Tsugumi", "TsugumiRepackCore", "TsugumiDecodeProtocol"],
+            path: "Tests/TsugumiApp/Core"
         ),
         .testTarget(
-            name: "TurboFieldfareDecodeServiceTests",
-            dependencies: ["TurboFieldfareDecodeService", "TurboFieldfareAppCore", "TurboFieldfareDecodeProtocol"],
-            path: "Tests/TurboFieldfareDecodeService"
+            name: "TsugumiDecodeServiceTests",
+            dependencies: ["TsugumiDecodeService", "TsugumiAppCore", "TsugumiDecodeProtocol"],
+            path: "Tests/TsugumiDecodeService"
         ),
         .testTarget(
-            name: "TurboFieldfareMacPresentationTests",
-            dependencies: ["TurboFieldfareAppCore", "TurboFieldfareMacPresentation"],
-            path: "Tests/TurboFieldfareApp/MacPresentation"
+            name: "TsugumiMacPresentationTests",
+            dependencies: ["TsugumiAppCore", "TsugumiMacPresentation"],
+            path: "Tests/TsugumiApp/MacPresentation"
         ),
         .testTarget(
-            name: "TurboFieldfareServerTests",
+            name: "TsugumiServerTests",
             dependencies: [
-                "TurboFieldfareServerCore",
+                "TsugumiServerCore",
                 .product(name: "NIOEmbedded", package: "swift-nio"),
             ],
-            path: "Tests/TurboFieldfareServer",
+            path: "Tests/TsugumiServer",
             resources: [.copy("Fixtures")]
         ),
     ]

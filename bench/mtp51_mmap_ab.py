@@ -35,8 +35,8 @@ import subprocess
 import sys
 import time
 
-CLI = "./.build/release/TurboFieldfareCLI"
-MODEL = os.environ.get("TF_MODEL", "scratch/gemma4-qat-sym.gturbo")
+CLI = "./.build/release/TsugumiCLI"
+MODEL = os.environ.get("TF_MODEL", "scratch/gemma4-qat-sym.moepack")
 MESSAGES = os.environ.get("TF_MESSAGES", "bench/math.json")
 COOL_S = int(os.environ.get("COOL_S", "10"))
 EXPERT_MB = 3.35872          # expertStride 3,358,720 B (48 §1)

@@ -18,7 +18,7 @@
 
 | # | 論点 | 結論 |
 | --- | --- | --- |
-| 1 | 動くのか | **動く。**`--qwen-mtp` でヘッドが GPU に載り、幅 2 の検証パスが回り、答えが出る。`.gturbo` は 1 バイトも作り直していない — ヘッドは 503 MB の sidecar 1 枚 (§1) |
+| 1 | 動くのか | **動く。**`--qwen-mtp` でヘッドが GPU に載り、幅 2 の検証パスが回り、答えが出る。`.moepack` は 1 バイトも作り直していない — ヘッドは 503 MB の sidecar 1 枚 (§1) |
 | 2 | 速いのか | **タスク次第で符号が変わる** (§5、192 トークン × 2 反復、腕は交互)。エージェントのコード修正 **×1.146**、エージェントのツール JSON **×1.199**、コード生成 ×0.959、英語散文 ×0.941、2,698 トークンの要約 **×0.843** |
 | 3 | 受理率は当たったか | **当たった。**実機の on-policy P1 は 64.7〜88.6%。[33 §2-1](33-MTP-ACCEPTANCE.md) の off-policy 予測とタスクの並びまで一致する。**プロンプト履歴を捨てた影響も予測どおり** (§2-2 の ablation が t3 で 64.92% と出し、実機が 64.7%) |
 | 4 | 何が一番効いているのか | **受理率ではなく、エキスパート取得の相乗り。**1 パスが 1.8 トークンぶんの取得を 1 回で済ませるので、**素の decode が遅いタスクほど MTP が勝つ**。MTP 側の tok/s は 16.3〜19.3 とほとんど動かないのに、素の decode は 13.5〜20.5 と 1.5 倍動く (§5-2) |
@@ -32,13 +32,13 @@
 | 12 | 深さ 3 の MTP ヘッドは | **プロンプト履歴を持たせていない。**33 は教師強制なので MTP の K/V が全位置埋まっていた。実機で同じにするには fc と k/v 射影の T 行プレフィルが要る。**先に代償を測った** — 平均 P1 78.40% → 76.05% (§2-2)。2 ポイントに 2 本目の prefill 経路は釣り合わない |
 | 13 | 文法 / ツール呼び出しと併用できるか | ~~**できない。**~~ **[40](40-MTP-GRAMMAR.md) で併用できるようになった** (2026-08-22)。原因は「2 行版が `normalizedHidden` を埋めない」ではなく、**再畳み込みがどの行を読むか指定できなかった**こと。`encodeMaskedRescore` に行を渡すだけで済み、新カーネルは 0 本 |
 | 14 | 次に何をすれば勝ち幅が広がるか | **残る 1.21 倍**。幅 1 を T 行経路に流すと素の decode の 1.21 倍かかる (§4-4)。内訳は GPU +2.7 ms / ホスト +11 ms で、ホスト側は層ごとの route grouping、GPU 側は prefill attention と router。ここを decode 級にすれば全タスクで勝つ側に回る (§7) |
-| 15 | 要ったもの | Metal カーネル 2 本 (`dequant_int8_gemv_rows_simd`、`qwen_lm_head_greedy_int8_rows_chunk_raw_multi`) + BF16 GEMV 1 本。Swift 3 ファイル。Python 2 本。**`.gturbo` の repack は 0 回** |
+| 15 | 要ったもの | Metal カーネル 2 本 (`dequant_int8_gemv_rows_simd`、`qwen_lm_head_greedy_int8_rows_chunk_raw_multi`) + BF16 GEMV 1 本。Swift 3 ファイル。Python 2 本。**`.moepack` の repack は 0 回** |
 
 ---
 
 ## 1. ヘッドを実機に載せる — sidecar 1 枚
 
-`.gturbo` に MTP は入っていない。`RepackPlanner.classify` が
+`.moepack` に MTP は入っていない。`RepackPlanner.classify` が
 `language_model.mtp.` を `.excludedDraft` に落とすからで、
 [30 §6-6](30-MTP-HEAD-GRAFT.md) の「pack を作り直す理由が無い」はそのまま生きて
 いる。**503 MB の sidecar を 1 枚足す**のが答えだった。
@@ -46,7 +46,7 @@
 ```bash
 scratch/mtp-venv/bin/python Scripts/qwen35/build_mtp_sidecar.py \
     ~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-shisa-baked \
-    --out ~/LLM/ornith-mtp-head --gturbo scratch/ornith-oq4e-g64.gturbo
+    --out ~/LLM/ornith-mtp-head --moepack scratch/ornith-oq4e-g64.moepack
 ```
 
 | 出るもの | 中身 |
@@ -55,7 +55,7 @@ scratch/mtp-venv/bin/python Scripts/qwen35/build_mtp_sidecar.py \
 | `mtp_experts.bin` | **452,984,832 B** = 256 × **1,769,472**。**本体の `packed_experts` とバイト並びが同じ** (gate w/s/b, up w/s/b, down w/s/b、ページまで padding) |
 | `mtp_head.json` | 形・量子化・offset・sha256 |
 
-- **`expertStride` が本体と一致することを書き出し時に検算する** (`--gturbo`)。
+- **`expertStride` が本体と一致することを書き出し時に検算する** (`--moepack`)。
   MoE のカーネルは 8 本の blob に**同じ** `MoEExpertOffsets` を当てるので、
   並びが違う sidecar は「もっともらしいバイトを違う意味で読む」— それは
   流暢な出力になって現れるので、実行時にも `checkExpertLayout` で照合する。
@@ -368,13 +368,13 @@ off が速い。#2 が片付くまでツール呼び出しとは併用できな�
 | --- | --- |
 | sidecar の生成と本体との照合 | `Scripts/qwen35/build_mtp_sidecar.py` → `~/LLM/ornith-mtp-head/` (**実測(手元)**) |
 | 履歴 ablation (full / gen / last) | `Scripts/qwen35/mtp_history_ablation.py` → `scratch/qwen35/mtp-a/*.history.json` (**実測(手元)**、モデル再実行なし) |
-| ヘッドの GPU 実装 | `Sources/TurboFieldfare/MTP/QwenMTPSidecar.swift` / `QwenMTPDrafter.swift` |
-| 幅 2 のループ・巻き戻し・対照 2 本 | `Sources/TurboFieldfare/Runtime/Inference/QwenSpeculativeDecode.swift` |
-| 再帰状態の影とポインタ交換 | `Sources/TurboFieldfare/Runtime/KVCache/RecurrentStateManager.swift` (`ensureShadow` / `adoptShadow`) + `QwenPrefill.encodeSplitRecurrent` |
-| T 行の密射影 | `Sources/TurboFieldfare/Metal/Quant/dequant_int8.metal` `dequant_int8_gemv_rows_simd` + `DequantInt8GEMV.encodeRows` |
-| 2 行を 1 回の 508 MB 読みで採点する頭 | `Sources/TurboFieldfare/Metal/Qwen/qwen.metal` `qwen_lm_head_greedy_int8_rows_chunk_raw_multi` + `QwenLMHeadChainInt8.encodeGreedyDecodeRows` ([33 §3-8](33-MTP-ACCEPTANCE.md) の測定 3) |
+| ヘッドの GPU 実装 | `Sources/Tsugumi/MTP/QwenMTPSidecar.swift` / `QwenMTPDrafter.swift` |
+| 幅 2 のループ・巻き戻し・対照 2 本 | `Sources/Tsugumi/Runtime/Inference/QwenSpeculativeDecode.swift` |
+| 再帰状態の影とポインタ交換 | `Sources/Tsugumi/Runtime/KVCache/RecurrentStateManager.swift` (`ensureShadow` / `adoptShadow`) + `QwenPrefill.encodeSplitRecurrent` |
+| T 行の密射影 | `Sources/Tsugumi/Metal/Quant/dequant_int8.metal` `dequant_int8_gemv_rows_simd` + `DequantInt8GEMV.encodeRows` |
+| 2 行を 1 回の 508 MB 読みで採点する頭 | `Sources/Tsugumi/Metal/Qwen/qwen.metal` `qwen_lm_head_greedy_int8_rows_chunk_raw_multi` + `QwenLMHeadChainInt8.encodeGreedyDecodeRows` ([33 §3-8](33-MTP-ACCEPTANCE.md) の測定 3) |
 | `mtp.fc` 用の BF16 GEMV | 同 `qwen_bf16_gemv_f16` + `QwenKernels.encodeBF16GEMV` |
 | A/B の生データ | `bench/qwen35/mtp_ab.sh` → `scratch/qwen35/mtp-ab/*.footer` / `*.json`、集計は `bench/qwen35/mtp_ab_report.py` |
 | エージェント形の 2 タスク | `bench/qwen35/a1-agent-edit.json` / `a2-agent-tool.json` |
-| Phase 4 の検査 | `TurboFieldfareKernelCheck --qwen-prefill scratch/ornith-oq4e-g64.gturbo` |
+| Phase 4 の検査 | `TsugumiKernelCheck --qwen-prefill scratch/ornith-oq4e-g64.moepack` |
 | 予測の出どころ | [33 §2-1 / §3-6 / §3-7 / §3-8](33-MTP-ACCEPTANCE.md)、[30 §6](30-MTP-HEAD-GRAFT.md) |

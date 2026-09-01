@@ -1,7 +1,7 @@
 # 12. M2 の結果 — ドラフター forward 単体
 
 測定: 2026-08-17、M3 Pro 18GB / macOS 15.7.5 / Swift 6.2。
-対象モデル `scratch/gemma4-qat.gturbo` (M1 でドラフター追記済み)。
+対象モデル `scratch/gemma4-qat.moepack` (M1 でドラフター追記済み)。
 
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
@@ -11,7 +11,7 @@
 
 | # | 出口条件 (04-PHASES M2) | 結果 |
 | --- | --- | --- |
-| 1 | 参照実装との突き合わせ (合成入力) | **成立 (実測)。**3 ケース × 8 ステージ、`TurboFieldfareKernelCheck --draft` が 57/57 PASS (fixture 51 + 検出力 6、§2) |
+| 1 | 参照実装との突き合わせ (合成入力) | **成立 (実測)。**3 ケース × 8 ステージ、`TsugumiKernelCheck --draft` が 57/57 PASS (fixture 51 + 検出力 6、§2) |
 | 2 | 閾値は測って決める | **決定 (実測)。**参照自身の FP16 床を `Scripts/mtp/fp16_error_floor.py` で測り、その内側に収めている (§2) |
 | 3 | 検出力 3 件 (壊した参照が閾値を超える) | **成立 (実測)。**ropeOffByOne / qNormDropped / attentionScaleClassic が 6/6 超え (§3) |
 | 4 | (副次) argmax の一致 | **3/3 完全一致** (§2) |
@@ -20,7 +20,7 @@
 `DraftForward` (独立的な forward 1 本) だけで、`RealForwardRunner` /
 `RawCompletion` には 1 行も触れていない。テキスト生成の経路が M2 の影響を受ける
 箇所は存在しない (**導出**: 呼び出しグラフ上 `DraftForward` を参照するのは
-`TurboFieldfareKernelCheck --draft` のみ)。
+`TsugumiKernelCheck --draft` のみ)。
 
 ## 1. 参照実装の確定 — transformers 5.10.4
 
@@ -95,10 +95,10 @@ logits 2e-1/5e-2。
 | `Scripts/mtp/dump_draft_fixtures.py` | float32 参照の段階別 fixture 生成 (3 ケース × 15 ファイル) |
 | `Scripts/mtp/fp16_error_floor.py` | 参照自身の FP16 床測定 (§2) |
 | `ManifestReader` | `manifest.draft` を `ManifestDraft` として公開 + `files` 収まり検査 |
-| `Sources/TurboFieldfare/MTP/DraftWeights.swift` | 遅延ロード・スキーマ検査 (量子化エントリ込み)・アクセサ。`VisionWeights` の int4 対応写像 |
-| `Sources/TurboFieldfare/MTP/DraftForward.swift` | forward 1 ステップ。既存 decode カーネルのみで組成 (新規 Metal は `scale_inplace_fp16` 1 本のみ) |
+| `Sources/Tsugumi/MTP/DraftWeights.swift` | 遅延ロード・スキーマ検査 (量子化エントリ込み)・アクセサ。`VisionWeights` の int4 対応写像 |
+| `Sources/Tsugumi/MTP/DraftForward.swift` | forward 1 ステップ。既存 decode カーネルのみで組成 (新規 Metal は `scale_inplace_fp16` 1 本のみ) |
 | `Model.swift` | `hasDraft` / `draftWeights()` (vision と同型の遅延ロード) |
-| `TurboFieldfareKernelCheck --draft <model>` | fixture 突合 + 検出力 (`--vision-tower` の写像) |
+| `TsugumiKernelCheck --draft <model>` | fixture 突合 + 検出力 (`--vision-tower` の写像) |
 
 レイヤ tail は **non-MMoE 版のサンドイッチ** (`h1 = h + rmsnorm(attn)`、
 `out = (h1 + rmsnorm(mlp)) × layer_scalar` — norm 2 回) で、ターゲットの MoE tail
@@ -118,7 +118,7 @@ logits 2e-1/5e-2。
 ## 6. テスト (**実測**)
 
 - `Scripts/test.sh`: **826 テスト / 140 スイート / 11 issue — 既知の陳腐化スイートのみ、新規失敗ゼロ** (M1 と同一構成。M2 はテストを足していない: 突合は `swift test` で走らない KernelCheck 側に置いた。vision の layer B と同じ構成)
-- `TurboFieldfareKernelCheck` 全部盛り (INT4 両 group + vision + draft): **100 cases PASS**、exit 0
+- `TsugumiKernelCheck` 全部盛り (INT4 両 group + vision + draft): **100 cases PASS**、exit 0
 
 ## 7. 次 (M3) に渡すもの
 

@@ -1,7 +1,7 @@
 # 11. M1 の結果 — フォーマット拡張と repacker
 
 測定: 2026-08-17、M3 Pro 18GB / macOS 15.7.5 / Swift 6.2。
-対象モデル `scratch/gemma4-qat.gturbo` (QAT lattice-aligned + vision tower)。
+対象モデル `scratch/gemma4-qat.moepack` (QAT lattice-aligned + vision tower)。
 
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
@@ -11,15 +11,15 @@
 
 | # | 出口条件 (04-PHASES M1) | 結果 |
 | --- | --- | --- |
-| 1 | `--include-draft` / `--add-draft` | **実装。**`TurboFieldfareRepack` の 2 モード (§2) |
-| 2 | ドラフターなしの `.gturbo` が現行とバイト一致 | **成立 (実測)。**凍結フィクスチャ `productionWritersMatchPreRefactorV1Fixtures` が通る。`draft` は optional なのでキー自体が現れない (§3) |
+| 1 | `--include-draft` / `--add-draft` | **実装。**`TsugumiRepack` の 2 モード (§2) |
+| 2 | ドラフターなしの `.moepack` が現行とバイト一致 | **成立 (実測)。**凍結フィクスチャ `productionWritersMatchPreRefactorV1Fixtures` が通る。`draft` は optional なのでキー自体が現れない (§3) |
 | 3 | 旧ランタイムが `flags.mtpDraft` を名指しで拒否 | **成立 (実測)。**`manifest.flags contains unknown key "mtpDraft"` で exit 1 (§5) |
-| 4 | 対照 (フラグなし) は exit 0 | **成立 (実測)。**同じバイナリが `gemma4.gturbo` を生成して exit 0 (§5) |
+| 4 | 対照 (フラグなし) は exit 0 | **成立 (実測)。**同じバイナリが `gemma4.moepack` を生成して exit 0 (§5) |
 | 5 | 上流ピンの再確認 (05-RISKS U6) | **一致 (実測)。**revision・テンソル全数・payload・BF16 3 本の SHA-256 が 01 の記録どおり (§1) |
-| 6 | 実機の `scratch/gemma4-qat.gturbo` | **ドラフター追記済み。**236 MB のみ取得、テキスト側 inode 不変、再検証 exit 0 (§4)。受入ゲート 7 を M1 の時点で満たしている |
+| 6 | 実機の `scratch/gemma4-qat.moepack` | **ドラフター追記済み。**236 MB のみ取得、テキスト側 inode 不変、再検証 exit 0 (§4)。受入ゲート 7 を M1 の時点で満たしている |
 
 **ランタイムはドラフターをまだ 1 バイトも読まない。**M1 が触るのは
-`TurboFieldfareFormat` / `TurboFieldfareRepack` と、`GTurboFormatV1.knownFlags` に
+`MoEPackFormat` / `TsugumiRepack` と、`MoEPackFormatV1.knownFlags` に
 `mtpDraft` を足したことによる**受理**だけ。decode 経路は無変更。
 
 ## 1. 上流ピンの再確認 (**実測**、2026-08-17)
@@ -51,14 +51,14 @@ M1 の取得前に HF API と Range 取得で読み直した。
 
 ## 2. 入れたもの
 
-### 2-1. フォーマット (`TurboFieldfareFormat`)
+### 2-1. フォーマット (`MoEPackFormat`)
 
 | 追加 | 内容 |
 | --- | --- |
 | `flags.mtpDraft` | `knownFlags` に追加。**旧ビルドの拒否はこれが担う** |
 | `versionMinorDraft = 2` | vision の 1 と同じく記述的 |
-| `draft/draft_weights.bin` | `GTurboFormatV1.draftWeightsPath` |
-| `manifest.draft` | optional セクション (`GTurboManifestDraftV1`) |
+| `draft/draft_weights.bin` | `MoEPackFormatV1.draftWeightsPath` |
+| `manifest.draft` | optional セクション (`MoEPackManifestDraftV1`) |
 | `validateDraftSection` | フラグ/セクションの対、minor ゲート、`files` 宣言、payload の収まり、**ターゲット arch との一致** |
 
 vision との差は最後の 1 行にある。ドラフターは**自前の K/V を持たず**ターゲットの
@@ -79,7 +79,7 @@ sharedSlidingKVLayer は sliding 層、sharedFullKVLayer は full 層を指す�
 (最後の sliding = 28、最後の full = 29)。ピン側に書かないので、層構成の違う
 ターゲットには自分の層番号が入る。
 
-### 2-2. repacker (`TurboFieldfareRepack`)
+### 2-2. repacker (`TsugumiRepack`)
 
 | ファイル | 役割 | 写像元 |
 | --- | --- | --- |
@@ -100,8 +100,8 @@ vision との実質的な差は **int4 であること**。tower は BF16 一枚
 ### 2-3. CLI
 
 ```
-TurboFieldfareRepack --output <model.gturbo> --include-draft
-TurboFieldfareRepack --add-draft --input-gturbo <model.gturbo>
+TsugumiRepack --output <model.moepack> --include-draft
+TsugumiRepack --add-draft --input-moepack <model.moepack>
 ```
 
 `--add-vision` と `--add-draft` は排他 (どちらもモデルディレクトリを占有するため)。
@@ -119,9 +119,9 @@ issue の内訳は `RESULTS_VISION.md` §7 と同じ陳腐化スイート
 | --- | ---: | --- |
 | `DraftInstallTests` | 6 | 中身がソースのバイトであること、フラグなしで何も動かないこと、ピン違反・由来違反・寸法違反・欠損の拒否 |
 | `DraftAppendInstallTests` | 6 | 追記が新規インストールと同一、tower との共存、二重追記の拒否、失敗時に何も残さないこと、テキスト側 inode/mtime 不変 |
-| `GTurboFormatCodecTests` (追加) | 11 | セクション/フラグの対、minor ゲート、arch との一致、共有 KV 層の種類、tie されていない lm head の拒否 |
+| `MoEPackFormatCodecTests` (追加) | 11 | セクション/フラグの対、minor ゲート、arch との一致、共有 KV 層の種類、tie されていない lm head の拒否 |
 
-**バイト一致 (出口条件 2)**: `GTurboFormatCompatibilityTests` の
+**バイト一致 (出口条件 2)**: `MoEPackFormatCompatibilityTests` の
 `productionWritersMatchPreRefactorV1Fixtures` が通る。これは manifest / layout /
 resident index を凍結フィクスチャと**バイト比較**する検査で、`draft` を optional に
 したことでキー自体が現れないことを示す (`textOnlyManifestOmitsTheDraftSectionEntirely`
@@ -133,16 +133,16 @@ manifest の差が「ドラフター 1 件ぶんだけ」であることを直�
 
 ## 4. 実機での `--add-draft` (**実測**)
 
-`scratch/gemma4-qat.gturbo` (QAT + vision tower、16 GB) に追記した。
+`scratch/gemma4-qat.moepack` (QAT + vision tower、16 GB) に追記した。
 
 ```
-$ time ./.build/release/TurboFieldfareRepack --add-draft --input-gturbo scratch/gemma4-qat.gturbo
-Added the MTP drafter to /Users/mh/LLM/turbo-fieldfare/scratch/gemma4-qat.gturbo
+$ time ./.build/release/TsugumiRepack --add-draft --input-moepack scratch/gemma4-qat.moepack
+Added the MTP drafter to /Users/mh/LLM/tsugumi/scratch/gemma4-qat.moepack
 Drafter: 48 tensors, 236114440 bytes
 Source: mlx-community/gemma-4-26B-A4B-it-qat-assistant-4bit @ bb94eae1b70a80dac16cbf959bb4b7d56bd1fb8c
 Downloaded 236114440 bytes
 Re-verified 39 files (17216936158 bytes)
-./.build/release/TurboFieldfareRepack --add-draft --input-gturbo   7.64s user 3.53s system 15% cpu 1:14.20 total
+./.build/release/TsugumiRepack --add-draft --input-moepack   7.64s user 3.53s system 15% cpu 1:14.20 total
                                                                              (exit 0)
 ```
 
@@ -187,39 +187,39 @@ Re-verified 39 files (17216936158 bytes)
 追記後の状態:
 
 ```
-$ ./.build/release/TurboFieldfareRepack --add-draft --input-gturbo scratch/gemma4-qat.gturbo
-add-draft failed: configuration invalid: …/scratch/gemma4-qat.gturbo already has an MTP
+$ ./.build/release/TsugumiRepack --add-draft --input-moepack scratch/gemma4-qat.moepack
+add-draft failed: configuration invalid: …/scratch/gemma4-qat.moepack already has an MTP
 drafter; reinstall the model to change it                                    (exit 1)
 
-$ ./.build/release/TurboFieldfareRepack --verify-install --input-gturbo scratch/gemma4-qat.gturbo
+$ ./.build/release/TsugumiRepack --verify-install --input-moepack scratch/gemma4-qat.moepack
 Verified 39 files (17216936158 bytes)                                        (exit 0)
 ```
 
-> **運用上の注意:** `scratch/gemma4-qat.gturbo` は `mtpDraft` フラグを持つようになった。
+> **運用上の注意:** `scratch/gemma4-qat.moepack` は `mtpDraft` フラグを持つようになった。
 > これは §5 の拒否がまさに働くということで、**M1 以前のビルド (古い CLI / Server /
 > Mac アプリのバイナリ) はこのモデルを読み込めない。**該当するバイナリは再ビルドが要る。
-> `scratch/gemma4.gturbo` (旧 4bit インストール) はフラグを持たないので影響を受けない。
+> `scratch/gemma4.moepack` (旧 4bit インストール) はフラグを持たないので影響を受けない。
 
 ## 5. 旧ランタイムの拒否と対照 (**実測**)
 
 M1 の変更を 1 行も含まないビルド (この作業の直前に `swift build -c release` して
-退避したバイナリ) に、ドラフター付きの `.gturbo` を食わせた。
+退避したバイナリ) に、ドラフター付きの `.moepack` を食わせた。
 
 ```
-$ <pre-M1>/TurboFieldfareCLI --model scratch/gemma4-qat.gturbo \
+$ <pre-M1>/TsugumiCLI --model scratch/gemma4-qat.moepack \
       --prompt "The capital of France is" --max-new 8
 error: manifest.flags contains unknown key "mtpDraft"
 exit 1
 ```
 
 **対照 (この検査の検出力そのもの):** 同じバイナリで、`mtpDraft` を持たない
-`scratch/gemma4.gturbo` は正常に生成して exit 0。
+`scratch/gemma4.moepack` は正常に生成して exit 0。
 
 | バイナリ | モデル | flags | 結果 |
 | --- | --- | --- | --- |
-| pre-M1 | `gemma4-qat.gturbo` (ドラフターあり) | `mtpDraft: true` | **exit 1**、`unknown key "mtpDraft"` |
-| pre-M1 | `gemma4.gturbo` (ドラフターなし) | フラグなし | exit 0、`tok/s=13.734` |
-| M1 | `gemma4-qat.gturbo` (ドラフターあり) | `mtpDraft: true` | exit 0、`tok/s=11.567`、`load=0.763s` |
+| pre-M1 | `gemma4-qat.moepack` (ドラフターあり) | `mtpDraft: true` | **exit 1**、`unknown key "mtpDraft"` |
+| pre-M1 | `gemma4.moepack` (ドラフターなし) | フラグなし | exit 0、`tok/s=13.734` |
+| M1 | `gemma4-qat.moepack` (ドラフターあり) | `mtpDraft: true` | exit 0、`tok/s=11.567`、`load=0.763s` |
 
 拒否はフラグに対するものであって、「古いバイナリが何にでも失敗する」のではない
 (vision の `RESULTS_VISION.md` §8 と同じ形)。

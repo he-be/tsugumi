@@ -41,7 +41,7 @@
 
 - コミット `efd5d02`、Apple M3 Pro (GPU 18 コア) / 18 GB / **DRAM 150 GB/s**、
   macOS 15.7.5、Swift 6.2.4
-- `TurboFieldfareCLI --model scratch/gemma4-qat.gturbo --max-new 1 --verification trusted-install`
+- `TsugumiCLI --model scratch/gemma4-qat.moepack --max-new 1 --verification trusted-install`
 - プロンプト 1973 トークン (`--max-context 4096`)。一部の内訳は 797 / 405 トークン
 - 30 層 (SWA 25 / full 5) / expert 128 / top-8 / `hiddenSize` 2816 /
   `moeIntermediateSize` 704 / `ffnIntermediate` 2112 / `slidingWindow` 1024 /
@@ -229,7 +229,7 @@ peak           3.13 GB
   chunk 2048 で 3072 行になる。**16K コンテキストでの `ExpertCacheBudget` 再計算が必須**
   (今回 `--max-context 8192` + 96 スロットは起動時に弾かれた)。
 - `routePartials` スクラッチは `C × topK × D × 2 B` = chunk 2048 で 92 MB。
-- 数値検証: `TurboFieldfareValidation` を chunk 256/512/1024/2048 で通す。
+- 数値検証: `TsugumiValidation` を chunk 256/512/1024/2048 で通す。
   greedy 出力の chunk 128 一致は 2 プロンプトで確認済みだが、**回帰テストに落とす**。
 - **既定値は変えない。**まず `--prefill-chunk-tokens` で選べるようにするだけ。
 
@@ -249,7 +249,7 @@ peak           3.13 GB
   1 ヘッド**を担当し、KV タイルを threadgroup メモリに段階的に載せる形に書き換える。
 - あるいは `attention_prefill_full_tensorops_2d_validity_v2` を
   `headDim 256 / numKVHeads 8` に一般化する (SWA 層に当てるにはリング対応も要る)。
-- **先に測るべき単体数値**: `TurboFieldfareKernelCheck` に
+- **先に測るべき単体数値**: `TsugumiKernelCheck` に
   「SWA attention 単体の GPU 時間と読み出しバイト数」を出すケースを足す。
   現状の 790 GB (**導出**) を**実測に置き換えてから**着手する。
   ここが導出のままだと、効果を後で説明できない。
@@ -476,7 +476,7 @@ shared=4.15s  moe=8.58s  tail=0.05s       GPU 合計 24.82s / 壁時計 27.20s =
    §8 筆頭の数値検証はこれで**実測**に置き換わった。
 4. **greedy 出力一致は仍未取得。**CLI に attention パスの切替フラグがなく、
    `.fullTensorOps2DValidityV2` との A/B を取るにはフック追加か
-   `TurboFieldfareValidation` 拡張が要る (**未確認**のまま残す)。
+   `TsugumiValidation` 拡張が要る (**未確認**のまま残す)。
 5. **Swift 6.3.3 の型チェッカーでテスト 2 ファイルがコンパイルエラーになる**
    (`SharedExpertInt4Tests` / `PrefillSharedExpertTests`)。
    `quantizeInt4Affine(_:groupSize:)` の関数参照が曖昧になるのと、
@@ -576,7 +576,7 @@ pp は予測 300-340 に届かないが、それは Gate 3 (MoE) を飛ばして
 仮数 12 bit を要求し、FP16 は 11 bit)。活性は元から FP16、累算は float なので、
 増える誤差はこの 1 か所だけ。
 
-- `TurboFieldfareKernelCheck` の新ケース (FP32 CPU 参照との比較、
+- `TsugumiKernelCheck` の新ケース (FP32 CPU 参照との比較、
   group 32/64 × 3 形状) で **rel 3-4e-4**。半精度丸めの理論値と一致する。
 - `PrefillAffineTests` の対 GEMV 比較では **maxAbs = 2.44e-4 = 出力 FP16 の 1 ulp**
   ちょうど。従来の許容値 2e-4 は 1 ulp を下回っていたので、
@@ -590,7 +590,7 @@ pp は予測 300-340 に届かないが、それは Gate 3 (MoE) を飛ばして
 
 #### 検証の状態
 
-- `TurboFieldfareKernelCheck` に `prefill-qmm` 3 ケース × group 32/64 を追加。
+- `TsugumiKernelCheck` に `prefill-qmm` 3 ケース × group 32/64 を追加。
   タイル丁度 (t=64 n=2112 k=2816)、M と N が両方タイル半端 (t=131 n=100)、
   極小 (t=7 n=64 k=128)。出力バッファに番兵を置いて未書き込みも見る。**全通過**。
 - `Scripts/test.sh` **698 テスト / 126 スイート、12 issue**。

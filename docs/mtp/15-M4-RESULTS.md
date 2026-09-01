@@ -1,7 +1,7 @@
 # 15. M4 の結果 — verify パスと KV 巻き戻し
 
 測定: 2026-08-18、M3 Pro 18GB / macOS 15.7.5 / Swift 6.3.3。
-対象モデル `scratch/gemma4-qat.gturbo`。
+対象モデル `scratch/gemma4-qat.moepack`。
 
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
@@ -24,7 +24,7 @@
 | 2 | 巻き戻し後の続きが「巻き戻さなかった世界」と一致 | **成立。**16/16 トークン一致 |
 | 3 | わざと壊して FAIL する | **成立。**短い/長い/巻き戻さないの 3 通りとも 0/16 (k=8 では 1/16) |
 
-`TurboFieldfareKernelCheck --verify-block` が **12 cases PASS / exit 0**。
+`TsugumiKernelCheck --verify-block` が **12 cases PASS / exit 0**。
 
 **しかし M4 で初めて測った verify の費用が、10-M0 §2 の費用モデルと合わない** (§4):
 
@@ -59,7 +59,7 @@ GPU の内訳を取ると verify 1 ブロックの 60〜69% が routed MoE で�
 | `SpeculativeVerifier` プロトコル | `verifyBlock` / `rewind` / `maxSpeculativeBlockTokens`。既存の `LogitProducer` を広げない (D3) ので、テストのスクリプト済みプロデューサは 1 行も変わらない |
 | `RealForwardRunner.verifyBlock` | prefill チャンク経路の head を「最終行だけ」から「全行」に一般化しただけ。forward 本体は 1 行も分岐しない |
 | `LMHeadChainInt4.encodeGreedyDecode(outTokenOffset:)` | ブロックの k 個の argmax を 1 本のバッファに並べる |
-| `TurboFieldfareKernelCheck --verify-block` | M4 の検査本体 (§2, §3)。`--verify-block-size` / `--verify-rounds` / `--verify-cost-only` / `--model-only` |
+| `TsugumiKernelCheck --verify-block` | M4 の検査本体 (§2, §3)。`--verify-block-size` / `--verify-rounds` / `--verify-cost-only` / `--model-only` |
 | `TF_PREFILL_MOE_GEMM_MIN_TOKENS` | routed MoE のタイル経路を使う最小チャンク幅。**既定 0 = 従来どおり**。§4-3 の測定用 |
 
 decode 経路 (`produce`) は無変更。`verifyBlock` を呼ばない実行は 1 命令も増えない。
@@ -313,7 +313,7 @@ M0 の帯域下限 0.62 まで下げることが必要条件になる。
   4 本のみ (`AppModelInstallTests` のピン監査、`AppRuntimeOptionsTests`、
   `AppContextLengthOptionTests`、`RuntimeConfigurationTests`)。新規失敗ゼロ。
   M3.5 の 826 から +4 は今回足した `KVCacheManagerTests` の巻き戻し 4 本
-- `TurboFieldfareKernelCheck --verify-block scratch/gemma4-qat.gturbo`:
+- `TsugumiKernelCheck --verify-block scratch/gemma4-qat.moepack`:
   **12 cases PASS**、exit 0 (k=4 / k=8 / `TF_PREFILL_MOE_GEMM_MIN_TOKENS=16` の
   いずれでも)
 
@@ -348,5 +348,5 @@ M0 の帯域下限 0.62 まで下げることが必要条件になる。
    「完全一致」から「分岐位置の実測」に読み替える。
 
 **測り直しの 1 行**:
-`.build/release/TurboFieldfareKernelCheck --verify-block scratch/gemma4-qat.gturbo`
+`.build/release/TsugumiKernelCheck --verify-block scratch/gemma4-qat.moepack`
 (正しさ)、`--verify-cost-only` (費用)。

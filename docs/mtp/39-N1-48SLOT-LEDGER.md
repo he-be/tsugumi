@@ -104,7 +104,7 @@ sudo sysctl iogpu.wired_limit_mb=14336        # 再起動で 8192 に戻る
 # 段 1: costProbe の c 曲線 (画像 A)
 for S in 16 24 32 48; do
   TF_EXPERT_CACHE_SLOTS=$S TF_VERIFY_COST_WIDTHS=1,2,3,4,6,8 \
-    .build/release/TurboFieldfareKernelCheck --verify-block scratch/gemma4-qat.gturbo \
+    .build/release/TsugumiKernelCheck --verify-block scratch/gemma4-qat.moepack \
     --verify-cost-only --verify-block-size 4 --verify-image "$A" --verify-thinking \
     > bench/logs/39_n1/cost_${S}slots.log
 done

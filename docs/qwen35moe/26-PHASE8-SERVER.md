@@ -6,10 +6,10 @@ CLI は実物にツールを呼ばせたが、**サーバーは Gemma の型し�
 `ChatRequestParser` / `ServerGenerationPlan` に Ornith の分岐が無かった。
 
 ```
-.build/release/TurboFieldfareServer \
-  --model scratch/ornith-oq4e-g64.gturbo --model-id ornith-1.5-35b-a3b \
+.build/release/TsugumiServer \
+  --model scratch/ornith-oq4e-g64.moepack --model-id ornith-1.5-35b-a3b \
   --port 8099 --ctx-size 8192 --verification trusted-install --metrics
-→ TurboFieldfareServer ready … family=qwen3_5_moe context=8192 slots=32 \
+→ TsugumiServer ready … family=qwen3_5_moe context=8192 slots=32 \
   expert_io=mmap mtp=0 reasoning_budget=-1 reasoning_format=auto
 ```
 
@@ -76,7 +76,7 @@ Gemma 版との差は 1 つだけ、`approximations` の**タグが 3 種類あ�
 ## 3. チャンネル規則は 1 つ、生産者は 2 つ
 
 `QwenReasoningSplitter` は `RunQwen.swift` の `private struct` だったが、
-**ライブラリ (`Sources/TurboFieldfare/Tokenization/`) に移した**。サーバーも
+**ライブラリ (`Sources/Tsugumi/Tokenization/`) に移した**。サーバーも
 「ツールを宣言しない要求」で同じものが要るからで、写すのではなく動かした。
 
 移すついでに API を `QwenStructuredAssistantDecoder` に合わせた
@@ -218,7 +218,7 @@ completed in 4.3s prompt=16 cached=0 completion=32 finish=stop
 ```
 
 これは**結線の不具合ではなく、非遅延文法の前置きの設計そのもの**である
-([`QwenToolCallGrammar.toolPreamble`](../../Sources/TurboFieldfare/Grammar/QwenToolCallGrammar.swift)):
+([`QwenToolCallGrammar.toolPreamble`](../../Sources/Tsugumi/Grammar/QwenToolCallGrammar.swift)):
 前置きは「**セクション開始でない任意のトークン**」で、そこに置かれた保証は
 「前置きの中では*止まれない* (`mayEndHere` が偽なので停止トークンが拒まれる)
 から、出口は呼び出しを書くことしか無い」だった。**止まれないことと、
@@ -272,7 +272,7 @@ Gemma の実測値を動かさないため、共有部への変更は次の 3 �
 | `ServerProperties` | `supportsVision` を追加 (既定 `true`) | Gemma の `/props` は同じ答えを返す |
 | `Command/main.swift` | 家族分岐、`forceLogitsHead: !isOrnith`、起動ログに `family=` | Gemma の枝は元のまま |
 
-`Sources/TurboFieldfareCLI/RunQwen.swift` は `QwenReasoningSplitter` を
+`Sources/TsugumiCLI/RunQwen.swift` は `QwenReasoningSplitter` を
 ライブラリのものに差し替えただけで、出力は変わらない (実物で確認)。
 
 ## 8. この文書が動かした結論

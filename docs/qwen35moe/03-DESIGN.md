@@ -5,7 +5,7 @@
 ## 1. 変換と repack (残作業)
 
 どちらの候補も MLX 量子化済み・3 ロール分割済みなので ([02](02-CHECKPOINTS.md))、
-残るのは「`.gturbo` に書く前の焼き込み」「名前寄せ」「repack を通すこと」だけ。
+残るのは「`.moepack` に書く前の焼き込み」「名前寄せ」「repack を通すこと」だけ。
 MLX 側は焼き込みをしないもの (`q_norm` の 1/16) があるので、本リポジトリ側で必ずやる。
 
 ### 1-1. 焼き込みと読み込み時の注意
@@ -49,7 +49,7 @@ oQ 系の名前との対応:
 
 ## 2. 新規に書くカーネル
 
-**方針: 新規は全部 `Sources/TurboFieldfare/Metal/Qwen/qwen.metal` に置く。**
+**方針: 新規は全部 `Sources/Tsugumi/Metal/Qwen/qwen.metal` に置く。**
 既存 `.metal` を触らない (Gemma の実測値を凍結したままにするため)。
 SiLU だけは共有ヘッダに置きたくなるが、`gelu_pytorch_tanh` が 4 箇所に重複定義されている
 現状に合わせて **`qwen.metal` にローカル定義する**。
@@ -60,7 +60,7 @@ SiLU だけは共有ヘッダに置きたくなるが、`gelu_pytorch_tanh` が 
 
 ### 2-1. `qwen_silu_mul` — SiLU (**書けた**)
 
-`grep -rni silu Sources/TurboFieldfare/Metal` は **0 件** (実測 = ソース)。
+`grep -rni silu Sources/Tsugumi/Metal` は **0 件** (実測 = ソース)。
 `gelu_mul_fp16` (`utility.metal`) の SiLU 版を書く: `y = x * sigmoid(x) * up`。
 shared expert (int4) と routed expert (phase1) の両方から呼ぶ。
 
@@ -277,7 +277,7 @@ final class RecurrentStateManager {
 | `moe_phase2_down_reduce_k8` | top-8 = 8 simdgroup 固定。一致 |
 | 期待値の事前確保 | `maxRouterRows * 256 * Float` と `kPrefillRouterMaxExperts=256` が**既に 256** |
 | `PreadExpertStreamer` / `MmapExpertMapping` / `ExpertCacheBudget` | `expertStride` / `expertsPerLayer` を layout.json から読む。次元のハードコード無し |
-| `GTurboPackedExpertsLayoutV1` | 16 KiB 揃え。Ornith は 108 ページちょうど |
+| `MoEPackPackedExpertsLayoutV1` | 16 KiB 揃え。Ornith は 108 ページちょうど |
 | `rmsnorm_bf16w` / `rmsnorm_no_scale` | `1+w` 規約が一致 (焼き込み状態は候補ごとに確認 — §1-1) |
 | `attention_prefill_causal_qblock_d256` | **head_dim だけで選ばれる。**Qwen の full 層 (256) がそのまま当たる |
 | `MPPPrefillInt4QMM` (Metal 4 tensor ops) | `K % 64 == 0` と group 64 のみが条件。2048 / 4096 / 512 すべて満たす |
@@ -378,7 +378,7 @@ h_mtp = decoder_layer(h_mtp)          # full attention + MoE-256
 logits = lm_head(mtp.norm(h_mtp))     # lm_head は本体と共用
 ```
 
-`GTurboManifestDraftV1` は `tieWordEmbeddings == true` を**無条件に要求**し、
+`MoEPackManifestDraftV1` は `tieWordEmbeddings == true` を**無条件に要求**し、
 `sharedSlidingKVLayer` / `sharedFullKVLayer` を必須にしている (実測 = ソース)。
 **Qwen の draft セクションは別スキーマにする** (`draftFamily` で分岐)。
 配線の第三者資料として `Shiftedx/…-mtplx` の `mtp_contract` が読める

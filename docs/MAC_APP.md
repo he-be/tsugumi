@@ -1,14 +1,14 @@
 # Mac アプリ — 二モデル対応の設計と運用
 
-最終更新: 2026-09-01。対象は `TurboFieldfareMac` (SwiftUI) と、その推論プロセス
-`TurboFieldfareDecodeService`。**このリポジトリで積んだ改善を規定値として GUI から
+最終更新: 2026-09-01。対象は `TsugumiMac` (SwiftUI) と、その推論プロセス
+`TsugumiDecodeService`。**このリポジトリで積んだ改善を規定値として GUI から
 使えるようにした**改造の記録と、ウェイト供給の手順。
 
 ## 1. なにが入ったか
 
 | 項目 | Gemma 4 26B-A4B QAT | Ornith-1.5 35B-A3B oQ4e-g64 |
 | --- | --- | --- |
-| ウェイト | `sym` repack + vision + drafter (`scratch/gemma4-qat-sym.gturbo`, 15.7 GB) | q_norm bake + shisa MTP ヘッド (`scratch/ornith-oq4e-g64.gturbo` 19.6 GB + sidecar 503 MB) |
+| ウェイト | `sym` repack + vision + drafter (`scratch/gemma4-qat-sym.moepack`, 15.7 GB) | q_norm bake + shisa MTP ヘッド (`scratch/ornith-oq4e-g64.moepack` 19.6 GB + sidecar 503 MB) |
 | Vision | あり (画像添付 UI、最大 4 枚) | なし |
 | MTP | 既定 ON、ブロック 4 | 既定 ON、幅 2 固定 ([docs/qwen35moe/36](qwen35moe/36-MTP-DECODE.md)) |
 | Thinking | トグルあり、**既定 OFF** | トグルあり、**既定 ON** |
@@ -29,7 +29,7 @@
 ON/OFF に関わらず 2 ターン目以降の prompt cache は当たる** — Gemma は LCP、
 Ornith は厳密な延長がそのまま成立する。答えが 1 文字も出ずに失敗したターンは
 履歴に残さない (モデルが見ていない会話を描かない)。会話のリセットは従来どおり
-コンテキストメニューの Clear。ターン間の履歴は `TurboFieldfareDecodeService`
+コンテキストメニューの Clear。ターン間の履歴は `TsugumiDecodeService`
 へのワイヤ (`DecodeGenerationRequest.history`) を通る。
 
 **複数チャット** (2026-09-01): 会話ごとの状態 (下書き・履歴・ライブ出力) を
@@ -43,7 +43,7 @@ transcript mailbox は 1 本のクライアント所有チャネルなので所�
 ゲートし、他チャットの画面が生成中の本文を吸わないようにしてある。
 
 **永続化** (2026-09-01): チャット一覧・各会話の履歴・ライブ出力・下書き・選択位置を
-`~/Library/Application Support/TurboFieldfare/chats.json` に保存する
+`~/Library/Application Support/Tsugumi/chats.json` に保存する
 (`AppChatStore`)。チャットはモデルに紐付かない (別モデルで続きを打てる) ので、
 モデル別設定ファイルとは別の 1 枚。構造変化 (新規・削除・切替・Clear) と
 ターン完了は即時保存、下書きのタイプは 1 秒デバウンス — 終了直前 1 秒未満の
@@ -85,7 +85,7 @@ Scripts/app/upload_prebuilt.sh
 
 ## 3. Ornith の MTP サイドカー
 
-ヘッドは `.gturbo` に入らない ([docs/qwen35moe/30 §6](qwen35moe/30-MTP-HEAD-GRAFT.md))。
+ヘッドは `.moepack` に入らない ([docs/qwen35moe/30 §6](qwen35moe/30-MTP-HEAD-GRAFT.md))。
 エンジンは `<モデル>/mtp-head/mtp_head.json` を先に探し、無ければ
 `~/LLM/ornith-mtp-head` (`TF_QWEN_MTP_HEAD` で差し替え) に落ちる。どちらも無ければ
 **MTP は静かに OFF でロードする** (答えられないより遅い方がまし)。Gemma 側も同じ:

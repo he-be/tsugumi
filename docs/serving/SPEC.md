@@ -1,6 +1,6 @@
-# サーバー仕様 (SPEC) — TurboFieldfareServer
+# サーバー仕様 (SPEC) — TsugumiServer
 
-2026-08-19 制定。**この文書が `TurboFieldfareServer` の唯一の規範仕様である。**
+2026-08-19 制定。**この文書が `TsugumiServer` の唯一の規範仕様である。**
 実装・テスト・運用文書はすべてここから導出する。ここに書いていない挙動は
 実装しない。実装がこの文書と食い違えば、それはバグである — 直すのは実装か、
 §13 の手順を踏んだこの文書への行追加であり、その場しのぎの実装変更ではない。
@@ -219,7 +219,7 @@
 | DEV-8 | 音声・動画入力 | あり (mtmd) | 501 | モデルが vision のみ | モデルが変わったら |
 | DEV-9 | `top_k` の上限 | INT32_MAX | 256 へ丸め | サンプラ実装の partial-sort 上限。クランプであり拒否ではない | サンプラを一般化したら |
 | DEV-10 | `top_p` のサンプラ写像 | 全語彙で nucleus を取る | `top_p < 1` かつ `top_k` 未指定なら `top_k = 256` を補う。`top_p = 0` は貪欲 (`top_k = 1`) として実行 | サンプラが全語彙 nucleus を実装していない (`GenerationConfig.validate`)。R3 の「範囲外は端に丸める」の延長で、拒否ではない | 全語彙 nucleus を実装したら |
-| DEV-12 | チャットテンプレート | 同梱 `chat_template.jinja` をそのまま描く | **サーバーだけリポジトリ所有の変種**を描く (`Sources/TurboFieldfare/Templates/server_chat_template.jinja`、`GFTokenizer.ChatTemplateVariant.serverRedraw`)。同梱版との差分は 1 ハンク: 完了した model ターンに、生成時に KV へ入っていた thought channel (思考 OFF なら空、思考 ON なら思考ブロック) を描き直す | 同梱版は思考ブロックを「最後の user より後」かつ「`tool_calls` を持つ」ターンにしか描かないので、完了した回答を描き直すと必ず生成時とずれる = INV-1 が破れ、毎ターン LCP が 12〜20+ トークン短くなる。CLI・アプリ・KernelCheck は同梱版のまま (既定 `.modelBundled`) なので、それらのトークン列は 1 ビットも動かない | 同梱テンプレートが完了ターンを生成どおりに描くようになったら |
+| DEV-12 | チャットテンプレート | 同梱 `chat_template.jinja` をそのまま描く | **サーバーだけリポジトリ所有の変種**を描く (`Sources/Tsugumi/Templates/server_chat_template.jinja`、`GFTokenizer.ChatTemplateVariant.serverRedraw`)。同梱版との差分は 1 ハンク: 完了した model ターンに、生成時に KV へ入っていた thought channel (思考 OFF なら空、思考 ON なら思考ブロック) を描き直す | 同梱版は思考ブロックを「最後の user より後」かつ「`tool_calls` を持つ」ターンにしか描かないので、完了した回答を描き直すと必ず生成時とずれる = INV-1 が破れ、毎ターン LCP が 12〜20+ トークン短くなる。CLI・アプリ・KernelCheck は同梱版のまま (既定 `.modelBundled`) なので、それらのトークン列は 1 ビットも動かない | 同梱テンプレートが完了ターンを生成どおりに描くようになったら |
 | DEV-13 | 部分再利用の深さ | 共通接頭辞ならいくらでも遡って再開できる | **KV カーソルを戻せるのはリングの余裕まで** (`min(maxContext, slidingWindow + prefillChunkTokens) - slidingWindow`、既定 **2048 トークン**)。それより深い分岐は接頭辞を捨てて全 prefill | FP16 リングは SWA 層の物理スロットを `capacity` ごとに再利用するので、`[N, position)` を書いた時点で `[N-capacity, position-capacity)` は潰れている。カーネルが読む `[N-slidingWindow, N)` を守る条件がこの式 (`KVCacheManager.maximumSafeRewind`) | リング容量が変わったら自動で追随する。リングを切れば (`fp16RingEnabled = false`) 制限は消える |
 | DEV-21 | 思考の予算に `max_tokens` が効くときの分け方 | 予算は `reasoning_budget_tokens` だけ。`max_tokens` は分けない | `max_tokens` のうち **`max(1, max_tokens/4)` を答えのために取り置き**、残りを思考の締切にする | RSN-4 は「`max_tokens` の残りも予算のうち」と言うが、分け方までは決めていない。取り置きが無いと、思考が `max_tokens` を丸ごと使い切ってから終了タグを差し込むことになり、本文 0 字という直そうとしている欠陥がそのまま残る。1/4 に強い根拠は無く、**測って動かしてよい数字** | 実測で答えが切れる/思考が短すぎるとわかったら |
 | DEV-14 | 投機デコードを落とす要求 | 強制挿入 (`rbudget`) もサンプラ chain の中にあるので、どの要求も投機と併用できる | **思考の終了タグを強制しうる要求 (RSN-4) と `repeat_penalty != 1` の要求は投機デコードを使わない** (plain 経路に落ちる)。**文法はこの列から外れた — GEN-14 で併用する** | 強制挿入は「引かずに置くトークン」、repetition penalty は「まだ確定していない履歴に依存する引き」であり、どちらもブロック内の後続位置が検証された前提を崩す。参照実装はどちらもサンプラとして chain に入れてあるので併用できるが、こちらの `ReasoningBudgetForcer` は復号ループの側にあり、サンプラの中にいない。**2026-08-21 に GEN-14 で文法だけを外した** — 文法は引き直し (GEN-7) を持ち込むが、引き直しても位置ごとに引き直すのは target 自身であり、食い違った位置から後ろは捨てるので前提は崩れない (参照実装 `common_sampler_sample_and_accept_n` がそう書いてある)。この 2 つを外に残したのは、実装の形が違うからであって理由が同じだからではない | 強制挿入をサンプラ側へ移したら (思考 ON の常用セッションに MTP が要ると分かった時点で読み直す)。repetition penalty はサンプラが履歴をブロック内で確定できるようになったら |

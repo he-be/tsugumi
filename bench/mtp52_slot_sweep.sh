@@ -9,8 +9,8 @@ mkdir -p bench/mtp52
 # `RuntimeConfiguration.allowedExpertCacheSlots` を一時的に広げること。
 for SLOTS in 16 64; do
   echo "=== warmup slots=$SLOTS ==="
-  TF_EXPERT_MMAP=0 ./.build/release/TurboFieldfareCLI \
-    --model scratch/gemma4-qat-sym.gturbo --messages-file bench/math.json \
+  TF_EXPERT_MMAP=0 ./.build/release/TsugumiCLI \
+    --model scratch/gemma4-qat-sym.moepack --messages-file bench/math.json \
     --temperature 0 --max-new 32 --expert-cache-slots "$SLOTS" \
     --verification trusted-install >/dev/null 2>&1
   sleep 15

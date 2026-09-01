@@ -1,7 +1,7 @@
 # 22. 目標設定のやり直し — 倒れたのは水準だけで、差分は一度も倒れていない
 
 測定: 2026-08-18、M3 Pro 18GB / macOS 15.7.5 / Swift 6.3.3、commit `8f1aab5`。
-対象モデル `scratch/gemma4-qat.gturbo`、`sample_imgs/` の 8 枚。
+対象モデル `scratch/gemma4-qat.moepack`、`sample_imgs/` の 8 枚。
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
 本書は新しい測定を 1 本 (§4) 足すが、主目的は**採点の仕組みを直すこと**である。
@@ -211,7 +211,7 @@ M5 のあと、感度表が指す唯一の経路は **F の内訳**である:
 ゴールタスクの生成長と decode 比率 (§4):
 
 ```
-.build/release/TurboFieldfareCLI --model scratch/gemma4-qat.gturbo \
+.build/release/TsugumiCLI --model scratch/gemma4-qat.moepack \
   --messages-file bench/mtp_goal_prompt.json --image sample_imgs/IMG_2112.JPG --image-tokens 280 \
   --thinking on --temperature 0 --max-new 2048 \
   --expert-cache-slots 80 --verification trusted-install

@@ -5,7 +5,7 @@
 表記は PLAN.md に合わせる: **実測** / **導出** / **未確認**
 
 対象は `pi` v0.84.2 (`openai-completions` アダプタ) から
-`TurboFieldfareServer` を使ったときに観測された 3 つの症状。
+`TsugumiServer` を使ったときに観測された 3 つの症状。
 
 ---
 
@@ -25,7 +25,7 @@ A と B はどちらもサーバ側の挙動。C はサーバの問題ではな�
 ## 2. 計測環境
 
 - コミット `efd5d02`、Apple M3 Pro (GPU 18 コア) / 18 GB、macOS 15.7.5、Swift 6.2.4
-- `.build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo --port 8093`
+- `.build/release/TsugumiServer --model scratch/gemma4-qat.moepack --port 8093`
   (既定値: 48 スロット / LFU / prefill on / chunk 128 / RDADVISE off / 16K context)
 - pi の設定は変更せず、pi が向いている 8091 に**記録用プロキシ**を挟んで
   8093 へ転送し、リクエストとレスポンス (SSE 含む) を全文記録した。
@@ -101,7 +101,7 @@ pi に `proj` ディレクトリを調べさせた 1 セッション = 19 リク
 チャットテンプレートはツール呼び出しを
 `<|tool_call>call:` + 名前 + `{` 引数 `}` + `<tool_call|>` として描画し、
 **呼び出し ID を含めない**
-(モデル同梱の `scratch/gemma4-qat.gturbo/tokenizer/chat_template.jinja:246`)。
+(モデル同梱の `scratch/gemma4-qat.moepack/tokenizer/chat_template.jinja:246`)。
 
 継続ブリッジ `GFTokenizer.encodeToolResultContinuation`
 (`Tokenizer.swift:408-438`) は、キャッシュ側の assistant のツール呼び出し
@@ -189,7 +189,7 @@ pi --append-system-prompt "Questions about anything on this machine (files, dire
 
 ## 6. 付: pp (プレフィル) の律速要因
 
-`turbofieldfare-m3pro-status.md` §5「分かっていないこと」1 番目の
+`tsugumi-m3pro-status.md` §5「分かっていないこと」1 番目の
 「prefill が I/O 律速か計算律速か」に対する測定。
 
 ### 6-1. 実測

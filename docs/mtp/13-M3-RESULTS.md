@@ -1,7 +1,7 @@
 # 13. M3 の結果 — 受理率の実測 (go / no-go)
 
 測定: 2026-08-17、M3 Pro 18GB / macOS 15.7.5 / Swift 6.2。
-対象モデル `scratch/gemma4-qat.gturbo` (M1 でドラフター追記済み)。
+対象モデル `scratch/gemma4-qat.moepack` (M1 でドラフター追記済み)。
 参照実装との突き合わせ (§3) のみ外部機 (llama.cpp / CUDA 多 GPU)。
 
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
@@ -50,7 +50,7 @@ peak 9.8 GB) より大きく、メモリ増も +0.24 GB で済む。取りに行
   から)。10-M0 §3 の上限表と同じ数え方なので直接比較できる。dense 平均との差は
   0.05 以内 (**実測**)。
 
-計装は `Sources/TurboFieldfare/MTP/DraftAcceptanceProbe.swift` と、
+計装は `Sources/Tsugumi/MTP/DraftAcceptanceProbe.swift` と、
 `RealForwardRunner.produceToken` の 2 か所の呼び出しだけ。オフのときのコストは
 `draftProbeSettings != nil` の判定 1 個。
 
@@ -223,7 +223,7 @@ story プロンプト、192 tok、同一セッションで交互に 3 回:
 ## 8. 実装上の発見 — 量子化 group サイズが 1 プロセスに 2 つある
 
 `MetalContext` は affine group サイズを**シェーダライブラリに焼き込む**
-(「1 プロセス 1 モデル、group サイズは一様」という前提)。MTP 付きの `.gturbo` は
+(「1 プロセス 1 モデル、group サイズは一様」という前提)。MTP 付きの `.moepack` は
 **1 ファイルの中でこの前提を破る** (**実測**): ターゲット (26B) の
 `manifest.quant.*.groupSize` = **32**、ドラフターの `manifest.draft.quant.groupSize`
 = **64**。M2 の `KernelCheck --draft` は既定の group 64 のコンテキストで走っていたので
@@ -242,7 +242,7 @@ group サイズの関数定数化 (シェーダ全体に波及) より波及が�
 
 | 面 | 内容 |
 | --- | --- |
-| `Sources/TurboFieldfare/MTP/DraftAcceptanceProbe.swift` | 診断本体。ラウンド生成・突合・鎖の集計・TSV 出力 |
+| `Sources/Tsugumi/MTP/DraftAcceptanceProbe.swift` | 診断本体。ラウンド生成・突合・鎖の集計・TSV 出力 |
 | `DraftForward.swift` | `kvLength` (規約の切り替え) と `slidingRingCapacity` (SWA リングの本番レイアウト) を追加。既定値は M2 と同一挙動 |
 | `MetalContext.swift` | `init(sharingDeviceWith:)` (§8) |
 | `RealForwardRunner.swift` | probe の遅延生成、`produceToken` の 2 か所 (突合と生成)、post-norm hidden の取り出し (02 §N3) |
@@ -260,7 +260,7 @@ group サイズの関数定数化 (シェーダ全体に波及) より波及が�
 
 - `Scripts/test.sh`: **826 テスト / 140 スイート / 11 issue — 既知の陳腐化スイートのみ、
   新規失敗ゼロ** (M1/M2 と同一)
-- `TurboFieldfareKernelCheck --draft scratch/gemma4-qat.gturbo`: **100 cases PASS**、
+- `TsugumiKernelCheck --draft scratch/gemma4-qat.moepack`: **100 cases PASS**、
   exit 0 (M2 の突合は `kvLength` 追加後も無変更で通る)
 
 ## 11. 次 — M3.5 (受理率の回復)
@@ -282,5 +282,5 @@ M4 に入る前に、§6 を潰して §3 の水準に寄せる。decode 経路�
    (§4 の最適点)。03-DESIGN D7 の `--draft-block-size` は `0|2..8` のまま残すが、
    既定は 3。
 
-**測り直しの 1 行**: `TF_DRAFT_PROBE=/tmp/probe.tsv .build/release/TurboFieldfareCLI
---model scratch/gemma4-qat.gturbo --messages-file bench/story.json ...`
+**測り直しの 1 行**: `TF_DRAFT_PROBE=/tmp/probe.tsv .build/release/TsugumiCLI
+--model scratch/gemma4-qat.moepack --messages-file bench/story.json ...`

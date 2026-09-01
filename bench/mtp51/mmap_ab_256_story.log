@@ -1,5 +1,5 @@
 # ./bench/mtp51_mmap_ab.py --rounds 3 --messages bench/story.json --out bench/mtp51/mmap_ab_256_story.log
-# model=scratch/gemma4-qat-sym.gturbo messages=bench/story.json slots=32 max_new=256 cool=10s
+# model=scratch/gemma4-qat-sym.moepack messages=bench/story.json slots=32 max_new=256 cool=10s
 round 1  pread  io    7.40 ms/tok  tok/s  29.950  prefill  1.294s  peak  4.51GB  miss 3829/61200  out 99b3239bcf26
 「……え、ええええええええ！？」
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""`.gturbo` の affine 量子化フィールドに何が入っているかを検定する。
+"""`.moepack` の affine 量子化フィールドに何が入っているかを検定する。
 
-使い方: python3 check_bias_identity.py <model.gturbo> [layers]
+使い方: python3 check_bias_identity.py <model.moepack> [layers]
 
 2 つ測る (docs/mtp/44-W1-WEIGHT-DIET.md §1 / §2):
 

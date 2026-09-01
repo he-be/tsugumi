@@ -1,10 +1,10 @@
 # 26. M6 の結果 — Server に載せた
 
 測定: 2026-08-18、M3 Pro 18GB / macOS 15.7.5 / Swift 6.3.3。
-対象モデル `scratch/gemma4-qat.gturbo` (drafter 同梱)。触ったファイルは §6。
+対象モデル `scratch/gemma4-qat.moepack` (drafter 同梱)。触ったファイルは §6。
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
-M5.6 まではループを回すのが CLI だけで、`TurboFieldfareServer` は
+M5.6 まではループを回すのが CLI だけで、`TsugumiServer` は
 `--draft-block-size` を知らなかった。04-PHASES の M6 (CLI / Server / 受入) の
 残りはそこ 1 点である。本書はサーバーに同じ 1 本の口を足し、
 **pi (コーディングエージェント) が実際に投げる形** — tools 宣言つき・streaming・
@@ -144,7 +144,7 @@ temp 0、on と off は**別プロセス**(サーバーの設定はプロセス�
 ## 5. 測り直しの 1 行
 
 ```bash
-.build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo \
+.build/release/TsugumiServer --model scratch/gemma4-qat.moepack \
   --port 8091 --expert-cache-slots 80 --verification trusted-install \
   --draft-block-size 4
 ```
@@ -157,9 +157,9 @@ temp 0、on と off は**別プロセス**(サーバーの設定はプロセス�
 
 | ファイル | 中身 |
 | --- | --- |
-| `Sources/TurboFieldfareServer/Core/ServerArguments.swift` | `--draft-block-size` の parse と検証 (0 または 2...8、`--prefill on` を要求)、usage |
-| `Sources/TurboFieldfareServer/Core/ServerInference.swift` | 起動時の `SpeculativeScratch` (ドラフター無しは起動失敗)、生成 1 か所の分岐、`ServerSpeculativeSummary` |
-| `Sources/TurboFieldfareServer/Core/ServerLog.swift` | 完了行の `mtp=` / `rounds=` / `accept=` |
-| `Sources/TurboFieldfareServer/Command/main.swift` | フラグの受け渡しと ready 行 |
-| `Tests/TurboFieldfareServer/OpenAIValidationTests.swift` | 新規 2 本 (幅の受理と拒否、`--prefill off` との併用拒否) |
+| `Sources/TsugumiServer/Core/ServerArguments.swift` | `--draft-block-size` の parse と検証 (0 または 2...8、`--prefill on` を要求)、usage |
+| `Sources/TsugumiServer/Core/ServerInference.swift` | 起動時の `SpeculativeScratch` (ドラフター無しは起動失敗)、生成 1 か所の分岐、`ServerSpeculativeSummary` |
+| `Sources/TsugumiServer/Core/ServerLog.swift` | 完了行の `mtp=` / `rounds=` / `accept=` |
+| `Sources/TsugumiServer/Command/main.swift` | フラグの受け渡しと ready 行 |
+| `Tests/TsugumiServer/OpenAIValidationTests.swift` | 新規 2 本 (幅の受理と拒否、`--prefill off` との併用拒否) |
 | `docs/OPENAI_SERVER.md` / `docs/RUNTIME_CONTROLS.md` | フラグの説明と実測値 |

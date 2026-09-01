@@ -103,7 +103,7 @@ tok/s =  30.34 − 0.2674 × 2^H     R² = 0.9718   残差 ±0.52
 #   en_prose   = bench/mtp_register_en_prose.json
 #   en_bullets = bench/mtp_register_en_bullets.json
 # 各 run: 温度・top-k・top-p は CLI 既定 (= 運用点) のまま指定しない
-.build/release/TurboFieldfareCLI --model scratch/gemma4-qat.gturbo \
+.build/release/TsugumiCLI --model scratch/gemma4-qat.moepack \
   --messages-file <上の 4 本> --image <$TF_SAMPLE_IMGS の 1 枚> --image-tokens 280 \
   --seed <1234|1235|1236> --max-new 192 --max-context 4096 \
   --expert-cache-slots 32 --thinking off --draft-block-size 0 \

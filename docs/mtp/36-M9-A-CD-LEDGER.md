@@ -3,7 +3,7 @@
 測定: 2026-08-19 深夜〜08-20 未明、M3 Pro 18GB / macOS 15.7.5 / commit `e5b3596`
 (§9/§10 の測定中に `bench/mtp_cd_sweep.py` へ `--temperature` と `--thinking` が入った。
 本番コード `Sources/` は全節を通じて無改変)。
-対象モデル `scratch/gemma4-qat.gturbo` (drafter 同梱)、**32 スロット**。
+対象モデル `scratch/gemma4-qat.moepack` (drafter 同梱)、**32 スロット**。
 測ったのは **verify ブロックの費用曲線 c** (幅 k を 1,2,3,4,6,8 で振る) と、
 **本番 footer から取り出した (c, d) 台帳**である。
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
@@ -319,7 +319,7 @@
 
 ## 1. 測り方 (**実測**)
 
-計器は `Sources/TurboFieldfareKernelCheck/VerifyBlockCheck.swift` の
+計器は `Sources/TsugumiKernelCheck/VerifyBlockCheck.swift` の
 `costProbe` (`--verify-cost-only`、`:651-779`)。設計はこうである:
 
 - **同じトークン列・同じ位置**を、1 トークンずつの `produce` と 幅 k の
@@ -336,7 +336,7 @@
 
 ```
 TF_EXPERT_CACHE_SLOTS=32 TF_VERIFY_COST_WIDTHS=1,2,3,4,6,8 \
-  .build/release/TurboFieldfareKernelCheck --verify-block scratch/gemma4-qat.gturbo \
+  .build/release/TsugumiKernelCheck --verify-block scratch/gemma4-qat.moepack \
   --verify-cost-only --verify-block-size 4 \
   --verify-image sample_imgs/IMG_2113.JPG --verify-thinking
 ```
@@ -435,10 +435,10 @@ decode と k=1 の要求 240 件/位置は **30 層 × topK 8 = 240** と一致�
 **(i) 分子が受理長ではない。**footer の `accept` は
 `meanAcceptedLength = accepted / rounds` で、コメントが明記するとおり
 **"Mean accepted draft length per round"** = **ラウンドあたり受理ドラフト本数**
-である (`Sources/TurboFieldfare/Runtime/Generation/SpeculativeCompletion.swift:66-70`)。
+である (`Sources/Tsugumi/Runtime/Generation/SpeculativeCompletion.swift:66-70`)。
 1 ラウンドが産む token は **受理ドラフト + bonus 1 本**なので、
 式の分子に置くべき「受理長」は **accept + 1**。
-`Sources/TurboFieldfareCLI/Run.swift:312-314` は現に `accept=` と
+`Sources/TsugumiCLI/Run.swift:312-314` は現に `accept=` と
 `tok/round=` を**別々に**印字しており、27 §2 自身の引用
 `rounds=74 accept=1.689/3 tok/round=2.703` がその裏取りである。
 ⇒ 1.885 ではなく **2.885** を置かねばならない。
@@ -903,10 +903,10 @@ k=1 (turbo の bs=2 に対応) で **1.600 / 1.714 / 1.699** だった。
 ### 5b. 温度は受理だけでなく**費用構造ごと**切り替える
 
 `isPureGreedy = (temperature == 0 && repetitionPenalty == 1)`
-(`Sources/TurboFieldfare/Runtime/Generation/RawCompletion.swift:69-71`)、
-`forceLogitsHead: !config.isPureGreedy` (`Sources/TurboFieldfareCLI/Run.swift:158`)、
+(`Sources/Tsugumi/Runtime/Generation/RawCompletion.swift:69-71`)、
+`forceLogitsHead: !config.isPureGreedy` (`Sources/TsugumiCLI/Run.swift:158`)、
 `guard !fusedGreedy || config.isPureGreedy`
-(`Sources/TurboFieldfare/Runtime/Generation/CompletionPrefill.swift:41-42`)。
+(`Sources/Tsugumi/Runtime/Generation/CompletionPrefill.swift:41-42`)。
 **temp 0 は融合 greedy ヘッド、temp 1.0 は logits ヘッド**で、
 経路が分岐する。実測された差は 4b のとおり
 **ラウンド外費用 0.06〜0.83 ms/round (temp 0) 対 1.277 ms/引いた行 (temp 1.0)**。
@@ -948,7 +948,7 @@ k=1 (turbo の bs=2 に対応) で **1.600 / 1.714 / 1.699** だった。
 ```bash
 # 測定 1 — verify ブロックの費用曲線 (32 スロット、画像 + thinking)
 TF_EXPERT_CACHE_SLOTS=32 TF_VERIFY_COST_WIDTHS=1,2,3,4,6,8 \
-  .build/release/TurboFieldfareKernelCheck --verify-block scratch/gemma4-qat.gturbo \
+  .build/release/TsugumiKernelCheck --verify-block scratch/gemma4-qat.moepack \
   --verify-cost-only --verify-block-size 4 \
   --verify-image sample_imgs/IMG_2113.JPG --verify-thinking
 
@@ -961,7 +961,7 @@ TF_EXPERT_CACHE_SLOTS=32 TF_VERIFY_COST_WIDTHS=1,2,3,4,6,8 \
 # TF_EXPERT_CACHE_SLOTS だけ振る。1 スロット数につき 1 プロセス。
 for S in 16 24; do
   TF_EXPERT_CACHE_SLOTS=$S TF_VERIFY_COST_WIDTHS=1,2,3,4,6,8 \
-    .build/release/TurboFieldfareKernelCheck --verify-block scratch/gemma4-qat.gturbo \
+    .build/release/TsugumiKernelCheck --verify-block scratch/gemma4-qat.moepack \
     --verify-cost-only --verify-block-size 4 \
     --verify-image sample_imgs/IMG_2113.JPG --verify-thinking \
     > bench/logs/36-cost-${S}slots-image.log
@@ -1009,7 +1009,7 @@ md5 sample_imgs/IMG_2113.JPG sample_imgs/IMG_2114.JPG sample_imgs/IMG_2115.JPG \
 # 4 つの register: ja_prose = 既存の bench/mtp_goal_prompt.json
 for P in bench/mtp_goal_prompt.json bench/mtp_register_ja_bullets.json \
          bench/mtp_register_en_prose.json bench/mtp_register_en_bullets.json; do
-  .build/release/TurboFieldfareCLI --model scratch/gemma4-qat.gturbo \
+  .build/release/TsugumiCLI --model scratch/gemma4-qat.moepack \
     --messages-file "$P" --image sample_imgs/IMG_2113.JPG --image-tokens 280 \
     --temperature 0 --seed 1234 --max-new 192 --max-context 4096 \
     --expert-cache-slots 32 --thinking off --draft-block-size 0 \
@@ -1018,7 +1018,7 @@ done
 
 # コード register (テキストのみ。画像経路を通らない)。bs を 0/3/4/6 で振る。
 for BS in 0 3 4 6; do
-  .build/release/TurboFieldfareCLI --model scratch/gemma4-qat.gturbo \
+  .build/release/TsugumiCLI --model scratch/gemma4-qat.moepack \
     --messages-file bench/mtp_register_code.json \
     --temperature 0 --seed 1234 --max-new 192 --max-context 4096 \
     --expert-cache-slots 32 --thinking off --draft-block-size $BS \
@@ -1038,7 +1038,7 @@ for R in ja_prose en_bullets code; do
     en_bullets) EXTRA="--image sample_imgs/IMG_2113.JPG --image-tokens 280"
                 P=bench/mtp_register_en_bullets.json ;;
   esac
-  .build/release/TurboFieldfareCLI --model scratch/gemma4-qat.gturbo \
+  .build/release/TsugumiCLI --model scratch/gemma4-qat.moepack \
     --messages-file "$P" $EXTRA \
     --temperature 0 --seed 1234 --max-new 192 --max-context 4096 \
     --expert-cache-slots 32 --expert-cache-policy lfu --thinking off \
@@ -1060,7 +1060,7 @@ for R in ja en_bullets code; do
                 P=bench/mtp_register_en_bullets.json ;;
   esac
   TF_PREFILL_HOST_PROFILE=1 \
-  .build/release/TurboFieldfareCLI --model scratch/gemma4-qat.gturbo \
+  .build/release/TsugumiCLI --model scratch/gemma4-qat.moepack \
     --messages-file "$P" $EXTRA \
     --temperature 0 --seed 1234 --max-new 192 --max-context 4096 \
     --expert-cache-slots 32 --expert-cache-policy lfu --thinking off \
@@ -1189,11 +1189,11 @@ python3 bench/mtp36/an5.py   # 層ごとのスロット再配分 (総量 960 固
      (`VerifyBlockCheck.swift:673`)。つまり融合 greedy ヘッドで、
      logits バッファは書かれない。
    - 本番 CLI は `forceLogitsHead: !config.isPureGreedy`
-     (`Sources/TurboFieldfareCLI/Run.swift:158`)、
+     (`Sources/TsugumiCLI/Run.swift:158`)、
      `isPureGreedy = (temperature == 0 && repetitionPenalty == 1)`
-     (`Sources/TurboFieldfare/Runtime/Generation/RawCompletion.swift:69-71`)。
+     (`Sources/Tsugumi/Runtime/Generation/RawCompletion.swift:69-71`)。
      **temp 1.0 は必ず logits ヘッドに落ちる。**そうしないと
-     `Sources/TurboFieldfare/Runtime/Generation/CompletionPrefill.swift:41-42` の
+     `Sources/Tsugumi/Runtime/Generation/CompletionPrefill.swift:41-42` の
      `guard !fusedGreedy || config.isPureGreedy` が
      `unsupportedPrefillSeed` を投げて止まる。
    - logits ヘッドになると `SpeculativeCompletion.swift:196-217` の
@@ -1643,7 +1643,7 @@ exceeds this device's recommended Metal working set — resident 1.51 GB
 
 **これは物理メモリの制約ではない。**機械は 18 GB で、9.02 GB は入る。
 弾いているのは `ExpertCacheBudget.fitsRecommendedWorkingSet`
-(`Sources/TurboFieldfare/Runtime/Configuration/ExpertCacheBudget.swift:38-40`) で、
+(`Sources/Tsugumi/Runtime/Configuration/ExpertCacheBudget.swift:38-40`) で、
 比較相手は `device.recommendedMaxWorkingSetSize` (`:103`) である。
 この値は `iogpu.wired_limit_mb` で決まり、**測定時点で 8192 に戻っていた**
 (35 の測定時は 14336 だった)。
@@ -2382,7 +2382,7 @@ bs=0 (投機オフ) / 192 tok / max-context 4096**。振ったのは
 ヘッダ (3 本とも同一):
 
 ```
-# turbo-fieldfare expert trace v1
+# tsugumi expert trace v1
 # experts=128 / layers=30 / slots=32 / topK=8 / policy=lfu
 # prefill=chunked / prefillChunkTokens=2048
 # model=mlx-community/gemma-4-26B-A4B-it-qat-q4_0-mlx-aligned
@@ -2838,7 +2838,7 @@ decode 基準と verify を交互に測るのでキャッシュの状態が本�
 ### 14a. 計器と分離の手続き (**実測**)
 
 **計器が何を言っているか**を先に固定する
-(`Sources/TurboFieldfare/Runtime/Prefill/PrefillHostProfile.swift` と
+(`Sources/Tsugumi/Runtime/Prefill/PrefillHostProfile.swift` と
 `GPUQueueOccupancy.swift` の doc comment):
 
 | 列 | 意味 | 落とし穴 |

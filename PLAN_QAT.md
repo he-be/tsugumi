@@ -26,7 +26,7 @@ M3 Pro 18GB / macOS 15.7.5 / `macos15-support` ブランチ
 
 | Phase | 状態 | 結果 |
 | --- | --- | --- |
-| A0 数値検証ハーネス | **完了** | `TurboFieldfareKernelCheck`。commit `4cd8c69` |
+| A0 数値検証ハーネス | **完了** | `TsugumiKernelCheck`。commit `4cd8c69` |
 | A カーネルの group パラメータ化 | **完了** | §3-1-a の 4 箇所を修正。group 64 の数値は修正前と同値。commit `4cd8c69` |
 | A 既存モデル回帰 (§5-0) | **完了・合格** | 3 本とも ±1% 以内 (下記 §5-0 の実測) |
 | B bf16 ルーター | **完了** | ハーネスは 20/20 PASS。§3-1-a-2 / §3-1-a-3 で group 幾何のバグを計 3 箇所追加で発見・修正。既存モデルの実機出力は文字単位で不変 |
@@ -87,7 +87,7 @@ BF16 ルーターが正しく動いたからで、§5-A は 20/20 PASS のまま
 
 ```bash
 swift build -c release
-./.build/release/TurboFieldfareKernelCheck          # 20/20 PASS を確認
+./.build/release/TsugumiKernelCheck          # 20/20 PASS を確認
 ```
 
 ### 副産物: `bench.sh` の既存バグを修正した (**実測**)
@@ -120,7 +120,7 @@ RESULTS §3-4 の 30.84 / 31.31 / 28.42 tok/s は `--temperature 0` の表
 | ソース取得方法 | **配布のままローカル DL 済み** (`scratch/qat-aligned-snapshot/`、§1-2)。repack はローカルスナップショットから行う |
 | エキスパートキャッシュスロット | **64 を基本**。`ExpertCacheBudget` に弾かれた場合のみ 48 |
 | 既存ピン (`gemma-4-26b-a4b-it-4bit`) | **残す**。repacker はローカルスナップショット入力モードを追加するだけ |
-| 出力先 | `scratch/gemma4-qat.gturbo` (既存 `gemma4.gturbo` と共存。受け入れ後に入れ替えを判断) |
+| 出力先 | `scratch/gemma4-qat.moepack` (既存 `gemma4.moepack` と共存。受け入れ後に入れ替えを判断) |
 | 品質と性能の両方が受入条件 | 性能 ≥ ベースラインの −10%、メモリ < 12 GB、品質は寿司俳句等で目視評価 |
 | **group 64/32 の両対応** | **受入後も残す** (ユーザー判断、2026-08-16)。下記 §0-1 |
 
@@ -276,13 +276,13 @@ TTFT: 初回充填 6.4 GB → 7.1 GB なので +0.7 s 程 (**導出**)。
 group サイズはモデルごとに一様 (config の base のみ。オーバーライドなし) であり、
 1 プロセス = 1 モデル (CLI / サーバ / アプリ / decode service すべて)。
 よって **function constant やカーネル複製ではなく、MetalContext がソース結合時に
-`#define TURBO_AFFINE_GROUP_SIZE <n>` を注入する** 方式を取る。
+`#define MOEPACK_AFFINE_GROUP_SIZE <n>` を注入する** 方式を取る。
 
 - `MetalContext` に `affineGroupSize: Int` (既定 64) を持たせ、シェーダライブラリは
   **最初の `pipeline()` 呼び出しまで遅延コンパイル** に変える。runner は
   `Model.load` 後、カーネル生成前に `context.affineGroupSize = manifest 値` を設定する。
 - 各 `.metal` の `kGroupSize`/`kMoEGroupSize`/`kPrefillGroupSize`/`kFusedGroupSize`/
-  `kInt8GroupSize`/`kLMHeadGroupSize` を `TURBO_AFFINE_GROUP_SIZE` 参照に置換
+  `kInt8GroupSize`/`kLMHeadGroupSize` を `MOEPACK_AFFINE_GROUP_SIZE` 参照に置換
   (既定 64 なので**既存モデルの挙動は不変**)。
   D=2816, F=704/2112, 4096, 8192 はいずれも 32 の倍数なので N % GS == 0 は成立
   (**実測**)。
@@ -303,10 +303,10 @@ decode の INT4 GEMV は**ベクタ化ブロックの分割を数値リテラル
 `kGroupSize` では書かれていない:
 
 ```
-Sources/TurboFieldfare/Metal/Quant/dequant_int4.metal:126,135
-Sources/TurboFieldfare/Metal/Sampling/logit.metal:648,651
-Sources/TurboFieldfare/Metal/MoE/moe.metal:207,209      (routed down)
-Sources/TurboFieldfare/Metal/MoE/moe.metal:273,278      (routed gate/up, u16load 版)
+Sources/Tsugumi/Metal/Quant/dequant_int4.metal:126,135
+Sources/Tsugumi/Metal/Sampling/logit.metal:648,651
+Sources/Tsugumi/Metal/MoE/moe.metal:207,209      (routed down)
+Sources/Tsugumi/Metal/MoE/moe.metal:273,278      (routed gate/up, u16load 版)
 ```
 
 ```metal
@@ -381,7 +381,7 @@ GS=64 を入れると `g == st` で元のコードに戻る。実測でも group
 
 #### 3-1-a-3. 棚卸しの結果: さらに 2 箇所 (**実測**、2026-08-16)
 
-上の教訓を受けて `TURBO_AFFINE_GROUP_SIZE` を参照する 6 ファイルを全走査した。
+上の教訓を受けて `MOEPACK_AFFINE_GROUP_SIZE` を参照する 6 ファイルを全走査した。
 **同じ「1 群 = 64 要素」を仮定していたのはあと 2 つ**、どちらも
 `dequant_int8.metal`:
 
@@ -412,9 +412,9 @@ GS=64 を入れると `g == st` で元のコードに戻る。実測でも group
 `MetalContext()` は 3 つの入口すべてで `Model.load` より**前**に構築される:
 
 ```
-Sources/TurboFieldfareCLI/Run.swift:63          → :64 で Model.load
-Sources/TurboFieldfareServer/Core/ServerInference.swift:403
-Sources/TurboFieldfareApp/Core/Inference/RealInferenceClient.swift:194
+Sources/TsugumiCLI/Run.swift:63          → :64 で Model.load
+Sources/TsugumiServer/Core/ServerInference.swift:403
+Sources/TsugumiApp/Core/Inference/RealInferenceClient.swift:194
 ```
 
 `MetalContext.init` は `compileShaderLibrary` を即時に呼び `library` を
@@ -462,7 +462,7 @@ define のほうが変更範囲が小さい。**どちらでも成立する**こ
 スナップショットは配布のまま手元にある (§1-2) ので、遠隔レンジ取得の
 dual-source 化ではなく**ローカル入力モード**を追加する:
 
-- `TurboFieldfareRepack` CLI に `--source-snapshot <dir>` を追加
+- `TsugumiRepack` CLI に `--source-snapshot <dir>` を追加
   (既定の従来挙動 — pinned リポジトリのストリーミング取得 — は不変)。
 - ローカルモードは `IndexLoader.load(snapshotDir:)` + shard ヘッダ読み出しから
   `RepackPlanner.plan` に入り、既存の `RangeCopyPlanner` / 書き出し / ハッシュ /
@@ -489,11 +489,11 @@ dual-source 化ではなく**ローカル入力モード**を追加する:
 
 ### Phase A0 — group 32 の数値検証ハーネス (Phase A より先に作る) — **完了**
 
-> `TurboFieldfareKernelCheck` として実装。`swift build -c release` に含まれる。
+> `TsugumiKernelCheck` として実装。`swift build -c release` に含まれる。
 >
 > ```
-> ./.build/release/TurboFieldfareKernelCheck                 # group 64 と 32 の両方
-> ./.build/release/TurboFieldfareKernelCheck --group-size 32
+> ./.build/release/TsugumiKernelCheck                 # group 64 と 32 の両方
+> ./.build/release/TsugumiKernelCheck --group-size 32
 > ```
 >
 > **ハーネス自身の穴を 1 つ潰した (**実測**)。**当初 `RelError.compute` を
@@ -511,10 +511,10 @@ dual-source 化ではなく**ローカル入力モード**を追加する:
 
 | ファイル | 変更 |
 | --- | --- |
-| `Package.swift` | `.executableTarget(name: "TurboFieldfareKernelCheck")` を追加。依存は `TurboFieldfare` + `TurboFieldfareValidationSupport` |
-| `Sources/TurboFieldfareKernelCheck/main.swift` | 合成入力を group 32 / 64 の両方で量子化し、GPU カーネルと CPU 参照を突き合わせて PASS/FAIL を出す |
+| `Package.swift` | `.executableTarget(name: "TsugumiKernelCheck")` を追加。依存は `Tsugumi` + `TsugumiValidationSupport` |
+| `Sources/TsugumiKernelCheck/main.swift` | 合成入力を group 32 / 64 の両方で量子化し、GPU カーネルと CPU 参照を突き合わせて PASS/FAIL を出す |
 
-CPU 参照は既にある: `TurboFieldfareValidation/Support/Reference/Quant/`
+CPU 参照は既にある: `TsugumiValidation/Support/Reference/Quant/`
 (`DequantInt4Gemv.swift`, `EmbedLookup.swift`, `DequantInt8Gemv.swift`)。
 これらは `Quantization.groupSize` を直接参照しているので、**参照側も
 group を引数で受け取れるようにする**(参照実装は素直なループなので容易)。
@@ -542,7 +542,7 @@ group を引数で受け取れるようにする**(参照実装は素直なル�
 > **group 64 の相対誤差が修正前後で完全に一致した**ことが、既存モデルの
 > 挙動不変の直接の証拠になっている (式に GS=64 を代入すると元のコードに戻る)。
 >
-> 実機スモーク (`gemma4.gturbo` / haiku / 32 tok) も、ヒット率のカウントが
+> 実機スモーク (`gemma4.moepack` / haiku / 32 tok) も、ヒット率のカウントが
 > 修正前と 1 件も違わない (`prefill 3341/7854`, `decode 7238/7440`)。
 >
 > **Phase B 以降が使う API (実装済み):**
@@ -556,7 +556,7 @@ group を引数で受け取れるようにする**(参照実装は素直なル�
 > | `Model.affineGroupSize` | `Model.swift` | manifest 由来。`quant.embedding.groupSize ?? 64` |
 > | `Quantization.supportedGroupSizes` | `Quantization.swift` | `[32, 64]` |
 > | `Quantization.quantizeInt4Affine(_:groupSize:)` 他 | 同上 | 4 関数に `groupSize:` を追加 (既定 64) |
-> | `TURBO_AFFINE_GROUP_SIZE` | 各 `.metal` | `preprocessorMacros` で注入。各ファイルに `#ifndef` の 64 フォールバックあり |
+> | `MOEPACK_AFFINE_GROUP_SIZE` | 各 `.metal` | `preprocessorMacros` で注入。各ファイルに `#ifndef` の 64 フォールバックあり |
 >
 > `RealForwardRunner.init` が `try context.setAffineGroupSize(model.affineGroupSize)`
 > を**カーネル生成より前に**呼ぶ。3 つの入口 (CLI / Server / App) はいずれも
@@ -595,8 +595,8 @@ group を引数で受け取れるようにする**(参照実装は素直なル�
 | `Infrastructure/ModelIO/ManifestReader.swift` | router bits [8,16]、bits 16 は scheme/scale/bias を `bf16`/`none`/`none` 要求、**groupSize を manifest 駆動に** |
 | `Metal/Quant/dequant_int8.metal` | §3-1-a-3 の 2 箇所を同じ変換で修正 |
 | `Kernels/Quant/DequantInt8GEMV.swift` / `Kernels/MoE/SharedExpertInt8.swift` | N % 64 のガード。前者は harness 用に `package` 可視化 |
-| `TurboFieldfareValidation/.../DequantInt8Gemv.swift` / `MoE/Moe.swift` | 参照に `groupSize:` を追加、`MoeRef.runFFNInt8` を新設 |
-| `TurboFieldfareKernelCheck/main.swift` | §5-A ケース 6-9 |
+| `TsugumiValidation/.../DequantInt8Gemv.swift` / `MoE/Moe.swift` | 参照に `groupSize:` を追加、`MoeRef.runFFNInt8` を新設 |
+| `TsugumiKernelCheck/main.swift` | §5-A ケース 6-9 |
 
 **設計上の決定 (実装で確定した点):**
 
@@ -605,7 +605,7 @@ group を引数で受け取れるようにする**(参照実装は素直なル�
   (`SharedExpertRuntime(weightBits:)` と同じ形)。誤った側を encode したら
   precondition で落ちる。
 - **bf16 カーネルは group サイズに一切依存しない** (群構造がないため)。
-  `TURBO_AFFINE_GROUP_SIZE` を参照しないので、group 32/64 のどちらでも同一。
+  `MOEPACK_AFFINE_GROUP_SIZE` を参照しないので、group 32/64 のどちらでも同一。
 - `ManifestReader.validateQuant` の groupSize 検証は
   「`Quantization.supportedGroupSizes` に入っていて、かつ全スロットで一致」に
   変えた。`Model.affineGroupSize` が embedding スロット 1 つを全体の代表として
@@ -654,7 +654,7 @@ GPU フレームキャプチャだけ。今回の主リスク (§3-1-a) には �
 ### 5-0. 既存モデルの回帰確認 (Phase A+B 完了時、新モデル DL 前)
 
 ```bash
-.build/release/TurboFieldfareCLI --model scratch/gemma4.gturbo \
+.build/release/TsugumiCLI --model scratch/gemma4.moepack \
   --messages-file bench/haiku.json --max-new 64 --seed 1   # 動作 + footer
 TEMP=0 MAXNEW=384 ./bench.sh ja   # tok/s が RESULTS §3-4 から ±4% 以内
 ```
@@ -751,7 +751,7 @@ Phase A0 のハーネスで、**合成入力に対し GPU カーネル vs CPU �
 ### 5-1. インストール (ローカルスナップショットから)
 
 ```bash
-swift run -c release TurboFieldfareRepack --output scratch/gemma4-qat.gturbo \
+swift run -c release TsugumiRepack --output scratch/gemma4-qat.moepack \
   --source-snapshot scratch/qat-aligned-snapshot
 ```
 
@@ -766,7 +766,7 @@ swift run -c release TurboFieldfareRepack --output scratch/gemma4-qat.gturbo \
    - 寿司俳句: temp 1.0 で完答すること (ベースラインも 828 tok で完答 — RESULTS §3-5)
    - 三次方程式: 手法が妥当であること (ベースラインで見られたアラビア語トークン混入が消えるかは観察項目)
 3. **性能** (PLAN §6 プロトコル、インターリーブ 3 回中央値):
-   `./bench.sh ja` 相当を `--model scratch/gemma4-qat.gturbo` で。
+   `./bench.sh ja` 相当を `--model scratch/gemma4-qat.moepack` で。
    合格: haiku tg **≥ 27.8 tok/s** (30.84 の −10%)。TTFT は +1 s 以内。
 
    > **ゲート値に余白がほとんどないことを先に認めておく** (**導出**)。
@@ -828,12 +828,12 @@ footer 全文 / プロトコルからの逸脱すべて) を残す。スイー�
 ## 9. 他エントリポイントの動作確認 (**実測**、2026-08-16)
 
 §5 の受入プロトコルは CLI (`bench.sh` 経由) でしか測っていなかった。
-`TurboFieldfareServer` (OpenAI 互換) と `TurboFieldfareApp` (Mac GUI) は
+`TsugumiServer` (OpenAI 互換) と `TsugumiApp` (Mac GUI) は
 Phase A-D を通じて一度も動かしていなかったため、優先度の高い Server から
 動作確認した。
 
 ```bash
-.build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo --port 8091 &
+.build/release/TsugumiServer --model scratch/gemma4-qat.moepack --port 8091 &
 curl http://localhost:8091/v1/chat/completions -H "Content-Type: application/json" \
   -d '{"model":"gemma-4-26b-a4b-it","messages":[{"role":"user","content":"日本語で一言挨拶して"}],"max_tokens":30,"temperature":0}'
 # → {"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"こんにちは！"}, ...
@@ -849,7 +849,7 @@ CLI と同じ経路で group size / bf16 ルーターが解決されるため、
   group 32 の decode パスと組み合わさったときの数値的な正しさ・性能
   (§5-A のハーネスは単発のカーネル呼び出ししか見ていない)
 - 複数リクエストのキューイング下での挙動
-- `TurboFieldfareApp` (Mac GUI) — ビルド・起動とも今回未実施。
+- `TsugumiApp` (Mac GUI) — ビルド・起動とも今回未実施。
   `RealInferenceClient.swift:194` も同じ3入口の1つ (§3-1-b) なので理屈上は
   動くはずだが、実機確認はしていない
 

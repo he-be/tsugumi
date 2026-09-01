@@ -1,8 +1,8 @@
 import sys, statistics
 from collections import Counter, defaultdict
-sys.path.insert(0,"/Users/mh/LLM/turbo-fieldfare/bench")
+sys.path.insert(0,"/Users/mh/LLM/tsugumi/bench")
 from expert_sim import read_trace, LayerCache
-BASE="/Users/mh/LLM/turbo-fieldfare/bench/logs/36_trace/%s.tsv"
+BASE="/Users/mh/LLM/tsugumi/bench/logs/36_trace/%s.tsv"
 REGS=["ja_prose","en_bullets","code"]
 D={}
 for r in REGS:

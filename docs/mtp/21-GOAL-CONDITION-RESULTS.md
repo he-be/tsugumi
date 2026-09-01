@@ -1,7 +1,7 @@
 # 21. ゴール条件で測る — 「MTP が最も得をしない領域」は逆だった
 
 測定: 2026-08-18、M3 Pro 18GB / macOS 15.7.5 / Swift 6.3.3、commit `4e767e1` + §1 の変更。
-対象モデル `scratch/gemma4-qat.gturbo`、画像は `sample_imgs/IMG_2112.JPG` (853×1280、
+対象モデル `scratch/gemma4-qat.moepack`、画像は `sample_imgs/IMG_2112.JPG` (853×1280、
 soft 260 tok — 10-M0 §4 と同じ 1 枚)。表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
 ---
@@ -58,7 +58,7 @@ decode 経路からは呼ばれない。変更後も **12 cases PASS** (**実測
 
 ```
 TF_VERIFY_COST_BLOCKS=46 TF_EXPERT_CACHE_SLOTS=80 \
-  .build/release/TurboFieldfareKernelCheck --verify-block scratch/gemma4-qat.gturbo \
+  .build/release/TsugumiKernelCheck --verify-block scratch/gemma4-qat.moepack \
   --verify-cost-only --verify-cold --verify-image sample_imgs/IMG_2112.JPG \
   --verify-thinking --verify-prompt "この画像に写っているものを日本語で詳しく説明してください。"
 ```

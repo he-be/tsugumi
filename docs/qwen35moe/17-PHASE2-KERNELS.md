@@ -4,14 +4,14 @@
 通った続き。[04](04-PHASES.md) 次の一手 #13。
 
 線形注意 30 層の入口と出口、full attention 10 層の q/k 後処理、MoE の 2 か所を
-埋めた。**新規は全部 `Sources/TurboFieldfare/Metal/Qwen/qwen.metal`** に置き、
+埋めた。**新規は全部 `Sources/Tsugumi/Metal/Qwen/qwen.metal`** に置き、
 既存 `.metal` は 1 行も触っていない (Gemma 4 の実測値を凍結したまま second
 architecture を足すため — [README](README.md) 運用ルール)。
 
 | | |
 | --- | --- |
 | カーネル | 7 本 (`qwen.metal`)、Swift 側は `QwenKernels` |
-| 検査 | `TurboFieldfareKernelCheck --qwen` で **29 本すべて緑** |
+| 検査 | `TsugumiKernelCheck --qwen` で **29 本すべて緑** |
 | 時間 | prefill 2048 で線形注意 30 層の**周辺**が 33.6 ms、full attention 10 層が 10.0 ms |
 | 途中で分かったこと | ① fast math が減衰ゲートを床の 19 倍に落とす ② conv をトークン方向に切ると 50.0 → 21.9 ms ③ **本線の `lm_head` は 4-bit ではない**ので [03 §2-8](03-DESIGN.md) は書き直しが要る |
 
@@ -44,8 +44,8 @@ architecture を足すため — [README](README.md) 運用ルール)。
 ## 2. 検査 (29 本すべて緑)
 
 ```
-swift run -c release TurboFieldfareKernelCheck --qwen             # 既定 512 トークン
-swift run -c release TurboFieldfareKernelCheck --qwen --qwen-tokens 2048
+swift run -c release TsugumiKernelCheck --qwen             # 既定 512 トークン
+swift run -c release TsugumiKernelCheck --qwen --qwen-tokens 2048
 ```
 
 立て方は [15 §2](15-PHASE2-GDN.md) と同じ: **チェックポイントも fixtures も開かず**、
@@ -103,7 +103,7 @@ u が小さいとき 1+u の丸めで有効数字を落とす — 減衰ゲー�
 ## 4. 時間
 
 ```
-swift run -c release TurboFieldfareKernelCheck --qwen --qwen-bench --qwen-tokens 2048
+swift run -c release TsugumiKernelCheck --qwen --qwen-bench --qwen-tokens 2048
 ```
 
 20 回の中央値。カーネル 1 本のマイクロベンチなので `bench.sh` の作法 (temp /

@@ -16,7 +16,7 @@
 | **S1** | **公式推奨サンプリングパラメータ以外は使ってはならない** | `temperature=0.6` / `top_p=0.95` / `top_k=20`。サーバーは常にこの 3 つで生成する。クライアントが別の値を送っても**この値で上書きして実行**し、上書きした事実を完了行に記録する。「受理して無視して greedy」は**廃止** |
 | **S2** | **MTP は常に有効** | tools / reasoning / 文法 / サンプリングの有無に関係なく `--draft-block-size 2` が効き続ける。**「サンプリング時は MTP を off」は不可** |
 | **S3** | **prompt cache は全条件で有効** | tools / reasoning / サンプリング / MTP のどの組み合わせでも `cache_n` が効く。切れるのは要求が `cache_prompt: false` を送ったときだけ (CACHE-5) |
-| **S4** | **評価は除く** | 参照一致検査・MTP 受理率・ベンチ採点は `temperature 0` の greedy が要る。**例外は CLI (`TurboFieldfareCLI`) と検査経路のみ**で、サーバー (HTTP) には例外を作らない |
+| **S4** | **評価は除く** | 参照一致検査・MTP 受理率・ベンチ採点は `temperature 0` の greedy が要る。**例外は CLI (`TsugumiCLI`) と検査経路のみ**で、サーバー (HTTP) には例外を作らない |
 
 **S1 と S2 は同時に成り立たせる必要がある** — ここが設計の全部である。素直な
 投機デコードは「本体の argmax と draft が一致したら受理」なので、サンプリングを
@@ -60,7 +60,7 @@ logits を書かないこと**」と正しく診断していて、写す順の 4
 | すでに読んでいるバイト | **540 MB/tok** ([19](19-LM-HEAD-INT8.md)) |
 | 比 | **0.09%** |
 
-サンプラは**既にある** — `Sources/TurboFieldfare/Runtime/Generation/Sampler.swift`
+サンプラは**既にある** — `Sources/Tsugumi/Runtime/Generation/Sampler.swift`
 (Gemma が使っている GPU の top-k / top-p / 温度、FP16 logits [vocab] を取る)。
 logit softcap は Qwen に無いので無条件適用を切る ([03 §178](03-DESIGN.md))。
 

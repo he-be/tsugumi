@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Vision demo: launches the 16K server, warms it, and serves the browser UI.
 
-One command owns the whole session. It starts `TurboFieldfareServer` with the
+One command owns the whole session. It starts `TsugumiServer` with the
 16K configuration from `docs/SERVER_RUNBOOK.md` §1(a), waits for the port,
 warms the decode path and the vision tower so the first picture the user picks
 is not also the run that pays for the tower's first call, serves
@@ -29,7 +29,7 @@ on the old path instead, which is how the two are compared by feel: run the same
 picture twice, once each way, and watch the first-token time.
 
 Only the standard library is used, and no process is ever terminated that this
-command did not start (AGENTS.md). If another TurboFieldfare process is already
+command did not start (AGENTS.md). If another Tsugumi process is already
 running, the demo attaches to it read-only and leaves it running at exit.
 """
 
@@ -69,8 +69,8 @@ def _images_dir() -> Path:
 
 
 IMAGES_DIR = _images_dir()
-SERVER_BIN = REPO_ROOT / ".build" / "release" / "TurboFieldfareServer"
-DEFAULT_MODEL = "scratch/gemma4-qat-sym.gturbo"
+SERVER_BIN = REPO_ROOT / ".build" / "release" / "TsugumiServer"
+DEFAULT_MODEL = "scratch/gemma4-qat-sym.moepack"
 
 # SERVER_RUNBOOK.md §1(a): the 16K configuration, the fastest one that fits.
 MAX_CONTEXT = 8192
@@ -92,8 +92,8 @@ ALLOWED_EXPERT_CACHE_SLOTS = (8, 16, 24, 32)
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 
 # AGENTS.md: one model process at a time, and this is how you find the others.
-PGREP_PATTERN = ("TurboFieldfareServer|TurboFieldfareMac|TurboFieldfareDecodeService|"
-                 "TurboFieldfareCLI|TurboFieldfarePackageTests|swiftpm-testing-helper|"
+PGREP_PATTERN = ("TsugumiServer|TsugumiMac|TsugumiDecodeService|"
+                 "TsugumiCLI|TsugumiPackageTests|swiftpm-testing-helper|"
                  "mlx_lm|mlx-lm")
 
 READY_TIMEOUT_S = 240.0
@@ -169,7 +169,7 @@ def warmup_png(width: int = 96, height: int = 96) -> bytes:
 
 
 class ModelServer:
-    """Owns (or attaches to) the TurboFieldfareServer process."""
+    """Owns (or attaches to) the TsugumiServer process."""
 
     def __init__(self, bus: EventBus, model: str, port: int,
                  expert_cache_slots: int = EXPERT_CACHE_SLOTS,
@@ -221,14 +221,14 @@ class ModelServer:
                 self._after_ready()
                 return
             raise RuntimeError(
-                "another TurboFieldfare process is running and port "
+                "another Tsugumi process is running and port "
                 f"{self.port} does not answer: " + "; ".join(existing)
                 + " -- stop it yourself, then rerun this command")
 
         if not SERVER_BIN.exists():
             raise RuntimeError(
                 f"{SERVER_BIN.relative_to(REPO_ROOT)} is missing; run "
-                "`swift build -c release --product TurboFieldfareServer` first")
+                "`swift build -c release --product TsugumiServer` first")
         model_path = (REPO_ROOT / self.model) if not os.path.isabs(self.model) else Path(self.model)
         if not model_path.exists():
             raise RuntimeError(f"model not found: {model_path}")
@@ -384,7 +384,7 @@ class ModelServer:
 # ------------------------------------------------------------- HTTP surface
 
 class DemoHandler(BaseHTTPRequestHandler):
-    server_version = "TurboFieldfareVisionDemo/1.0"
+    server_version = "TsugumiVisionDemo/1.0"
     protocol_version = "HTTP/1.1"
 
     app: "DemoApp" = None  # type: ignore[assignment]
@@ -586,7 +586,7 @@ def main() -> int:
     parser.add_argument("--model", default=DEFAULT_MODEL,
                         help=f"model to serve (default: {DEFAULT_MODEL})")
     parser.add_argument("--model-port", type=int, default=8091,
-                        help="port for TurboFieldfareServer (default: 8091)")
+                        help="port for TsugumiServer (default: 8091)")
     parser.add_argument("--port", type=int, default=8799,
                         help="port for this demo UI (default: 8799)")
     parser.add_argument("--no-open", action="store_true",

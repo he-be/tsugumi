@@ -1,7 +1,7 @@
 # 30. M8 果実 B の実装 — 先読みを fetch に渡したら遅くなった
 
 測定: 2026-08-19、M3 Pro 18GB / macOS 15.7.5 / Swift 6.3.3。
-対象モデル `scratch/gemma4-qat.gturbo` (drafter 同梱)、32 / 48 スロット、8192 context。
+対象モデル `scratch/gemma4-qat.moepack` (drafter 同梱)、32 / 48 スロット、8192 context。
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
 29-M8-B-PROBE §6 が置いた引き継ぎ (「まだ入っていないのは予測を実際に fetch に
@@ -64,8 +64,8 @@
 ## 2. ゲート 1 (**実測**)
 
 ```bash
-TF_MTP_EXPERT_PREFETCH=1 TF_PREFILL_HOST_PROFILE=1 .build/release/TurboFieldfareCLI \
-  --model scratch/gemma4-qat.gturbo --messages-file bench/mtp_goal_prompt.json \
+TF_MTP_EXPERT_PREFETCH=1 TF_PREFILL_HOST_PROFILE=1 .build/release/TsugumiCLI \
+  --model scratch/gemma4-qat.moepack --messages-file bench/mtp_goal_prompt.json \
   --image sample_imgs/IMG_2112.JPG --image-tokens 280 --thinking on --temperature 0 \
   --max-new 120 --max-context 8192 --expert-cache-slots 32 \
   --verification trusted-install --draft-block-size 4
@@ -171,11 +171,11 @@ TF_MTP_EXPERT_PREFETCH=1 TF_PREFILL_HOST_PROFILE=1 .build/release/TurboFieldfare
 
 | ファイル | 中身 |
 | --- | --- |
-| `Sources/TurboFieldfare/Infrastructure/Streaming/PreadExpertStreamer.swift` | **投機用プラン** `planSpeculativeExperts` (使用回数を上げない / 直近のプランを追い出さない / 置けなければ `nil`) |
-| `Sources/TurboFieldfare/Runtime/Inference/ModelExpertIO.swift` | `planSpeculativeRoutedExperts` (層を開いて上に委譲するだけ) |
-| `Sources/TurboFieldfare/Runtime/Inference/ExpertPrefetch.swift` | **新規。**env ゲート (`TF_MTP_EXPERT_PREFETCH` / `_N` / `_D`)、飛行中ハンドルの控えと採点 (`useful`) |
-| `Sources/TurboFieldfare/Runtime/Inference/RealForwardRunner.swift` | 予測の読み戻しを 1 か所に括り出し (`readRouterPreview`)、`issueExpertPrefetch`、`.route` 段の頭の待ち、チャンク離脱時の `defer` 回収、要る距離だけ router を回す |
-| `Sources/TurboFieldfare/Runtime/Prefill/PrefillHostProfile.swift` | `wait.prefetch` 段 |
+| `Sources/Tsugumi/Infrastructure/Streaming/PreadExpertStreamer.swift` | **投機用プラン** `planSpeculativeExperts` (使用回数を上げない / 直近のプランを追い出さない / 置けなければ `nil`) |
+| `Sources/Tsugumi/Runtime/Inference/ModelExpertIO.swift` | `planSpeculativeRoutedExperts` (層を開いて上に委譲するだけ) |
+| `Sources/Tsugumi/Runtime/Inference/ExpertPrefetch.swift` | **新規。**env ゲート (`TF_MTP_EXPERT_PREFETCH` / `_N` / `_D`)、飛行中ハンドルの控えと採点 (`useful`) |
+| `Sources/Tsugumi/Runtime/Inference/RealForwardRunner.swift` | 予測の読み戻しを 1 か所に括り出し (`readRouterPreview`)、`issueExpertPrefetch`、`.route` 段の頭の待ち、チャンク離脱時の `defer` 回収、要る距離だけ router を回す |
+| `Sources/Tsugumi/Runtime/Prefill/PrefillHostProfile.swift` | `wait.prefetch` 段 |
 | `Tests/.../PreadExpertStreamerTests+CachePlanning.swift` | 投機用プランの 3 本 (直近ラウンドは追い出さず `nil` を返す / 古いスロットは取ってヒットとして見える / LFU の保護を得ない) |
 
 `Scripts/test.sh` は **871 テスト / 146 スイート / 11 issues** で、失敗は既知の

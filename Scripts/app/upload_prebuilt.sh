@@ -1,7 +1,7 @@
 #!/bin/zsh
 # 完成品ウェイトを Hugging Face に上げる (Mac アプリの直DLインストーラの供給源)。
 #
-# アプリ側のピンは Sources/TurboFieldfareApp/Core/Installation/ にある:
+# アプリ側のピンは Sources/TsugumiApp/Core/Installation/ にある:
 #   - PrebuiltModelSource.swift  … リポジトリ名
 #   - PrebuiltFileTables.swift   … ファイルごとの bytes / SHA-256
 # ここでアップロードする内容を変えたら、その 2 つを必ず作り直すこと
@@ -19,13 +19,13 @@ ORNITH_REPO="$OWNER/turbofieldfare-ornith-oq4e-g64"
 
 echo "== gemma4-qat-sym (15.7 GB) =="
 hf repo create "$GEMMA_REPO" --repo-type model --private 2>/dev/null || true
-hf upload "$GEMMA_REPO" "$REPO_ROOT/scratch/gemma4-qat-sym.gturbo" . \
+hf upload "$GEMMA_REPO" "$REPO_ROOT/scratch/gemma4-qat-sym.moepack" . \
     --repo-type model \
     --exclude "verified-install.json" --exclude "*.install.lock" --exclude ".DS_Store"
 
 echo "== ornith-oq4e-g64 (19.6 GB) + MTP sidecar (503 MB) =="
 hf repo create "$ORNITH_REPO" --repo-type model --private 2>/dev/null || true
-hf upload "$ORNITH_REPO" "$REPO_ROOT/scratch/ornith-oq4e-g64.gturbo" . \
+hf upload "$ORNITH_REPO" "$REPO_ROOT/scratch/ornith-oq4e-g64.moepack" . \
     --repo-type model \
     --exclude "verified-install.json" --exclude "*.install.lock" --exclude ".DS_Store"
 hf upload "$ORNITH_REPO" "$HOME/LLM/ornith-mtp-head" mtp-head \

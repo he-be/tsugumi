@@ -205,7 +205,7 @@ fc (BF16 GEMV) → `input_layernorm` → k/v 射影だけでよく、attention �
 ### A. 幅 2 特化のハイブリッド検証パス ([36 §7](36-MTP-DECODE.md) #1 #3 #4 を 1 設計で)
 
 残る 1.21 倍の内訳 (ホスト +11 ms = `readPrefillRoutes`
-(`Sources/TurboFieldfare/Runtime/Inference/QwenPrefill.swift:800`) の層ごと汎用
+(`Sources/Tsugumi/Runtime/Inference/QwenPrefill.swift:800`) の層ごと汎用
 grouping、GPU +2.7 ms = prefill attention + block router) と、t4 の長文脈負け
 (2,900 位置 × 2 行の T 行 attention) は、**全部「幅 2 なのに汎用 T 行機械を
 使っている」ことに由来する**。attention/GDN と MoE は分離できる:
@@ -292,7 +292,7 @@ snapshot に draft KV を含める拡張は後回しでよい。まず NVMAI と
 | 和集合費用モデルと p > 0.585 | 同 `:713` 付近の `verifyGreedyPair` doc コメント (**実測(NVMAI)**) |
 | サーバー選択ロジック / prompt cache 排他 | `~/LLM/NVMAI/sources/NVMAIServer/Core/ServerInference.swift:1085` / `:451` |
 | メモリ予算の器 | `~/LLM/NVMAI/sources/NVMAI/Runtime/Generation/StreamingMTP.swift` `StreamingMTPMemoryPlan` |
-| 本線の汎用 grouping (ホスト +11 ms の主犯とみるもの) | `Sources/TurboFieldfare/Runtime/Inference/QwenPrefill.swift:800` `readPrefillRoutes` |
-| 文法との排他 | `Sources/TurboFieldfare/Runtime/Inference/QwenSpeculativeDecode.swift:164` |
+| 本線の汎用 grouping (ホスト +11 ms の主犯とみるもの) | `Sources/Tsugumi/Runtime/Inference/QwenPrefill.swift:800` `readPrefillRoutes` |
+| 文法との排他 | `Sources/Tsugumi/Runtime/Inference/QwenSpeculativeDecode.swift:164` |
 | 実機の A/B・費用分解・対照 | [36](36-MTP-DECODE.md) §3〜§5 (**実測(手元)**) |
 | 移送の成否の判定材料 | [32 §1-4](32-NVMAI-ADOPT.md) / [33 §2-1, §3-7](33-MTP-ACCEPTANCE.md) / [36 §2-2, §4-1, §5](36-MTP-DECODE.md) |

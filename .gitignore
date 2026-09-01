@@ -29,8 +29,8 @@ weights/
 models/
 Model/
 !Tests/**/Model/
-# Repacked .gturbo directories (manifest.json/layout.json inside aren't caught by *.bin)
-*.gturbo/
+# Repacked .moepack directories (manifest.json/layout.json inside aren't caught by *.bin)
+*.moepack/
 
 # Editor
 .vscode/

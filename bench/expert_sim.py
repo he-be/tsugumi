@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """スロット数 vs エキスパートキャッシュのヒット率をトレースから机上で引く。
 
-`TurboFieldfareCLI --dump-expert-trace <path>` が吐いた TSV を読み、
+`TsugumiCLI --dump-expert-trace <path>` が吐いた TSV を読み、
 `PreadExpertStreamer.makeExpertCachePlan` と同じ追い出し規則を再現する。
 1 回のトレースから任意のスロット数・任意のポリシーの結果が出るので、
 実機で条件ごとに測り直す必要がない (PLAN Phase 0 の出口条件)。

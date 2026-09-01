@@ -26,12 +26,12 @@ group size が既に**コンパイル時のモデル全体定数**で、`MetalCo
 group 64 の drafter が同居できるのはこのため)。**スキームは同じ棚に乗る。**
 
 - `Quantization.AffineScheme` = `.affine` / `.sym`
-- `MetalContext.setAffineScheme` → `TURBO_AFFINE_SYMMETRIC` を注入
+- `MetalContext.setAffineScheme` → `MOEPACK_AFFINE_SYMMETRIC` を注入
 - manifest の 4bit スロットは `scheme: "sym" / biasType: "none"`。
   **8bit スロットは対象外** — INT8 群のゼロ点は本物のデータである
 - **カーネルの引数は 1 つも変えていない。**`sym` では bias の**束縛が scales を指す**
   (resident は `biasSize == 0` で、エキスパート blob は `*_biases` が存在しない)。
-  シェーダは `TURBO_AFFINE_SYMMETRIC` の側でそれを**読まない**
+  シェーダは `MOEPACK_AFFINE_SYMMETRIC` の側でそれを**読まない**
 
 ## 2. 丸め順序を合わせると、出力がビット一致する (**実測**)
 
@@ -59,7 +59,7 @@ argmax が反転して分岐した (42 §3 が記録した現象と同じ)。
 
 | 検定 | 結果 |
 | --- | --- |
-| カーネル数値検定 (`TurboFieldfareKernelCheck`) | **69/69 PASS**。**全 INT4 ケースを両スキームで 2 回**回す (group 64/32 × affine/sym)。フィクスチャは `bias == -8*scale` を満たす対称格子を作り、**bias 配列は書いたまま**にして参照値に使う — 導出を間違えたカーネルは「見えているのに読まない値」に対して落ちる |
+| カーネル数値検定 (`TsugumiKernelCheck`) | **69/69 PASS**。**全 INT4 ケースを両スキームで 2 回**回す (group 64/32 × affine/sym)。フィクスチャは `bias == -8*scale` を満たす対称格子を作り、**bias 配列は書いたまま**にして参照値に使う — 導出を間違えたカーネルは「見えているのに読まない値」に対して落ちる |
 | 生成のバイト一致 | temp 0 / 256 tok / 32 スロット、3 プロンプトすべて**バイト一致** |
 | 同一データでの導出検定 | affine モデルを `TF_FORCE_AFFINE_SCHEME=sym` で走らせると affine ライブラリと**バイト一致**。データを固定して導出だけ入れ替える検定である |
 | 既存テスト | `swift test` の赤は**変更前 34 件・変更後 28 件で同じ集合** (C2 の意図的な赤 + モック HTTP のフレーク)。追加の破れなし |
@@ -140,21 +140,21 @@ routed MoE gate/up 本体**が `float(gB_row[g])` という綴りで bias を読
 ```bash
 swift build -c release
 # 形式の検定 (両スキーム × 両 group size で 69 ケース)
-./.build/release/TurboFieldfareKernelCheck
+./.build/release/TsugumiKernelCheck
 
 # ローカルスナップショットから sym で入れる (プローブが自動で判定する)
-./.build/release/TurboFieldfareRepack --output scratch/gemma4-qat-sym.gturbo \
+./.build/release/TsugumiRepack --output scratch/gemma4-qat-sym.moepack \
     --source-snapshot scratch/qat-aligned-snapshot --overwrite
 # → [repack] affine scheme — symmetric: 788175872 groups verified, ...
 
 # 出力のバイト一致 (temp 0)
-./.build/release/TurboFieldfareCLI --model <affine> --prompt "..." --temperature 0 \
+./.build/release/TsugumiCLI --model <affine> --prompt "..." --temperature 0 \
     --max-new 256 --expert-cache-slots 32 > a.txt
-./.build/release/TurboFieldfareCLI --model <sym> --prompt "..." --temperature 0 \
+./.build/release/TsugumiCLI --model <sym> --prompt "..." --temperature 0 \
     --max-new 256 --expert-cache-slots 32 > b.txt && diff a.txt b.txt
 
 # データを固定して導出だけ入れ替える (affine モデルを sym ライブラリで走らせる)
-TF_FORCE_AFFINE_SCHEME=sym ./.build/release/TurboFieldfareCLI --model <affine> ...
+TF_FORCE_AFFINE_SCHEME=sym ./.build/release/TsugumiCLI --model <affine> ...
 ```
 
 塔とドラフターは別に足す (§9)。`--include-vision` / `--include-draft` を
@@ -162,8 +162,8 @@ TF_FORCE_AFFINE_SCHEME=sym ./.build/release/TurboFieldfareCLI --model <affine> .
 既存のバンドルには追記のほうが安い:
 
 ```bash
-./.build/release/TurboFieldfareRepack --add-vision --input-gturbo scratch/gemma4-qat-sym.gturbo
-./.build/release/TurboFieldfareRepack --add-draft  --input-gturbo scratch/gemma4-qat-sym.gturbo
+./.build/release/TsugumiRepack --add-vision --input-moepack scratch/gemma4-qat-sym.moepack
+./.build/release/TsugumiRepack --add-draft  --input-moepack scratch/gemma4-qat-sym.moepack
 ```
 
 `TF_FORCE_AFFINE_SCHEME` は**計器であって設定ではない**。恒等式を満たさない
@@ -173,16 +173,16 @@ TF_FORCE_AFFINE_SCHEME=sym ./.build/release/TurboFieldfareCLI --model <affine> .
 
 | ファイル | 変更 |
 | --- | --- |
-| `TurboFieldfareFormat/GTurboAffineV1.swift` | 新規。`bias == -8*scale` の 1 か所きりの実装 (ランタイムと packer が共有する) |
+| `MoEPackFormat/MoEPackAffineV1.swift` | 新規。`bias == -8*scale` の 1 か所きりの実装 (ランタイムと packer が共有する) |
 | `Infrastructure/ModelIO/Quantization.swift` | `AffineScheme`、対称フィクスチャ `quantizeInt4Symmetric` |
-| `Infrastructure/Metal/MetalContext.swift` | `setAffineScheme` / `canUseAffineScheme` / `TURBO_AFFINE_SYMMETRIC` |
+| `Infrastructure/Metal/MetalContext.swift` | `setAffineScheme` / `canUseAffineScheme` / `MOEPACK_AFFINE_SYMMETRIC` |
 | `Metal/{prefill,dequant_int4,moe,logit,tensorops}.metal` | ゼロ点をヘルパ経由に (19 か所)。**INT8 ルーターの 2 か所は据え置き** |
 | `Runtime/Inference/{Model,ModelExpertIO,RealForwardRunner}.swift` | スキームの解決、bias 束縛の別名化、スキーマ検査 |
 | `Infrastructure/ModelIO/ManifestReader.swift` | `sym` の受理と「4bit スロットは全部同じスキーム」の検査 |
 | `Kernels/TensorCore/MPPPrefillInt4QMM.swift` | 別コンパイルの `tensorops` にもスキームを渡す |
-| `TurboFieldfareRepack/Core/Planning/SymmetricProbe.swift` | 新規。恒等式の全数検定 |
-| `TurboFieldfareRepack/Core/{Planning,Format,Remote}/` | `sym` レイアウトの計画・manifest 出力・ローカル入力の配線 |
-| `TurboFieldfareKernelCheck/main.swift` | 全 INT4 ケースを両スキームで回す (`--affine-only` で従来どおり) |
+| `TsugumiRepack/Core/Planning/SymmetricProbe.swift` | 新規。恒等式の全数検定 |
+| `TsugumiRepack/Core/{Planning,Format,Remote}/` | `sym` レイアウトの計画・manifest 出力・ローカル入力の配線 |
+| `TsugumiKernelCheck/main.swift` | 全 INT4 ケースを両スキームで回す (`--affine-only` で従来どおり) |
 | `bench/mtp45/` | 新規。一次ログ 4 本 |
 | `MTP/DraftContextPlan.swift` | 新規 (2026-08-21、§9c)。draft context を group size と**スキームの両方**で分ける 1 か所きりの判断 |
 | `MTP/DraftWeights.swift` | `DraftConfig.quantScheme` — manifest の `draft.quant.scheme` を読む |
@@ -190,16 +190,16 @@ TF_FORCE_AFFINE_SCHEME=sym ./.build/release/TurboFieldfareCLI --model <affine> .
 
 ## 9. 塔とドラフターを `sym` バンドルに載せる (**実測**、2026-08-21)
 
-45 を書いた時点の `scratch/gemma4-qat-sym.gturbo` は**本体だけ**だった。
+45 を書いた時点の `scratch/gemma4-qat-sym.moepack` は**本体だけ**だった。
 `--add-vision` / `--add-draft` を順に当てて v1.0 → v1.2 にし、
 affine バンドルと同じ 3 点セットにした。**追記は `quant` を持ち越すので
 `sym` は壊れない** (`VisionAppendInstaller.manifestAddingVision`、
 `DraftAppendInstaller.manifestAddingDraft`)。
 
 ```
-$ ./.build/release/TurboFieldfareRepack --add-vision --input-gturbo scratch/gemma4-qat-sym.gturbo
+$ ./.build/release/TsugumiRepack --add-vision --input-moepack scratch/gemma4-qat-sym.moepack
 Tower: 356 tensors, 1145588832 bytes    Re-verified 38 files (15445129364 bytes)
-$ ./.build/release/TurboFieldfareRepack --add-draft  --input-gturbo scratch/gemma4-qat-sym.gturbo
+$ ./.build/release/TsugumiRepack --add-draft  --input-moepack scratch/gemma4-qat-sym.moepack
 Drafter: 48 tensors, 236114440 bytes    Re-verified 39 files (15681261432 bytes)
 ```
 

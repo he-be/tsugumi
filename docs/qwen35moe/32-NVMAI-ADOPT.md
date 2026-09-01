@@ -185,7 +185,7 @@ NVMAI の解は巻き戻さない: **生成が終わった時点の状態を丸�
 
 本ランタイムへの読み替え:
 
-- **器は既にある。**Gemma 側の `Sources/TurboFieldfareServer/Core/ServerPromptCache.swift`
+- **器は既にある。**Gemma 側の `Sources/TsugumiServer/Core/ServerPromptCache.swift`
   が同じ役割を持っている。足りないのは (a) `QwenForwardRunner` +
   `RecurrentStateManager` の capture/restore (連続 2 バッファなので
   memcpy 2 回 + KV)、(b) `QwenServerSession` の `cache_n` 結線

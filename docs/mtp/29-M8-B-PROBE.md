@@ -1,7 +1,7 @@
 # 29. M8 果実 B の前提検定 — router の先行適用は当たるか
 
 測定: 2026-08-19、M3 Pro 18GB / macOS 15.7.5 / Swift 6.3.3。
-対象モデル `scratch/gemma4-qat.gturbo` (drafter 同梱)、32 スロット / 8192 context。
+対象モデル `scratch/gemma4-qat.moepack` (drafter 同梱)、32 スロット / 8192 context。
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
 28-M8-PROPOSAL §7 が置いた「着手前に潰す計測 4 本」のうち **2 本目 (B の的中率)**
@@ -47,8 +47,8 @@ command buffer に、層 L+d の router をもう 1 本積む**。入力は層 L
 渡らないので、この計器は**測るだけで何も速くしない**。
 
 ```bash
-TF_MTP_ROUTER_PREVIEW=1 .build/release/TurboFieldfareCLI \
-  --model scratch/gemma4-qat.gturbo --messages-file bench/mtp_goal_prompt.json \
+TF_MTP_ROUTER_PREVIEW=1 .build/release/TsugumiCLI \
+  --model scratch/gemma4-qat.moepack --messages-file bench/mtp_goal_prompt.json \
   --image sample_imgs/IMG_2112.JPG --image-tokens 280 --thinking on --temperature 0 \
   --max-new 200 --max-context 8192 --expert-cache-slots 32 \
   --verification trusted-install --draft-block-size 4
@@ -178,8 +178,8 @@ TF_PREFILL_GPU_PROFILE=1`。見るのは `GPU idle` と `wait.front`、
 
 | ファイル | 中身 |
 | --- | --- |
-| `Sources/TurboFieldfare/Runtime/Inference/RouterPreviewProbe.swift` | **新規。**計器の本体 (距離別の積み上げ、順位別の的中率)。`TF_MTP_ROUTER_PREVIEW` / `TF_MTP_ROUTER_PREVIEW_D` |
-| `Sources/TurboFieldfare/Runtime/Inference/RealForwardRunner.swift` | 層 L+d の router の encode、予測の読み戻しと採点、`ensureRouterPreviewBuffers`、`verifyBlock` での 1 行出力 |
+| `Sources/Tsugumi/Runtime/Inference/RouterPreviewProbe.swift` | **新規。**計器の本体 (距離別の積み上げ、順位別の的中率)。`TF_MTP_ROUTER_PREVIEW` / `TF_MTP_ROUTER_PREVIEW_D` |
+| `Sources/Tsugumi/Runtime/Inference/RealForwardRunner.swift` | 層 L+d の router の encode、予測の読み戻しと採点、`ensureRouterPreviewBuffers`、`verifyBlock` での 1 行出力 |
 | `bench/mtp_router_xlayer.py` | **新規。**§0-2 の層間相関 (実機を回さずトレースだけで潰せる代案の検定) |
 
 `Scripts/test.sh` は **868 テスト / 146 スイート / 11 issues** で、失敗は既知の

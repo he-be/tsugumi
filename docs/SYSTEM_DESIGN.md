@@ -1,6 +1,6 @@
 # System design
 
-TurboFieldfare is a Swift and Metal runtime for Gemma 4 26B-A4B on Apple
+Tsugumi is a Swift and Metal runtime for Gemma 4 26B-A4B on Apple
 Silicon. The text-only installation is about 14.3 GB, but the target machine
 has 8 GB of memory. The runtime keeps the common weights and working state
 available to Metal. It stores routed experts in per-layer files and reads only
@@ -83,12 +83,12 @@ See the [command-line instructions](../README.md#command-line-interface) for
 installation. The [optimization journey](OPTIMIZATION_JOURNEY.md#explicit-reads-made-expert-streaming-work)
 records the current instruction-checkpoint validation.
 
-## The `.gturbo` directory
+## The `.moepack` directory
 
 The installation tree is abridged below:
 
 ```text
-gemma4.gturbo/
+gemma4.moepack/
   manifest.json
   verified-install.json
   model_weights.bin
@@ -142,7 +142,7 @@ together: unquantized tensors present in both are hashed on both sides and
 compared against a pinned digest before anything is written.
 
 A model that is already installed does not have to be rebuilt to gain the
-tower. `--add-vision --input-gturbo <model.gturbo>` downloads only the tower,
+tower. `--add-vision --input-moepack <model.moepack>` downloads only the tower,
 writes it beside the text weights, and rewrites `manifest.json` and
 `verified-install.json`; the result is byte-identical to the same model
 installed with `--include-vision`. The same parity proof runs, measured against
@@ -168,15 +168,15 @@ vision tower) and has a standalone forward for it (`DraftForward`) that M2 of
 outputs; the decode path itself still does not touch it, and speculation
 integration is the subject of M3–M5.
 
-[`TurboFieldfareFormat`](../Sources/TurboFieldfareFormat) defines the v1 JSON
+[`MoEPackFormat`](../Sources/MoEPackFormat) defines the v1 JSON
 files and resident index used by the installer, verifier, and runtime. This
 keeps parsing and validation consistent across all three.
 
-The model path itself may be a symlink. TurboFieldfare resolves it once when
+The model path itself may be a symlink. Tsugumi resolves it once when
 the model opens, then rejects any symlinks inside the model directory. Changing
 the original symlink later cannot switch files under a running model.
 
-By default, TurboFieldfare hashes `manifest.json`, `model_weights.bin`, and
+By default, Tsugumi hashes `manifest.json`, `model_weights.bin`, and
 `packed_experts/layout.json` at load, then hashes each routed-expert layer file
 on first use. The trusted-receipt policy is an explicit alternative. It still
 hashes the same three common files. For large layer files, it checks the
@@ -233,7 +233,7 @@ the same slot concurrently.
 
 ```mermaid
 flowchart LR
-    subgraph Disk[".gturbo on SSD"]
+    subgraph Disk[".moepack on SSD"]
         MW["model_weights.bin\ncommon weights"]
         LF["30 layer files\n128 routed experts each"]
         MF["manifest + layout + tokenizer"]
@@ -307,7 +307,7 @@ The production profile handles up to 128 prompt tokens at a time. Execution
 stays layer-major: it moves each bounded group of rows through the transformer
 one layer at a time, without holding expert activations for the full prompt.
 
-For each chunk and layer, TurboFieldfare:
+For each chunk and layer, Tsugumi:
 
 - runs projection GEMM/QMM paths where the row count can amortize setup;
 - applies causal sliding-window or full attention and writes K/V rows;
@@ -414,7 +414,7 @@ logits path, temperature `0` selects the argmax after any repetition penalty.
 
 ## Metal execution
 
-TurboFieldfare compiles its Metal source at runtime. Decode uses custom affine
+Tsugumi compiles its Metal source at runtime. Decode uses custom affine
 INT4 and INT8 GEMV kernels that consume the checkpoint's packed values, BF16
 scales, and BF16 biases directly. MPP prefill dequantizes one bounded weight
 tile into FP16 threadgroup memory and passes FP16 tensors to `matmul2d`. The
@@ -439,48 +439,48 @@ operations. Single-token decode stays on custom GEMV kernels.
 These files are the main entry points for the design described above. Their
 references lead to the supporting code and tests.
 
-- **Model contract and runtime path.** [`ArchConfig`](../Sources/TurboFieldfare/Infrastructure/ModelIO/ModelTypes.swift)
-  defines the fixed Gemma 4 shape; [`RuntimeConfiguration`](../Sources/TurboFieldfare/Runtime/Configuration/RuntimeConfiguration.swift)
+- **Model contract and runtime path.** [`ArchConfig`](../Sources/Tsugumi/Infrastructure/ModelIO/ModelTypes.swift)
+  defines the fixed Gemma 4 shape; [`RuntimeConfiguration`](../Sources/Tsugumi/Runtime/Configuration/RuntimeConfiguration.swift)
   defines the production configuration.
-- **Remote install and `.gturbo` layout.** Start with
-  [`SupportedModelSource`](../Sources/TurboFieldfareRepack/Core/Remote/SupportedModelSource.swift),
-  [`RemoteStreamingRepacker`](../Sources/TurboFieldfareRepack/Core/Remote/RemoteStreamingRepacker.swift),
-  and [`RepackPlanner`](../Sources/TurboFieldfareRepack/Core/Planning/RepackPlanner.swift)
+- **Remote install and `.moepack` layout.** Start with
+  [`SupportedModelSource`](../Sources/TsugumiRepack/Core/Remote/SupportedModelSource.swift),
+  [`RemoteStreamingRepacker`](../Sources/TsugumiRepack/Core/Remote/RemoteStreamingRepacker.swift),
+  and [`RepackPlanner`](../Sources/TsugumiRepack/Core/Planning/RepackPlanner.swift)
   for the pinned source, bounded range repack, and resident/per-layer file plan.
-- **Integrity and model load.** [`ManifestReader`](../Sources/TurboFieldfare/Infrastructure/ModelIO/ManifestReader.swift),
-  [`VerifiedInstallReceipt`](../Sources/TurboFieldfare/Infrastructure/ModelIO/VerifiedInstallReceipt.swift),
-  and [`Model.load`](../Sources/TurboFieldfare/Runtime/Inference/Model.swift) cover
+- **Integrity and model load.** [`ManifestReader`](../Sources/Tsugumi/Infrastructure/ModelIO/ManifestReader.swift),
+  [`VerifiedInstallReceipt`](../Sources/Tsugumi/Infrastructure/ModelIO/VerifiedInstallReceipt.swift),
+  and [`Model.load`](../Sources/Tsugumi/Runtime/Inference/Model.swift) cover
   validation, resident mapping, and lazy layer verification.
-- **Resident and streamed weights.** [`ResidentBuffer`](../Sources/TurboFieldfare/Infrastructure/ModelIO/ResidentBuffer.swift),
-  [`ModelExpertIO`](../Sources/TurboFieldfare/Runtime/Inference/ModelExpertIO.swift),
-  and [`PreadExpertStreamer`](../Sources/TurboFieldfare/Infrastructure/Streaming/PreadExpertStreamer.swift)
+- **Resident and streamed weights.** [`ResidentBuffer`](../Sources/Tsugumi/Infrastructure/ModelIO/ResidentBuffer.swift),
+  [`ModelExpertIO`](../Sources/Tsugumi/Runtime/Inference/ModelExpertIO.swift),
+  and [`PreadExpertStreamer`](../Sources/Tsugumi/Infrastructure/Streaming/PreadExpertStreamer.swift)
   own common weights, expert-cache planning, slots, and parallel bounded reads.
-- **KV cache and attention.** [`KVCacheManager`](../Sources/TurboFieldfare/Runtime/KVCache/KVCacheManager.swift)
+- **KV cache and attention.** [`KVCacheManager`](../Sources/Tsugumi/Runtime/KVCache/KVCacheManager.swift)
   owns bounded circular SWA storage and linear full-attention storage.
-  [`Attention`](../Sources/TurboFieldfare/Kernels/Attention/Attention.swift) and
-  [`PrefillAttention`](../Sources/TurboFieldfare/Kernels/Attention/PrefillAttention.swift)
+  [`Attention`](../Sources/Tsugumi/Kernels/Attention/Attention.swift) and
+  [`PrefillAttention`](../Sources/Tsugumi/Kernels/Attention/PrefillAttention.swift)
   consume distinct FP16 K/V ranges.
-- **Prompt and decode orchestration.** [`runRawCompletion`](../Sources/TurboFieldfare/Runtime/Generation/RawCompletion.swift)
-  owns the outer generation loop; [`RealForwardRunner`](../Sources/TurboFieldfare/Runtime/Inference/RealForwardRunner.swift)
+- **Prompt and decode orchestration.** [`runRawCompletion`](../Sources/Tsugumi/Runtime/Generation/RawCompletion.swift)
+  owns the outer generation loop; [`RealForwardRunner`](../Sources/Tsugumi/Runtime/Inference/RealForwardRunner.swift)
   owns the per-layer prefill and decode graph.
-- **Prefill memory and scheduling.** [`PrefillChunkScratch`](../Sources/TurboFieldfare/Runtime/Prefill/PrefillChunkScratch.swift),
-  [`PrefillRoutedTileScheduler`](../Sources/TurboFieldfare/Kernels/Prefill/MoE/PrefillRoutedTileScheduler.swift),
-  and [`MPPPrefillInt4QMM`](../Sources/TurboFieldfare/Kernels/TensorCore/MPPPrefillInt4QMM.swift)
+- **Prefill memory and scheduling.** [`PrefillChunkScratch`](../Sources/Tsugumi/Runtime/Prefill/PrefillChunkScratch.swift),
+  [`PrefillRoutedTileScheduler`](../Sources/Tsugumi/Kernels/Prefill/MoE/PrefillRoutedTileScheduler.swift),
+  and [`MPPPrefillInt4QMM`](../Sources/Tsugumi/Kernels/TensorCore/MPPPrefillInt4QMM.swift)
   show bounded scratch, slot-safe expert tiles, and staged affine MPP projections.
-- **Router and routed MoE.** [`MoE`](../Sources/TurboFieldfare/Kernels/MoE/MoE.swift)
-  and [`moe.metal`](../Sources/TurboFieldfare/Metal/MoE/moe.metal) implement
+- **Router and routed MoE.** [`MoE`](../Sources/Tsugumi/Kernels/MoE/MoE.swift)
+  and [`moe.metal`](../Sources/Tsugumi/Metal/MoE/moe.metal) implement
   top-8 selection, cached-hit work, affine GeGLU, and weighted down reduction.
-- **Vision groundwork (not on any runtime path).** [`VisionGeometry`](../Sources/TurboFieldfare/Vision/VisionGeometry.swift)
+- **Vision groundwork (not on any runtime path).** [`VisionGeometry`](../Sources/Tsugumi/Vision/VisionGeometry.swift)
   ports the upstream aspect-ratio-preserving resize, so an image's soft-token
   count is derived rather than assumed to be the 280 cap;
-  [`VisionImagePreprocessor`](../Sources/TurboFieldfare/Vision/VisionImagePreprocessor.swift)
-  decodes and patchifies; [`VisionPrompt`](../Sources/TurboFieldfare/Vision/VisionPrompt.swift)
+  [`VisionImagePreprocessor`](../Sources/Tsugumi/Vision/VisionImagePreprocessor.swift)
+  decodes and patchifies; [`VisionPrompt`](../Sources/Tsugumi/Vision/VisionPrompt.swift)
   expands image placeholders and rejects literal media markers.
-  [`VisionFixtures`](../Sources/TurboFieldfareValidation/Support/Fixtures/VisionFixtures.swift)
+  [`VisionFixtures`](../Sources/TsugumiValidation/Support/Fixtures/VisionFixtures.swift)
   reads the reference dumps produced by [`Scripts/vision/`](../Scripts/vision/README.md).
-- **Metal library and fusions.** [`MetalContext`](../Sources/TurboFieldfare/Infrastructure/Metal/MetalContext.swift),
-  [`tensorops.metal`](../Sources/TurboFieldfare/Metal/TensorCore/tensorops.metal),
-  and [`fused.metal`](../Sources/TurboFieldfare/Metal/Fusions/fused.metal) show
+- **Metal library and fusions.** [`MetalContext`](../Sources/Tsugumi/Infrastructure/Metal/MetalContext.swift),
+  [`tensorops.metal`](../Sources/Tsugumi/Metal/TensorCore/tensorops.metal),
+  and [`fused.metal`](../Sources/Tsugumi/Metal/Fusions/fused.metal) show
   runtime compilation, the MPP tensor-ops kernel, and production decode fusions.
 
 ## Correctness and safety invariants
@@ -525,7 +525,7 @@ warm model, serializes generation, and retains one verified conversational KV
 prefix by default. It retains only that prefix. See the
 [local server guide](OPENAI_SERVER.md).
 
-TurboFieldfare is a research system. The Mac app exposes a small set of typed
+Tsugumi is a research system. The Mac app exposes a small set of typed
 runtime controls. The production path uses FP16 KV, exact split-K/V
 attention, a 16-slot LFU expert cache, chunked prefill, staged affine MPP
 prefill, and batched routed MoE prefill. File-read advice (`RDADVISE`) is off by
@@ -535,6 +535,6 @@ default.
 
 - [Local OpenAI-compatible server](OPENAI_SERVER.md)
 - [Benchmarks](BENCHMARKS.md)
-- [The experiments that shaped TurboFieldfare](OPTIMIZATION_JOURNEY.md)
+- [The experiments that shaped Tsugumi](OPTIMIZATION_JOURNEY.md)
 - [Complete experiment inventory](experiments/EXPERIMENT_INVENTORY.md)
 - [Implementation references](IMPLEMENTATION_REFERENCES.md)

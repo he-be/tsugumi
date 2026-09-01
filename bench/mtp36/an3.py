@@ -1,8 +1,8 @@
 import sys, math
 from collections import Counter, defaultdict
-sys.path.insert(0,"/Users/mh/LLM/turbo-fieldfare/bench")
+sys.path.insert(0,"/Users/mh/LLM/tsugumi/bench")
 from expert_sim import read_trace
-BASE="/Users/mh/LLM/turbo-fieldfare/bench/logs/36_trace/%s.tsv"
+BASE="/Users/mh/LLM/tsugumi/bench/logs/36_trace/%s.tsv"
 print(f"{'reg':12s} {'H(bits)':>8s} {'perplexity':>11s} {'eff.experts/layer':>18s}")
 for r in ["ja_prose","en_bullets","code"]:
     h,rec=read_trace(BASE%r)

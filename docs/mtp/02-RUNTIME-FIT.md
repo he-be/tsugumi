@@ -29,8 +29,8 @@ M3 Pro 18GB / macOS 15.7.5。MTP の期待値はこの数字の上に立てる�
 メモリのベースライン: テキストのみ peak **6.64 GB** / vision 同居 **6.97〜7.01 GB**。
 ドラフター int4 は +0.24 GB で、12 GB 予算に対し余白は 5 GB 近い (**導出**)。
 
-サンプリング既定: CLI `1.0` (`Sources/TurboFieldfareCLI/Args.swift:195`)、
-Server `1.0` (`Sources/TurboFieldfareServer/Core/OpenAIModels.swift:405`)、
+サンプリング既定: CLI `1.0` (`Sources/TsugumiCLI/Args.swift:195`)、
+Server `1.0` (`Sources/TsugumiServer/Core/OpenAIModels.swift:405`)、
 Mac アプリ `0.2`、`bench.sh ja` は `TEMP=0`。**受入は temp 0 と 1.0 の両方で測る。**
 
 ---
@@ -58,7 +58,7 @@ Mac アプリ `0.2`、`bench.sh ja` は `TEMP=0`。**受入は temp 0 と 1.0 �
 | 資産 | 実体 | MTP での使い道 |
 | --- | --- | --- |
 | prefill の span 機構 | `RealForwardRunner.swift:594-612` の `PrefillChunkPlanner.spans(...)`、chunk ごとの行制御 (`:645-690`) | **k トークン verify はこの span 機構の最小ケース**。短いチャンクを 1 本流す経路が既にある |
-| manifest の optional セクション | `GTurboManifestV1.swift:105-401` の `vision` + `flags.visionTower` + `versionMinor` ゲート + 「フラグとセクションは 1 つの事実を 2 回書く」検証 | ドラフター用セクションを同じ型で足せる (03 D1) |
+| manifest の optional セクション | `MoEPackManifestV1.swift:105-401` の `vision` + `flags.visionTower` + `versionMinor` ゲート + 「フラグとセクションは 1 つの事実を 2 回書く」検証 | ドラフター用セクションを同じ型で足せる (03 D1) |
 | 旧ランタイムの明示的拒否 | `RESULTS_VISION.md` §8: 旧ビルドが `unknown key "visionTower"` で exit 1、対照は exit 0 | 同じ検出力つきの検査を書ける |
 | 追記インストーラ | `--add-vision` (`VisionAppendInstaller.swift`)。tower 1.14 GB のみ取得、テキスト側 inode 不変 | `--add-draft` はこの写像 (03 D2) |
 | プロンプトキャッシュの契約 | `RawCompletion.swift:260-270` の `kvBackedTokenIDs` / `uncommittedBoundaryTokenIDs`、「画像ターンは publish しない」前例 (`:115-122`) | 投機位置を公開しない不変条件を同じ形で書ける (03 D7) |

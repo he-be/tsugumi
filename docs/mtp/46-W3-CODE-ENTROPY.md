@@ -1,7 +1,7 @@
 # 46. W3 — INT4 コードは 3.45 bit。**縮むが、展開器のほうが読み出しより遅い**
 
 測定: 2026-08-20、M3 Pro 18GB / macOS 15.7.5 / commit `6abb72a`。
-一次資料は `bench/mtp46/`。**推論経路 (`Sources/TurboFieldfare/`) は無改変** —
+一次資料は `bench/mtp46/`。**推論経路 (`Sources/Tsugumi/`) は無改変** —
 足したのはオフラインのスクリプト 2 本だけである。
 
 [44](44-W1-WEIGHT-DIET.md) / [45](45-W2-SYM-ADOPTION.md) が `bias` の 0.5 bpw を
@@ -253,14 +253,14 @@ RAM → RAM の memcpy である** (installed 13.28 GiB に対しマシンは 18
 ```bash
 # §2 / §3 — コードの全数 census (約 3 分、12.9 GB を読む。scale/bias には触らない)
 /Users/mh/LLM/venv/bin/python3 bench/check_code_entropy.py \
-    scratch/gemma4-qat-sym.gturbo > bench/mtp46/code_entropy_full.log
+    scratch/gemma4-qat-sym.moepack > bench/mtp46/code_entropy_full.log
 # 層を絞るなら第 2 引数に "0" や "0,15,29"
 
 # §4 — 変換率 (割り算だけ。入力は bench/mtp45/ab_tps_32slots.log の実測値)
 /Users/mh/LLM/venv/bin/python3 bench/mtp46_io_conversion.py
 
 # §5a — 1 歩ごとのミス数 (temp 0 なので決定論。タイミングに依存しない)
-./.build/release/TurboFieldfareCLI --model scratch/gemma4-qat-sym.gturbo \
+./.build/release/TsugumiCLI --model scratch/gemma4-qat-sym.moepack \
     --prompt "日本の四季について、簡潔に説明してください。" --temperature 0 \
     --max-new 24 --expert-cache-slots 32 \
     --dump-expert-trace bench/mtp46/trace_boundary.tsv

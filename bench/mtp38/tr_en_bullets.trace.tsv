@@ -1,4 +1,4 @@
-# turbo-fieldfare expert trace v1
+# tsugumi expert trace v1
 # experts=128
 # layers=30
 # model=mlx-community/gemma-4-26B-A4B-it-qat-q4_0-mlx-aligned

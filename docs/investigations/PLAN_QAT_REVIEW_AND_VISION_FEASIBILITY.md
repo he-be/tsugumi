@@ -14,7 +14,7 @@
 | 問い | 結論 |
 | --- | --- |
 | PLAN_QAT は OPTIMIZATION_JOURNEY の車輪の再発明か | **していない。**両文書の目的が直交し、実験記録にも QAT / group 32 / bf16 ルーターの前例はない (**実測**)。ただし PLAN が踏襲すべき教訓のうち 1 件 (アライメント) は明示されていないので §2-3 に注意点として残す |
-| Vision 機能は原理的に追加可能か | **可能。**重みは DL 元の Google QAT リポジトリ自体が全量保持している (**実測**、§3-1)。ただし配布状態 (.gturbo v1 = text-only) からの拡張であり、**ワイヤフォーマット拡張を含む本格的な機能追加**になる (§3-3)。前提の一部 (vision ウェイトのチェックポイント間共有) は実測で崩れているため、重みは必ず QAT リポジトリから取ること (§3-1-b) |
+| Vision 機能は原理的に追加可能か | **可能。**重みは DL 元の Google QAT リポジトリ自体が全量保持している (**実測**、§3-1)。ただし配布状態 (.moepack v1 = text-only) からの拡張であり、**ワイヤフォーマット拡張を含む本格的な機能追加**になる (§3-3)。前提の一部 (vision ウェイトのチェックポイント間共有) は実測で崩れているため、重みは必ず QAT リポジトリから取ること (§3-1-b) |
 
 ---
 
@@ -120,7 +120,7 @@ Gemma 3 系の「QAT では vision tower が凍結されていて非 QAT 版と�
   通常の埋め込みとして通るため、**クラッシュせず黙って崩れた出力になる**
   (**導出**、構造からの帰結)。
 
-#### d. `.gturbo` v1 の収容力 (**実測**、ソース読み)
+#### d. `.moepack` v1 の収容力 (**実測**、ソース読み)
 
 - **ResidentIndex は名前付きの汎用テンソル目録** (dtype / shape /
   offset / scale / bias。bf16 dtype=1 を持つ)。物理的には vision テンソルを
@@ -129,7 +129,7 @@ Gemma 3 系の「QAT では vision tower が凍結されていて非 QAT 版と�
 - 一方 **manifest.arch は固定フィールド** (hiddenSize / numHeads / …) で
   vision のアーキ情報を載せる場所がなく、`flags` は既知集合のみを受入
   (未知の flag は v1 リーダが拒否)。→ **vision 対応にはワイヤフォーマットの
-  バージョン管理された拡張が必須。** `Sources/TurboFieldfareFormat/` は
+  バージョン管理された拡張が必須。** `Sources/MoEPackFormat/` は
   Foundation-only の固定契約なので、拡張は v1 の後方互換追加または v2 として
   明示的に設計する必要がある。
 - repacker は `vision_tower.*` / `embed_vision.*` を
@@ -169,7 +169,7 @@ KV (**導出**): 画像 1 枚 = 280 位置 × 30 層ぶんの KV エントリ。
 
 | # | 領域 | 内容 | 規模感 |
 | --- | --- | --- | --- |
-| 1 | `TurboFieldfareFormat` | manifest への vision セクション (アーキ、quant スロット、soft-token 数、boi/eoi/image token id)。未知 flag を拒否する現行検証との両立 — バージョン方針の明示 | 中 (契約変更なので検証もセット) |
+| 1 | `MoEPackFormat` | manifest への vision セクション (アーキ、quant スロット、soft-token 数、boi/eoi/image token id)。未知 flag を拒否する現行検証との両立 — バージョン方針の明示 | 中 (契約変更なので検証もセット) |
 | 2 | repacker | `--include-vision` 相当の opt-in。**ソースが二股になる点に注意**: ローカル QAT snapshot に vision がないため、テキストはローカル snapshot、vision は Google リポジトリの range 取得という dual-source が必要。指紋 (SHA-256) の管理対象が 2 リポジトリに広がる | 中 |
 | 3 | runtime: 画像前処理 | 画像デコード・resize・標準化 (`std_scale`/`std_bias` は重みから読む)。`processor_config.json` の精査が前提 (**未確認**) | 中 |
 | 4 | runtime: tower 推論 | patch conv、位置埋め込み、27 層 bf16 forward、RoPE (theta 100)。既存プリミティブで構成可能。prefill 時のみ実行 | 大 (新経路) |
@@ -192,7 +192,7 @@ KV (**導出**): 画像 1 枚 = 280 位置 × 30 層ぶんの KV エントリ。
 
 Vision 機能の追加は**原理的に可能**であり、最大の障害だった「重みがない」は
 実測で解消した (Google QAT リポジトリが 1.15 GB bf16 で保持、range 取得可)。
-ただし (1) `.gturbo` フォーマット拡張、(2) tower 推論と prefill 統合という
+ただし (1) `.moepack` フォーマット拡張、(2) tower 推論と prefill 統合という
 2 つの新規経路、(3) 三入口 (CLI / Server / App) への画像入力、を含む
 本格的な機能開発であり、「配布状態からの改造」の枠を確実に超える。
 着手は PLAN_QAT の受入手続き (§5-2) 完了後が自然。最初の一歩は

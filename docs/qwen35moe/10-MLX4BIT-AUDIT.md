@@ -37,7 +37,7 @@ routed expert 1 本 = `gate/up/down × (weight 524,288 + scales 32,768 + biases 
 (oQ4e のヘッダ・本ファイルで計 3 回目の一致)。
 40 層 × 256 本 = **18,119,393,280 B**、スロット 1 本 = **67.5 MiB**。
 
-`.gturbo` に落としたときの導出サイズ: `packed_experts` 18.12 GB +
+`.moepack` に落としたときの導出サイズ: `packed_experts` 18.12 GB +
 `model_weights.bin` **1.39 GB** = **19.51 GB**。
 
 ## 3. 確定した事実 (計画の未確認・落とし穴を潰したもの)

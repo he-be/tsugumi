@@ -15,8 +15,8 @@ run() {  # $1=0/1  $2=block  $3=pos
   label=$([ "$on" = 1 ] && echo mmap || echo pread)
   # ADVISE=0: このログは advise が製品に入る前の条件で取られている
   # (既定は 2026-08-20 に mmap の腕だけ on になった。52 §8)。
-  TF_EXPERT_MMAP="$on" TF_EXPERT_MMAP_ADVISE=0 ./.build/release/TurboFieldfareCLI \
-    --model scratch/gemma4-qat-sym.gturbo --messages-file bench/math.json \
+  TF_EXPERT_MMAP="$on" TF_EXPERT_MMAP_ADVISE=0 ./.build/release/TsugumiCLI \
+    --model scratch/gemma4-qat-sym.moepack --messages-file bench/math.json \
     --temperature 0 --max-new 256 --expert-cache-slots 32 \
     --verification trusted-install > /tmp/tf_sa.txt 2>&1
   {

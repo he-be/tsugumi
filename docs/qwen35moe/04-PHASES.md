@@ -45,16 +45,16 @@ attention と `in_proj_*` を int8 に上げる案 (+約 580 MB) を先に評価
 ## Phase 1 — 変換 (GPU 不要)
 
 入力はローカルの候補 ([02 §2](02-CHECKPOINTS.md))。ダウンロード不要。
-焼き込みと名前寄せ ([03 §1](03-DESIGN.md)) → `TurboFieldfareRepack --source-snapshot` →
-`.gturbo`。`ArchInfo.load` に Qwen の `config.json` パーサを足し、
-`GTurboManifestArchV1` に `family` / `layerKinds` / `linearAttention` セクションを足す。
+焼き込みと名前寄せ ([03 §1](03-DESIGN.md)) → `TsugumiRepack --source-snapshot` →
+`.moepack`。`ArchInfo.load` に Qwen の `config.json` パーサを足し、
+`MoEPackManifestArchV1` に `family` / `layerKinds` / `linearAttention` セクションを足す。
 
 **出口:** `--verify-install` が緑。ファイルサイズが [01 §5-3](01-MODEL.md) と一致。
 `expertStride == 1_769_472`。
 
 ## Phase 2 — カーネル (GPU を使うが、モデルは載せない)
 
-[03 §2](03-DESIGN.md) の各カーネルを `TurboFieldfareKernelCheck` で Phase 0 の fixtures に
+[03 §2](03-DESIGN.md) の各カーネルを `TsugumiKernelCheck` で Phase 0 の fixtures に
 対して検証。FP16 の誤差床は `Scripts/vision/fp16_error_floor.py` と同じ手続きで先に測る
 (**カーネルのバグと丸め誤差を分離できる検証系を先に作る** — PLAN_VISION §6 の教訓)。
 
@@ -146,7 +146,7 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
   swift-jinja が描画する。`--thinking` が `enable_thinking` に直結する
 - 停止トークンは `[248046, 248044]` (実測(上流)) で、`QwenTokenizer` が持つ
 
-**出口条件は満たした:** `TurboFieldfareCLI --model … --messages-file …` が
+**出口条件は満たした:** `TsugumiCLI --model … --messages-file …` が
 日本語でも英語でも答え、`<think>` ブロックは stderr、答えは stdout に分かれる
 ([22 §5](22-PHASE5-TOKENIZER.md))。
 
@@ -155,7 +155,7 @@ INT8 の chain で、`--qwen` は 39 本になった。**Phase 2 はこれで閉
 - パーサは `QwenToolCallParser`。**値の綴りは宣言された型で決まる** —
   テンプレートが文字列だけを生で書くので、`Set<String>` ではなく
   ツールのスキーマを要る。駆動は `QwenStructuredAssistantDecoder`
-- GBNF は `QwenToolCallGrammar` (`TurboFieldfare` 側) と
+- GBNF は `QwenToolCallGrammar` (`Tsugumi` 側) と
   `QwenChatGrammarBuilder` (サーバー側の薄い口)。生の文字列値は
   **`\n</parameter>` を含まない任意のテキスト**を 13 状態で綴る —
   `[^<]*` にするとマークアップを引数に取れない
@@ -258,7 +258,7 @@ a = 2.344 (平均)。**運用幅は k=2 (ドラフト 1 本)** — 検証費用�
 ([36 §5-3](36-MTP-DECODE.md))。既定は off のまま。
 
 **回した** ([36](36-MTP-DECODE.md)、2026-08-22)。ヘッドは 503 MB の sidecar で
-GPU に載り (`.gturbo` の repack は 0 回)、幅 2 の検証パスと巻き戻しが回り、
+GPU に載り (`.moepack` の repack は 0 回)、幅 2 の検証パスと巻き戻しが回り、
 実タスク 5 本を 192 トークン生成した。**取り分はタスクで符号が変わる** —
 エージェント形 ×1.146 / ×1.199、コード ×0.959、散文 ×0.941、
 2,698 トークンの要約 ×0.843。**受入条件のうち 1 つが未達である**:
@@ -348,7 +348,7 @@ prefill attention / block router / per-pair MoE の加算順が残っている
 
 1〜4. ~~`oQ4e-g64` の norm 規約 / `conv1d` の軸順 / router のビット幅 / `q_norm` の
    焼き込み~~ → **完了** ([12](12-OQ4E-G64-AUDIT.md))
-5〜6. ~~名前寄せ~~ / ~~`.gturbo` への repack~~ → **完了** ([13](13-PHASE1-REPACK.md))
+5〜6. ~~名前寄せ~~ / ~~`.moepack` への repack~~ → **完了** ([13](13-PHASE1-REPACK.md))
 7. ~~生成スモーク~~ → **完了。文が出た** ([14 §6](14-REFERENCE.md))
 9. ~~2 候補の品質差 (NLL)~~ → **完了。4 本とも `oQ4e-g64` が低い。本線を
    `oQ4e-g64` に決めた** ([16 §1](16-QUALITY.md))
@@ -360,7 +360,7 @@ prefill attention / block router / per-pair MoE の加算順が残っている
    「int4 の specialization」ではなく「INT8 の chain」だった**ので #11 の後ろに回る
 11. ~~混在ビット幅の受け入れ~~ → **完了。本線が `Model.load` を通る**
    ([18](18-MIXED-BITS.md))。**索引から導く**に決め、manifest のスロットは幅の
-   上限を述べるだけにした。`.gturbo` の形式は変えていない。Qwen 用の常駐
+   上限を述べるだけにした。`.moepack` の形式は変えていない。Qwen 用の常駐
    スキーマ (`linear_attn` 9 本 / 倍幅の `q_proj` / 別テンソルの `lm_head`) と
    `--qwen-open` も入った
 15. ~~INT8 の LM head chain~~ → **完了。Phase 2 が閉じた** ([19](19-LM-HEAD-INT8.md))。
@@ -467,7 +467,7 @@ prefill attention / block router / per-pair MoE の加算順が残っている
 
 道具: `Scripts/qwen35/audit_checkpoint.py` / `bake_snapshot.py` / `mlx_quant.py` /
 `reference_forward.py` (numpy だけ)。`test_reference_forward.py` だけ torch を使う。
-カーネルの検査は `TurboFieldfareKernelCheck --gdn` と `--qwen`
+カーネルの検査は `TsugumiKernelCheck --gdn` と `--qwen`
 (どちらもモデルもチェックポイントも要らない)。時間は `--gdn-bench` / `--qwen-bench`。
 **幅 2 の投機が再帰状態に払う費用は `--qwen-state-bench`**
 (`--qwen-state-bench-iterations` / `--qwen-state-bench-cooldown`、腕は交互。
@@ -497,13 +497,13 @@ prefill attention / block router / per-pair MoE の加算順が残っている
 ([22](22-PHASE5-TOKENIZER.md); `--qwen-tokenizer-fixture`)。その fixture は
 `Scripts/qwen35/tokenizer_fixture.py` が上流を 1 度回して作る
 (`~/LLM/venv/bin/python3` に `tokenizers` と `transformers` が入っている)。
-**CLI から実物に話しかけるのは `TurboFieldfareCLI --model … --messages-file …`**
+**CLI から実物に話しかけるのは `TsugumiCLI --model … --messages-file …`**
 (family は `manifest.json` から読む)。
-**HTTP から話しかけるのは `TurboFieldfareServer --model …`** — 家族は同じく
+**HTTP から話しかけるのは `TsugumiServer --model …`** — 家族は同じく
 `manifest.json` から読み、起動ログの `family=` が名乗る ([26](26-PHASE8-SERVER.md))。
 参照の fixture は `scratch/qwen35/decode-fixture-55.json`、
 トークナイザの fixture は `scratch/qwen35/tokenizer-fixture.json`。
-repack 済みモデルは `scratch/ornith-oq4e-g64.gturbo`、repack の入力は
+repack 済みモデルは `scratch/ornith-oq4e-g64.moepack`、repack の入力は
 `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64-baked`。**参照器には焼き込み前の
 `~/LLM/Ornith-1.5-35B-A3B-oQ4e-g64` を渡す** (`q_norm` の 1/16 は本ランタイム
 専用の細工なので、参照の算式には入れない)。

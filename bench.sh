@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# TurboFieldfare ベンチ v3 (M3 Pro 18GB / macOS 15.7.5)
+# Tsugumi ベンチ v3 (M3 Pro 18GB / macOS 15.7.5)
 #
 #   ./bench.sh prompts     プロンプト生成 (m を 526tok 前後に調整済み)
 #   ./bench.sh japrompts   PLAN 付録の日本語プロンプト 3 本を生成
@@ -49,8 +49,8 @@
 set -euo pipefail
 
 REPO="${REPO:-$PWD}"
-CLI="${CLI:-$REPO/.build/release/TurboFieldfareCLI}"
-MODEL="${MODEL:-$REPO/scratch/gemma4.gturbo}"
+CLI="${CLI:-$REPO/.build/release/TsugumiCLI}"
+MODEL="${MODEL:-$REPO/scratch/gemma4.moepack}"
 OUT="$REPO/bench"
 LOGS="$OUT/logs"
 TSV="$OUT/results.tsv"
@@ -78,9 +78,9 @@ SEED="${SEED:-}"        # 空なら run 番号を使う
 preflight() {
   [[ -x "$CLI" ]] || { echo "CLI がない: $CLI" >&2; exit 1; }
   [[ -d "$MODEL" ]] || { echo "モデルがない: $MODEL" >&2; exit 1; }
-  if pgrep -qf TurboFieldfareMac || pgrep -qf TurboFieldfareDecodeService \
-     || pgrep -qf TurboFieldfareServer; then
-    echo "他の TurboFieldfare プロセスが動いてる。落としてから。" >&2; exit 1
+  if pgrep -qf TsugumiMac || pgrep -qf TsugumiDecodeService \
+     || pgrep -qf TsugumiServer; then
+    echo "他の Tsugumi プロセスが動いてる。落としてから。" >&2; exit 1
   fi
   mkdir -p "$LOGS"
   [[ -f "$TSV" ]] || printf 'label\tn\tptok\tntok\treal\tdecode\trate\tprefill_s\tttft_s\tio_ms\thit_pct\tpeak_gb\tflags\n' > "$TSV"

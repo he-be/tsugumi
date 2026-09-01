@@ -1,5 +1,5 @@
 # ./bench/mtp51_mmap_ab.py --rounds 3 --out bench/mtp51/mmap_ab_256_math_v2.log
-# model=scratch/gemma4-qat-sym.gturbo messages=bench/math.json slots=32 max_new=256 cool=10s
+# model=scratch/gemma4-qat-sym.moepack messages=bench/math.json slots=32 max_new=256 cool=10s
 round 1  pread  io   14.63 ms/tok  tok/s  25.198  prefill  1.215s  peak  4.54GB  miss 9145/61200  out 40f67036aa88
 この方程式 $x^3 + 2x^2 - 3x - 1 = 0$ は、整数解や有理数解の候補（$\pm 1$）を代入しても成立しないため、通常の因数分解（たすき掛けなど）では解けません。
 

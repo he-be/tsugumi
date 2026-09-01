@@ -5,8 +5,8 @@
 分かり、[18](18-MIXED-BITS.md) の #11 が片づくのを待っていた最後のカーネル。
 
 ```
-swift run -c release TurboFieldfareKernelCheck --qwen             # 検査 39 本
-swift run -c release TurboFieldfareKernelCheck --qwen --qwen-bench --qwen-tokens 2048
+swift run -c release TsugumiKernelCheck --qwen             # 検査 39 本
+swift run -c release TsugumiKernelCheck --qwen --qwen-bench --qwen-tokens 2048
 ```
 
 | | |

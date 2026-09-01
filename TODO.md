@@ -65,7 +65,7 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
 
 **0. 一番速い確認は 1 行。**サーバーを建て直して pi を普通に使い、サーバーの
 ログに `mtp=` が出るか見る。出れば両方効いている。**必ず先に再ビルドすること**
-(`swift build -c release --product TurboFieldfareServer`) — 2026-08-21 に
+(`swift build -c release --product TsugumiServer`) — 2026-08-21 に
 古いバイナリで C3 を走らせて 1 往復無駄にした。
 
 **1. `Scripts/c3_smoke.sh` を 15 検査で走らせる。**15 個目が `GEN-14` で、
@@ -73,8 +73,8 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
 建てる** (スクリプトは建てない・止めない)。前に走らせた構成:
 
 ```
-.build/release/TurboFieldfareServer \
-  --model scratch/gemma4-qat-sym.gturbo --port 8091 \
+.build/release/TsugumiServer \
+  --model scratch/gemma4-qat-sym.moepack --port 8091 \
   --ctx-size 65536 --expert-cache-slots 32 --draft-block-size 4
 ```
 
@@ -105,7 +105,7 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
    **P6 は済んだので、次はこれ。**「通しで動く」と「動くときに MTP が効いている」は別の主張で、
    2026-08-21 に数字で見たら後者が偽だった (だから P6 がある)。見るのは
    応答の `timings.draft_n`、サーバー側なら footer の `mtp=/rounds=/accept=`。
-   **前提は 2026-08-21 に揃えた** — `scratch/gemma4-qat-sym.gturbo` は本体だけで、
+   **前提は 2026-08-21 に揃えた** — `scratch/gemma4-qat-sym.moepack` は本体だけで、
    画像もドラフターも入っていなかった。`--add-vision` / `--add-draft` を当てて
    v1.2 にし、affine バンドルとのバイト一致まで見てある
    ([docs/mtp/45](docs/mtp/45-W2-SYM-ADOPTION.md) §9)。
@@ -187,7 +187,7 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
 | `ServerPromptRenderer` | テキスト/tools 経路の描画。**サーバーが描く変種はここの `static let variant` 1 か所が決める** |
 | `commonPrefixLength` | CACHE-1 の本体。**D3 でキャッシュ判定はこれ 1 本になった** |
 | `GFTokenizer.ChatTemplateVariant` | D2 で入った。`.modelBundled` (CLI・アプリ・KernelCheck) と `.serverRedraw` (サーバー) の 2 値。**既定は `.modelBundled`** なので、足した経路を明示的に渡さない限り描画は動かない |
-| `ServerChatTemplate` | リポジトリ所有の jinja (`Sources/TurboFieldfare/Templates/server_chat_template.jinja`)。SPEC §12 DEV-12 |
+| `ServerChatTemplate` | リポジトリ所有の jinja (`Sources/Tsugumi/Templates/server_chat_template.jinja`)。SPEC §12 DEV-12 |
 | `ServerReadiness` / `ServerProperties` | P3。ロード状態は経路表より手前で見る。`/props` は `ChatRequestSchema` の表を歩いて作る — **既定値の第 2 の写しを作らないこと** |
 | `Scripts/c3_smoke.sh` | C3 の **15 検査**。2026-08-21 に 14 緑。**15 個目の `GEN-14` はまだ走らせていない** |
 
@@ -201,7 +201,7 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
   (2026-08-20 実測)。`GFTokenizer.load()` (引数なし、テストが使う) は HF キャッシュの
   `~/.cache/huggingface/hub/models--google--gemma-4-26B-A4B-it/snapshots/4d7ae4984b…/chat_template.jinja`
   (390 行、sha `ae53464b…`、ヘッダに `Published: 2026-07-09`)、サーバーは
-  `scratch/gemma4.gturbo/tokenizer/chat_template.jinja` (362 行、sha `36e3a42e…`) を引く。
+  `scratch/gemma4.moepack/tokenizer/chat_template.jinja` (362 行、sha `36e3a42e…`) を引く。
   **D2 の変種はサーバーが実際に使っている 362 行版から取った** (差分 1 ハンクに保つため)
   ので、tools 経路については**テストとサーバーが同じテンプレートを見るようになった**のは
   D2 の副産物である。ただし 390 行版にある `arguments is none` 対応・`image_url` /
@@ -234,7 +234,7 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
   C0〜C2 は重みも Metal も要らず、サーバー全体で 8 秒。
 - C3 (実機スモーク) だけモデルを積む。走らせる前に AGENTS.md の
   「Test rules」を満たすこと — 特に
-  `pgrep -fl 'TurboFieldfareServer|TurboFieldfareMac|…'` が空であること。
+  `pgrep -fl 'TsugumiServer|TsugumiMac|…'` が空であること。
   **既にあるモデルプロセスを止めない。**
 - 参照実装: `~/LLM/llama.cpp`、ピン `34af94cd9`。**作業ツリーはピンより先に
   進んでいる** (2026-08-20 時点で `fe8156f78`)。素の `grep` はピンでないコードを
@@ -243,7 +243,7 @@ SPEC が勝つ。この文書が古かったら、直すのはこの文書のほ
   `tools/server/server-schema.cpp` (要求スキーマ)、`server-common.cpp`
   (OAI 層とエラー封筒)、`server-context.cpp` (キャッシュ)、`README.md`。
   ピンを上げるときは差分を読んで SPEC の該当行を先に直す。
-- モデル同梱テンプレート: `scratch/gemma4.gturbo/tokenizer/chat_template.jinja`。
+- モデル同梱テンプレート: `scratch/gemma4.moepack/tokenizer/chat_template.jinja`。
 - **実機で見ていないもの** (すべて C3 送り、`Scripts/c3_smoke.sh` に検査がある):
   棄却サンプリングと遅延文法と思考中の抑止 (GEN-5/6/7) が本物のサンプラで
   動くこと、予算切れの終了タグ強制 (RSN-4) がモデルの上で本文を書かせること、

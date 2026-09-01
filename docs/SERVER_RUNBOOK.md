@@ -1,28 +1,28 @@
 # サーバーの建て方 (M3 Pro 18GB 用の手順書)
 
-`TurboFieldfareServer` を pi / OpenCode などの OpenAI 互換クライアントに
+`TsugumiServer` を pi / OpenCode などの OpenAI 互換クライアントに
 つなぐための、この機体専用の手順。一般向けの説明は
 [OPENAI_SERVER.md](OPENAI_SERVER.md)、フラグの意味は
 [RUNTIME_CONTROLS.md](RUNTIME_CONTROLS.md) にある。
 
-実測は 2026-08-18 / M3 Pro 18GB / macOS 15.7.5 / `scratch/gemma4-qat.gturbo`
+実測は 2026-08-18 / M3 Pro 18GB / macOS 15.7.5 / `scratch/gemma4-qat.moepack`
 (QAT + vision tower + ドラフター)。
 
 ---
 
 ## 0. 建てる前に 1 つだけ確認する
 
-**TurboFieldfare のプロセスは同時に 1 つだけ。**テストも Mac アプリも数えるので、
+**Tsugumi のプロセスは同時に 1 つだけ。**テストも Mac アプリも数えるので、
 先に必ずこれを見る:
 
 ```bash
-pgrep -fl 'TurboFieldfareServer|TurboFieldfareMac|TurboFieldfareDecodeService|TurboFieldfareCLI|TurboFieldfarePackageTests|swiftpm-testing-helper|mlx_lm|mlx-lm'
+pgrep -fl 'TsugumiServer|TsugumiMac|TsugumiDecodeService|TsugumiCLI|TsugumiPackageTests|swiftpm-testing-helper|mlx_lm|mlx-lm'
 ```
 
 何か出たら、それを止めてから建てる。
 
 ```bash
-swift build -c release --product TurboFieldfareServer   # 初回とコード変更のあと
+swift build -c release --product TsugumiServer   # 初回とコード変更のあと
 ```
 
 ## 1. コピペする 3 つの構成
@@ -52,8 +52,8 @@ swift build -c release --product TurboFieldfareServer   # 初回とコード変�
 ### (a) 16K — pi の常用。他の作業とメモリを分け合う設定
 
 ```bash
-.build/release/TurboFieldfareServer \
-  --model scratch/gemma4-qat.gturbo \
+.build/release/TsugumiServer \
+  --model scratch/gemma4-qat.moepack \
   --port 8091 \
   --ctx-size 16384 \
   --expert-cache-slots 32 \
@@ -64,8 +64,8 @@ swift build -c release --product TurboFieldfareServer   # 初回とコード変�
 ### (b) 64K — 長い会話やログを丸ごと貼るとき
 
 ```bash
-.build/release/TurboFieldfareServer \
-  --model scratch/gemma4-qat.gturbo \
+.build/release/TsugumiServer \
+  --model scratch/gemma4-qat.moepack \
   --port 8091 \
   --ctx-size 65536 \
   --expert-cache-slots 32 \
@@ -76,8 +76,8 @@ swift build -c release --product TurboFieldfareServer   # 初回とコード変�
 ### (c) 128K — 最長
 
 ```bash
-.build/release/TurboFieldfareServer \
-  --model scratch/gemma4-qat.gturbo \
+.build/release/TsugumiServer \
+  --model scratch/gemma4-qat.moepack \
   --port 8091 \
   --ctx-size 131072 \
   --expert-cache-slots 32 \
@@ -89,13 +89,13 @@ swift build -c release --product TurboFieldfareServer   # 初回とコード変�
 ときのものである。スロットを 3 構成とも 32 に揃えた今、両者の差は KV の大きさ
 だけになった — **この条件での再測定は未了**。
 
-**ポートは 8091。**`~/.pi/agent/models.json` の `local-turbofieldfare` が
+**ポートは 8091。**`~/.pi/agent/models.json` の `local-tsugumi` が
 `http://127.0.0.1:8091/v1` を向いている。
 
 バックグラウンドに置いてログを残す形:
 
 ```bash
-nohup .build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo \
+nohup .build/release/TsugumiServer --model scratch/gemma4-qat.moepack \
   --port 8091 --ctx-size 65536 --expert-cache-slots 32 \
   --verification trusted-install --draft-block-size 4 > /tmp/tf-server.log 2>&1 &
 ```
@@ -151,7 +151,7 @@ curl -s http://127.0.0.1:8091/v1/chat/completions \
 **止め方**: フォアグラウンドなら Control-C。バックグラウンドなら
 
 ```bash
-pkill -f TurboFieldfareServer
+pkill -f TsugumiServer
 ```
 
 ## 4. 出る速度 (**実測**、同じ要求を 3 回の中央値)
@@ -184,7 +184,7 @@ pkill -f TurboFieldfareServer
 
 ## 5. pi につなぐ
 
-`~/.pi/agent/models.json` は設定済み (`local-turbofieldfare` → 8091)。
+`~/.pi/agent/models.json` は設定済み (`local-tsugumi` → 8091)。
 サーバーを建ててから pi を起動するだけでよい。
 
 **2026-08-19 に制限が 2 つとも消えた**: 対話モード (tools 有効) で画像が使え、
@@ -193,7 +193,7 @@ Reasoning も使える ([docs/serving/SPEC.md](serving/SPEC.md) MSG-6)。
 ### (a) 思考を pi 側から切り替えたい場合の設定
 
 思考は既定で効く (`--reasoning-budget` の既定は -1 = 無制限)。pi の Shift-Tab で
-切り替えたいなら `~/.pi/agent/models.json` の `local-turbofieldfare` に 2 行足す:
+切り替えたいなら `~/.pi/agent/models.json` の `local-tsugumi` に 2 行足す:
 
 ```jsonc
 "compat": {
@@ -219,12 +219,12 @@ Reasoning も使える ([docs/serving/SPEC.md](serving/SPEC.md) MSG-6)。
 
 ```bash
 # 1. サーバー (§1(a) のまま。思考は既定で効く)
-.build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo \
+.build/release/TsugumiServer --model scratch/gemma4-qat.moepack \
   --port 8091 --ctx-size 16384 --expert-cache-slots 32 \
   --verification trusted-install --draft-block-size 4
 
 # 2. 別ターミナルで pi (対話モード = tools 有効のまま)
-pi --provider local-turbofieldfare --model gemma-4-26b-a4b-it
+pi --provider local-tsugumi --model gemma-4-26b-a4b-it
 ```
 
 セッション内で見るもの:
@@ -279,11 +279,11 @@ curl -s http://127.0.0.1:8091/metrics   # Prometheus 形式
 | `exit 2` + usage が出る | フラグの値が受け付けられない。**`-c/--ctx-size` と `--expert-cache-slots` は列挙で断らず、この機体が確保できる値へ下に丸める** (SPEC FLAG-2 / DEV-2) — 断られるのは 0 と負のときだけ。実効値は `/props` の `n_ctx` で読める。列挙で断るのは `--draft-block-size` (0 または 2...8) と `--prefill-chunk-tokens` |
 | `exceeds this device's recommended Metal working set` | §2。スロットを 1 段下げる |
 | `--draft-block-size 4 requires --prefill on` | MTP はチャンク prefill の経路を通る。`--prefill off` とは併用できない |
-| `needs a model installed with the drafter section` | そのモデルにドラフターが入っていない。`TurboFieldfareRepack --add-draft <model>` で 236 MB を追記する |
+| `needs a model installed with the drafter section` | そのモデルにドラフターが入っていない。`TsugumiRepack --add-draft <model>` で 236 MB を追記する |
 | 500 `prompt contains the special token <\|image\|>` | 貼り付けた本文にテンプレートの特殊トークンが入っている。プロンプト側で取り除く |
 | 503 `model_loading` が返る | まだロード中。`/v1/models` が 200 になるまで待つ (20〜40 秒) |
 | ポートが開かない / `connection refused` | プロセスが立っていないか、ロードに失敗して落ちた (§2 のガードなど)。stderr の `error:` 行を読む |
-| 起動はするのに極端に遅い | 別の TurboFieldfare プロセスが同時に走っている (§0) |
+| 起動はするのに極端に遅い | 別の Tsugumi プロセスが同時に走っている (§0) |
 
 ## 7. 画像デモから自動で建てる
 
@@ -312,8 +312,8 @@ python3 Scripts/demo/serve.py     # http://127.0.0.1:8799/
 違うのはフラグ 3 つと、できないこと 2 つである。
 
 ```bash
-.build/release/TurboFieldfareServer \
-  --model scratch/ornith-oq4e-g64.gturbo \
+.build/release/TsugumiServer \
+  --model scratch/ornith-oq4e-g64.moepack \
   --model-id ornith-1.5-35b-a3b \
   --port 8092 \
   --ctx-size 131072 \
@@ -327,7 +327,7 @@ python3 Scripts/demo/serve.py     # http://127.0.0.1:8799/
 | 違い | 中身 |
 | --- | --- |
 | `--draft-block-size` | **0 か 2 のみ。**この家族のヘッドは 1 パスに 1 本しかドラフトしないので、幅は 2 で固定である ([docs/qwen35moe/40](qwen35moe/40-MTP-GRAMMAR.md) §4)。**tools と併用できる** |
-| MTP ヘッドの在処 | `~/LLM/ornith-mtp-head/` の **480 MB sidecar** (`.gturbo` の中ではない)。`TF_QWEN_MTP_HEAD` で差し替える。**無ければ起動しない** |
+| MTP ヘッドの在処 | `~/LLM/ornith-mtp-head/` の **480 MB sidecar** (`.moepack` の中ではない)。`TF_QWEN_MTP_HEAD` で差し替える。**無ければ起動しない** |
 | 画像 | **400 `unsupported_image`。**Phase 9 で、`/props` の `modalities.vision` も false を返す |
 | prompt cache | **ある。ただし「厳密な延長」だけ** ([docs/qwen35moe/41](qwen35moe/41-PROMPT-CACHE.md))。再帰状態は巻き戻せないので**部分再利用が無い** — 新しいプロンプトが前回の続きでなければ `cached=0` になる (Gemma のような最長共通接頭辞ではない)。ミスの理由は stderr の `prompt cache miss diverged_at=… held=…` が名指す |
 | サンプラ | **公式推奨の 0.6 / 0.95 / 20 で必ず走る** ([docs/qwen35moe/42](qwen35moe/42-SAMPLING.md))。要求が別の値を送っても**上書きして実行**し、完了行に `approx="sampling/official-override: temperature=1.0→0.6 …"` と出る。公式値どおり送った要求には何も出ない。`repeat_penalty` と `seed` は使わない (これも上書きとして名前が出る) |
@@ -375,10 +375,10 @@ sudo sysctl iogpu.wired_limit_mb=14336     # 再起動で 8192 に戻る
   (起動は通るし、`peak` も出力も変わらない)
 
 pi 側は `~/.pi/agent/models.json` に provider を 1 つ足してある
-(`local-turbofieldfare-ornith` → 8092、`reasoning: true`、`input: ["text"]`):
+(`local-tsugumi-ornith` → 8092、`reasoning: true`、`input: ["text"]`):
 
 ```bash
-pi --provider local-turbofieldfare-ornith --model ornith-1.5-35b-a3b
+pi --provider local-tsugumi-ornith --model ornith-1.5-35b-a3b
 ```
 
 **MTP はサンプリング下でも切れない** (要件 S2)。受理規則は

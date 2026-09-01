@@ -6,7 +6,7 @@ Phase 3 の宿題として残した「`quant.attention` のスロット 1 個で
 だけなので Metal デバイスは要るが、計算はしない)。
 
 ```
-swift run -c release TurboFieldfareKernelCheck --qwen-open scratch/ornith-oq4e-g64.gturbo
+swift run -c release TsugumiKernelCheck --qwen-open scratch/ornith-oq4e-g64.moepack
 ```
 
 | | |
@@ -53,7 +53,7 @@ Phase 3 の結線と INT8 LM head ([17 §5](17-PHASE2-KERNELS.md)) はここに�
 repack 側も直した。スロットの幅は**最後に見たテンソル**ではなく**最大**を書く
 (`RemoteStreamingRepacker.writeManifest`)。今までは層の走査順に依存していて、
 たまたま 8 が最後だっただけだった。**一様な checkpoint では最大 = その幅**なので、
-Gemma の manifest も既存の `ornith-oq4e-g64.gturbo` も出力は変わらない
+Gemma の manifest も既存の `ornith-oq4e-g64.moepack` も出力は変わらない
 (再 repack は要らなかった)。
 
 ## 3. 実物の幅の分布 (実測(手元))
@@ -80,7 +80,7 @@ Gemma の manifest も既存の `ornith-oq4e-g64.gturbo` も出力は変わら�
 `validateRuntimeSchema` は Gemma の綴り (`pre_feedforward_layernorm_2` /
 `router.proj` / `layer_scalar`) を直に並べていたので、**混在ビット幅より前に
 テンソル名で落ちていた**。族で分岐させ、共通部分は `ResidentSchemaChecker` に
-出した (`Sources/TurboFieldfare/Runtime/Inference/RuntimeSchema.swift`)。
+出した (`Sources/Tsugumi/Runtime/Inference/RuntimeSchema.swift`)。
 routed expert の区画は綴りが同じなので 1 つのまま両族が使う。
 
 Qwen 側で Gemma と違うのは 3 つ:
@@ -121,7 +121,7 @@ Qwen 側で Gemma と違うのは 3 つ:
 | #15 (INT8 LM head) | **着手できる。**幅はテンソルごとに引けるようになった |
 | #14 (Phase 3 の結線) | 障害は取れた。残るカーネルは LM head だけ |
 | [13 §4-2](13-PHASE1-REPACK.md) | 「Phase 3 の設計で決める」→ **索引から導くに決めた** (§1) |
-| 形式 v1 | **変更なし。**`.gturbo` のバイトは 1 つも動いていない |
+| 形式 v1 | **変更なし。**`.moepack` のバイトは 1 つも動いていない |
 
 ## 7. 途中で分かったこと
 

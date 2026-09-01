@@ -129,7 +129,7 @@ def parse_footer(stderr: str) -> dict:
 
 def run_once(args, image: str, block_size: int) -> dict:
     cmd = [
-        str(ROOT / ".build/release/TurboFieldfareCLI"),
+        str(ROOT / ".build/release/TsugumiCLI"),
         "--model", args.model,
         "--messages-file", str(ROOT / "bench/mtp_goal_prompt.json"),
         "--image", str(IMAGES_DIR / image),
@@ -185,7 +185,7 @@ def spread_pct(values: list) -> float:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--model", default="scratch/gemma4-qat.gturbo")
+    parser.add_argument("--model", default="scratch/gemma4-qat.moepack")
     parser.add_argument("--images", nargs="*", default=None,
                         help="台帳を無視して任意の画像で走る (採点にはならない)")
     parser.add_argument("--block-size", type=int, default=V2_BLOCK_SIZE)
@@ -212,11 +212,11 @@ def main() -> int:
                    for n in images]
 
     # 冷温プロトコル (P6): 他の推論プロセスが居ないことを確認し、機械の状態を記録する。
-    others = subprocess.run(["pgrep", "-f", "TurboFieldfare"],
+    others = subprocess.run(["pgrep", "-f", "Tsugumi"],
                             capture_output=True, text=True).stdout.split()
     others = [p for p in others if p != str(os.getpid())]
     if others:
-        raise SystemExit(f"他の TurboFieldfare プロセスが居る (pid {others})。GPU は 1 個で使う。")
+        raise SystemExit(f"他の Tsugumi プロセスが居る (pid {others})。GPU は 1 個で使う。")
     wired = subprocess.run(["sysctl", "-n", "iogpu.wired_limit_mb"],
                            capture_output=True, text=True).stdout.strip()
 

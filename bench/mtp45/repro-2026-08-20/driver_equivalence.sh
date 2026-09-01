@@ -1,8 +1,8 @@
 #!/bin/zsh
 set -u
-CLI=./.build/release/TurboFieldfareCLI
-AFF=scratch/gemma4-qat.gturbo
-SYM=scratch/e2e-sym-check.gturbo
+CLI=./.build/release/TsugumiCLI
+AFF=scratch/gemma4-qat.moepack
+SYM=scratch/e2e-sym-check.moepack
 OUT=$1
 COOL=20
 typeset -a P

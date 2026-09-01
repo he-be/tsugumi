@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """N1 (37 §3) — 48 スロットの台帳。四則のみ。"""
 import re, csv, pathlib, statistics as st
-D = pathlib.Path("/Users/mh/LLM/turbo-fieldfare/bench/logs/39_n1")
+D = pathlib.Path("/Users/mh/LLM/tsugumi/bench/logs/39_n1")
 SLOTS = [16, 24, 32, 48]
 
 print("=" * 76)

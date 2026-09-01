@@ -33,8 +33,8 @@
 set -euo pipefail
 
 REPO="${REPO:-$PWD}"
-CLI="${CLI:-$REPO/.build/release/TurboFieldfareCLI}"
-MODEL="${MODEL:-$REPO/scratch/ornith-oq4e-g64.gturbo}"
+CLI="${CLI:-$REPO/.build/release/TsugumiCLI}"
+MODEL="${MODEL:-$REPO/scratch/ornith-oq4e-g64.moepack}"
 OUT="$REPO/bench"
 LOGS="$OUT/logs/qwen35"
 TSV="$OUT/qwen35-results.tsv"
@@ -47,9 +47,9 @@ COMMON="--temperature 0 --repetition-penalty 1 --thinking off --max-context 4096
 preflight() {
   [[ -x "$CLI" ]] || { echo "CLI がない: $CLI" >&2; exit 1; }
   [[ -d "$MODEL" ]] || { echo "モデルがない: $MODEL" >&2; exit 1; }
-  if pgrep -qf TurboFieldfareMac || pgrep -qf TurboFieldfareDecodeService \
-     || pgrep -qf TurboFieldfareServer; then
-    echo "他の TurboFieldfare プロセスが動いてる。落としてから。" >&2; exit 1
+  if pgrep -qf TsugumiMac || pgrep -qf TsugumiDecodeService \
+     || pgrep -qf TsugumiServer; then
+    echo "他の Tsugumi プロセスが動いてる。落としてから。" >&2; exit 1
   fi
   mkdir -p "$LOGS"
   [[ -f "$TSV" ]] || printf 'label\tn\tptok\tntok\treal\tdecode\trate\tprefill_s\tttft_s\thit_pct\tpeak_gb\tp_gpu\tp_io\tp_host\td_gpu\td_io\td_host\td_cb\tflags\n' > "$TSV"

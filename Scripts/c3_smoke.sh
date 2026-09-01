@@ -17,12 +17,12 @@
 # **人が先にやること** (このスクリプトは代行しない):
 #
 #   # 1. AGENTS.md "Test rules" のプロセス検査。何か出たら建てない。
-#   pgrep -fl 'TurboFieldfareServer|TurboFieldfareMac|TurboFieldfareDecodeService|TurboFieldfareCLI|TurboFieldfarePackageTests|swiftpm-testing-helper|mlx_lm|mlx-lm'
+#   pgrep -fl 'TsugumiServer|TsugumiMac|TsugumiDecodeService|TsugumiCLI|TsugumiPackageTests|swiftpm-testing-helper|mlx_lm|mlx-lm'
 #
 #   # 2. 建てる (docs/SERVER_RUNBOOK.md §1(a) の 16K 構成をそのまま)
-#   swift build -c release --product TurboFieldfareServer
-#   .build/release/TurboFieldfareServer \
-#     --model scratch/gemma4-qat-sym.gturbo \
+#   swift build -c release --product TsugumiServer
+#   .build/release/TsugumiServer \
+#     --model scratch/gemma4-qat-sym.moepack \
 #     --port 8091 \
 #     --ctx-size 16384 \
 #     --expert-cache-slots 32 \
@@ -65,7 +65,7 @@ REWIND_MARGIN=256
 FILLER_LINES="${TF_C3_FILLER_LINES:-260}"
 
 # AGENTS.md "Test rules" / SERVER_RUNBOOK.md §0 と同じ並び。
-PGREP_PATTERN='TurboFieldfareServer|TurboFieldfareMac|TurboFieldfareDecodeService|TurboFieldfareCLI|TurboFieldfarePackageTests|swiftpm-testing-helper|mlx_lm|mlx-lm'
+PGREP_PATTERN='TsugumiServer|TsugumiMac|TsugumiDecodeService|TsugumiCLI|TsugumiPackageTests|swiftpm-testing-helper|mlx_lm|mlx-lm'
 
 # 検査の並び。DEV-13 はキャッシュ状態を捨てさせるので必ず最後。
 ALL_CHECKS="GEN-1 GEN-3-object GEN-3-schema GEN-4-required GEN-4-named GEN-4-reject GEN-12 GEN-8 GEN-14 RSN-4-max-tokens RSN-4-budget CACHE-1 CACHE-1-thinking MSG-6 DEV-13"
@@ -210,8 +210,8 @@ preflight_processes() {
     all="$RUN_DIR/pgrep.txt"
     pgrep -fl "$PGREP_PATTERN" 2>/dev/null \
         | grep -v -e 'pgrep' -e "$SCRIPT_NAME" > "$all"
-    others="$(grep -v 'TurboFieldfareServer' "$all")"
-    servers="$(grep -c 'TurboFieldfareServer' "$all")"
+    others="$(grep -v 'TsugumiServer' "$all")"
+    servers="$(grep -c 'TsugumiServer' "$all")"
     if [ -n "$others" ]; then
         printf 'error: モデルを使う別のプロセスがいる (AGENTS.md "Test rules")。\n' >&2
         printf '%s\n' "$others" >&2
@@ -219,12 +219,12 @@ preflight_processes() {
         exit 2
     fi
     if [ "$servers" -gt 1 ]; then
-        printf 'error: TurboFieldfareServer が %s 本立っている。1 本にしてから走らせる。\n' "$servers" >&2
+        printf 'error: TsugumiServer が %s 本立っている。1 本にしてから走らせる。\n' "$servers" >&2
         cat "$all" >&2
         exit 2
     fi
     if [ "$servers" -eq 0 ]; then
-        note "注意: TurboFieldfareServer のプロセスが見当たらない。$BASE_URL が答えるなら別物の可能性がある"
+        note "注意: TsugumiServer のプロセスが見当たらない。$BASE_URL が答えるなら別物の可能性がある"
     fi
 }
 
@@ -240,8 +240,8 @@ error: $BASE_URL が答えない。$(head -1 "$RUN_DIR/health.err" 2>/dev/null)
 このスクリプトはサーバーを起動しない。人が別のターミナルで建てる
 (docs/SERVER_RUNBOOK.md §1(a)、先に AGENTS.md のプロセス検査):
 
-  .build/release/TurboFieldfareServer \\
-    --model scratch/gemma4-qat-sym.gturbo \\
+  .build/release/TsugumiServer \\
+    --model scratch/gemma4-qat-sym.moepack \\
     --port 8091 \\
     --ctx-size 16384 \\
     --expert-cache-slots 32 \\
@@ -809,7 +809,7 @@ check_gen14() {
     post "$RUN_DIR/gen14a.req.json" gen14a || { finish; return; }
     expect_status 200 || { finish; return; }
     if ! jq -e '.timings.draft_n? // empty | . > 0' "$LAST_BODY" >/dev/null 2>&1; then
-        skip "tools 無しの要求にも timings.draft_n が無い。原因は 3 つのどれか — (1) **サーバーのバイナリが P6 より前** (ログに mtp= は出るのに draft_n が無いならこれ。swift build -c release --product TurboFieldfareServer で建て直す)、(2) --draft-block-size 0 で建っている、(3) ドラフターの入っていないバンドル。GEN-14 はここでは判定できない"
+        skip "tools 無しの要求にも timings.draft_n が無い。原因は 3 つのどれか — (1) **サーバーのバイナリが P6 より前** (ログに mtp= は出るのに draft_n が無いならこれ。swift build -c release --product TsugumiServer で建て直す)、(2) --draft-block-size 0 で建っている、(3) ドラフターの入っていないバンドル。GEN-14 はここでは判定できない"
         finish
         return
     fi

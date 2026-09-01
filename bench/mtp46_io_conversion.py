@@ -15,7 +15,7 @@ REQUESTS, HITS, STEPS = 61200, 51394, 255          # 45 §4 (両スキームで�
 # エキスパート blob の内訳 (packed_experts/layout.json、1 エキスパート)
 CODES = 3 * 991_232        # gate/up/down の 4bit コード
 SCALES = 3 * 123_904       # bf16 scale
-ALIGN = 16_384             # GTurboFormatV1.alignmentBytes
+ALIGN = 16_384             # MoEPackFormatV1.alignmentBytes
 
 H_CODE = 3.4509            # bench/mtp46/code_entropy_full.log、per-blob 表
 

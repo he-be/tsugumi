@@ -190,7 +190,7 @@
 | | ファイル |
 | --- | --- |
 | P1 | `bench/` に分析スクリプト 1 本 (host profile のログを食う)。`SpeculativeCompletion.swift` にラウンド外の 1 行計器 |
-| P2 | `Sources/TurboFieldfareKernelCheck/MoERowsBench.swift` (D/F 可変化)。counters は Instruments か、恒久化するなら `MetalContext` に sample buffer |
+| P2 | `Sources/TsugumiKernelCheck/MoERowsBench.swift` (D/F 可変化)。counters は Instruments か、恒久化するなら `MetalContext` に sample buffer |
 | P3 | `DraftForward` の argmax カーネルに margin 出力 1 語、`SpeculativeDrafter.propose` に打ち切り、probe 側にダンプ。受理規則 (`SpeculativeCompletion.swift:260`) は触らない |
 | P5 | `bench/io_depth_probe.c` に mmap/MTLIO モード。本番は触らない |
 | P6 | `bench/` の資産と `Scripts/` の冷温化スクリプト |

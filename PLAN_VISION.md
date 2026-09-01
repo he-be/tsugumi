@@ -12,9 +12,9 @@ M3 Pro 18GB / macOS 15.7.5 / `macos15-support` ブランチ
 
 | 対象 | 方針 |
 | --- | --- |
-| `TurboFieldfareCLI` | **対応する** (`--image`) |
-| `TurboFieldfareServer` (OpenAI 互換) | **対応する** (`image_url` content part) |
-| `TurboFieldfareApp` (Mac GUI) | **放置。**本 PLAN のスコープ外。ビルドが壊れないことだけ守る |
+| `TsugumiCLI` | **対応する** (`--image`) |
+| `TsugumiServer` (OpenAI 互換) | **対応する** (`image_url` content part) |
+| `TsugumiApp` (Mac GUI) | **放置。**本 PLAN のスコープ外。ビルドが壊れないことだけ守る |
 | 音声 / 動画 | **やらない** (§9)。ただし「黙って壊れる」ことは許さない = 明示的に拒否する |
 
 ---
@@ -181,10 +181,10 @@ Swift から読む素朴なバイナリ (`TFVFIX01` + dtype u32 + ndim u32 + dim
 
 | 追加したもの | 中身 |
 | --- | --- |
-| `Sources/TurboFieldfare/Vision/VisionGeometry.swift` | `get_aspect_ratio_preserving_size` + patchify の移植。退化アスペクト比の救済分岐も含む |
+| `Sources/Tsugumi/Vision/VisionGeometry.swift` | `get_aspect_ratio_preserving_size` + patchify の移植。退化アスペクト比の救済分岐も含む |
 | `.../VisionImagePreprocessor.swift` | ImageIO で復号 → CGContext で目標サイズに縮小 → `/255` しつつ (py, px, c) 順に並べ替え → `[P, 768]` の fp16 |
 | `.../VisionPrompt.swift` | マーカー ID の解決、`<\|image\|>` → `boi + image×n + eoi` の展開、スパン算出、**メディアマーカーの拒否** |
-| `Sources/TurboFieldfareValidation/Support/Fixtures/VisionFixtures.swift` | fixture リーダ + **NaN-safe な `relativeError`** (§6-3)。V3/V4 の KernelCheck からも使う |
+| `Sources/TsugumiValidation/Support/Fixtures/VisionFixtures.swift` | fixture リーダ + **NaN-safe な `relativeError`** (§6-3)。V3/V4 の KernelCheck からも使う |
 | テスト 17 本 (4 スイート) | 下記 |
 
 `Scripts/test.sh`: **722 テスト / 131 スイート、12 issue**。
@@ -259,8 +259,8 @@ V5 のマスクもこの範囲で入れる。
 
 | 追加したもの | 中身 |
 | --- | --- |
-| `GTurboFormatV1` | `knownFlags += "visionTower"`、`versionMinorVision = 1`、`visionWeightsPath` |
-| `GTurboManifestVisionV1` | manifest の optional `vision` セクション (§0-D-1) + 整合検査 |
+| `MoEPackFormatV1` | `knownFlags += "visionTower"`、`versionMinorVision = 1`、`visionWeightsPath` |
+| `MoEPackManifestVisionV1` | manifest の optional `vision` セクション (§0-D-1) + 整合検査 |
 | `VisionConfig` (`ModelTypes.swift`) | ランタイム側の期待値。`ManifestReader.validateVision` が field 単位で照合 |
 | `VisionModelSource` / `VisionSourcePin` | Google リポジトリのピン (repo / revision / index SHA / 356 本 / 1,145,588,832 B / パリティ 3 本 / tower config) |
 | `VisionSourceLoader` | index・config.json を取得して**ピンと照合**し、必要な shard のヘッダだけを Range で取る |
@@ -338,7 +338,7 @@ vision 付きで resume しようとすると「計画が変わった」とし�
 
 ### 0-D-5. 退行なしの担保
 
-- **manifest のバイト一致**: `Tests/TurboFieldfareFormatCompatibility` の
+- **manifest のバイト一致**: `Tests/MoEPackFormatCompatibility` の
   凍結フィクスチャ (manifest / layout / resident index の SHA-256) が**そのまま通る**。
   `vision` は optional なので、text-only の JSON には**キー自体が現れない**
   (これも単体テストで固定した)。
@@ -353,7 +353,7 @@ vision 付きで resume しようとすると「計画が変わった」とし�
 (現行ビルドは `visionTower` を既知フラグとして知っているため)。
 機構そのもの (未知フラグ → `ModelError.unknownFlag` で `Model.load` が失敗) は
 既存テストと今回足した誤記フラグのテストで押さえてある。
-V6 の受入で、**vision 付き `.gturbo` を旧タグのビルドに食わせて実際に落ちること**を
+V6 の受入で、**vision 付き `.moepack` を旧タグのビルドに食わせて実際に落ちること**を
 一度だけ実機で確認する (§7 に追加)。
 
 ---
@@ -372,7 +372,7 @@ V2 の `--include-vision` は**インストール**のフラグで、インス�
 | **`--add-vision`** (今回) | **16.2 GB** | **16.2 GB** |
 
 ```
-swift run -c release TurboFieldfareRepack --add-vision --input-gturbo <model.gturbo>
+swift run -c release TsugumiRepack --add-vision --input-moepack <model.moepack>
 ```
 
 V3 の前に片付けた。そうしないと V4〜V6 の実機確認のたびに 15 GB のコピーが発生する。
@@ -380,7 +380,7 @@ V3 の前に片付けた。そうしないと V4〜V6 の実機確認のたび�
 | 追加したもの | 中身 |
 | --- | --- |
 | `VisionAppendInstaller` (`Core/Workflow`) | `AddVisionOptions` / `AddVisionResult`。ダウンロードは tower の 1.15 GB のみ |
-| `--add-vision --input-gturbo` | 他のモードとは排他。`--include-vision` との併用も拒否する |
+| `--add-vision --input-moepack` | 他のモードとは排他。`--include-vision` との併用も拒否する |
 | テスト 7 本 | 追記 5 (`VisionAppendInstallTests`) + CLI 2 |
 
 `Scripts/test.sh`: **752 テスト / 133 スイート、12 issue**。
@@ -416,7 +416,7 @@ issue の内訳は `PREFILL_THROUGHPUT.md` §7-7 の陳腐化 5 件と**完全�
 
 ### 0-E-4. 中断してもモデルは壊れない
 
-tower は**モデルディレクトリの外** (`<model>.gturbo.vision.partial/`) で組み立て、
+tower は**モデルディレクトリの外** (`<model>.moepack.vision.partial/`) で組み立て、
 完成してから `rename` で中に移す。順序は **重み → manifest**:
 その間の窓ではモデルは「元のテキスト専用モデル + 誰も読まないファイル」でしかない。
 逆順だと存在しない tower を宣言する瞬間ができる。
@@ -433,12 +433,12 @@ tower は**モデルディレクトリの外** (`<model>.gturbo.vision.partial/`
 
 ### 0-E-5. 実機の既存インストールに走らせた (**実測**、2026-08-17)
 
-§7 ゲート 10 を先に取った。対象は `scratch/gemma4-qat.gturbo` (QAT / 15 GB)。
+§7 ゲート 10 を先に取った。対象は `scratch/gemma4-qat.moepack` (QAT / 15 GB)。
 
 ```
-$ ./.build/release/TurboFieldfareRepack --add-vision \
-      --input-gturbo scratch/gemma4-qat.gturbo
-Added the vision tower to …/scratch/gemma4-qat.gturbo
+$ ./.build/release/TsugumiRepack --add-vision \
+      --input-moepack scratch/gemma4-qat.moepack
+Added the vision tower to …/scratch/gemma4-qat.moepack
 Tower: 356 tensors, 1145588832 bytes
 Source: google/gemma-4-26B-A4B-it-qat-q4_0-unquantized @ f1e06dc520982d9b9edd76859fdb7ab209449949
 Downloaded 1145588832 bytes
@@ -466,14 +466,14 @@ V4 以降の実機確認はこのインストールに対して行う。**15 GB 
 
 | 追加したもの | 中身 |
 | --- | --- |
-| `Sources/TurboFieldfare/Metal/Vision/vision.metal` | カーネル 8 本 (§0-F-1)。`MetalContext.shaderModules` に `vision` を追加 |
-| `Sources/TurboFieldfare/Kernels/Vision/VisionKernels.swift` | 6 個のラッパ。形状の前提を `precondition` で落とす |
+| `Sources/Tsugumi/Metal/Vision/vision.metal` | カーネル 8 本 (§0-F-1)。`MetalContext.shaderModules` に `vision` を追加 |
+| `Sources/Tsugumi/Kernels/Vision/VisionKernels.swift` | 6 個のラッパ。形状の前提を `precondition` で落とす |
 | `.../Validation/Support/Reference/Vision/VisionTowerRef.swift` | float32 CPU 参照 (上流ソースから書き起こし) + `BF16Tensor` |
-| `TurboFieldfareKernelCheck` | vision ケース 15 本 + `--vision-only` / `--bench` |
+| `TsugumiKernelCheck` | vision ケース 15 本 + `--vision-only` / `--bench` |
 
 ```
-$ ./.build/release/TurboFieldfareKernelCheck          # 41 cases, exit 0
-$ ./.build/release/TurboFieldfareKernelCheck --vision-only --bench
+$ ./.build/release/TsugumiKernelCheck          # 41 cases, exit 0
+$ ./.build/release/TsugumiKernelCheck --vision-only --bench
 ```
 
 `Scripts/test.sh`: **752 テスト / 133 スイート、12 issue** — V2-a から**数も内訳も変化なし**
@@ -607,20 +607,20 @@ scatter も入っていない (V5)。decode 経路・MoE・KV レイアウトは
 ## 0-G. V4 完了 (2026-08-17、**実測**)
 
 §5 の V4 (tower 統合 — 画像 → soft token) の出口条件を満たした。
-**実機の `scratch/gemma4-qat.gturbo` に入っている本物の 1.15 GB の tower で、
+**実機の `scratch/gemma4-qat.moepack` に入っている本物の 1.15 GB の tower で、
 参照 fixture 6 ケース全部を通した。**
 
 | 追加したもの | 中身 |
 | --- | --- |
-| `Sources/TurboFieldfare/Vision/VisionWeights.swift` | `vision/vision_weights.bin` の遅延ロード。SHA-256 → resident index → **config から導いた 356 本の期待表と照合** → mmap。層ごとのアクセサ |
-| `Sources/TurboFieldfare/Vision/VisionTower.swift` | 塔本体。patch embed → 27 層 → pool/標準化 → projector。scratch **82.7 MB** を 1 回だけ確保 |
+| `Sources/Tsugumi/Vision/VisionWeights.swift` | `vision/vision_weights.bin` の遅延ロード。SHA-256 → resident index → **config から導いた 356 本の期待表と照合** → mmap。層ごとのアクセサ |
+| `Sources/Tsugumi/Vision/VisionTower.swift` | 塔本体。patch embed → 27 層 → pool/標準化 → projector。scratch **82.7 MB** を 1 回だけ確保 |
 | `vision_norm_residual_add_block` (**9 本目のカーネル**) | post-norm と残差加算の融合 (§0-G-1) |
-| `TurboFieldfareKernelCheck --vision-tower <model.gturbo>` | fixture との段階別突き合わせ + 検出力 + end-to-end 計測 |
+| `TsugumiKernelCheck --vision-tower <model.moepack>` | fixture との段階別突き合わせ + 検出力 + end-to-end 計測 |
 | `Scripts/vision/fp16_error_floor.py` | **上流実装をうちの精度で回して FP16 の床を測る** (§0-G-2) |
 | テスト 11 本 (`VisionWeightsSchemaTests`) | スキーマ導出と 8 通りの拒否 |
 
 ```
-$ ./.build/release/TurboFieldfareKernelCheck --vision-tower scratch/gemma4-qat.gturbo --bench
+$ ./.build/release/TsugumiKernelCheck --vision-tower scratch/gemma4-qat.moepack --bench
 PASS  121 cases (group sizes [64, 32] + vision)          # 41 → 121
 ```
 
@@ -757,7 +757,7 @@ decode 経路・MoE・KV レイアウトは 1 行も変えていない。
 ## 0-H. V5 完了 (2026-08-17、**実測**)
 
 §5 の V5 (prefill 統合 — スパン・双方向マスク・scatter) の出口条件を満たした。
-**実機 `scratch/gemma4-qat.gturbo` で実画像 8 枚の説明が成立し、テキストのみの
+**実機 `scratch/gemma4-qat.moepack` で実画像 8 枚の説明が成立し、テキストのみの
 回帰は同一機の A/B で ±1.1% (ゲートは ±4%)。**
 
 | 追加したもの | 中身 |
@@ -788,7 +788,7 @@ issue は `PREFILL_THROUGHPUT.md` §7-7 の陳腐化分のうち **4 スイー�
 temp 0.2) を持っている。カーネルもサンプリング RNG もリサンプラも違うので
 一致はしない。見るのは**同じものが見えているか**である。
 
-`python3 Scripts/vision/caption_cli.py --model scratch/gemma4-qat.gturbo --label local-t02`
+`python3 Scripts/vision/caption_cli.py --model scratch/gemma4-qat.moepack --label local-t02`
 で 8 枚を回し、`sample_imgs/captions_compare_local.md` に並べた。
 
 | 画像 | soft token | 塔 | TTFT | 判定 |
@@ -972,7 +972,7 @@ soft token 数は画像のアスペクト比で決まる (§2-1) ので、解像
 
 ### 0-I-3. 本文 1 MiB の上限は画像と両立しない
 
-`TurboFieldfareHTTPServer.maximumBodyBytes` は 1 MiB 固定で、
+`TsugumiHTTPServer.maximumBodyBytes` は 1 MiB 固定で、
 **base64 の写真はこれを普通に超える。**上限をポリシーから導くようにした
 (`textBodyBytes + maxImages × ceil(maxImageBytes × 4/3)`)。
 既定 (4 枚 × 8 MiB) では約 45 MB になる。loopback 専用・単一利用者の
@@ -1007,7 +1007,7 @@ tower の SHA-256 0.49 s を含み、どちらもプロセスにつき 1 回で�
 
 ### 0-I-6. 触っていないもの / 残した限界
 
-- Mac GUI (`TurboFieldfareApp`) は対象外のまま。ビルドは通る。
+- Mac GUI (`TsugumiApp`) は対象外のまま。ビルドは通る。
 - decode 経路・MoE・KV レイアウトは V6 でも 1 行も変えていない
   (差分はサーバ側 + テキスト経路が呼ばない静的関数 1 本、`RESULTS_VISION.md` §3)。
 - 画像つき会話の 2 ターン目以降は毎回フル prefill (§0-H-7 のまま)。
@@ -1044,7 +1044,7 @@ shard 1 の safetensors ヘッダを Range 取得して直接数えた。
 projector (6,488,064 B) と std (4,608 B)。合計は上の 1,145,588,832 B と厳密に一致する。
 
 > `position_embedding_table` が **[2, 10240, 1152] の 3 階テンソル**で 47 MB ある点に注意。
-> `GTurboResidentIndexEntryV1.shape` は `[UInt32; 4]` なのでそのまま格納できる (**実測**)。
+> `MoEPackResidentIndexEntryV1.shape` は `[UInt32; 4]` なのでそのまま格納できる (**実測**)。
 
 ### 1-2. ローカル QAT snapshot と Google QAT リポジトリは同系統 (**実測**、新規事実)
 
@@ -1241,7 +1241,7 @@ V4 の参照比較で「どちらが上流と一致するか」を**測って**�
 | `ExpertCacheBudget` の合計 | 7.15 GB | **8.30 GB** (推奨 12.88 GB 内) |
 
 実 peak は QAT 実測 6.0 GB (`RESULTS_QAT.md`) に対し **7.2 GB 前後**と見込む (**導出**)。
-ディスク: `.gturbo` が +1.15 GB (15.5 GB → 16.7 GB)。ダウンロードは range 取得 1.15 GB。
+ディスク: `.moepack` が +1.15 GB (15.5 GB → 16.7 GB)。ダウンロードは range 取得 1.15 GB。
 **インストールは 1 個のまま太る** — `--add-vision` があるので、既存インストールに
 足す場合もコピーは発生せず、実行中のピークも +1.15 GB で済む (§0-E)。
 
@@ -1293,7 +1293,7 @@ S=280 の最大形状で確保し、それ以下の画像では使い残す (再
 
 ## 4. 設計
 
-### 4-1. `.gturbo` フォーマット拡張 — v1 に「追加」し、旧ランタイムには**明示的に拒否させる**
+### 4-1. `.moepack` フォーマット拡張 — v1 に「追加」し、旧ランタイムには**明示的に拒否させる**
 
 調査資料の指摘どおり、`manifest.arch` は固定フィールドで vision の置き場がない。
 方針:
@@ -1301,7 +1301,7 @@ S=280 の最大形状で確保し、それ以下の画像では使い残す (再
 | 決定 | 内容 | 根拠 |
 | --- | --- | --- |
 | vision の重みは **別ファイル** `vision/vision_weights.bin` | `model_weights.bin` には入れない | `Model.load` は `model_weights.bin` 全体を**毎回 eager に SHA-256 する** (`Model.swift:455`、**実測**)。同居させるとテキストのみの起動が +1.15 GB ぶん遅くなる。別ファイルなら**初回の画像入力時に遅延検証**でき、テキスト専用ワークロードのコストがゼロになる |
-| その中身は **既存の ResidentIndex v1 形式をそのまま再利用** | ヘッダ + エントリ表 + 文字列表 + ペイロード | `GTurboResidentIndexCodec` は名前付き汎用テンソル目録で、bf16 dtype と 4 階 shape を持つ (**実測**)。新しいコーデックを書く理由がない |
+| その中身は **既存の ResidentIndex v1 形式をそのまま再利用** | ヘッダ + エントリ表 + 文字列表 + ペイロード | `MoEPackResidentIndexCodec` は名前付き汎用テンソル目録で、bf16 dtype と 4 階 shape を持つ (**実測**)。新しいコーデックを書く理由がない |
 | manifest に **`vision` セクション** (optional) を追加 | §4-1-a | `arch` に混ぜると `validateArch` の field 単位比較が壊れる |
 | **`flags.visionTower = true`** を `knownFlags` に追加 | v1.1 | 旧バイナリは `ModelError.unknownFlag` で**起動時に落ちる** (**実測**、`ManifestReader.decode:103`)。「黙って画像を無視して部分的に動く」を構造的に禁止できる。調査資料 §3-4 が求めた性質そのもの |
 | `versionMinor` は 0 → **1** | vision 付きの manifest のみ | 拒否は flag が担うので minor は表示的意味 (`decode` は `minor >= 0` を通す、**実測**) |
@@ -1334,8 +1334,8 @@ S=280 の最大形状で確保し、それ以下の画像では使い残す (再
 無駄なので、**既存の HTTP Range 経路をそのまま使い、vision テンソルのバイト範囲だけ取る**。
 
 ```
-swift run -c release TurboFieldfareRepack \
-  --output scratch/gemma4-qat-vision.gturbo \
+swift run -c release TsugumiRepack \
+  --output scratch/gemma4-qat-vision.moepack \
   --source-snapshot scratch/qat-aligned-snapshot \
   --include-vision                       # ← 追加。既定は無効 (現行の出力と 1 バイトも変わらない)
 ```
@@ -1383,7 +1383,7 @@ CGImageSource で読み込み → sRGB / 8bit RGB に統一 (do_convert_rgb 相�
 
 ### 4-4. ランタイム: tower の推論
 
-新規 `Sources/TurboFieldfare/Metal/Vision/vision.metal` + `Kernels/Vision/`。
+新規 `Sources/Tsugumi/Metal/Vision/vision.metal` + `Kernels/Vision/`。
 既存プリミティブと同型のものは**同じ構造で書き、同じ検証系に載せる**。
 
 | # | カーネル | 内容 | 既存との関係 |
@@ -1535,9 +1535,9 @@ tower は prefill の前段でしか動かないので、**§5-0 のテキスト
 | --- | --- | --- |
 | **V0** | 参照系の固定 | 下記 §5-V0 — **完了 (2026-08-17、§0-B)** |
 | **V1** | 前処理 + トークン列 (GPU なし) | 参照 fixture と patch 一致 (許容 §6-1)。画像なしの `<\|image\|>` が**エラーになる** — **完了 (2026-08-17、§0-C)** |
-| **V2** | フォーマット拡張 + repacker | `--include-vision` で `.gturbo` が出来、**旧バイナリが flag で拒否する**。`--include-vision` なしの出力が現行とバイト一致 — **完了 (2026-08-17、§0-D)**。ただし旧バイナリでの実拒否確認は V6 に持ち越し (§0-D-6) |
+| **V2** | フォーマット拡張 + repacker | `--include-vision` で `.moepack` が出来、**旧バイナリが flag で拒否する**。`--include-vision` なしの出力が現行とバイト一致 — **完了 (2026-08-17、§0-D)**。ただし旧バイナリでの実拒否確認は V6 に持ち越し (§0-D-6) |
 | **V2-a** | `--add-vision` (既存インストールへの追記) | 追記後の `manifest.json` と `vision/vision_weights.bin` が `--include-vision` の出力と**バイト一致**、テキスト側の inode が不変 — **完了 (2026-08-17、§0-E)** |
-| **V3** | tower カーネル + 単体検証 + **性能実測** | `TurboFieldfareKernelCheck` に vision ケース追加で全 PASS + **検出力の裏取り**。bf16 QMM の実測 GFLOP/s を記録 — **完了 (2026-08-17、§0-F)**。15 ケース PASS、bf16 QMM **3.15 TFLOP/s**、塔 **1.37 s/画像** |
+| **V3** | tower カーネル + 単体検証 + **性能実測** | `TsugumiKernelCheck` に vision ケース追加で全 PASS + **検出力の裏取り**。bf16 QMM の実測 GFLOP/s を記録 — **完了 (2026-08-17、§0-F)**。15 ケース PASS、bf16 QMM **3.15 TFLOP/s**、塔 **1.37 s/画像** |
 | **V4** | tower 統合 (画像 → soft token) | 参照実装の `pooler_output` と相対誤差 ≤ §6-1 層 B の閾値 — **完了 (2026-08-17、§0-G)**。6 fixture 全通過、閾値は**実測して 2 本立てに確定** (max 8e-2 / rms 2e-3)、塔 **1.392 s/画像** (P=2520) |
 | **V5** | prefill 統合 (スパン・マスク・scatter) | 実画像で説明が成立。**テキストのみの回帰 ±1%** (§5-0 相当) — **完了 (2026-08-17、§0-H)**。8 枚が別サーバの同一チェックポイントと同じものを説明し、同一機 A/B で decode ±1.1% / pp 231.8 対 230.1。CLI の入口は前倒し (§0-H-5) |
 | **V6** | Server の入口 + 受入 | §7 のゲート、`RESULTS_VISION.md` — **完了 (2026-08-17、§0-I)**。10 ゲート全合格、`image_url` は `data:` のみ、TTFT 4.16 s (S=280)、peak 7.01 GB |
@@ -1649,8 +1649,8 @@ tower は off-path なので、動いたら実装ミス)。
 | 5 | メモリ | footer の peak < 12 GB、`ExpertCacheBudget` が 48 スロットを通す |
 | 6 | Server | `data:` URI で 200、`http(s)` URI で 400、画像ありでプロンプトキャッシュが**publish されない**こと |
 | 7 | 起動 | `--verification trusted-install` / `full-sha256` の両方で exit 0 |
-| 8 | 退行なし | `--include-vision` なしで作った `.gturbo` が現行とバイト一致 (V2 の出口条件の再確認) |
-| 9 | 旧ランタイム拒否 | vision 付き `.gturbo` を **vision 以前のタグでビルドしたバイナリ**に渡し、`unknown v1 flag` で exit != 0 になることを実機で 1 回確認する (§0-D-6) |
+| 8 | 退行なし | `--include-vision` なしで作った `.moepack` が現行とバイト一致 (V2 の出口条件の再確認) |
+| 9 | 旧ランタイム拒否 | vision 付き `.moepack` を **vision 以前のタグでビルドしたバイナリ**に渡し、`unknown v1 flag` で exit != 0 になることを実機で 1 回確認する (§0-D-6) |
 | 10 | 追記 | 実機の既存インストールに `--add-vision` を 1 回走らせ、**ダウンロードが 1.15 GB 前後**、`model_weights.bin` の inode が不変、再検証が exit 0 であることを記録する (§0-E) |
 
 記録は `RESULTS_VISION.md` に PLAN §6 準拠 (commit / ハード / コマンド / exit code /
@@ -1687,7 +1687,7 @@ footer 全文 / プロトコルからの逸脱すべて)。
 
 - **音声・動画。**トークン (`<|audio|>` 258881 / `<|video|>` 258884) と
   `audio_config` は存在するが、tower も前処理も別物。**明示的に拒否する**だけ入れる。
-- **Mac GUI (`TurboFieldfareApp`)。**ユーザー指示。ビルドが通り、
+- **Mac GUI (`TsugumiApp`)。**ユーザー指示。ビルドが通り、
   テキストで従来どおり動くことだけ守る。
 - **tower の量子化。**bf16 のまま常駐させる。int4 化は QAT 由来でない再量子化に
   なるので品質リスクが読めない (調査資料 §3-2 と同じ判断)。

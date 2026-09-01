@@ -3,7 +3,7 @@
 実施: 2026-08-17〜18 / M3 Pro 18GB / macOS 15.7.5 (24G624) / `macos15-support` ブランチ
 commit `a533171` + M6 の作業ツリー (Server の `--draft-block-size`)
 Apple Swift 6.3.3 / target arm64-apple-macosx15.0
-モデル: `scratch/gemma4-qat.gturbo` (QAT 15 GB + vision tower 1.15 GB + ドラフター 236 MB、
+モデル: `scratch/gemma4-qat.moepack` (QAT 15 GB + vision tower 1.15 GB + ドラフター 236 MB、
 `--add-draft` で追記)
 **追記 (2026-08-21):** 同じドラフターを `sym` バンドルにも載せた。ファイルは sha256 まで同一で、
 受理列 (`accepted=26,23,21,11`) も `--verify-block` の 12 ケースも一致する
@@ -127,7 +127,7 @@ on と off は別プロセス (サーバーの設定はプロセス固定)、1 �
 ## 5. ゲート 5・6・7 — ロード・旧ランタイム・追記 (**実測**、[11-M1](docs/mtp/11-M1-RESULTS.md))
 
 ```
-$ .build/release/TurboFieldfareRepack --add-draft scratch/gemma4-qat.gturbo
+$ .build/release/TsugumiRepack --add-draft scratch/gemma4-qat.moepack
 Drafter: 48 tensors, 236114440 bytes
 Downloaded 236114440 bytes                                            (exit 0)
 ```
@@ -137,13 +137,13 @@ Downloaded 236114440 bytes                                            (exit 0)
 | 取得バイト | **236,114,440 B ちょうど** (payload と同じ。ギャップの余分な取得はゼロ) |
 | テキスト側 | inode / mtime / サイズとも不変。再検証 exit 0 |
 | ロード | `load=0.763 s` (追記前 0.708 s と同じ桁)。`draft/` は load 経路に現れない |
-| 旧ランタイム | pre-M1 ビルドが `manifest.flags contains unknown key "mtpDraft"` で **exit 1**、対照の `gemma4.gturbo` は exit 0 |
+| 旧ランタイム | pre-M1 ビルドが `manifest.flags contains unknown key "mtpDraft"` で **exit 1**、対照の `gemma4.moepack` は exit 0 |
 | 重みの一致 | HF から Range 取得した 3 テンソルが**バイト一致** |
 
 ## 6. ゲート 8 — 巻き戻しと verify の検査 (**実測**)
 
 ```
-$ .build/release/TurboFieldfareKernelCheck --verify-block scratch/gemma4-qat.gturbo \
+$ .build/release/TsugumiKernelCheck --verify-block scratch/gemma4-qat.moepack \
     --verify-block-size 4 --verify-rounds 8
 12 中 9 PASS / 3 FAIL
 ```
@@ -200,13 +200,13 @@ QAT・M2 以前の既定値をピン留めしたままの陳腐化した監査**
 ## 8. 運用点
 
 ```bash
-.build/release/TurboFieldfareServer --model scratch/gemma4-qat.gturbo \
+.build/release/TsugumiServer --model scratch/gemma4-qat.moepack \
   --port 8091 --expert-cache-slots 80 --verification trusted-install \
   --draft-block-size 4
 ```
 
 ```bash
-.build/release/TurboFieldfareCLI --model scratch/gemma4-qat.gturbo \
+.build/release/TsugumiCLI --model scratch/gemma4-qat.moepack \
   --messages-file bench/mtp_goal_prompt.json --image sample_imgs/IMG_2112.JPG \
   --thinking on --temperature 0 --expert-cache-slots 80 --draft-block-size 4
 ```

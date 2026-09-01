@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Fetch the Gemma 4 MTP drafter weights for the Python-side reference.
 
-The Swift installer (`TurboFieldfareRepack --add-draft`) has its own pinned
+The Swift installer (`TsugumiRepack --add-draft`) has its own pinned
 fetch path; this script exists for `dump_draft_fixtures.py`, which needs the
 same 236 MB checkpoint locally to run the float32 reference
 (`docs/mtp/04-PHASES.md` §5).

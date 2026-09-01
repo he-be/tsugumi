@@ -5,7 +5,7 @@
 | Phase | 内容 | 出口条件 |
 | --- | --- | --- |
 | **M0** | 参照実装の読解と期待値モデル | `01-CHECKPOINT.md` §5 の Q1〜Q6 に答えが付く。`decode/tok` の内訳を実測し、MTP の速度上限を式で書く (§1) |
-| **M1** | フォーマット拡張 + repacker | **完了** ([11-M1-RESULTS.md](11-M1-RESULTS.md))。`--include-draft` / `--add-draft`。ドラフターなしの `.gturbo` が現行と**バイト一致** (凍結フィクスチャ)。旧ランタイムが `flags.mtpDraft` を名指しで拒否し、対照 (フラグなし) は exit 0 |
+| **M1** | フォーマット拡張 + repacker | **完了** ([11-M1-RESULTS.md](11-M1-RESULTS.md))。`--include-draft` / `--add-draft`。ドラフターなしの `.moepack` が現行と**バイト一致** (凍結フィクスチャ)。旧ランタイムが `flags.mtpDraft` を名指しで拒否し、対照 (フラグなし) は exit 0 |
 | **M2** | ドラフター forward 単体 | **完了** ([12-M2-RESULTS.md](12-M2-RESULTS.md))。合成入力で参照 (transformers 5.10.4, float32) と突合、FP16 誤差床の内側。検出力 3 件 (RoPE 位置 / q_norm / attention scale) が閾値を超える。argmax 3/3 一致。decode 経路無変更 |
 | **M3** | **受理率の実測 (go / no-go)** | **完了 ([13-M3-RESULTS.md](13-M3-RESULTS.md))。go、bs=3 で進む。**実測は上限の 34〜59% で日本語長文 0.91〜1.12 倍だが、同系モデルの参照実装 (llama.cpp `draft-mtp`) は 1.26〜1.28 倍を出しており、差は入力規約の未決着で説明が付く。埋めた先は k=3 で 1.30 倍。診断オフ時のテキスト速度は +1.1% (ノイズ内) |
 | **M3.5** | 受理率の回復 | 参照実装 (llama.cpp) と入力規約を突き合わせ、**第 1 ドラフト受理率が上限の 80% 前後**に乗る。ドラフターを group 32 で repack。decode 経路は無変更のまま |
@@ -75,7 +75,7 @@ M0 の式に入れて **1.2 倍を切るなら報告して停止**。到達可�
 | 3 | テキスト回帰 | MTP 無効時の `bench.sh ja` が現行比 **±4% 以内** (同一セッション A/B。セッションを跨いだ比較は分解能がない — `RESULTS_VISION.md` §3) |
 | 4 | メモリ | peak が 12 GB 予算内。テキストのみ 6.64 GB / vision 同居 7.01 GB に **+0.24 GB** 程度で収まること |
 | 5 | ロード時間 | MTP 無効時の `load=` が現行と変わらない (D1 の遅延ロード) |
-| 6 | 旧ランタイム拒否 | MTP 付き `.gturbo` を MTP 以前のビルドに食わせて exit 1。対照 (フラグなし) は exit 0 |
+| 6 | 旧ランタイム拒否 | MTP 付き `.moepack` を MTP 以前のビルドに食わせて exit 1。対照 (フラグなし) は exit 0 |
 | 7 | 追記 | `--add-draft` が 236 MB のみ取得。テキスト側 inode 不変、再検証 exit 0 |
 | 8 | KV 巻き戻しの検出力 | わざと壊した rewind で検査が **FAIL する**こと |
 | 9 | Server | プロンプトキャッシュが投機位置を publish しない。`cached_tokens` が MTP あり/なしで一致 → **合格** (26-M6 §3。2 ターン目が on/off とも 209、本文も一致) |
@@ -132,4 +132,4 @@ vision と同じ形にする:
   `(トークン, last_hidden, 共有 KV)` なので、ここを乱数で与えれば参照と本ランタイムを
   同じ入力で比べられる。**ターゲット 26B を Python 側で回す必要はない** (**導出**)。
 - fixture は `scratch/mtp-fixtures/` (作業ツリー外)。
-- 突き合わせは `TurboFieldfareKernelCheck --draft` (`--vision-tower` の写像)。
+- 突き合わせは `TsugumiKernelCheck --draft` (`--vision-tower` の写像)。

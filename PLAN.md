@@ -1,7 +1,7 @@
 # PLAN — M3 Pro 18GB / macOS 15 専用化
 
 作成: 2026-08-16 / 更新: 2026-08-16 (Phase 0-2 実施後)
-入力: `turbofieldfare-m3pro-status.md` (実測), `TODO.md` (macOS 15 フォールバックの分析)
+入力: `tsugumi-m3pro-status.md` (実測), `TODO.md` (macOS 15 フォールバックの分析)
 方針: 汎用性を捨てて、この 1 台 (M3 Pro / 18GB / macOS 15.7.5) の常用機にする
 
 表記は status ドキュメントと同じ:
@@ -127,7 +127,7 @@ expert メモリ = 30 層 × slots × 3.3587 MB = slots × 100.8 MB
 ### 1-4. スロット上限 32 は構造的制約ではない (**実測**)
 
 ```swift
-// Sources/TurboFieldfare/Runtime/Configuration/RuntimeConfiguration.swift:23
+// Sources/Tsugumi/Runtime/Configuration/RuntimeConfiguration.swift:23
 public static let allowedExpertCacheSlots = [8, 16, 24, 32]
 public static let allowedPrefillChunkTokens = [32, 64, 128]
 public static let minimumExpertCacheSlotsForChunkedPrefill = 16
@@ -502,7 +502,7 @@ Phase 6                             ← やらない
 
 ## 6. 測定プロトコル (status 9 節を踏襲)
 
-- TurboFieldfare のプロセスは同時に 1 つだけ
+- Tsugumi のプロセスは同時に 1 つだけ
 - サーマルドリフト (連続実行で約 4% 低下) があるので条件はインターリーブ、
   実行間に 20 s クールダウン
 - `swift run` ではなく `.build/release/` を直叩き

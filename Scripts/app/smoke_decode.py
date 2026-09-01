@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drive TurboFieldfareDecodeService over its unix socket, like the Mac app does."""
+"""Drive TsugumiDecodeService over its unix socket, like the Mac app does."""
 import json
 import socket
 import struct
@@ -8,8 +8,8 @@ import sys
 import time
 import uuid
 
-REPO = "/Users/mh/LLM/turbo-fieldfare"
-SERVICE = f"{REPO}/.build/release/TurboFieldfareDecodeService"
+REPO = "/Users/mh/LLM/tsugumi"
+SERVICE = f"{REPO}/.build/release/TsugumiDecodeService"
 
 
 def send(sock, obj):
@@ -155,7 +155,7 @@ if __name__ == "__main__":
                              temperature=1.0, top_k=64, top_p=0.95,
                              thinking=False, images=[sys.argv[2]],
                              max_new=64))
-        session(f"{REPO}/scratch/gemma4-qat-sym.gturbo", 8192, runs)
+        session(f"{REPO}/scratch/gemma4-qat-sym.moepack", 8192, runs)
     else:
         runs = [
             dict(label="ornith-think", prompt="1+1は?ひとことで。",
@@ -165,4 +165,4 @@ if __name__ == "__main__":
                  temperature=0.6, top_k=20, top_p=0.95, thinking=False,
                  max_new=64),
         ]
-        session(f"{REPO}/scratch/ornith-oq4e-g64.gturbo", 8192, runs)
+        session(f"{REPO}/scratch/ornith-oq4e-g64.moepack", 8192, runs)

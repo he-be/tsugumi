@@ -91,7 +91,7 @@ scratch と無関係な property)。**幅の側が 1 通りだった**ので、�
 ## 3. 直したあと (**実測**)
 
 ```
-$ ./.build/release/TurboFieldfareKernelCheck --qwen-prefill scratch/ornith-oq4e-g64.gturbo
+$ ./.build/release/TsugumiKernelCheck --qwen-prefill scratch/ornith-oq4e-g64.moepack
 PASS  41 tokens, every one equal to the float32 reference
 PASS  chunk 8 (3 chunks) — the same 41 tokens
 PASS  routed experts on the per-pair path, chunk 512 (1 chunks) — the same 41 tokens

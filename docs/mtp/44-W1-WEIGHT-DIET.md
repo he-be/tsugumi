@@ -1,7 +1,7 @@
 # 44. W1 — QAT ウェイトの `bias` は情報ゼロ。`scale` は詰めると負ける
 
 測定: 2026-08-20、M3 Pro 18GB / macOS 15.7.5 / commit `4311ad5`。
-一次資料は `bench/mtp44/`。**推論経路 (`Sources/TurboFieldfare/`) は無改変** —
+一次資料は `bench/mtp44/`。**推論経路 (`Sources/Tsugumi/`) は無改変** —
 足したのは計器の 1 ファイル (`BpwProbe.swift`) と `main.swift` のフラグ 1 つ、
 それと `bench/check_bias_identity.py` である。
 
@@ -13,7 +13,7 @@
 ## 0. 結論 — 4 つ
 
 1. **`bias` は情報を持っていない** (**実測**、§1)。`bias == -8 * scale` が bf16 の
-   ビットパターンとして `scratch/gemma4-qat.gturbo` の **7 億 8817 万群すべて**で
+   ビットパターンとして `scratch/gemma4-qat.moepack` の **7 億 8817 万群すべて**で
    成り立つ。**格子整合の QAT チェックポイント固有**で、通常の affine 量子化
    (ベースライン) は 34〜38% が外れる。落とせるのは **1.468 GiB / 14.71 GiB = 9.98%**。
 2. **落とすと床の上でバイト比どおりに速くなる** (**実測**、§4)。`gate/up` は
@@ -62,7 +62,7 @@
 
 ## 3. 計器 — 形状ではなく**形式**だけを振る (**実測**)
 
-`TurboFieldfareKernelCheck --bpw-probe`。43 の `--moe-rows-shape-sweep` が還元次元を
+`TsugumiKernelCheck --bpw-probe`。43 の `--moe-rows-shape-sweep` が還元次元を
 振ったのに対し、こちらは**形状を production に固定して重みの形式だけを振る**。
 
 `BpwProbe.swift` は `prefill_moe_rows_gate_up_act` / `prefill_moe_rows_down` の
@@ -185,12 +185,12 @@ KL の対照群を置かないと言えない**ので、ここでは採らない
 
 ```bash
 # §1 / §2 — 格子の検定 (7 秒、scale/bias のページしか触らない)
-cd scratch && python3 ../bench/check_bias_identity.py gemma4-qat.gturbo
-python3 ../bench/check_bias_identity.py gemma4.gturbo   # 対照群
+cd scratch && python3 ../bench/check_bias_identity.py gemma4-qat.moepack
+python3 ../bench/check_bias_identity.py gemma4.moepack   # 対照群
 
 # §3-§5 — 形式スイープ (1 回 4 分。3 回、間に 20 秒のクールダウン)
-swift build -c release --product TurboFieldfareKernelCheck
-./.build/release/TurboFieldfareKernelCheck --bpw-probe --group-size 32 \
+swift build -c release --product TsugumiKernelCheck
+./.build/release/TsugumiKernelCheck --bpw-probe --group-size 32 \
     --moe-rows-bench-iterations 50
 ```
 
@@ -200,7 +200,7 @@ swift build -c release --product TurboFieldfareKernelCheck
 
 | ファイル | 変更 |
 | --- | --- |
-| `Sources/TurboFieldfareKernelCheck/BpwProbe.swift` | 新規。独自 MTLLibrary の rows カーネル 2 本 × 形式 4 種、フィクスチャ、数値一致検定 |
-| `Sources/TurboFieldfareKernelCheck/main.swift` | `--bpw-probe` の分岐を 1 つ |
+| `Sources/TsugumiKernelCheck/BpwProbe.swift` | 新規。独自 MTLLibrary の rows カーネル 2 本 × 形式 4 種、フィクスチャ、数値一致検定 |
+| `Sources/TsugumiKernelCheck/main.swift` | `--bpw-probe` の分岐を 1 つ |
 | `bench/check_bias_identity.py` | 新規 |
 | `bench/mtp44/` | 新規。一次ログ 4 本 |

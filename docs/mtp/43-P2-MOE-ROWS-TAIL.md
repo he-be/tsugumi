@@ -1,9 +1,9 @@
 # 43. P2 — `moe` は帯域床ではない。外れているのは `down` の 6 群の末尾 1 か所だけ
 
 測定: 2026-08-20、M3 Pro 18GB / macOS 15.7.5 / commit `657425b`。
-一次資料は `bench/mtp43/`。**推論経路 (`Sources/TurboFieldfare/`) は無改変** —
+一次資料は `bench/mtp43/`。**推論経路 (`Sources/Tsugumi/`) は無改変** —
 足したのは計器バイナリの 1 フラグだけである
-(`TurboFieldfareKernelCheck --moe-rows-shape-sweep`)。
+(`TsugumiKernelCheck --moe-rows-shape-sweep`)。
 
 [34](34-M9-PROPOSAL.md) の **P2**。41 §6 が「`c` を動かせるのは `moe` だけ」と
 出したので、その `moe` が**帯域床にいるのか、発行/占有率で律速しているのか**を決める。
@@ -193,14 +193,14 @@ F=768 はバイトが 9% 多いので、本来の繕いは**これより良い�
 ## 7. 再現手順
 
 ```bash
-swift build -c release --product TurboFieldfareKernelCheck
+swift build -c release --product TsugumiKernelCheck
 # 還元次元のスイープ (モデル不要 / I/O 無し / 1 分未満)
 for R in 1 2 4 8; do
-  .build/release/TurboFieldfareKernelCheck --moe-rows-shape-sweep \
+  .build/release/TsugumiKernelCheck --moe-rows-shape-sweep \
     --group-size 32 --moe-rows-r $R > bench/logs/43_p2/sweep_g32_r$R.log
 done
 # production 形状の段別 (31 と同じもの、群 32 で)
-.build/release/TurboFieldfareKernelCheck --moe-rows-bench --group-size 32 \
+.build/release/TsugumiKernelCheck --moe-rows-bench --group-size 32 \
   > bench/logs/43_p2/rowsbench_g32.log
 ```
 

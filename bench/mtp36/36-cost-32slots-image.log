@@ -1,6 +1,6 @@
 
 === MTP verify pass + KV rewind (docs/mtp 04-PHASES M4) ===
-  model    gemma4-qat.gturbo
+  model    gemma4-qat.moepack
   prompt   308 tok, block k=4, rounds=12, vision 1 img/266 soft, thinking
   probe    warm cache, 144 positions per phase
   cache    32 slots/layer, lfu

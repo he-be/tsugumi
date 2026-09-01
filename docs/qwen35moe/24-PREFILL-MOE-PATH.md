@@ -5,12 +5,12 @@
 #21 (2048 トークン / チャンク 512 の逆転) の答えを持っていた。
 
 ```
-swift run -c release TurboFieldfareKernelCheck \
-  --qwen-prefill scratch/ornith-oq4e-g64.gturbo \
+swift run -c release TsugumiKernelCheck \
+  --qwen-prefill scratch/ornith-oq4e-g64.moepack \
   --qwen-decode-fixture scratch/qwen35/decode-fixture-55.json
 
-swift run -c release TurboFieldfareKernelCheck \
-  --qwen-prefill-bench scratch/ornith-oq4e-g64.gturbo \
+swift run -c release TsugumiKernelCheck \
+  --qwen-prefill-bench scratch/ornith-oq4e-g64.moepack \
   --qwen-prefill-bench-tokens 2048 --qwen-prefill-bench-chunk 2048 \
   --qwen-prefill-bench-iterations 3 --qwen-prefill-bench-moe tiled
 ```

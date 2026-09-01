@@ -4,8 +4,8 @@
 取り直し) が **Phase 3 を閉じ**、その参照がそのまま Phase 4 の物差しになった。
 
 ```
-swift run -c release TurboFieldfareKernelCheck \
-  --qwen-prefill scratch/ornith-oq4e-g64.gturbo \
+swift run -c release TsugumiKernelCheck \
+  --qwen-prefill scratch/ornith-oq4e-g64.moepack \
   --qwen-decode-fixture scratch/qwen35/decode-fixture-55.json
 ```
 

@@ -1,7 +1,7 @@
 # 23. M5 の結果 — ループを作り、採点基準 v1 で初めて測った
 
 測定: 2026-08-18、M3 Pro 18GB / macOS 15.7.5 / Swift 6.3.3、commit は本文末尾。
-対象モデル `scratch/gemma4-qat.gturbo` (drafter 同梱)。
+対象モデル `scratch/gemma4-qat.moepack` (drafter 同梱)。
 表記は PLAN 系と同じ: **実測** / **導出** / **未確認**。
 
 22-GOAL-RESET §7 の指示どおり、M4.x の最適化を止めて **M5 (ループ統合)** を先に作った。
@@ -52,9 +52,9 @@
 
 | 追加 | 場所 | 中身 |
 | --- | --- | --- |
-| 本番ドラフター | `Sources/TurboFieldfare/MTP/SpeculativeDrafter.swift` | M3 の probe の `draftRound` から記録・ダンプを外したもの。入力規約は 14-M3.5 §6 の `prev-bonus` (hidden は 1 つ前の行、RoPE は bonus トークン自身の位置、KV は `[0, p)`、ラウンド中は位置固定) |
+| 本番ドラフター | `Sources/Tsugumi/MTP/SpeculativeDrafter.swift` | M3 の probe の `draftRound` から記録・ダンプを外したもの。入力規約は 14-M3.5 §6 の `prev-bonus` (hidden は 1 つ前の行、RoPE は bonus トークン自身の位置、KV は `[0, p)`、ラウンド中は位置固定) |
 | hidden の取り出し | `RealForwardRunner` の head 経路 | head は最終 RMSNorm を自分のカーネル内で当てるので post-norm hidden はどこにも無い (02 §N3)。**speculative ループがバッファを bind している間だけ** head 行ぶんの norm を 1 回足して書き出す |
-| ループ | `Sources/TurboFieldfare/Runtime/Generation/SpeculativeCompletion.swift` | D6 の 1 ラウンド。prefill までの前段は `CompletionPrefill.swift` に括り出して `runRawCompletion` と共有する (D6 の指示どおり、while に分岐を足していない) |
+| ループ | `Sources/Tsugumi/Runtime/Generation/SpeculativeCompletion.swift` | D6 の 1 ラウンド。prefill までの前段は `CompletionPrefill.swift` に括り出して `runRawCompletion` と共有する (D6 の指示どおり、while に分岐を足していない) |
 | CLI | `--draft-block-size <0\|2..8>` | 既定 **0** (D7)。0 のときドラフター 236 MB は開かない (D1 の遅延ロード) |
 
 ラウンドの中身 (D6 のまま):
@@ -310,8 +310,8 @@ F と M をループ内で分離する (bs を振って `verify(k) = F + M·k` �
 ブロック 1 回の内訳 (§7 の `wait.front`):
 
 ```
-TF_PREFILL_HOST_PROFILE=1 .build/release/TurboFieldfareCLI \
-  --model scratch/gemma4-qat.gturbo --messages-file bench/mtp_goal_prompt.json \
+TF_PREFILL_HOST_PROFILE=1 .build/release/TsugumiCLI \
+  --model scratch/gemma4-qat.moepack --messages-file bench/mtp_goal_prompt.json \
   --image sample_imgs/IMG_2112.JPG --image-tokens 280 --thinking on --temperature 0 \
   --max-new 200 --expert-cache-slots 80 --verification trusted-install --draft-block-size 4
 ```
@@ -319,7 +319,7 @@ TF_PREFILL_HOST_PROFILE=1 .build/release/TurboFieldfareCLI \
 ゲート 1 の切り分け (投機を止めて経路だけ残す):
 
 ```
-TF_MTP_DRAFTS=0 .build/release/TurboFieldfareCLI ... --draft-block-size 4
+TF_MTP_DRAFTS=0 .build/release/TsugumiCLI ... --draft-block-size 4
 ```
 
 感度表 (入力は本書 §5 に差し替え済み):
