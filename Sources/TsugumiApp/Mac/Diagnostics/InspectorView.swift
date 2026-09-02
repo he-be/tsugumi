@@ -11,6 +11,7 @@ struct InspectorView: View {
             modelSection
             memorySection
             generationSection
+            personaSection
             webSearchSection
             runtimeSection
             RunnerDiagnosticsSection(diagnostics: model.diagnostics)
@@ -125,6 +126,29 @@ struct InspectorView: View {
             }
         }
         .disabled(model.isRunning || model.loadState.isLoading)
+    }
+
+    /// The instruction layer: who the assistant is, who is asking, how to
+    /// answer. Saved as it is typed; the next turn carries it.
+    private var personaSection: some View {
+        Section(L("Instructions")) {
+            PersonaField(title: L("Who the assistant is"),
+                         placeholder: AppPersona.defaultIdentity,
+                         text: $model.persona.identity)
+            PersonaField(title: L("About you"),
+                         placeholder: L("Where you live, what you do, what you like. Used for weather, food, local questions."),
+                         text: $model.persona.aboutUser)
+            PersonaField(title: L("How to answer"),
+                         placeholder: L("Length, tone, what to skip. For example: short, no preamble, say when unsure."),
+                         text: $model.persona.answerStyle)
+            Text(L("Goes at the top of every turn's system prompt, for either model. Empty fields are left out."))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .onChange(of: model.persona) {
+            model.savePersona()
+        }
+        .disabled(model.isRunning)
     }
 
     /// The web tools: mode, the keys, and the two limits that decide how
@@ -266,6 +290,46 @@ struct InspectorView: View {
         .disabled(model.isRunning || model.loadState.isLoading)
     }
 
+}
+
+/// One persona field: a title, a placeholder that doubles as the example,
+/// and a small multi-line editor.
+private struct PersonaField: View {
+    let title: String
+    let placeholder: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.secondary)
+            TextEditor(text: $text)
+                .font(.body)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 44, maxHeight: 120)
+                .padding(4)
+                .background {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(nsColor: .textBackgroundColor))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(.separator, lineWidth: 0.5)
+                        }
+                }
+                .overlay(alignment: .topLeading) {
+                    if text.isEmpty {
+                        Text(placeholder)
+                            .font(.body)
+                            .foregroundStyle(.tertiary)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 4)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .accessibilityLabel(title)
+        }
+    }
 }
 
 /// The local Wikipedia index: its path, a chooser, and what the file says

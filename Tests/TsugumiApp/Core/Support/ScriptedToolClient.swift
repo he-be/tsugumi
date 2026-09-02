@@ -9,6 +9,9 @@ final class ScriptedToolClient: AppInferenceClient, @unchecked Sendable {
     enum Round: Sendable {
         case calls([AppToolCall], text: String = "", reasoning: String = "")
         case answer(String, reasoning: String = "")
+        /// The generation fails before any token, the way the decode
+        /// service reports a structured-output failure.
+        case fail(String)
     }
 
     private let rounds: Mutex<[Round]>
@@ -47,6 +50,11 @@ final class ScriptedToolClient: AppInferenceClient, @unchecked Sendable {
                                    peakMemoryBytes: nil, runtimeOptions: request.runtimeOptions)
                 }
                 switch round {
+                case .fail(let message):
+                    let error = AppInferenceError.unknown(message)
+                    continuation.yield(.failed(error, partial: diagnostics(.failed, tokens: 0)))
+                    continuation.finish(throwing: error)
+                    return
                 case .calls(let calls, let text, let reasoning):
                     if !reasoning.isEmpty {
                         continuation.yield(.token(AppTokenEvent(

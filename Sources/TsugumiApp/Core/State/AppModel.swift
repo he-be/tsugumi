@@ -39,6 +39,9 @@ public final class AppModel {
     /// Keys and limits for the web tools, one file for the app. Edited in
     /// the Inspector; `saveWebSearchConfiguration` writes it back.
     public var webSearchConfiguration: WebSearchConfiguration
+    /// The instruction layer every turn carries (`AppPersona`), one file
+    /// for the app. Edited in the Inspector; `savePersona` writes it back.
+    public var persona: AppPersona
     public private(set) var newlineShortcut: AppNewlineShortcut = .return
     public private(set) var sentPromptBehavior: AppSentPromptBehavior = .keep
     public var diagnostics: AppDiagnostics?
@@ -80,9 +83,23 @@ public final class AppModel {
     /// have run, and the task executing the calls between rounds.
     private let toolExecutorProvider: (WebSearchConfiguration, AppNetworkMode) throws -> (any AppToolExecutor)?
     private let webSearchConfigurationURL: URL?
+    private let personaURL: URL?
     private var activeToolExecutor: (any AppToolExecutor)?
     private var activeNetworkMode: AppNetworkMode = .offline
     private var activeSystemPrompt: String?
+    /// Online with the web tools declared: the turn must search, then read
+    /// a page, before it may answer (`AppModel.onlineToolChoice`). The
+    /// model is not asked whether it needs to — with the switch on, the
+    /// user has already said so.
+    private var activeOnlinePolicy = false
+    /// The request of the round now generating, kept so a structured-output
+    /// failure (the model's first token was a stray control token, which the
+    /// tool decoder fails closed on) can run the same round once more.
+    private var activeRoundRequest: AppGenerationRequest?
+    private var structuredRetriesUsed = 0
+    /// Counts rounds; a stream from an earlier round (the one being
+    /// retried) is ignored once a newer round has started.
+    private var roundGeneration: UInt64 = 0
     private var pendingToolCalls: [AppToolCall] = []
     private var toolRoundsUsed = 0
     private var toolTask: Task<Void, Never>?
@@ -104,8 +121,13 @@ public final class AppModel {
                 settingsPersistenceEnabled: Bool = false,
                 chatStore: AppChatStore? = nil,
                 webSearchConfigurationURL: URL? = nil,
+                personaURL: URL? = nil,
                 toolExecutorProvider: ((WebSearchConfiguration, AppNetworkMode) throws -> (any AppToolExecutor)?)? = nil) {
         self.chatStore = chatStore
+        let personaFileURL = personaURL
+            ?? (settingsPersistenceEnabled ? AppPersonaStore.defaultFileURL : nil)
+        self.personaURL = personaFileURL
+        self.persona = personaFileURL.map { AppPersonaStore.load(from: $0) } ?? AppPersona()
         let configurationURL = webSearchConfigurationURL
             ?? (settingsPersistenceEnabled ? WebSearchConfigurationStore.defaultFileURL : nil)
         self.webSearchConfigurationURL = configurationURL
@@ -215,6 +237,58 @@ public final class AppModel {
     public var outputToolTrace: [AppToolTraceEntry] { selectedChat.outputToolTrace }
 
     public var outputContinuationTurns: [AppChatTurn] { selectedChat.outputContinuationTurns }
+
+    public var outputDirective: AppAnswerDirective? { selectedChat.outputDirective }
+
+    public var outputVariants: [AppAnswerVariant] { selectedChat.outputVariants }
+
+    public var selectedVariantIndex: Int { selectedChat.selectedVariantIndex }
+
+    /// How many answers the live turn has to choose between.
+    public var answerCount: Int { selectedChat.answerCount }
+
+    /// What the answer on display leaned on, from its trace.
+    public var outputGrounding: AppAnswerGrounding {
+        AppAnswerGrounding.of(selectedChat.outputToolTrace)
+    }
+
+    /// True when the answer on display names no source although a web step
+    /// ran: the model searched and then wrote from memory.
+    public var outputLacksCitation: Bool {
+        outputGrounding.webSteps > 0
+            && !AppAnswerGrounding.citesSources(outputResponsePlainText)
+    }
+
+    /// Tokens the last round of the selected chat's turn occupied: the
+    /// prompt as prefilled (history included) plus what was generated. Nil
+    /// until a round has finished; the HUD shows it against
+    /// `maxContextTokens`.
+    public var contextUsedTokens: Int? {
+        guard let diagnostics, let promptTokens = diagnostics.promptTokenCount else { return nil }
+        return promptTokens + diagnostics.generatedTokens
+    }
+
+    /// A finished answer can be asked for again: same question, same
+    /// images, optionally with a directive.
+    public var canRegenerate: Bool {
+        !isRunning && isModelAvailable && !loadState.isLoading && !hasStaleLoadedRuntime
+            && !outputPromptText.isEmpty && !outputResponsePlainText.isEmpty
+    }
+
+    public var canAskFollowUp: Bool { canRegenerate }
+
+    /// "Search and answer again" is offered when the model could have
+    /// searched and did not: tools are this model's, the web is reachable
+    /// with the keys on file, and the answer on display has no web step.
+    public var canSearchAgain: Bool {
+        canRegenerate && toolsAvailable && webSearchConfiguration.resolved().canSearch
+            && outputGrounding.webSteps == 0
+    }
+
+    public func savePersona() {
+        guard let personaURL else { return }
+        try? AppPersonaStore.save(persona, to: personaURL)
+    }
 
     public var attachedImagePaths: [String] {
         get { selectedChat.attachedImagePaths }
@@ -942,12 +1016,45 @@ public final class AppModel {
         chat.outputReasoningText = ""
         chat.outputContinuationTurns = []
         chat.outputToolTrace = []
+        chat.outputDirective = nil
+        chat.outputVariants = []
+        chat.selectedVariantIndex = 0
         if chat.id == mailboxOwnerChatID {
             generationTranscriptMailbox?.reset()
             mailboxOwnerChatID = nil
         }
         diagnostics = nil
         error = nil
+        persistChatsNow()
+    }
+
+    /// Puts an earlier answer to the live turn on display. The answer now
+    /// on display goes back among the variants at its own position, so the
+    /// order stays the order the answers were made in. The next run folds
+    /// whichever is on display.
+    public func selectVariant(_ index: Int) {
+        guard !isRunning else { return }
+        let chat = selectedChat
+        guard index != chat.selectedVariantIndex, (0...chat.outputVariants.count).contains(index) else { return }
+        let displayed = AppAnswerVariant(
+            directive: chat.outputDirective,
+            text: responsePlainText(of: chat),
+            reasoningText: chat.outputReasoningText,
+            continuationTurns: chat.outputContinuationTurns,
+            toolTrace: chat.outputToolTrace)
+        chat.outputVariants.insert(displayed, at: chat.selectedVariantIndex)
+        let chosen = chat.outputVariants.remove(at: index)
+        if chat.id == mailboxOwnerChatID {
+            // The mailbox holds the streamed text of the answer just set
+            // aside; from here the chat's own fields are the source.
+            mailboxOwnerChatID = nil
+        }
+        chat.outputDirective = chosen.directive
+        chat.outputText = chosen.text
+        chat.outputReasoningText = chosen.reasoningText
+        chat.outputContinuationTurns = chosen.continuationTurns
+        chat.outputToolTrace = chosen.toolTrace
+        chat.selectedVariantIndex = index
         persistChatsNow()
     }
 
@@ -965,7 +1072,7 @@ public final class AppModel {
         guard !chat.outputPromptText.isEmpty else { return }
         if !response.isEmpty || !reasoning.isEmpty {
             chat.conversationTurns.append(AppChatTurn(role: .user,
-                                                      text: chat.outputPromptText,
+                                                      text: chat.outputPromptAsSent,
                                                       imagePaths: chat.outputImagePaths))
             // The tool rounds sit between the question and the answer, as
             // the model saw them; the next request redraws them the same way.
@@ -980,6 +1087,9 @@ public final class AppModel {
         chat.outputReasoningText = ""
         chat.outputContinuationTurns = []
         chat.outputToolTrace = []
+        chat.outputDirective = nil
+        chat.outputVariants = []
+        chat.selectedVariantIndex = 0
     }
 
     public func attachImages(_ paths: [String]) {
@@ -998,8 +1108,50 @@ public final class AppModel {
     public func run() {
         guard canRun else { return }
         let chat = selectedChat
+        let question = promptText
+        let images = selectedModelKind.supportsVision ? chat.attachedImagePaths : []
         foldCompletedTurnIntoHistory(of: chat)
-        let mode = effectiveNetworkMode
+        startTurn(question: question, imagePaths: images, directive: nil,
+                  mode: effectiveNetworkMode, in: chat)
+    }
+
+    /// Asks the live turn's question again. The answer on display is set
+    /// aside as a variant; the new one streams into the live fields. A
+    /// `searched` directive goes online and makes the first round call a
+    /// tool; the others keep the switch as it is.
+    public func regenerate(_ directive: AppAnswerDirective) {
+        guard directive == .searched ? canSearchAgain : canRegenerate else { return }
+        let chat = selectedChat
+        let displayed = AppAnswerVariant(
+            directive: chat.outputDirective,
+            text: responsePlainText(of: chat),
+            reasoningText: chat.outputReasoningText,
+            continuationTurns: chat.outputContinuationTurns,
+            toolTrace: chat.outputToolTrace)
+        chat.outputVariants.insert(displayed, at: chat.selectedVariantIndex)
+        chat.selectedVariantIndex = chat.outputVariants.count
+        let mode: AppNetworkMode = directive == .searched ? .online : effectiveNetworkMode
+        startTurn(question: chat.outputPromptText, imagePaths: chat.outputImagePaths,
+                  directive: directive == .again ? nil : directive, mode: mode, in: chat)
+    }
+
+    /// Opens a new turn under the answer with a stock question. The
+    /// composer's draft is left as it was.
+    public func askFollowUp(_ followUp: AppFollowUp) {
+        guard canAskFollowUp else { return }
+        let draft = promptText
+        promptText = followUp.prompt
+        run()
+        promptText = draft
+    }
+
+    /// One turn of the chat: the question as the live user turn, then the
+    /// first round (after the app's own lookups when tools are declared).
+    /// `question` is what the transcript shows; the model gets it with the
+    /// directive's line appended.
+    private func startTurn(question: String, imagePaths: [String],
+                           directive: AppAnswerDirective?,
+                           mode: AppNetworkMode, in chat: AppChatSession) {
         let executor: (any AppToolExecutor)?
         let systemPrompt: String?
         let request: AppGenerationRequest
@@ -1010,8 +1162,11 @@ public final class AppModel {
         }
         do {
             executor = toolsAvailable ? try toolExecutorProvider(webSearchConfiguration, mode) : nil
-            systemPrompt = executor.map { makeSystemPrompt(for: $0) }
-            request = try makeFirstRoundRequest(executor: executor, systemPrompt: systemPrompt)
+            systemPrompt = makeSystemPrompt(tools: executor)
+            request = try makeFirstRoundRequest(
+                executor: executor, systemPrompt: systemPrompt,
+                prompt: directive?.apply(to: question) ?? question,
+                imagePaths: imagePaths, history: chat.conversationTurns)
         } catch let appError as AppInferenceError {
             error = appError
             return
@@ -1025,8 +1180,9 @@ public final class AppModel {
         generationTranscriptMailbox?.reset()
         mailboxOwnerChatID = chat.id
         generatingChat = chat
-        chat.outputPromptText = request.prompt
+        chat.outputPromptText = question
         chat.outputImagePaths = request.imagePaths
+        chat.outputDirective = directive
         chat.outputText = ""
         chat.outputReasoningText = ""
         chat.outputContinuationTurns = []
@@ -1036,6 +1192,9 @@ public final class AppModel {
         activeToolExecutor = executor
         activeNetworkMode = mode
         activeSystemPrompt = systemPrompt
+        activeOnlinePolicy = mode == .online
+            && request.tools.contains { $0.name == WebSearchToolExecutor.searchToolName }
+        structuredRetriesUsed = 0
         pendingToolCalls = []
         toolRoundsUsed = 0
         activeRunRuntimeKey = AppLoadedRuntimeKey(
@@ -1095,8 +1254,10 @@ public final class AppModel {
             let request = try makeFirstRoundRequest(
                 executor: activeToolExecutor,
                 systemPrompt: activeSystemPrompt,
+                toolChoice: onlineToolChoice(trace: chat.outputToolTrace,
+                                             tools: activeToolExecutor?.definitions ?? []).choice,
                 continuation: chat.outputContinuationTurns,
-                prompt: chat.outputPromptText, imagePaths: chat.outputImagePaths,
+                prompt: chat.outputPromptAsSent, imagePaths: chat.outputImagePaths,
                 history: chat.conversationTurns)
             startRound(request)
         } catch {
@@ -1113,18 +1274,43 @@ public final class AppModel {
         livePrefillDone = 0
         livePrefillTotal = 0
         phase = .prefill
+        activeRoundRequest = request
+        roundGeneration &+= 1
+        let round = roundGeneration
         runTask = Task.detached { [weak self, client, request] in
             guard let self else { return }
             do {
                 for try await event in client.generate(request) {
-                    await self.apply(event)
+                    await self.apply(event, round: round)
                 }
             } catch let appError as AppInferenceError {
-                await self.finishStreamFailure(appError)
+                await self.finishStreamFailure(appError, round: round)
             } catch {
-                await self.finishStreamFailure(.unknown("\(error)"))
+                await self.finishStreamFailure(.unknown("\(error)"), round: round)
             }
         }
+    }
+
+    /// The decode service's "structured_output_failure": the tool decoder
+    /// refused what the model wrote (in practice a stray tool marker as the
+    /// first token). Sampling makes the next draw different, and the prefix
+    /// is cached, so the round is run once more before the turn fails.
+    nonisolated static func isStructuredOutputFailure(_ error: AppInferenceError) -> Bool {
+        if case .unknown(let message) = error {
+            return message.hasPrefix("structured_output_failure")
+        }
+        return false
+    }
+
+    private func retryRoundAfterStructuredFailure() -> Bool {
+        guard structuredRetriesUsed == 0, let request = activeRoundRequest,
+              runState == .running, !isCancellationPending else { return false }
+        structuredRetriesUsed += 1
+        let chat = generatingChat ?? selectedChat
+        chat.outputText = ""
+        chat.outputReasoningText = ""
+        startRound(request)
+        return true
     }
 
     /// The round ended on tool calls: run them, append the assistant turn
@@ -1183,15 +1369,17 @@ public final class AppModel {
         let maxRounds = webSearchConfiguration.resolved().maxToolRounds
         let exhausted = toolRoundsUsed >= maxRounds
         let request: AppGenerationRequest
+        let policy = onlineToolChoice(trace: chat.outputToolTrace,
+                                      tools: activeToolExecutor?.definitions ?? [])
         do {
             request = try makeRequest(
                 continuation: chat.outputContinuationTurns,
                 systemPrompt: activeSystemPrompt,
                 // Past the round budget the tools are withdrawn: the model
                 // has to answer with what it has.
-                tools: exhausted ? [] : (activeToolExecutor?.definitions ?? []),
-                toolChoice: exhausted ? .none : .auto,
-                prompt: chat.outputPromptText,
+                tools: exhausted ? [] : policy.tools,
+                toolChoice: exhausted ? .none : policy.choice,
+                prompt: chat.outputPromptAsSent,
                 imagePaths: chat.outputImagePaths,
                 history: chat.conversationTurns)
         } catch {
@@ -1276,18 +1464,33 @@ public final class AppModel {
         return executors.count == 1 ? executors[0] : CompositeToolExecutor(executors)
     }
 
-    private func makeSystemPrompt(for executor: any AppToolExecutor) -> String {
-        WebSearchPrompt.system(maxRounds: webSearchConfiguration.resolved().maxToolRounds,
-                               tools: executor.promptFacts)
+    /// The persona first, then the tool instructions when tools are
+    /// declared; nil when there is neither, so the request renders through
+    /// the plain template exactly as before.
+    private func makeSystemPrompt(tools executor: (any AppToolExecutor)?) -> String? {
+        var sections: [String] = []
+        if let personaSection = persona.promptSection {
+            sections.append(personaSection)
+        }
+        if let executor {
+            sections.append(WebSearchPrompt.system(
+                maxRounds: webSearchConfiguration.resolved().maxToolRounds,
+                tools: executor.promptFacts))
+        }
+        return sections.isEmpty ? nil : sections.joined(separator: "\n\n")
     }
 
     /// The request the next `run` would send for the current mode: the tools
     /// and system prompt when any are declared, nothing extra otherwise.
     public func makeRequest() throws -> AppGenerationRequest {
         let executor = toolsAvailable ? try toolExecutorProvider(webSearchConfiguration, effectiveNetworkMode) : nil
+        let tools = executor?.definitions ?? []
+        let online = effectiveNetworkMode == .online
+            && tools.contains { $0.name == WebSearchToolExecutor.searchToolName }
         return try makeFirstRoundRequest(
             executor: executor,
-            systemPrompt: executor.map { makeSystemPrompt(for: $0) })
+            systemPrompt: makeSystemPrompt(tools: executor),
+            toolChoice: onlineToolChoice(trace: [], tools: tools, online: online).choice)
     }
 
     /// The round that has no results yet. The thought channel is where
@@ -1297,6 +1500,7 @@ public final class AppModel {
     /// Rounds that see results think without a bound.
     private func makeFirstRoundRequest(executor: (any AppToolExecutor)?,
                                        systemPrompt: String?,
+                                       toolChoice: AppToolChoice = .auto,
                                        continuation: [AppChatTurn] = [],
                                        prompt: String? = nil,
                                        imagePaths: [String]? = nil,
@@ -1308,12 +1512,37 @@ public final class AppModel {
             continuation: continuation,
             systemPrompt: systemPrompt,
             tools: executor?.definitions ?? [],
-            toolChoice: .auto,
+            toolChoice: toolChoice,
             enableThinking: plan.enabled,
             reasoningBudgetTokens: plan.budget,
             prompt: prompt,
             imagePaths: imagePaths,
             history: history)
+    }
+
+    /// What the next round may do, under the online policy: no search yet
+    /// and no page read → `web_search` is forced; searched but no page
+    /// read → `fetch_page` is forced; a page read (by the model, or by the
+    /// app for a URL in the question) → the model chooses. Every round
+    /// declares all the tools — the declarations render at the top of the
+    /// prompt, and changing them between rounds throws the prompt cache
+    /// away; the grammar pins the named tool on its own. A fetch that
+    /// failed counts as tried, so a dead site does not eat the round
+    /// budget. Off the policy, always the model's choice.
+    private func onlineToolChoice(trace: [AppToolTraceEntry], tools: [AppToolDefinition],
+                                  online: Bool? = nil)
+        -> (choice: AppToolChoice, tools: [AppToolDefinition]) {
+        guard online ?? activeOnlinePolicy else { return (.auto, tools) }
+        let fetchTried = trace.contains { $0.name == WebSearchToolExecutor.fetchToolName }
+        let searched = trace.contains { $0.name == WebSearchToolExecutor.searchToolName && $0.status == .done }
+        if fetchTried { return (.auto, tools) }
+        if searched {
+            guard tools.contains(where: { $0.name == WebSearchToolExecutor.fetchToolName }) else {
+                return (.auto, tools)
+            }
+            return (.function(name: WebSearchToolExecutor.fetchToolName), tools)
+        }
+        return (.function(name: WebSearchToolExecutor.searchToolName), tools)
     }
 
     nonisolated static func firstRoundThinking(tools: Bool, thinking: Bool, budget: Int)
@@ -1360,7 +1589,8 @@ public final class AppModel {
         return request
     }
 
-    func apply(_ event: AppInferenceEvent) {
+    func apply(_ event: AppInferenceEvent, round: UInt64? = nil) {
+        if let round, round != roundGeneration { return }
         switch event {
         case .prefillProgress(let done, let total):
             phase = .prefill
@@ -1398,6 +1628,9 @@ public final class AppModel {
         case .cancelled(let diagnostics):
             finishCancelled(diagnostics)
         case .failed(let appError, let partial):
+            if Self.isStructuredOutputFailure(appError), retryRoundAfterStructuredFailure() {
+                return
+            }
             diagnostics = partial
             materializeServiceTranscript()
             finishWithError(appError)
@@ -1435,7 +1668,8 @@ public final class AppModel {
         finishTerminalRun()
     }
 
-    private func finishStreamFailure(_ appError: AppInferenceError) {
+    private func finishStreamFailure(_ appError: AppInferenceError, round: UInt64? = nil) {
+        if let round, round != roundGeneration { return }
         materializeServiceTranscript()
         finishWithError(appError)
     }
@@ -1450,6 +1684,9 @@ public final class AppModel {
         toolTask = nil
         activeToolExecutor = nil
         activeSystemPrompt = nil
+        activeOnlinePolicy = false
+        activeRoundRequest = nil
+        structuredRetriesUsed = 0
         pendingToolCalls = []
         persistChatsNow()
     }

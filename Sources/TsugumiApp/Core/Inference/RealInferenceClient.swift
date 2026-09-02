@@ -470,6 +470,7 @@ actor RealInferenceSession {
         case .auto: .auto
         case .required: .required
         case .none: .none
+        case .function(let name): .function(name: name)
         }
 
         let vision = attachments.isEmpty

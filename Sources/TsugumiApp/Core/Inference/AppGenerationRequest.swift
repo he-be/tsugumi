@@ -154,6 +154,9 @@ public struct AppGenerationRequest: Equatable, Sendable {
         if toolChoice == .required, tools.isEmpty {
             throw AppInferenceError.invalidRequest("Requiring a tool call needs at least one tool.")
         }
+        if case .function(let name) = toolChoice, !tools.contains(where: { $0.name == name }) {
+            throw AppInferenceError.invalidRequest("Forcing a call of \(name) needs that tool declared.")
+        }
         try runtimeOptions.validate()
 
         if requireModelDirectory {

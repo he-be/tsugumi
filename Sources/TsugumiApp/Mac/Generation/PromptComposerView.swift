@@ -80,6 +80,7 @@ struct PromptComposerView: View {
             if model.toolsAvailable {
                 webSearchControl
             }
+            thinkingControl
             Spacer()
             clearAction
             GenerateControl(model: model)
@@ -146,6 +147,42 @@ struct PromptComposerView: View {
         .disabled(model.isRunning)
         .help("\(L("Network")): \(model.networkMode.label) — \(model.networkMode.help)")
         .accessibilityLabel("\(L("Network")) \(model.networkMode.label)")
+    }
+
+    /// The thought channel, on or off for the next turn. The same value as
+    /// the Inspector's switch; here because it is the one knob that changes
+    /// how long an answer takes.
+    private var thinkingControl: some View {
+        Button {
+            model.thinkingEnabled.toggle()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "brain")
+                if model.thinkingEnabled {
+                    Text(L("Thinking"))
+                        .font(.caption.weight(.medium))
+                }
+            }
+            .frame(height: 28)
+            .padding(.horizontal, model.thinkingEnabled ? 6 : 0)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .fixedSize()
+        .foregroundStyle(model.thinkingEnabled
+                         ? AnyShapeStyle(TsugumiMacTheme.accentColor)
+                         : AnyShapeStyle(.secondary))
+        .background {
+            if model.thinkingEnabled {
+                Capsule().fill(TsugumiMacTheme.accentColor.opacity(0.12))
+            }
+        }
+        .disabled(model.isRunning)
+        .help(model.thinkingEnabled
+              ? L("Thinking is on: the model reasons before it answers. Slower, better on hard questions.")
+              : L("Thinking is off: the model answers directly."))
+        .accessibilityLabel(L("Thinking"))
+        .accessibilityValue(model.thinkingEnabled ? L("On") : L("Off"))
     }
 
     private var attachmentsRow: some View {

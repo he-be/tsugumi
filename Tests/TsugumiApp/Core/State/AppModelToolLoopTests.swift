@@ -19,13 +19,13 @@ import Testing
     }
 
     @MainActor
-    @Test func onlineDeclaresTheToolsAndLeavesTheChoiceToTheModel() throws {
+    @Test func onlineDeclaresTheToolsAndForcesTheSearch() throws {
         let model = readyModel(client: ScriptedToolClient([]), executor: ScriptedToolExecutor(results: [:]))
         model.promptText = "hi"
         model.networkMode = .online
         let online = try model.makeRequest()
         #expect(online.tools.map(\.name) == ["web_search", "fetch_page"])
-        #expect(online.toolChoice == .auto)
+        #expect(online.toolChoice == .function(name: "web_search"))
         #expect(online.systemPrompt?.contains("web_search") == true)
         // Offline the provider has nothing to declare here (no index in this test).
         model.networkMode = .offline
@@ -74,10 +74,15 @@ import Testing
         #expect(second.continuation[1].toolCallID == "call-1")
         #expect(second.continuation[1].toolName == "web_search")
         #expect(second.continuation[1].text.contains("https://example.jp/w"))
-        #expect(second.toolChoice == .auto)
-        #expect(second.tools.count == 2)
-        // Round 3 has both rounds.
+        // Searched, nothing read yet: the second round must fetch. All the
+        // tools stay declared so the prompt prefix (and its cache) holds.
+        #expect(second.toolChoice == .function(name: "fetch_page"))
+        #expect(second.tools.map(\.name) == ["web_search", "fetch_page"])
+        // Round 3 has both rounds and, a page read, the model's choice.
         #expect(client.requests[2].continuation.count == 4)
+        #expect(client.requests[2].toolChoice == .auto)
+        #expect(client.requests[2].tools.count == 2)
+        #expect(client.requests[0].toolChoice == .function(name: "web_search"))
         #expect(executor.calls == [searchCall, fetchCall])
 
         // The live turn shows the answer and the trace.
@@ -191,8 +196,8 @@ import Testing
         await waitForIdle(model)
 
         #expect(client.requests.count == 4)
-        #expect(client.requests[0].toolChoice == .auto)
-        #expect(client.requests[1].toolChoice == .auto)
+        #expect(client.requests[0].toolChoice == .function(name: "web_search"))
+        #expect(client.requests[1].toolChoice == .function(name: "fetch_page"))
         // Two rounds used: the third request withdraws the tools.
         #expect(client.requests[2].tools.isEmpty)
         #expect(client.requests[2].toolChoice == .none)
@@ -259,6 +264,113 @@ import Testing
         #expect(!model.toolsAvailable)
         #expect(model.effectiveNetworkMode == .offline)
         #expect(try model.makeRequest().tools.isEmpty)
+    }
+
+    @MainActor
+    @Test func aPageTheAppPrefetchedSatisfiesTheOnlinePolicy() async throws {
+        let seed = AppToolLookup(
+            call: AppToolCall(id: "x", name: "fetch_page", argumentsJSON: #"{"url":"https://example.jp/p"}"#),
+            result: AppToolResult(content: "URL: https://example.jp/p\n\n本文", summary: "direct · 2 chars"),
+            subject: "https://example.jp/p")
+        let client = ScriptedToolClient([.answer("読みました。\n参照: https://example.jp/p")])
+        let executor = ScriptedToolExecutor(results: [:], seeds: [seed])
+        let model = readyModel(client: client, executor: executor)
+        model.networkMode = .online
+        model.promptText = "https://example.jp/p 何これ"
+        model.run()
+        await waitForIdle(model)
+        let request = try #require(client.requests.first)
+        #expect(request.toolChoice == .auto)
+        #expect(request.tools.count == 2)
+    }
+
+    @MainActor
+    @Test func aFailedFetchCountsAsTriedSoTheBudgetIsNotEaten() async throws {
+        let client = ScriptedToolClient([
+            .calls([searchCall]),
+            .calls([fetchCall]),
+            .answer("取れませんでした"),
+        ])
+        let executor = ScriptedToolExecutor(results: [
+            "call-1": AppToolResult(content: "検索: 東京 天気 (Serper, 1 件)", summary: "Serper · 1 hits"),
+            "call-2": AppToolResult(content: "error: 503", isError: true, summary: "503"),
+        ])
+        let model = readyModel(client: client, executor: executor)
+        model.networkMode = .online
+        model.promptText = "東京の天気は?"
+        model.run()
+        await waitForIdle(model)
+        #expect(client.requests.map(\.toolChoice) == [
+            .function(name: "web_search"), .function(name: "fetch_page"), .auto])
+        #expect(client.requests[2].tools.count == 2)
+    }
+
+    @MainActor
+    @Test func aStructuredOutputFailureRunsTheRoundOnceMore() async throws {
+        let client = ScriptedToolClient([
+            .calls([searchCall]),
+            .calls([fetchCall]),
+            .fail("structured_output_failure kind=decoder_consume cause=malformed rendered_prompt_tokens=4582"),
+            .answer("読みました。\n参照: https://example.jp/w"),
+        ])
+        let executor = ScriptedToolExecutor(results: [
+            "call-1": AppToolResult(content: "検索: 東京 天気 (Serper, 1 件)", summary: "Serper · 1 hits"),
+            "call-2": AppToolResult(content: "URL: https://example.jp/w\n\n晴れ", summary: "direct · 2 chars"),
+        ])
+        let model = readyModel(client: client, executor: executor)
+        model.networkMode = .online
+        model.promptText = "東京の天気は?"
+        model.run()
+        await waitForIdle(model)
+        #expect(model.error == nil)
+        #expect(client.requests.count == 4)
+        #expect(client.requests[2] == client.requests[3])
+        #expect(model.outputResponsePlainText.contains("読みました"))
+        #expect(model.outputToolTrace.count == 2)
+    }
+
+    @MainActor
+    @Test func aSecondStructuredOutputFailureFailsTheTurn() async throws {
+        let client = ScriptedToolClient([
+            .fail("structured_output_failure kind=decoder_consume cause=malformed"),
+            .fail("structured_output_failure kind=decoder_finish cause=malformed"),
+            .answer("never"),
+        ])
+        let model = readyModel(client: client, executor: ScriptedToolExecutor(results: [:]))
+        model.networkMode = .online
+        model.promptText = "q"
+        model.run()
+        await waitForIdle(model)
+        #expect(client.requests.count == 2)
+        #expect(model.error?.userMessage.contains("structured_output_failure") == true)
+        #expect(model.outputResponsePlainText.isEmpty)
+    }
+
+    @MainActor
+    @Test func otherFailuresAreNotRetried() async throws {
+        let client = ScriptedToolClient([.fail("decode service failed"), .answer("never")])
+        let model = readyModel(client: client, executor: ScriptedToolExecutor(results: [:]))
+        model.networkMode = .online
+        model.promptText = "q"
+        model.run()
+        await waitForIdle(model)
+        #expect(client.requests.count == 1)
+        #expect(model.error != nil)
+    }
+
+    @MainActor
+    @Test func offlineLeavesTheChoiceToTheModel() async throws {
+        let wiki = AppToolCall(id: "w1", name: "wikipedia_search", argumentsJSON: #"{"query":"淀城"}"#)
+        let client = ScriptedToolClient([.calls([wiki]), .answer("淀城です")])
+        let executor = ScriptedToolExecutor(results: ["w1": AppToolResult(content: "hit", summary: "1")])
+        let model = AppModel(client: client, toolExecutorProvider: { _, _ in executor })
+        model.modelPathText = FileManager.default.temporaryDirectory.path
+        model.loadState = .ready(modelDirectory: FileManager.default.temporaryDirectory, loadSeconds: 1)
+        model.networkMode = .offline
+        model.promptText = "淀城"
+        model.run()
+        await waitForIdle(model)
+        #expect(client.requests.map(\.toolChoice) == [.auto, .auto])
     }
 
     @MainActor

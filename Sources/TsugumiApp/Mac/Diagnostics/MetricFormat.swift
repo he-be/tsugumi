@@ -32,6 +32,16 @@ enum MetricFormat {
         String(format: "%.1f", value)
     }
 
+    /// "820", "5.2K", "32K": token counts as the context picker writes them.
+    static func kiloTokens(_ tokens: Int) -> String {
+        guard tokens >= 1000 else { return "\(tokens)" }
+        let thousands = Double(tokens) / 1024
+        if thousands >= 10 || thousands == thousands.rounded() {
+            return "\(Int(thousands.rounded()))K"
+        }
+        return String(format: "%.1fK", thousands)
+    }
+
     static func percent(_ value: Double) -> String {
         String(format: "%.1f%%", value)
     }

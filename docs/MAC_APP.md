@@ -148,11 +148,44 @@ CommonMark と Gemma の日本語の食い違いで、実回答から見つけ�
 で手元の会話履歴にも同じ検査を掛けられ、`TSUGUMI_MARKDOWN_PNG_DIR=<dir>` を足すと
 1 回答 1 枚の PNG が出るので目視できる (どちらもリポジトリには入れない)。
 
+## 4d. 回答の下の操作行と指示層 (2026-09-02)
+
+要件表と採否は `docs/MAC_APP_UX.md`。入ったもの:
+
+- **HUD の「コンテキスト」**: 直前ラウンドの prompt tokens + 生成 tokens を、読み込んだ上限に対して
+  「5.2K / 32K」と出す (`AppModel.contextUsedTokens`)。
+- **コンポーザの Thinking トグル**: Inspector のスイッチと同じ `thinkingEnabled`。
+- **最後の回答の下の操作行** (`AnswerActionsRow`): 根拠バッジ (Web · 検索 N · 取得 M / Wikipedia N / 検索なし。
+  検索できたのにしなかったとき、検索したのにページを読んでいないとき (取得 0) は橙)、
+  検索したのに「参照:」も URL も無い回答には「参照なし」(橙)、別回答の切り替え (1/3)、「検索して答え直す」(検索なしのときだけ)、
+  「短く」「率直に」「反対の立場で」、再生成、コピー。過去ターンには付けない。
+- **再生成の意味論**: 同じユーザーターンをもう一度。いまの回答は `outputVariants` に退避し、選択中の回答だけを
+  次の run が履歴に折り込む。「短く」「率直に」「検索して」はユーザーターンの末尾に 1 行足して送り
+  (`AppAnswerDirective.instruction`)、折り込んだ履歴もその文面を持つ (キャッシュの前提はモデルが見た通りの描き直し)。
+  表示の `outputPromptText` は元の質問のまま、指示は `outputDirective`。
+  「検索して答え直す」は Online 固定 (Online は必ず検索して読む。docs/WEB_SEARCH.md §2)。指示行は「1〜2 ページを fetch_page で読み、
+  本文に基づいて答え、URL を『参照:』に挙げる」まで求める (2026-09-02 夜のレシピの会話で、検索 1 回・取得 0・
+  参照なしで記憶から書いた回答が出たため)。「反対の立場で」は追加ターン (`askFollowUp`)。
+- **文法失敗の再試行**: decode service の `structured_output_failure` (最初のトークンが迷子の制御トークン、
+  2026-09-02 23:00 のレシピの再生成で 1 件) は同じラウンドを 1 回だけやり直す。ツール宣言はラウンドで変えない
+  (変えるとプロンプトキャッシュが宣言の位置から外れる)。詳細は docs/WEB_SEARCH.md §2。
+- **指示層** (`AppPersona`): Inspector の「指示」に自認・あなたについて・答え方の 3 欄。
+  `~/Library/Application Support/Tsugumi/persona.json` に 1 枚。空でなければシステムプロンプトの先頭に入り、
+  ツール無し (Offline で索引なし、Ornith) でも付く。3 欄とも空ならシステムプロンプト自体を足さない。
+  既定は自認だけ「あなたは Tsugumi。この Mac の中だけで動くローカル AI アシスタントです。」。
+- **URL をクリックで開く**: Markdown のリンクは `.link` に URL を持ち、裸の URL (「参照:」の行) は
+  描画側で検出してリンクにする (swift-markdown の autolink 拡張は付けていない)。日本語の句読点で URL を切る。
+
+テスト: `Tests/TsugumiApp/Core/State/AppModelAnswerActionsTests.swift` (再生成・別回答・追随・検索して答え直す・
+指示層・コンテキスト・再起動後の復元)、`ResponseMarkdownRendererTests` (リンクと裸 URL)。
+
 ## 5. 設定ファイル
 
 `mac-app-settings-<モデルdir名>.json` をモデルディレクトリの隣に 1 モデル 1 枚。
 二モデルでサンプラも thinking 既定も違うため、共有ファイルをやめた
 (旧 `mac-app-settings.json` は読まれなくなる。作り直しで困る値は無い)。
+アプリ共通のものは `~/Library/Application Support/Tsugumi/` に: `chats.json` (会話)、`web-search.json` (キー)、
+`persona.json` (指示層)。
 
 ## 6. スモークの回し方
 

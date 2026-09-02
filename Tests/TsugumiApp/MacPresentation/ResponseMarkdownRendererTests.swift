@@ -39,7 +39,8 @@ import Testing
 
         let linkRange = (text as NSString).range(of: "link")
         #expect(result.attributedString.attribute(.link, at: linkRange.location,
-                                                  effectiveRange: nil) == nil)
+                                                  effectiveRange: nil) as? URL
+            == URL(string: "https://example.com"))
         let linkColor = result.attributedString.attribute(
             .foregroundColor, at: linkRange.location, effectiveRange: nil) as? NSColor
         #expect(linkColor?.isEqual(NSColor.linkColor) == true)
@@ -58,6 +59,38 @@ import Testing
         let strikeRange = (text as NSString).range(of: "obsolete")
         #expect(result.attributedString.attribute(
             .strikethroughStyle, at: strikeRange.location, effectiveRange: nil) != nil)
+    }
+
+    @Test func bareURLsAreLinkedWithoutTheirTrailingPunctuation() throws {
+        let source = "参照: https://example.jp/w、https://ja.wikipedia.org/wiki/淀城。\n\n(https://example.com/a) と `https://code.example/x`"
+        let result = ResponseMarkdownRenderer().render(source)
+        let string = result.attributedString
+        let text = string.string
+
+        func link(at needle: String) -> URL? {
+            let range = (text as NSString).range(of: needle)
+            return string.attribute(.link, at: range.location, effectiveRange: nil) as? URL
+        }
+        #expect(link(at: "https://example.jp/w") == URL(string: "https://example.jp/w"))
+        #expect(link(at: "https://ja.wikipedia.org") == URL(string: "https://ja.wikipedia.org/wiki/淀城"))
+        #expect(link(at: "https://example.com/a") == URL(string: "https://example.com/a"))
+        // The punctuation after each URL is plain text.
+        for needle in ["、https", "。", ") と"] {
+            let range = (text as NSString).range(of: needle)
+            #expect(string.attribute(.link, at: range.location, effectiveRange: nil) == nil, "\(needle)")
+        }
+        // Inside code nothing is linked.
+        #expect(link(at: "https://code.example/x") == nil)
+    }
+
+    @Test func aLinkWithoutAUsableDestinationOnlyLooksLikeOne() throws {
+        let result = ResponseMarkdownRenderer().render("[記事](淀城) と [空]()")
+        let text = result.attributedString.string
+        let range = (text as NSString).range(of: "記事")
+        #expect(result.attributedString.attribute(.link, at: range.location, effectiveRange: nil) == nil)
+        let color = result.attributedString.attribute(
+            .foregroundColor, at: range.location, effectiveRange: nil) as? NSColor
+        #expect(color?.isEqual(NSColor.linkColor) == true)
     }
 
     @Test func unfinishedFenceStillRendersAsCode() throws {

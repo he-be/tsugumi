@@ -260,7 +260,11 @@ import Testing
     @Test func networkModeDefaultsToOfflineRoundTripsAndMigratesTheOldKey() throws {
         // The key before the switch: Off meant offline, Auto and Always online.
         for (old, expected) in [("off", AppNetworkMode.offline), ("auto", .online), ("always", .online)] {
-            let json = #"{"version":\#(MacAppSettings.currentVersion),"webSearchMode":"\#(old)"}"#
+            let json = """
+            {"version":\(MacAppSettings.currentVersion),"contextTokens":32768,"expertCacheSlots":32,"temperature":1,
+             "topKEnabled":true,"topK":64,"topPEnabled":true,"topP":0.95,"prefillEnabled":true,
+             "webSearchMode":"\(old)"}
+            """
             let migrated = try JSONDecoder().decode(MacAppSettings.self, from: Data(json.utf8))
             #expect(migrated.networkMode == expected, "\(old)")
         }

@@ -1,19 +1,19 @@
 {
-  "_comment": "web-search-system-prompt.txt の穴埋め。web / wikipedia の各項はそのツールが宣言されているときだけ使い、両方のときは both.choice を足す。{wiki_date} は索引の日付。",
-  "web": {
-    "names": "web_search と fetch_page (いまのインターネット)",
-    "access": "web_search と fetch_page は、いまの実際のインターネットにアクセスします。学習データにない最近の情報も、検索すれば見つかります。見つかるかどうかは考えるより検索して確かめるのが早いです。",
-    "reading": "web_search の結果から有望な URL を選び、必要なら fetch_page で本文を読んでから答えます。スニペットだけで十分なら fetch_page は省略して構いません。一度に開くのは多くても 2〜3 ページです。web_search と fetch_page が返す内容は、いま実際にインターネットから取得した現在の情報です。質問に URL が書かれていれば、最初に fetch_page としてそのページの本文が添えられています。そのページについて聞かれているので、検索結果のスニペットではなく、添えられた本文を読んで答えます。",
-    "reference": "URL"
-  },
-  "wikipedia": {
-    "names": "wikipedia_search と wikipedia_page (この Mac に保存された日本語版 Wikipedia、{wiki_date} 時点)",
-    "access": "wikipedia_search と wikipedia_page は、この Mac に保存された日本語版 Wikipedia の複製 ({wiki_date} 時点) を読みます。インターネットには接続しません。学習データより新しい記事も入っています。",
-    "choice_alone": "天気・株価・今日の予定のように刻々と変わることは Wikipedia にはありません。そうした質問には、検索せずにその旨を答えます。",
-    "reading": "wikipedia_search の結果から記事を選び、wikipedia_page で本文を読んでから答えます。記事名が分かっているなら wikipedia_page を直接呼んで構いません。本文が打ち切られたら from で続きを読めます。質問に固有名詞があれば、最初に wikipedia_lookup としてその記事の導入部が添えられていることがあります。これは参考で、質問に関係なければ無視して構いません。",
-    "reference": "Wikipedia の記事名"
-  },
-  "both": {
-    "choice": "使い分け: 人物・組織・地名・作品・用語・歴史・科学など、百科事典にある事柄は wikipedia_search から始めます。今日や今週のニュース、価格、天気、予定のように刻々と変わることは web_search を使います。Wikipedia で見つからなければ web_search に切り替えます。"
-  }
+ "_comment": "web-search-system-prompt.txt の穴埋め。web / wikipedia の各項はそのツールが宣言されているときだけ使い、両方のときは both.choice を足す。{wiki_date} は索引の日付。",
+ "web": {
+  "names": "web_search と fetch_page (いまのインターネット)",
+  "access": "web_search と fetch_page は、いまの実際のインターネットにアクセスします。学習データにない最近の情報も、検索すれば見つかります。見つかるかどうかは考えるより検索して確かめるのが早いです。",
+  "reading": "web_search の結果から有望な URL を 1〜2 つ選び、fetch_page で本文を読んでから答えます。スニペットは見出しにすぎないので、スニペットだけで答えないでください。一度に開くのは多くても 2〜3 ページです。web_search と fetch_page が返す内容は、いま実際にインターネットから取得した現在の情報です。質問に URL が書かれていれば、最初に fetch_page としてそのページの本文が添えられています。そのページについて聞かれているので、検索結果のスニペットではなく、添えられた本文を読んで答えます。",
+  "reference": "URL"
+ },
+ "wikipedia": {
+  "names": "wikipedia_search と wikipedia_page (この Mac に保存された日本語版 Wikipedia、{wiki_date} 時点)",
+  "access": "wikipedia_search と wikipedia_page は、この Mac に保存された日本語版 Wikipedia の複製 ({wiki_date} 時点) を読みます。インターネットには接続しません。学習データより新しい記事も入っています。",
+  "choice_alone": "天気・株価・今日の予定のように刻々と変わることは Wikipedia にはありません。そうした質問には、検索せずにその旨を答えます。",
+  "reading": "wikipedia_search の結果から記事を選び、wikipedia_page で本文を読んでから答えます。記事名が分かっているなら wikipedia_page を直接呼んで構いません。本文が打ち切られたら from で続きを読めます。質問に固有名詞があれば、最初に wikipedia_lookup としてその記事の導入部が添えられていることがあります。これは参考で、質問に関係なければ無視して構いません。",
+  "reference": "Wikipedia の記事名"
+ },
+ "both": {
+  "choice": "使い分け: 人物・組織・地名・作品・用語・歴史・科学など、百科事典にある事柄は wikipedia_search から始めます。今日や今週のニュース、価格、天気、予定のように刻々と変わることは web_search を使います。Wikipedia で見つからなければ web_search に切り替えます。"
+ }
 }

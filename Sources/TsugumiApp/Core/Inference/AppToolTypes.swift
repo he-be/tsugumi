@@ -45,12 +45,35 @@ public struct AppToolDefinition: Equatable, Sendable {
     }
 }
 
-/// The three `tool_choice` shapes the app path uses. `required` forces a
-/// call through the grammar (the server pins one); `none` hides the tools.
-public enum AppToolChoice: String, Equatable, Sendable {
+/// The `tool_choice` shapes the app path uses. `required` forces a call
+/// through the grammar; `function` forces a call of one named tool;
+/// `none` hides the tools. Travels as a string (`rawValue`) to the decode
+/// service.
+public enum AppToolChoice: Equatable, Sendable, RawRepresentable {
     case auto
     case required
     case none
+    case function(name: String)
+
+    public var rawValue: String {
+        switch self {
+        case .auto: return "auto"
+        case .required: return "required"
+        case .none: return "none"
+        case .function(let name): return "function:" + name
+        }
+    }
+
+    public init?(rawValue: String) {
+        switch rawValue {
+        case "auto": self = .auto
+        case "required": self = .required
+        case "none": self = .none
+        default:
+            guard rawValue.hasPrefix("function:"), rawValue.count > "function:".count else { return nil }
+            self = .function(name: String(rawValue.dropFirst("function:".count)))
+        }
+    }
 }
 
 /// What a tool returned to the model, plus a short label for the trace the

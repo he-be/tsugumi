@@ -117,6 +117,9 @@ private enum Style {
         var code = false
         var strikethrough = false
         var link = false
+        /// Where the link goes; set only for a destination that parses as
+        /// a URL, so a click opens exactly what the model wrote.
+        var linkURL: URL?
     }
 
     static func baseAttributes() -> [NSAttributedString.Key: Any] {
@@ -141,10 +144,13 @@ private enum Style {
             values[.strikethroughStyle] = NSUnderlineStyle.single.rawValue
         }
         if inline.link {
-            // Styled as a link, deliberately not a `.link` attribute: the
-            // transcript never opens URLs on its own.
             values[.foregroundColor] = NSColor.linkColor
             values[.underlineStyle] = NSUnderlineStyle.single.rawValue
+            // A click opens the URL in the browser (the text view handles
+            // `.link`). References without a usable URL only look like one.
+            if let url = inline.linkURL {
+                values[.link] = url
+            }
         }
         return values
     }
@@ -428,7 +434,14 @@ private struct Builder: @MainActor MarkupVisitor {
     private mutating func visitInline(_ markup: Markup, block: Style.BlockKind) {
         switch markup {
         case let text as Text:
-            append(text.string, block: block)
+            // The parser has no autolink extension attached, so a bare URL
+            // (the "参照:" lines the prompt asks for) arrives as text and is
+            // linked here; inside a link or code it is left alone.
+            if inline.link || inline.code {
+                append(text.string, block: block)
+            } else {
+                appendAutolinked(text.string, block: block)
+            }
         case is SoftBreak, is LineBreak:
             // A line break inside the paragraph, not a new paragraph: the
             // model's line structure stays visible without the paragraph
@@ -447,8 +460,11 @@ private struct Builder: @MainActor MarkupVisitor {
             withInline({ $0.italic = true }, markup, block: block)
         case is Strikethrough:
             withInline({ $0.strikethrough = true }, markup, block: block)
-        case is Link:
-            withInline({ $0.link = true }, markup, block: block)
+        case let link as Link:
+            withInline({
+                $0.link = true
+                $0.linkURL = Self.url(from: link.destination)
+            }, markup, block: block)
         case let image as Image:
             // Never fetched. The alt text stands in, styled like a link so
             // it reads as a reference; without alt text the URL does.
@@ -465,6 +481,46 @@ private struct Builder: @MainActor MarkupVisitor {
                 visitInline(child, block: block)
             }
         }
+    }
+
+    /// Bare `http(s)://` runs in a text node become links. Trailing
+    /// punctuation the model wrote after the URL (a full stop, a closing
+    /// bracket, a Japanese comma) stays text.
+    private mutating func appendAutolinked(_ text: String, block: Style.BlockKind) {
+        var cursor = text.startIndex
+        for match in text.matches(of: Self.bareURL) {
+            append(String(text[cursor..<match.range.lowerBound]), block: block)
+            var url = String(match.output)
+            var trailing = ""
+            while let last = url.last, Self.trailingPunctuation.contains(last) {
+                trailing.insert(last, at: trailing.startIndex)
+                url.removeLast()
+            }
+            if let parsed = Self.url(from: url) {
+                let saved = inline
+                inline.link = true
+                inline.linkURL = parsed
+                append(url, block: block)
+                inline = saved
+            } else {
+                append(url, block: block)
+            }
+            append(trailing, block: block)
+            cursor = match.range.upperBound
+        }
+        append(String(text[cursor...]), block: block)
+    }
+
+    // Japanese punctuation ends a URL (a path can carry kana and kanji,
+    // so only the punctuation is excluded, not the script).
+    nonisolated(unsafe) private static let bareURL = /https?:\/\/[^\s<>"'、。，．（）「」『』【】]+/
+    private static let trailingPunctuation: Set<Character> = [".", ",", ";", ":", "!", "?", "。", "、", ")", "]", "）"]
+
+    static func url(from destination: String?) -> URL? {
+        guard let destination, let url = URL(string: destination),
+              let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https",
+              url.host != nil else { return nil }
+        return url
     }
 
     private mutating func withInline(_ change: (inout Style.Inline) -> Void,

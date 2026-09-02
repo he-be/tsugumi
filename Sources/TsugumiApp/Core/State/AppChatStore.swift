@@ -92,6 +92,9 @@ struct PersistedChat: Codable, Equatable {
     var outputReasoningText: String = ""
     var outputContinuationTurns: [AppChatTurn] = []
     var outputToolTrace: [AppToolTraceEntry] = []
+    var outputDirective: AppAnswerDirective?
+    var outputVariants: [AppAnswerVariant] = []
+    var selectedVariantIndex: Int = 0
 
     init(promptText: String = "",
          attachedImagePaths: [String] = [],
@@ -101,7 +104,10 @@ struct PersistedChat: Codable, Equatable {
          outputText: String = "",
          outputReasoningText: String = "",
          outputContinuationTurns: [AppChatTurn] = [],
-         outputToolTrace: [AppToolTraceEntry] = []) {
+         outputToolTrace: [AppToolTraceEntry] = [],
+         outputDirective: AppAnswerDirective? = nil,
+         outputVariants: [AppAnswerVariant] = [],
+         selectedVariantIndex: Int = 0) {
         self.promptText = promptText
         self.attachedImagePaths = attachedImagePaths
         self.turns = turns
@@ -111,11 +117,15 @@ struct PersistedChat: Codable, Equatable {
         self.outputReasoningText = outputReasoningText
         self.outputContinuationTurns = outputContinuationTurns
         self.outputToolTrace = outputToolTrace
+        self.outputDirective = outputDirective
+        self.outputVariants = outputVariants
+        self.selectedVariantIndex = selectedVariantIndex
     }
 
     private enum CodingKeys: String, CodingKey {
         case promptText, attachedImagePaths, turns, outputPromptText, outputImagePaths
         case outputText, outputReasoningText, outputContinuationTurns, outputToolTrace
+        case outputDirective, outputVariants, selectedVariantIndex
     }
 
     /// Fields added after the first file version decode as their defaults,
@@ -137,6 +147,13 @@ struct PersistedChat: Codable, Equatable {
             [AppChatTurn].self, forKey: .outputContinuationTurns) ?? []
         outputToolTrace = try container.decodeIfPresent(
             [AppToolTraceEntry].self, forKey: .outputToolTrace) ?? []
+        outputDirective = try container.decodeIfPresent(
+            AppAnswerDirective.self, forKey: .outputDirective)
+        outputVariants = try container.decodeIfPresent(
+            [AppAnswerVariant].self, forKey: .outputVariants) ?? []
+        selectedVariantIndex = min(
+            max(try container.decodeIfPresent(Int.self, forKey: .selectedVariantIndex) ?? 0, 0),
+            outputVariants.count)
     }
 }
 
@@ -152,7 +169,10 @@ extension PersistedChat {
             outputText: session.outputText,
             outputReasoningText: session.outputReasoningText,
             outputContinuationTurns: session.outputContinuationTurns,
-            outputToolTrace: session.outputToolTrace)
+            outputToolTrace: session.outputToolTrace,
+            outputDirective: session.outputDirective,
+            outputVariants: session.outputVariants,
+            selectedVariantIndex: session.selectedVariantIndex)
     }
 
     /// Rebuilds a session, dropping image paths whose files are gone — a
@@ -185,6 +205,9 @@ extension PersistedChat {
             }
             return entry
         }
+        session.outputDirective = outputDirective
+        session.outputVariants = outputVariants
+        session.selectedVariantIndex = selectedVariantIndex
         return session
     }
 }

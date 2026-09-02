@@ -21,6 +21,8 @@ struct StatusHUDView: View {
             if showsMetrics {
                 HUDMetricView(value: rateText, label: L("tok/s"), animated: !model.isRunning)
                 HUDMetricView(value: tokensText, label: L("tokens"), animated: !model.isRunning)
+                HUDMetricView(value: contextText, label: L("context"), animated: !model.isRunning)
+                    .help(L("Tokens the last round occupied, of the context the model was loaded with."))
                 HUDMetricView(value: memoryText, label: L("memory"), animated: !model.isRunning)
             }
         }
@@ -51,6 +53,15 @@ struct StatusHUDView: View {
 
     private var memoryText: String {
         MetricFormat.memory(model.currentProcessMemoryBytes)
+    }
+
+    /// "5.2K / 32K": the prompt as prefilled plus the answer, against the
+    /// window. The number to watch on a long chat — past it the oldest
+    /// turns fall out of what the model sees.
+    private var contextText: String {
+        let limit = MetricFormat.kiloTokens(model.maxContextTokens)
+        guard let used = model.contextUsedTokens else { return "\u{2014} / \(limit)" }
+        return "\(MetricFormat.kiloTokens(used)) / \(limit)"
     }
 
     private var showsMetrics: Bool {

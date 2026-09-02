@@ -106,12 +106,10 @@ struct OutputPaneView: View {
                     && model.outputResponsePlainText.isEmpty
                     && model.outputReasoningText.isEmpty)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .overlay(alignment: .topTrailing) {
-                    if !model.isSelectedChatGenerating && !model.outputResponsePlainText.isEmpty {
-                        copyResponseButton
-                            .padding(8)
-                    }
-                }
+            if !model.isSelectedChatGenerating && !model.outputResponsePlainText.isEmpty {
+                AnswerActionsRow(model: model)
+                    .padding(.top, 2)
+            }
         }
         .padding(.horizontal, 24)
         .padding(.vertical, 20)
@@ -241,35 +239,6 @@ struct OutputPaneView: View {
                     .foregroundStyle(.red)
             }
         }
-    }
-
-    private var copyResponseButton: some View {
-        Button {
-            copyResponse()
-        } label: {
-            Image(systemName: responseCopyFeedbackID == nil
-                  ? "doc.on.doc"
-                  : "checkmark.circle.fill")
-                .font(.callout.weight(.medium))
-                .contentTransition(.symbolEffect(.replace))
-                .foregroundStyle(responseCopyFeedbackID == nil
-                                 ? Color.secondary
-                                 : TsugumiMacTheme.accentColor)
-                .frame(width: 28, height: 28)
-                .contentShape(Circle())
-                .background(.regularMaterial, in: Circle())
-                .overlay {
-                    Circle().stroke(.separator.opacity(0.5), lineWidth: 0.5)
-                }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(responseCopyFeedbackID == nil
-                            ? L("Copy response")
-                            : L("Response copied"))
-        .accessibilityHint(L("Copies only the generated answer"))
-        .help(responseCopyFeedbackID == nil
-              ? L("Copy response")
-              : L("Response copied"))
     }
 
     private var emptyPlaceholderContent: some View {
@@ -606,6 +575,13 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         textView.textContainer?.lineFragmentPadding = 0
         textView.isAutomaticLinkDetectionEnabled = false
         textView.isAutomaticDataDetectionEnabled = false
+        // `.link` runs come styled by the renderer; a click opens the URL
+        // in the browser (the text view's default for `.link`).
+        textView.linkTextAttributes = [
+            .foregroundColor: NSColor.linkColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+            .cursor: NSCursor.pointingHand,
+        ]
         textView.setAccessibilityLabel(L("Conversation transcript"))
         scrollView.documentView = textView
         return scrollView

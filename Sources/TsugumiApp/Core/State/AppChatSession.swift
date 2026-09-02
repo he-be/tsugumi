@@ -24,8 +24,26 @@ public final class AppChatSession: Identifiable {
     public internal(set) var outputContinuationTurns: [AppChatTurn] = []
     /// The same rounds as the UI lists them.
     public internal(set) var outputToolTrace: [AppToolTraceEntry] = []
+    /// The line added to the question for this answer (a regeneration), or
+    /// nil for the question as typed. `outputPromptText` stays the question.
+    public internal(set) var outputDirective: AppAnswerDirective?
+    /// Earlier answers to the live turn, oldest first, set aside by
+    /// regenerations. The live output fields hold the one on display.
+    public internal(set) var outputVariants: [AppAnswerVariant] = []
+    /// Which answer is on display: an index into `outputVariants`, or
+    /// `outputVariants.count` for the latest one (the live fields).
+    public internal(set) var selectedVariantIndex: Int = 0
 
     public init() {}
+
+    /// The user turn as the model saw it: the question plus the directive.
+    public var outputPromptAsSent: String {
+        outputDirective?.apply(to: outputPromptText) ?? outputPromptText
+    }
+
+    /// One more than the variants set aside: the answers there are to
+    /// choose between.
+    public var answerCount: Int { outputVariants.count + 1 }
 
     /// Sidebar label: the first sent prompt's first line, else a stand-in.
     public var title: String {
