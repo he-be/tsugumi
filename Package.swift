@@ -21,6 +21,9 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
         .package(url: "https://github.com/apple/swift-nio.git", exact: "2.101.3"),
+        // GFM parser for the Mac app's response renderer: tables, HTML nodes
+        // and nesting come back as a typed AST rather than flattened runs.
+        .package(url: "https://github.com/swiftlang/swift-markdown.git", from: "0.5.0"),
     ],
     targets: [
         .target(
@@ -87,7 +90,10 @@ let package = Package(
         ),
         .target(
             name: "TsugumiMacPresentation",
-            dependencies: ["TsugumiAppCore"],
+            dependencies: [
+                "TsugumiAppCore",
+                .product(name: "Markdown", package: "swift-markdown"),
+            ],
             path: "Sources/TsugumiApp/MacPresentation"
         ),
         .target(
@@ -179,7 +185,8 @@ let package = Package(
         .testTarget(
             name: "TsugumiMacPresentationTests",
             dependencies: ["TsugumiAppCore", "TsugumiMacPresentation"],
-            path: "Tests/TsugumiApp/MacPresentation"
+            path: "Tests/TsugumiApp/MacPresentation",
+            resources: [.copy("Fixtures")]
         ),
         .testTarget(
             name: "TsugumiServerTests",

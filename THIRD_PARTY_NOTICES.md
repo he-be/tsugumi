@@ -43,6 +43,8 @@ The following table covers the complete graph reported by
 | [swift-crypto](https://github.com/apple/swift-crypto) | 4.5.0 | Apache-2.0; upstream NOTICE applies |
 | [swift-asn1](https://github.com/apple/swift-asn1) | 1.7.0 | Apache-2.0; upstream NOTICE applies |
 | [yyjson](https://github.com/ibireme/yyjson) | 0.12.0 | MIT |
+| [swift-markdown](https://github.com/swiftlang/swift-markdown) | 0.8.0 | Apache-2.0 with Runtime Library Exception |
+| [swift-cmark](https://github.com/swiftlang/swift-cmark) | 0.8.0 | BSD-2-Clause (cmark); see COPYING for bundled components |
 
 No copyleft or custom non-commercial license was found in this resolved graph.
 The dependency license files remain authoritative. For binary distribution,

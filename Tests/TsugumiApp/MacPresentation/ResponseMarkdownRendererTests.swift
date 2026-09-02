@@ -60,27 +60,162 @@ import Testing
             .strikethroughStyle, at: strikeRange.location, effectiveRange: nil) != nil)
     }
 
-    @Test func unfinishedFenceFallsBackToExactRawText() {
+    @Test func unfinishedFenceStillRendersAsCode() throws {
         let source = "Before\n\n```python\nprint('unfinished')"
         let result = ResponseMarkdownRenderer().render(source)
 
-        #expect(result.usedFallback)
-        #expect(result.attributedString.string == source)
+        #expect(!result.usedFallback)
+        let text = result.attributedString.string
+        #expect(!text.contains("```"))
+        let codeRange = (text as NSString).range(of: "print('unfinished')")
+        #expect(codeRange.location != NSNotFound)
+        let font = try #require(result.attributedString.attribute(
+            .font, at: codeRange.location, effectiveRange: nil) as? NSFont)
+        #expect(font.isFixedPitch)
     }
 
-    @Test func unsupportedHTMLTableAndImageStayReadableAsRawText() {
-        let renderer = ResponseMarkdownRenderer()
-        let samples = [
-            "<div>Never execute this</div>",
-            "| A | B |\n|---|---|\n| 1 | 2 |",
-            "![remote](https://example.com/image.png)",
-        ]
+    @Test func gfmTableRendersAsTextTableBlocks() throws {
+        let source = """
+        ### まとめ
+        | 特徴 | 内容 |
+        | :--- | :--- |
+        | **Tensor コア** | 行列演算専用 |
+        | NVLink | GPU間通信 |
 
-        for source in samples {
-            let result = renderer.render(source)
-            #expect(result.usedFallback)
-            #expect(result.attributedString.string == source)
-        }
+        参照:
+        * [NVIDIA](https://www.nvidia.com/)
+        """
+        let result = ResponseMarkdownRenderer().render(source)
+
+        #expect(!result.usedFallback)
+        let rendered = result.attributedString
+        let text = rendered.string
+        #expect(text.contains("Tensor コア"))
+        #expect(text.contains("GPU間通信"))
+        #expect(text.contains("参照:"))
+        #expect(!text.contains("|"))
+        #expect(!text.contains(":---"))
+
+        // Every cell is its own paragraph that carries a table block; the
+        // header row is bold; text after the table carries no block.
+        let headerRange = (text as NSString).range(of: "特徴")
+        let headerStyle = try #require(rendered.attribute(
+            .paragraphStyle, at: headerRange.location, effectiveRange: nil) as? NSParagraphStyle)
+        #expect(headerStyle.textBlocks.first is NSTextTableBlock)
+        let headerFont = try #require(rendered.attribute(
+            .font, at: headerRange.location, effectiveRange: nil) as? NSFont)
+        #expect(headerFont.fontDescriptor.symbolicTraits.contains(.bold))
+
+        let cellRange = (text as NSString).range(of: "GPU間通信")
+        let cellBlock = try #require((rendered.attribute(
+            .paragraphStyle, at: cellRange.location, effectiveRange: nil) as? NSParagraphStyle)?
+            .textBlocks.first as? NSTextTableBlock)
+        #expect(cellBlock.startingRow == 2)
+        #expect(cellBlock.startingColumn == 1)
+        #expect(cellBlock.table.numberOfColumns == 2)
+
+        let afterRange = (text as NSString).range(of: "参照:")
+        let afterStyle = try #require(rendered.attribute(
+            .paragraphStyle, at: afterRange.location, effectiveRange: nil) as? NSParagraphStyle)
+        #expect(afterStyle.textBlocks.isEmpty)
+    }
+
+    @Test func htmlStaysLiteralTextWithoutFailingTheWholeAnswer() throws {
+        let renderer = ResponseMarkdownRenderer()
+        let source = """
+        ### 1. std::vector<int> （動的配列）
+        文中の std::map<std::string, int> と `<html>` と <b>太字</b>。
+
+        <div>Never execute this</div>
+        """
+        let result = renderer.render(source)
+
+        #expect(!result.usedFallback)
+        let text = result.attributedString.string
+        #expect(text.contains("std::vector<int>"))
+        #expect(text.contains("std::map<std::string, int>"))
+        #expect(text.contains("<html>"))
+        #expect(text.contains("<b>太字</b>"))
+        #expect(text.contains("<div>Never execute this</div>"))
+        let headingRange = (text as NSString).range(of: "std::vector<int>")
+        let font = try #require(result.attributedString.attribute(
+            .font, at: headingRange.location, effectiveRange: nil) as? NSFont)
+        #expect(font.pointSize > NSFont.systemFontSize)
+    }
+
+    @Test func boldAroundJapaneseBracketsRendersBold() throws {
+        let source = "C++における `std::vector` は**「可変長配列」**、`std::map` は**「連想コンテナ」**です。"
+        let result = ResponseMarkdownRenderer().render(source)
+
+        #expect(!result.usedFallback)
+        let text = result.attributedString.string
+        #expect(!text.contains("**"))
+        #expect(text.contains("「可変長配列」"))
+        let boldRange = (text as NSString).range(of: "可変長配列")
+        let font = try #require(result.attributedString.attribute(
+            .font, at: boldRange.location, effectiveRange: nil) as? NSFont)
+        #expect(font.fontDescriptor.symbolicTraits.contains(.bold))
+    }
+
+    @Test func bulletsNestedUnderOrderedItemsStayBullets() {
+        let source = """
+        1. **`<html>`**
+            *   ルート要素です。
+            *   `lang` を書けます。
+        2. **`<head>`**
+            *   設定を書く場所です。
+        """
+        let result = ResponseMarkdownRenderer().render(source)
+
+        #expect(!result.usedFallback)
+        let text = result.attributedString.string
+        #expect(text.contains("1.\t<html>"))
+        #expect(text.contains("•\tルート要素です。"))
+        #expect(text.contains("•\t設定を書く場所です。"))
+        #expect(text.contains("2.\t<head>"))
+        #expect(!text.contains("2.\t設定"))
+    }
+
+    @Test func breakTagInsideTableCellBecomesLineBreak() throws {
+        let source = """
+        | 項目 | Python |
+        | :--- | :--- |
+        | **主な用途** | AI<br>データ<br/>Web |
+        """
+        let result = ResponseMarkdownRenderer().render(source)
+
+        #expect(!result.usedFallback)
+        let text = result.attributedString.string
+        #expect(!text.contains("<br"))
+        #expect(text.contains("AI\u{2028}データ\u{2028}Web"))
+        let cellRange = (text as NSString).range(of: "データ")
+        let style = try #require(result.attributedString.attribute(
+            .paragraphStyle, at: cellRange.location, effectiveRange: nil) as? NSParagraphStyle)
+        #expect(style.textBlocks.first is NSTextTableBlock)
+    }
+
+    @Test func imageSyntaxBecomesLinkAndFencedCodeIsUntouched() throws {
+        let source = """
+        画像 ![代替テキスト](https://example.com/a.png) と本文。
+
+        ![](https://example.com/b.png)
+
+        ```markdown
+        ![alt](https://example.com/c.png)
+        ```
+        """
+        let result = ResponseMarkdownRenderer().render(source)
+
+        #expect(!result.usedFallback)
+        let text = result.attributedString.string
+        #expect(text.contains("代替テキスト"))
+        #expect(text.contains("https://example.com/b.png"))
+        #expect(text.contains("![alt](https://example.com/c.png)"))
+        // Links are styled, not clickable, in this renderer; the alt text
+        // gets the same styling an ordinary link does.
+        let linkRange = (text as NSString).range(of: "代替テキスト")
+        #expect(result.attributedString.attribute(
+            .underlineStyle, at: linkRange.location, effectiveRange: nil) != nil)
     }
 
     @Test func latexRemainsReadableText() {
@@ -343,7 +478,10 @@ import Testing
             response: partial,
             isTerminal: true)
         #expect(first.mutation == .finalized)
-        #expect(storage.string.hasSuffix(partial))
+        // The unfinished fence is closed for display, so the code already
+        // shows as code; the late closing fence changes nothing visible.
+        #expect(storage.string.hasSuffix("kernel void matmul() {}\n"))
+        #expect(!storage.string.contains("```"))
 
         let updated = controller.synchronize(
             storage: storage,

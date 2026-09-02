@@ -126,6 +126,25 @@ drafter セクションの無い pack では OFF に落ちる。
 オーバー、プロンプトのコツ) と「Try an example」のカードは外し、Generation の
 サンプリング項目は畳んだ状態を既定にした。
 
+## 4c. 回答の Markdown 描画 (2026-09-02)
+
+`ResponseMarkdownRenderer` は swift-markdown (cmark-gfm) の AST を 1 回歩いて
+`NSAttributedString` を組む。以前は Foundation の `AttributedString(markdown:)` が
+返す平らな run 列から構造を推測していて、表の有無・`<…>`・画像記法のどれか 1 つで
+回答全体を素のテキストに落としていた。今は落とさない: 表は `NSTextTable`、HTML は
+書かれたままの文字、閉じていないフェンスもコード、画像は alt (無ければ URL) を
+リンク風に描く。パース前の書き換えは `presentationSource` の 2 つだけ
+(強調の両端の句読点を `**` の外へ出す、太字だけの行を段落にする)。どちらも
+CommonMark と Gemma の日本語の食い違いで、実回答から見つけたもの。
+
+回帰は `Tests/TsugumiApp/MacPresentation/MarkdownCorpusTests.swift`。
+`Fixtures/markdown-corpus/*.md` はサーバで生成した Gemma の実回答で、全件について
+「素に落ちない・記法が残らない」と「モデルが書いた語がすべて画面にある」
+(文字保存) を確かめる。描画がおかしい回答を見つけたら `.md` を 1 枚足す。
+`TSUGUMI_MARKDOWN_CORPUS_JSON=~/Library/Application\ Support/Tsugumi/chats.json`
+で手元の会話履歴にも同じ検査を掛けられ、`TSUGUMI_MARKDOWN_PNG_DIR=<dir>` を足すと
+1 回答 1 枚の PNG が出るので目視できる (どちらもリポジトリには入れない)。
+
 ## 5. 設定ファイル
 
 `mac-app-settings-<モデルdir名>.json` をモデルディレクトリの隣に 1 モデル 1 枚。
