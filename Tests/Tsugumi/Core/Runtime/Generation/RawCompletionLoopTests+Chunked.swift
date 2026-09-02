@@ -61,9 +61,11 @@ extension RawCompletionLoopTests {
         #expect(producer.produceCalls == 0)
         #expect(producer.lastOutputMode == .logits)
         #expect(producer.lastConfig == .production(chunkTokens: 32))
-        #expect(prefills.count == 1)
-        #expect(prefills.first?.0 == promptIDs.count)
-        #expect(prefills.first?.1 == promptIDs.count)
+        // The total is announced before the chunk runs, then the chunk lands.
+        #expect(prefills.count == 2)
+        #expect(prefills.first?.0 == 0)
+        #expect(prefills.last?.0 == promptIDs.count)
+        #expect(prefills.allSatisfy { $0.1 == promptIDs.count })
     }
 
     @Test func chunkedLogitsSeedProducesFirstToken() async throws {

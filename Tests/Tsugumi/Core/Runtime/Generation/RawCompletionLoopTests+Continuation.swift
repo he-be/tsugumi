@@ -95,6 +95,8 @@ extension RawCompletionLoopTests {
         #expect(producer.resetCalls == 0)
         #expect(producer.prepareCalls == [cached])
         #expect(producer.prefillRanges == [cached..<prompt.count])
+        // The cached prefix counts as done from the first report.
+        #expect(progress.first?.0 == cached)
         #expect(progress.last?.0 == prompt.count)
         #expect(progress.last?.1 == prompt.count)
         #expect(result.prefillTokens == prompt.count)

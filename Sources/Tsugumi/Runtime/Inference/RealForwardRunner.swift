@@ -983,7 +983,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                         promptStartPosition: startPosition,
                                         spans: imageSpans,
                                         softTokens: images),
-                head: spanIndex == spans.count - 1 ? .finalRow : .none)
+                head: spanIndex == spans.count - 1 ? .finalRow : .none,
+                onLayerProgress: { layersDone, layerCount in
+                    // Inside a chunk the caller would otherwise hear nothing
+                    // for the whole 2048-token pass; a layer-proportional count
+                    // keeps the app's "Prefill (done/total)" moving. Strictly
+                    // below the chunk's own completion so the numbers only
+                    // ever rise.
+                    let partial = span.tokenCount * layersDone / layerCount
+                    onProgress(span.tokenOffset + min(partial, span.tokenCount - 1))
+                })
             onProgress(span.completedCount)
         }
         if PrefillGPUProfile.isEnabled {
@@ -1201,7 +1210,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                      vision: VisionChunkPlan = .none,
                                      head: PrefillHeadRows,
                                      greedyRows: MTLBuffer? = nil,
-                                     speculativeBlock: Bool = false) async throws {
+                                     speculativeBlock: Bool = false,
+                                     onLayerProgress: (_ layersDone: Int, _ layerCount: Int) -> Void
+                                        = { _, _ in }) async throws {
         guard !tokens.isEmpty else { return }
         // 先読みは投げっぱなしにできない: 待たずにこの関数を抜けると、飛行中の
         // 読み出しが、別の用途に割り当て直されたスロットへ書き込みうる。
@@ -1547,6 +1558,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         }
 
         for L in 0..<cfg.numLayers {
+            // Reached once the previous layer's attention has been waited for;
+            // its routed tiles may still be in flight, which is close enough
+            // for a progress figure.
+            if L > 0 { onLayerProgress(L, cfg.numLayers) }
             let frontStart = PrefillHostProfile.mark()
             model.beginOpeningRoutedExpertStreamer(layer: L)
             let views = layerViews[L]

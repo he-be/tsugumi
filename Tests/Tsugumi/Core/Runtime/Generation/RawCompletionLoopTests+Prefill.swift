@@ -14,7 +14,9 @@ extension RawCompletionLoopTests {
             config: GenerationConfig(maxNewTokens: 4, temperature: 0))
 
         #expect(result.prefillTokens == promptIDs.count)
-        #expect(collected.prefills.count == promptIDs.count)
+        // One report up front (0/total) and then one per replayed token.
+        #expect(collected.prefills.count == promptIDs.count + 1)
+        #expect(collected.prefills.first?.0 == 0)
         #expect(collected.prefills.last?.0 == promptIDs.count)
         #expect(collected.prefills.allSatisfy { $0.1 == promptIDs.count })
     }

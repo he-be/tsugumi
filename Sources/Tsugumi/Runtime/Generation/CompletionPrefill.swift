@@ -88,6 +88,10 @@ func prepareGeneration(producer: any LogitProducer,
     var position = cachedPromptTokens
     var prefillSeed: PrefillSeed?
     let prefillTokens = promptIds[cachedPromptTokens...]
+    // Report the total before any work: the first chunk can be most of the
+    // prompt, and until it lands the caller would not even know how much
+    // there is to wait for. A fully cached prompt reports done == total here.
+    onProgress(.prefill(done: cachedPromptTokens, total: promptIds.count))
     switch prefillConfig.mode {
     case .chunked where producer is any ChunkedPrefillRunner:
         let chunked = producer as! any ChunkedPrefillRunner
