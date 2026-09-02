@@ -18,7 +18,7 @@ struct ErrorBanner: View {
                 Button {
                     model.error = nil
                 } label: {
-                    Label("Dismiss error", systemImage: "xmark")
+                    Label(L("Dismiss error"), systemImage: "xmark")
                         .labelStyle(.iconOnly)
                         .font(.caption.weight(.semibold))
                         .frame(width: 28, height: 28)

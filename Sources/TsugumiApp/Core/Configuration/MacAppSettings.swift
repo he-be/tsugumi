@@ -15,7 +15,6 @@ struct MacAppSettings: Codable, Equatable, Sendable {
     var mtpEnabled: Bool = true
     var thinkingEnabled: Bool = false
     var newlineShortcut: AppNewlineShortcut = .return
-    var showPromptExamples: Bool = true
     var sentPromptBehavior: AppSentPromptBehavior = .keep
     var webSearchMode: AppWebSearchMode = .off
 
@@ -32,7 +31,6 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         case mtpEnabled
         case thinkingEnabled
         case newlineShortcut
-        case showPromptExamples
         case sentPromptBehavior
         case webSearchMode
     }
@@ -49,7 +47,6 @@ struct MacAppSettings: Codable, Equatable, Sendable {
          mtpEnabled: Bool = true,
          thinkingEnabled: Bool = false,
          newlineShortcut: AppNewlineShortcut = .return,
-         showPromptExamples: Bool = true,
          sentPromptBehavior: AppSentPromptBehavior = .keep,
          webSearchMode: AppWebSearchMode = .off) {
         self.version = version
@@ -64,7 +61,6 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         self.mtpEnabled = mtpEnabled
         self.thinkingEnabled = thinkingEnabled
         self.newlineShortcut = newlineShortcut
-        self.showPromptExamples = showPromptExamples
         self.sentPromptBehavior = sentPromptBehavior
         self.webSearchMode = webSearchMode
     }
@@ -97,9 +93,6 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         newlineShortcut = try container.decodeIfPresent(
             AppNewlineShortcut.self,
             forKey: .newlineShortcut) ?? .return
-        showPromptExamples = try container.decodeIfPresent(
-            Bool.self,
-            forKey: .showPromptExamples) ?? true
         sentPromptBehavior = try container.decodeIfPresent(
             AppSentPromptBehavior.self,
             forKey: .sentPromptBehavior) ?? .keep

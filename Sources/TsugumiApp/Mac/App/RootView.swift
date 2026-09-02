@@ -101,11 +101,6 @@ struct RootView: View {
             if model.isSelectedChatReadOnly {
                 readOnlyNotice
             } else {
-                if model.promptText.isEmpty && model.showPromptExamples && !model.isRunning {
-                    PromptExamplesView { preset in
-                        model.promptText = preset.prompt
-                    }
-                }
                 ModelActionBanner(model: model)
                 PromptComposerView(model: model)
             }
@@ -113,7 +108,6 @@ struct RootView: View {
         .padding(.horizontal, 20)
         .padding(.bottom, 16)
         .animation(.smooth(duration: 0.2), value: model.promptText.isEmpty)
-        .animation(.smooth(duration: 0.2), value: model.showPromptExamples)
         .animation(.smooth(duration: 0.2), value: model.isSelectedChatReadOnly)
     }
 
@@ -121,7 +115,7 @@ struct RootView: View {
         HStack(spacing: 8) {
             ProgressView()
                 .controlSize(.small)
-            Text("Generating in another chat — this conversation is read-only until it finishes.")
+            Text(L("Generating in another chat — this conversation is read-only until it finishes."))
                 .font(.callout)
                 .foregroundStyle(.secondary)
         }

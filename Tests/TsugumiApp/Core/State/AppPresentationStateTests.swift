@@ -9,14 +9,14 @@ import Testing
         snapshot.hasStaleRuntime = true
         snapshot.lastStopReason = .maxTokens
         let state = AppPresentationState.resolve(snapshot)
-        #expect(state.label == "Reload required")
+        #expect(state.label == AppLocalization.string("Reload required"))
     }
 
     @Test func loadFailureIsVisibleAndRetryable() {
         let state = AppPresentationState.resolve(Self.installedSnapshot(
             loadState: .failed(.modelLoadFailed("synthetic"))))
-        #expect(state.label == "Model load failed")
-        #expect(state.detail == "Model load failed: synthetic")
+        #expect(state.label == AppLocalization.string("Model load failed"))
+        #expect(state.detail == AppLocalization.string("Model load failed: \("synthetic")"))
         #expect(state.severity == .error)
     }
 
@@ -25,7 +25,7 @@ import Testing
         snapshot.requiresInstallation = true
         snapshot.installReadiness = .failed("disk probe failed")
         let state = AppPresentationState.resolve(snapshot)
-        #expect(state.label == "Storage check failed")
+        #expect(state.label == AppLocalization.string("Storage check failed"))
         #expect(state.detail == "disk probe failed")
         #expect(!state.showsActivity)
     }
@@ -37,18 +37,18 @@ import Testing
 
         snapshot.loadState = .unloading
         state = AppPresentationState.resolve(snapshot)
-        #expect(state.label == "Unloading model")
+        #expect(state.label == AppLocalization.string("Unloading model"))
     }
 
     @Test func installedAndReadyStatesHaveExpectedLabels() {
         var snapshot = Self.installedSnapshot(loadState: .notLoaded)
         var state = AppPresentationState.resolve(snapshot)
-        #expect(state.label == "Installed · Not loaded")
+        #expect(state.label == AppLocalization.string("Installed · Not loaded"))
 
         snapshot.loadState = .ready(modelDirectory: URL(fileURLWithPath: "/tmp/model.moepack"),
                                     loadSeconds: 1)
         state = AppPresentationState.resolve(snapshot)
-        #expect(state.label == "Ready")
+        #expect(state.label == AppLocalization.string("Ready"))
     }
 
     @Test func conversationActionOnlyExposesIdleRecovery() {
@@ -123,7 +123,7 @@ import Testing
 
         let state = AppPresentationState.resolve(snapshot)
 
-        #expect(state.label == "Prefill (128/514)")
+        #expect(state.label == AppLocalization.string("Prefill (\(128)/\(514))"))
     }
 
     private static func installedSnapshot(loadState: AppModelLoadState) -> AppPresentationSnapshot {

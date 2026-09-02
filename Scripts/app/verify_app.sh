@@ -35,6 +35,10 @@ for path in \
     "Resources/Tsugumi_TsugumiAppCore.bundle" \
     "Resources/Tsugumi_TsugumiMac.bundle" \
     "Resources/Tsugumi.icns" \
+    "Resources/en.lproj" \
+    "Resources/ja.lproj" \
+    "Resources/Tsugumi_TsugumiMac.bundle/ja.lproj/Localizable.strings" \
+    "Resources/Tsugumi_TsugumiAppCore.bundle/ja.lproj/Localizable.strings" \
     "Info.plist"
 do
     if [[ -e "$CONTENTS/$path" ]]; then pass "$path"; else fail "$path が無い"; fi

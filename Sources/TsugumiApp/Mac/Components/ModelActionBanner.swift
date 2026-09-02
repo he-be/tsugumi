@@ -39,11 +39,11 @@ struct ModelActionBanner: View {
     private func message(for action: AppModelAction) -> String {
         switch action {
         case .load:
-            return "The model is unloaded. Load it to generate."
+            return L("The model is unloaded. Load it to generate.")
         case .retryLoad:
-            return model.presentation.detail ?? "The model could not be loaded."
+            return model.presentation.detail ?? L("The model could not be loaded.")
         case .reload:
-            return "Settings changed. Reload the model to continue."
+            return L("Settings changed. Reload the model to continue.")
         case .install, .cancelInstall, .cancelLoad, .unload:
             return model.presentation.label
         }
@@ -51,13 +51,13 @@ struct ModelActionBanner: View {
 
     private func buttonTitle(for action: AppModelAction) -> String {
         switch action {
-        case .load: return "Load Model"
-        case .retryLoad: return "Retry Load"
-        case .reload: return "Reload Model"
-        case .install: return "Install"
-        case .cancelInstall: return "Cancel"
-        case .cancelLoad: return "Cancel Load"
-        case .unload: return "Unload Model"
+        case .load: return L("Load Model")
+        case .retryLoad: return L("Retry Load")
+        case .reload: return L("Reload Model")
+        case .install: return L("Install")
+        case .cancelInstall: return L("Cancel")
+        case .cancelLoad: return L("Cancel Load")
+        case .unload: return L("Unload Model")
         }
     }
 

@@ -6,8 +6,8 @@ public enum AppSentPromptBehavior: String, CaseIterable, Codable, Sendable, Iden
 
     public var settingsLabel: String {
         switch self {
-        case .keep: return "Keep Prompt"
-        case .clear: return "Clear Prompt"
+        case .keep: return AppLocalization.string("Keep Prompt")
+        case .clear: return AppLocalization.string("Clear Prompt")
         }
     }
 }

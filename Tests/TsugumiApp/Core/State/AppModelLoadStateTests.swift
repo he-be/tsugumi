@@ -194,7 +194,7 @@ import Testing
         model.applyLoadState(.loading(.verifyingWeights))
         #expect(model.presentation.label == AppModelLoadPhase.verifyingWeights.label)
         model.applyLoadState(.failed(.modelLoadFailed("boom")))
-        #expect(model.presentation.detail == "Model load failed: boom")
+        #expect(model.presentation.detail == AppLocalization.string("Model load failed: \("boom")"))
     }
 
     @MainActor

@@ -8,10 +8,10 @@ public enum AppModelLoadPhase: Equatable, Sendable {
 
     public var label: String {
         switch self {
-        case .validatingDirectory: return "Validating model directory"
-        case .tokenizer: return "Loading tokenizer"
-        case .verifyingWeights: return "Verifying weights"
-        case .preparingRunner: return "Preparing runner"
+        case .validatingDirectory: return AppLocalization.string("Validating model directory")
+        case .tokenizer: return AppLocalization.string("Loading tokenizer")
+        case .verifyingWeights: return AppLocalization.string("Verifying weights")
+        case .preparingRunner: return AppLocalization.string("Preparing runner")
         }
     }
 }

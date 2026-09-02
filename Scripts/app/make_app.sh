@@ -4,7 +4,8 @@
 # 出来上がりの中身:
 #   Tsugumi.app/Contents/MacOS/TsugumiMac            … アプリ本体
 #   Tsugumi.app/Contents/MacOS/TsugumiDecodeService  … モデルを持つ別プロセス
-#   Tsugumi.app/Contents/Resources/*.bundle          … Metal / Templates / prompts / アイコン
+#   Tsugumi.app/Contents/Resources/*.bundle          … Metal / Templates / prompts / アイコン / 文言
+#   Tsugumi.app/Contents/Resources/{en,ja}.lproj      … アプリが持つ言語の宣言
 #
 # 2 つの実行ファイルが隣り合っていることが要件である。アプリは
 # DecodeServiceInferenceClient.defaultServiceURL() で「自分の隣の
@@ -82,8 +83,8 @@ done
 # 落とす — 揃っていないと初回のモデル読み込みで missingShaderResource になる。
 RESOURCE_BUNDLES=(
     Tsugumi_Tsugumi            # Metal/ と Templates/ (シェーダは実行時に compile する)
-    Tsugumi_TsugumiAppCore     # app-prompts.json
-    Tsugumi_TsugumiMac         # アプリアイコン
+    Tsugumi_TsugumiAppCore     # 検索プロンプトと状態ラベルの文言 (en/ja)
+    Tsugumi_TsugumiMac         # アプリアイコンと画面の文言 (en/ja)
 )
 for bundle in "${RESOURCE_BUNDLES[@]}"; do
     if [[ ! -d "$BIN_PATH/$bundle.bundle" ]]; then
@@ -91,6 +92,15 @@ for bundle in "${RESOURCE_BUNDLES[@]}"; do
         exit 1
     fi
     cp -R "$BIN_PATH/$bundle.bundle" "$CONTENTS/Resources/$bundle.bundle"
+done
+
+# 言語の宣言。macOS は main bundle が持つ言語を先に選び、リソース bundle を
+# それに合わせる。ここに lproj が無いと、日本語環境でも文言が英語のままになり、
+# システム設定の「アプリごとの言語」にも出てこない。中身は名前だけで足りる。
+for lang in en ja; do
+    mkdir -p "$CONTENTS/Resources/$lang.lproj"
+    printf 'CFBundleName = "Tsugumi";\nCFBundleDisplayName = "Tsugumi";\n' \
+        > "$CONTENTS/Resources/$lang.lproj/InfoPlist.strings"
 done
 
 echo "== icon =="
@@ -115,6 +125,7 @@ cat > "$CONTENTS/Info.plist" <<PLIST
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <key>CFBundleDevelopmentRegion</key><string>en</string>
     <key>CFBundleName</key><string>Tsugumi</string>
     <key>CFBundleDisplayName</key><string>Tsugumi</string>
     <key>CFBundleExecutable</key><string>TsugumiMac</string>

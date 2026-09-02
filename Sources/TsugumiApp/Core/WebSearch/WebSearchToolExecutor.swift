@@ -305,17 +305,17 @@ public enum AppWebSearchMode: String, CaseIterable, Codable, Sendable, Identifia
 
     public var label: String {
         switch self {
-        case .off: "Off"
-        case .auto: "Auto"
-        case .always: "Always"
+        case .off: AppLocalization.string("Off")
+        case .auto: AppLocalization.string("Auto")
+        case .always: AppLocalization.string("Always")
         }
     }
 
     public var help: String {
         switch self {
-        case .off: "No search tools. The model answers from its weights."
-        case .auto: "The model may search (the web, or the local Wikipedia) when it decides it needs to."
-        case .always: "Every answer starts with a search."
+        case .off: AppLocalization.string("No search tools. The model answers from its weights.")
+        case .auto: AppLocalization.string("The model searches when it decides it needs to.")
+        case .always: AppLocalization.string("Every answer starts with a search.")
         }
     }
 }

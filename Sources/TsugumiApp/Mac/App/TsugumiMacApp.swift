@@ -43,42 +43,38 @@ struct TsugumiMacApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .appInfo) {
-                Button("About Tsugumi") {
+                Button(L("About Tsugumi")) {
                     NSApp.orderFrontStandardAboutPanel(
                         options: AboutPanelPresentation.options(
                             infoDictionary: Bundle.main.infoDictionary,
                             icon: MacAppIcon.load()))
                 }
             }
-            CommandMenu("Generation") {
-                Button("Cancel Generation") { model.cancel() }
+            CommandMenu(L("Generation")) {
+                Button(L("Cancel Generation")) { model.cancel() }
                     .keyboardShortcut(".", modifiers: .command)
                     .disabled(!model.canCancel)
-                Button("Cancel Model Installation") { model.cancelInstall() }
+                Button(L("Cancel Model Installation")) { model.cancelInstall() }
                     .disabled(!model.canCancelInstall)
             }
-            CommandMenu("Model") {
-                Button("Load Model", action: model.loadModel)
+            CommandMenu(L("Model")) {
+                Button(L("Load Model"), action: model.loadModel)
                     .disabled(!model.canLoadModel)
-                Button("Reload Model", action: model.reloadModel)
+                Button(L("Reload Model"), action: model.reloadModel)
                     .disabled(!model.canReloadModel)
-                Button("Unload Model", action: model.unloadModel)
+                Button(L("Unload Model"), action: model.unloadModel)
                     .disabled(!model.canUnloadModel)
                 Divider()
-                Button("Reveal Model in Finder", action: revealModel)
+                Button(L("Reveal Model in Finder"), action: revealModel)
                     .disabled(modelRevealTarget == .unavailable)
             }
-            CommandMenu("Settings") {
-                Picker("Send Message With", selection: newlineShortcutBinding) {
+            CommandMenu(L("Settings")) {
+                Picker(L("Send Message With"), selection: newlineShortcutBinding) {
                     ForEach(AppNewlineShortcut.sendMessageOptions) { shortcut in
                         Text(shortcut.sendMessageLabel).tag(shortcut)
                     }
                 }
-                Picker("Prompt Examples", selection: showPromptExamplesBinding) {
-                    Text("Show").tag(true)
-                    Text("Hide").tag(false)
-                }
-                Picker("After Sending", selection: sentPromptBehaviorBinding) {
+                Picker(L("After Sending"), selection: sentPromptBehaviorBinding) {
                     ForEach(AppSentPromptBehavior.allCases) { behavior in
                         Text(behavior.settingsLabel).tag(behavior)
                     }
@@ -109,14 +105,6 @@ struct TsugumiMacApp: App {
             model.newlineShortcut
         } set: { shortcut in
             model.setNewlineShortcut(shortcut)
-        }
-    }
-
-    private var showPromptExamplesBinding: Binding<Bool> {
-        Binding {
-            model.showPromptExamples
-        } set: { show in
-            model.setShowPromptExamples(show)
         }
     }
 

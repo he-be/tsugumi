@@ -145,7 +145,7 @@ import TsugumiRepackCore
     #expect(model.installDownloadedBytes == 4)
     #expect(model.installTotalBytes == 10)
     #expect(model.installProgressFraction == 0.4)
-    #expect(model.presentation.label == "Downloading model")
+    #expect(model.presentation.label == AppLocalization.string("Downloading model"))
     model.cancelInstall()
     try await waitUntil { model.installState == .cancelled }
   }

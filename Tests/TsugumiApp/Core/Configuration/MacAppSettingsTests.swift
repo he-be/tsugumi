@@ -83,7 +83,6 @@ import Testing
         #expect(settings.topP == 0.8)
         #expect(!settings.prefillEnabled)
         #expect(settings.newlineShortcut == .return)
-        #expect(settings.showPromptExamples)
         #expect(settings.sentPromptBehavior == .keep)
     }
 
@@ -99,18 +98,8 @@ import Testing
 
     @Test func sendMessageOptionsUseUserFacingOrderAndLabels() {
         #expect(AppNewlineShortcut.sendMessageOptions == [.shiftReturn, .return])
-        #expect(AppNewlineShortcut.shiftReturn.sendMessageLabel == "Return")
-        #expect(AppNewlineShortcut.return.sendMessageLabel == "Command-Return")
-    }
-
-    @Test(arguments: [true, false])
-    func showPromptExamplesRoundTrips(_ show: Bool) throws {
-        let initial = MacAppSettings(showPromptExamples: show)
-        let decoded = try JSONDecoder().decode(
-            MacAppSettings.self,
-            from: JSONEncoder().encode(initial))
-
-        #expect(decoded == initial)
+        #expect(AppNewlineShortcut.shiftReturn.sendMessageLabel == AppLocalization.string("Return"))
+        #expect(AppNewlineShortcut.return.sendMessageLabel == AppLocalization.string("Command-Return"))
     }
 
     @Test(arguments: AppSentPromptBehavior.allCases)
@@ -167,7 +156,6 @@ import Testing
             topP: 0.8,
             prefillEnabled: false,
             newlineShortcut: .shiftReturn,
-            showPromptExamples: false,
             sentPromptBehavior: .clear)
         try MacAppSettingsFileStore.save(initial, forModelDirectory: modelDirectory)
 
@@ -183,7 +171,6 @@ import Testing
         #expect(model.topP == 0.8)
         #expect(!model.runtimeOptions.prefillEnabled)
         #expect(model.newlineShortcut == .shiftReturn)
-        #expect(!model.showPromptExamples)
         #expect(model.sentPromptBehavior == .clear)
 
         model.temperature = 0.6
@@ -202,7 +189,6 @@ import Testing
         #expect(saved.expertCacheSlots == 32)
         #expect(saved.prefillEnabled)
         #expect(saved.newlineShortcut == .shiftReturn)
-        #expect(!saved.showPromptExamples)
         #expect(saved.sentPromptBehavior == .clear)
         model.cancel()
     }
@@ -221,22 +207,6 @@ import Testing
         let saved = MacAppSettingsFileStore.loadOrCreate(
             forModelDirectory: modelDirectory)
         #expect(saved.newlineShortcut == .shiftReturn)
-    }
-
-    @MainActor
-    @Test func showPromptExamplesPersistsImmediately() throws {
-        let root = try makeTemporaryRoot()
-        defer { try? FileManager.default.removeItem(at: root) }
-        let modelDirectory = root.appendingPathComponent("gemma4.moepack", isDirectory: true)
-        let model = AppModel(
-            modelDirectory: modelDirectory,
-            settingsPersistenceEnabled: true)
-
-        model.setShowPromptExamples(false)
-
-        let saved = MacAppSettingsFileStore.loadOrCreate(
-            forModelDirectory: modelDirectory)
-        #expect(!saved.showPromptExamples)
     }
 
     @MainActor
@@ -262,19 +232,17 @@ import Testing
         let first = root.appendingPathComponent("first/model.moepack", isDirectory: true)
         let second = root.appendingPathComponent("second/model.moepack", isDirectory: true)
         try MacAppSettingsFileStore.save(
-            MacAppSettings(newlineShortcut: .return, showPromptExamples: true),
+            MacAppSettings(newlineShortcut: .return),
             forModelDirectory: first)
         try MacAppSettingsFileStore.save(
-            MacAppSettings(newlineShortcut: .shiftReturn, showPromptExamples: false),
+            MacAppSettings(newlineShortcut: .shiftReturn),
             forModelDirectory: second)
         let model = AppModel(modelDirectory: first, settingsPersistenceEnabled: true)
         #expect(model.newlineShortcut == .return)
-        #expect(model.showPromptExamples)
 
         model.setModelURL(second)
 
         #expect(model.newlineShortcut == .shiftReturn)
-        #expect(!model.showPromptExamples)
     }
 
     private func makeTemporaryRoot() throws -> URL {

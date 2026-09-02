@@ -60,7 +60,7 @@ import Testing
         model.promptText = "hi"
         model.run()
         #expect(!model.isRunning)
-        #expect(model.error?.userMessage.contains("API key") == true)
+        #expect(model.error?.userMessage.contains("API") == true)
     }
 
     @MainActor
@@ -187,7 +187,7 @@ import Testing
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
         #expect(model.phase == .tools)
-        #expect(model.presentation.label == "Searching the web")
+        #expect(model.presentation.label == AppLocalization.string("Searching the web"))
         model.cancel()
         #expect(!model.isRunning)
         #expect(model.error == .cancelled)

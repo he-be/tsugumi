@@ -19,21 +19,21 @@ public enum AppInferenceError: Error, Equatable, Sendable, CustomStringConvertib
         case .invalidRequest(let message):
             return message
         case .modelNotFound(let path):
-            return "Model directory is not loadable: \(path)"
+            return AppLocalization.string("Model directory is not loadable: \(path)")
         case .modelLoadFailed(let message):
-            return "Model load failed: \(message)"
+            return AppLocalization.string("Model load failed: \(message)")
         case .tokenizerUnavailable(let message):
-            return "Tokenizer unavailable: \(message)"
+            return AppLocalization.string("Tokenizer unavailable: \(message)")
         case .contextOverflow(let prompt, let maxNew, let maxContext):
-            return "Prompt (\(prompt) tokens) plus max response (\(maxNew)) exceeds the \(maxContext)-token context."
+            return AppLocalization.string("Prompt (\(prompt) tokens) plus max response (\(maxNew)) exceeds the \(maxContext)-token context.")
         case .generationInFlight:
-            return "A generation is already running."
+            return AppLocalization.string("A generation is already running.")
         case .modelNotLoaded:
-            return "Load the model before generating."
+            return AppLocalization.string("Load the model before generating.")
         case .reloadRequired:
-            return "Model settings changed. Reload the model before generating."
+            return AppLocalization.string("Model settings changed. Reload the model before generating.")
         case .cancelled:
-            return "Generation cancelled."
+            return AppLocalization.string("Generation cancelled.")
         case .unknown(let message):
             return message
         }
@@ -42,7 +42,7 @@ public enum AppInferenceError: Error, Equatable, Sendable, CustomStringConvertib
     public var technicalDetail: String {
         switch self {
         case .tokenizerUnavailable:
-            return "The installed tokenizer sidecar is missing or invalid. A Hugging Face fallback may require network access when no local sidecar is available."
+            return AppLocalization.string("The installed tokenizer sidecar is missing or invalid. A Hugging Face fallback may require network access when no local sidecar is available.")
         default:
             return userMessage
         }

@@ -18,7 +18,7 @@ struct GenerateControl: View {
         Button {
             model.run()
         } label: {
-            Label("Generate", systemImage: "arrow.up")
+            Label(L("Generate"), systemImage: "arrow.up")
                 .font(.callout.weight(.semibold))
                 .padding(.horizontal, 24)
                 .frame(minWidth: 124, minHeight: controlHeight)
@@ -41,7 +41,7 @@ struct GenerateControl: View {
         } label: {
             HStack(spacing: 10) {
                 if model.isCancellationPending {
-                    Text("Stopping")
+                    Text(L("Stopping"))
                         .font(.callout.weight(.medium))
                 } else if model.phase == .prefill {
                     Text(model.presentation.label)
@@ -49,12 +49,12 @@ struct GenerateControl: View {
                         .monospacedDigit()
                         .contentTransition(.numericText())
                 } else {
-                    Text("\(MetricFormat.rate(model.liveTokensPerSecond)) tok/s")
+                    Text("\(MetricFormat.rate(model.liveTokensPerSecond)) \(L("tok/s"))")
                         .font(.callout.weight(.semibold))
                         .monospacedDigit()
                         .contentTransition(.numericText())
                 }
-                Label("Stop generation", systemImage: "stop.fill")
+                Label(L("Stop generation"), systemImage: "stop.fill")
                     .labelStyle(.iconOnly)
                     .font(.callout)
                     .frame(width: 28, height: 28)
@@ -72,7 +72,7 @@ struct GenerateControl: View {
         }
         .keyboardShortcut(.cancelAction)
         .disabled(!model.canCancel)
-        .help("Stop generation")
+        .help(L("Stop generation"))
         .animation(.smooth(duration: 0.2), value: model.presentation.label)
     }
 }

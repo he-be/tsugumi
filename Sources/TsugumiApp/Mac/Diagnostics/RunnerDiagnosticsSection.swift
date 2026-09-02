@@ -5,66 +5,60 @@ struct RunnerDiagnosticsSection: View {
     let diagnostics: AppDiagnostics?
 
     var body: some View {
-        Section("Last run") {
+        Section(L("Last run")) {
             if let diagnostics {
-                groupLabel("Result")
-                DiagnosticRow("Settings", diagnostics.runtimeOptions.resultSummary, multiline: true)
-                DiagnosticRow("Prompt tokens", diagnostics.promptTokenCount.map(String.init) ?? "unknown")
+                groupLabel(L("Result"))
+                DiagnosticRow(L("Settings"), diagnostics.runtimeOptions.resultSummary, multiline: true)
+                DiagnosticRow(L("Prompt tokens"), diagnostics.promptTokenCount.map(String.init) ?? L("unknown"))
                 if let cached = diagnostics.cachedPromptTokens, cached > 0 {
-                    DiagnosticRow(
-                        "From prompt cache", "\(cached)",
-                        help: "Prompt tokens served from the previous run's state instead of being recomputed.")
+                    DiagnosticRow(L("From prompt cache"), "\(cached)")
                 }
-                DiagnosticRow("Output tokens", "\(diagnostics.generatedTokens)")
+                DiagnosticRow(L("Output tokens"), "\(diagnostics.generatedTokens)")
                 if let speculative = diagnostics.speculative {
                     DiagnosticRow(
-                        "MTP acceptance",
-                        "\(speculative.accepted)/\(speculative.proposed) (\(MetricFormat.percent(speculative.acceptanceRate * 100)))",
-                        help: "Drafted tokens the model's own draw agreed with. Higher acceptance means the speculative loop saved more time.")
+                        L("MTP acceptance"),
+                        "\(speculative.accepted)/\(speculative.proposed) (\(MetricFormat.percent(speculative.acceptanceRate * 100)))")
                 }
-                DiagnosticRow("Stop", diagnostics.stopReason.rawValue)
+                DiagnosticRow(L("Stop"), diagnostics.stopReason.rawValue)
 
-                groupLabel("Performance")
-                DiagnosticRow("Prompt prefill", MetricFormat.seconds(diagnostics.prefillSeconds))
+                groupLabel(L("Performance"))
+                DiagnosticRow(L("Prompt prefill"), MetricFormat.seconds(diagnostics.prefillSeconds))
                 if let prefillRate = diagnostics.prefillTokensPerSecond {
-                    DiagnosticRow(
-                        "Prefill rate",
-                        "\(MetricFormat.rate(prefillRate)) tok/s",
-                        help: "Prompt tokens divided by prefill time. Compare runs with similar prompt lengths and settings; short prompts include proportionally more fixed overhead.")
+                    DiagnosticRow(L("Prefill rate"), "\(MetricFormat.rate(prefillRate)) \(L("tok/s"))")
                 }
-                DiagnosticRow("First token wait", MetricFormat.seconds(diagnostics.timeToFirstTokenSeconds))
-                DiagnosticRow("Request TTFT", MetricFormat.seconds(diagnostics.requestStartTimeToFirstTokenSeconds))
-                DiagnosticRow("Decode duration", MetricFormat.seconds(diagnostics.decodeSeconds))
-                DiagnosticRow("Decode rate", "\(MetricFormat.rate(diagnostics.tokensPerSecond)) tok/s")
-                DiagnosticRow("Peak memory", MetricFormat.memory(diagnostics.peakMemoryBytes))
-                DiagnosticRow("I/O / token",
+                DiagnosticRow(L("First token wait"), MetricFormat.seconds(diagnostics.timeToFirstTokenSeconds))
+                DiagnosticRow(L("Request TTFT"), MetricFormat.seconds(diagnostics.requestStartTimeToFirstTokenSeconds))
+                DiagnosticRow(L("Decode duration"), MetricFormat.seconds(diagnostics.decodeSeconds))
+                DiagnosticRow(L("Decode rate"), "\(MetricFormat.rate(diagnostics.tokensPerSecond)) \(L("tok/s"))")
+                DiagnosticRow(L("Peak memory"), MetricFormat.memory(diagnostics.peakMemoryBytes))
+                DiagnosticRow(L("I/O / token"),
                               MetricFormat.milliseconds(diagnostics.runner?.ioMillisecondsPerToken))
 
                 if hasIssues(diagnostics) {
-                    groupLabel("Issues")
+                    groupLabel(L("Issues"))
                     issueRows(diagnostics)
                 }
 
                 if let prefill = diagnostics.prefill {
-                    DisclosureGroup("Prefill details") {
+                    DisclosureGroup(L("Prefill details")) {
                         VStack(spacing: 8) {
-                            DiagnosticRow("Mode", "\(prefill.requestedMode.rawValue) -> \(prefill.executedMode.rawValue)")
-                            DiagnosticRow("KV storage", prefill.kvStorageMode?.rawValue ?? "unknown")
-                            DiagnosticRow("Completeness", prefill.chunkCompleteness.rawValue)
+                            DiagnosticRow(L("Mode"), "\(prefill.requestedMode.rawValue) -> \(prefill.executedMode.rawValue)")
+                            DiagnosticRow(L("KV storage"), prefill.kvStorageMode?.rawValue ?? L("unknown"))
+                            DiagnosticRow(L("Completeness"), prefill.chunkCompleteness.rawValue)
                             if let reason = prefill.unsupportedReason, !reason.isEmpty {
-                                DiagnosticRow("Unsupported reason", reason, multiline: true)
+                                DiagnosticRow(L("Unsupported reason"), reason, multiline: true)
                             }
                         }
                         .frame(maxWidth: .infinity)
                     }
                 }
                 if let runner = diagnostics.runner {
-                    DisclosureGroup("Decode runner") {
+                    DisclosureGroup(L("Decode runner")) {
                         AdvancedRunnerDiagnosticsView(runner: runner)
                     }
                 }
             } else {
-                Text("No runs yet")
+                Text(L("No runs yet"))
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -75,18 +69,18 @@ struct RunnerDiagnosticsSection: View {
     private func issueRows(_ diagnostics: AppDiagnostics) -> some View {
         if let prefill = diagnostics.prefill {
             if prefill.requestedMode.rawValue != prefill.executedMode.rawValue {
-                DiagnosticRow("Prefill mode",
+                DiagnosticRow(L("Prefill mode"),
                               "\(prefill.requestedMode.rawValue) -> \(prefill.executedMode.rawValue)")
             }
             if prefill.chunkCompleteness != .complete {
-                DiagnosticRow("Prefill status", prefill.chunkCompleteness.rawValue)
+                DiagnosticRow(L("Prefill status"), prefill.chunkCompleteness.rawValue)
             }
             if let reason = prefill.unsupportedReason, !reason.isEmpty {
-                DiagnosticRow("Unsupported reason", reason, multiline: true)
+                DiagnosticRow(L("Unsupported reason"), reason, multiline: true)
             }
         }
         if let failures = diagnostics.runner?.rdadviseFailures, failures > 0 {
-            DiagnosticRow("RDADVISE failures", "\(failures)")
+            DiagnosticRow(L("RDADVISE failures"), "\(failures)")
         }
     }
 
@@ -115,14 +109,14 @@ private struct AdvancedRunnerDiagnosticsView: View {
         VStack(spacing: 8) {
             DiagnosticRow("cb1 / token", MetricFormat.milliseconds(runner.cb1MillisecondsPerToken))
             DiagnosticRow("cb2 / token", MetricFormat.milliseconds(runner.cb2MillisecondsPerToken))
-            DiagnosticRow("Head / token", MetricFormat.milliseconds(runner.headMillisecondsPerToken))
+            DiagnosticRow(L("Head / token"), MetricFormat.milliseconds(runner.headMillisecondsPerToken))
             if hasRDAdviceActivity {
                 DiagnosticRow("RDADVISE / token",
                               MetricFormat.milliseconds(runner.rdadviseMillisecondsPerToken))
-                DiagnosticRow("RDADVISE calls", MetricFormat.perToken(runner.rdadviseCallsPerToken))
-                DiagnosticRow("RDADVISE data",
+                DiagnosticRow(L("RDADVISE calls"), MetricFormat.perToken(runner.rdadviseCallsPerToken))
+                DiagnosticRow(L("RDADVISE data"),
                               MetricFormat.megabytesPerToken(runner.rdadviseMegabytesPerToken))
-                DiagnosticRow("RDADVISE skipped", MetricFormat.perToken(runner.rdadviseSkippedPerToken))
+                DiagnosticRow(L("RDADVISE skipped"), MetricFormat.perToken(runner.rdadviseSkippedPerToken))
             }
         }
         .frame(maxWidth: .infinity)
@@ -140,17 +134,11 @@ private struct DiagnosticRow: View {
     let label: String
     let value: String
     let multiline: Bool
-    let help: String?
-    @State private var isShowingHelp = false
 
-    init(_ label: String,
-         _ value: String,
-         multiline: Bool = false,
-         help: String? = nil) {
+    init(_ label: String, _ value: String, multiline: Bool = false) {
         self.label = label
         self.value = value
         self.multiline = multiline
-        self.help = help
     }
 
     var body: some View {
@@ -164,30 +152,7 @@ private struct DiagnosticRow: View {
                 .lineLimit(multiline ? nil : 2)
                 .fixedSize(horizontal: false, vertical: true)
         } label: {
-            HStack(spacing: 4) {
-                Text(label)
-                if let help {
-                    Button {
-                        isShowingHelp.toggle()
-                    } label: {
-                        Image(systemName: "info.circle")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                            .frame(width: 16, height: 16)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .help(help)
-                    .popover(isPresented: $isShowingHelp, arrowEdge: .trailing) {
-                        Text(help)
-                            .font(.callout)
-                            .frame(width: 280, alignment: .leading)
-                            .padding()
-                    }
-                    .accessibilityLabel("\(label) information")
-                    .accessibilityHint(help)
-                }
-            }
+            Text(label)
         }
     }
 }

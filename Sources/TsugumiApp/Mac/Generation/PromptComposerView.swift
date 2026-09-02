@@ -7,7 +7,6 @@ import UniformTypeIdentifiers
 struct PromptComposerView: View {
     @Bindable var model: AppModel
     @FocusState private var promptFocused: Bool
-    @State private var showingPromptTips = false
     @State private var showingImageImporter = false
 
     var body: some View {
@@ -31,7 +30,7 @@ struct PromptComposerView: View {
 
     private var editor: some View {
         TextEditor(text: $model.promptText)
-            .accessibilityLabel("Prompt")
+            .accessibilityLabel(L("Prompt"))
             .font(.body)
             .scrollContentBackground(.hidden)
             .focused($promptFocused)
@@ -56,7 +55,7 @@ struct PromptComposerView: View {
                 if model.promptText.isEmpty {
                     // Matches the NSTextView text origin: 5pt line fragment
                     // padding, no vertical inset.
-                    Text("Prompt")
+                    Text(L("Prompt"))
                         .font(.body)
                         .foregroundStyle(.tertiary)
                         .padding(.leading, 5)
@@ -75,7 +74,6 @@ struct PromptComposerView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            promptTips
             if model.supportsVision {
                 attachImagesButton
             }
@@ -92,7 +90,7 @@ struct PromptComposerView: View {
         Button {
             showingImageImporter = true
         } label: {
-            Label("Attach images", systemImage: "photo.badge.plus")
+            Label(L("Attach images"), systemImage: "photo.badge.plus")
                 .labelStyle(.iconOnly)
                 .frame(width: 28, height: 28)
                 .contentShape(Circle())
@@ -100,7 +98,7 @@ struct PromptComposerView: View {
         .buttonStyle(.borderless)
         .foregroundStyle(.secondary)
         .disabled(model.isRunning || model.attachedImagePaths.count >= 4)
-        .help("Attach up to 4 images (PNG, JPEG, WebP)")
+        .help(L("Attach up to 4 images (PNG, JPEG, WebP)"))
         .fileImporter(isPresented: $showingImageImporter,
                       allowedContentTypes: [.png, .jpeg, .webP, .gif],
                       allowsMultipleSelection: true) { result in
@@ -113,7 +111,7 @@ struct PromptComposerView: View {
     /// is readable without opening the menu.
     private var webSearchControl: some View {
         Menu {
-            Picker("Web search", selection: $model.webSearchMode) {
+            Picker(L("Web search"), selection: $model.webSearchMode) {
                 ForEach(AppWebSearchMode.allCases) { mode in
                     Text(mode.label).tag(mode)
                 }
@@ -146,8 +144,8 @@ struct PromptComposerView: View {
             }
         }
         .disabled(model.isRunning)
-        .help("Web search: \(model.webSearchMode.label) — \(model.webSearchMode.help)")
-        .accessibilityLabel("Web search \(model.webSearchMode.label)")
+        .help("\(L("Web search")): \(model.webSearchMode.label) — \(model.webSearchMode.help)")
+        .accessibilityLabel("\(L("Web search")) \(model.webSearchMode.label)")
     }
 
     private var attachmentsRow: some View {
@@ -185,62 +183,12 @@ struct PromptComposerView: View {
                     .symbolRenderingMode(.hierarchical)
             }
             .buttonStyle(.borderless)
-            .help("Remove image")
+            .help(L("Remove image"))
         }
         .padding(4)
         .background {
             RoundedRectangle(cornerRadius: 10)
                 .fill(Color(nsColor: .windowBackgroundColor))
-        }
-    }
-
-    private var promptTips: some View {
-        Button {
-            showingPromptTips.toggle()
-        } label: {
-            Label("Prompt tips", systemImage: "questionmark.circle")
-                .labelStyle(.iconOnly)
-                .frame(width: 28, height: 28)
-                .contentShape(Circle())
-        }
-        .buttonStyle(.borderless)
-        .foregroundStyle(.secondary)
-        .help("Prompt tips")
-        .popover(isPresented: $showingPromptTips,
-                 attachmentAnchor: .point(.top),
-                 arrowEdge: .top) {
-            promptGuide
-        }
-    }
-
-    private var promptGuide: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Prompting this model")
-                .font(.headline)
-
-            tipSection("Ask for a clear task",
-                       "Say what you want the model to create, explain, plan, or transform. Put the essential context in the same prompt.")
-            tipSection("Shape the answer",
-                       "Specify a useful length, sections, tone, or output format. Concrete constraints work better than a long list of vague preferences.")
-            tipSection("Anchor important facts",
-                       "Include facts the answer must preserve and say what should be checked. Generated factual claims can still be wrong or outdated.")
-            tipSection("For code and calculations",
-                       "Provide types, dimensions, interfaces, edge cases, or a small scaffold. Compile or run the result before relying on it.")
-            tipSection("Try a focused revision",
-                       "If the answer drifts, shorten the task and make the missing requirement explicit. The sampler defaults to each model's official recommendation.")
-        }
-        .font(.callout)
-        .frame(width: 390, alignment: .leading)
-        .padding(18)
-    }
-
-    private func tipSection(_ title: String, _ detail: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title)
-                .fontWeight(.semibold)
-            Text(detail)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -250,26 +198,26 @@ struct PromptComposerView: View {
             Button {
                 model.clearOutput()
             } label: {
-                Label("Clear output", systemImage: "trash")
+                Label(L("Clear output"), systemImage: "trash")
                     .labelStyle(.iconOnly)
                     .frame(width: 28, height: 28)
                     .contentShape(Circle())
             }
             .buttonStyle(.borderless)
-            .help("Clear output")
+            .help(L("Clear output"))
         } else if !model.isRunning && !model.promptText.isEmpty {
             Button {
                 model.promptText = ""
                 promptFocused = true
             } label: {
-                Label("Clear prompt", systemImage: "xmark.circle.fill")
+                Label(L("Clear prompt"), systemImage: "xmark.circle.fill")
                     .labelStyle(.iconOnly)
                     .symbolRenderingMode(.hierarchical)
                     .frame(width: 28, height: 28)
                     .contentShape(Circle())
             }
             .buttonStyle(.borderless)
-            .help("Clear prompt")
+            .help(L("Clear prompt"))
         }
     }
 }

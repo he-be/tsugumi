@@ -136,19 +136,6 @@ import Testing
     }
 
     @MainActor
-    @Test func promptExamplesPreferenceDoesNotMarkReadySessionStale() {
-        let model = AppModel(client: MockLifecycleInferenceClient())
-        let directory = FileManager.default.temporaryDirectory
-        model.modelPathText = directory.path
-        model.applyLoadState(.ready(modelDirectory: directory, loadSeconds: 0))
-
-        model.setShowPromptExamples(false)
-
-        #expect(!model.showPromptExamples)
-        #expect(!model.hasStaleLoadedRuntime)
-    }
-
-    @MainActor
     @Test func mockRunUpdatesOutputAndDiagnostics() async throws {
         let client = MockInferenceClient(response: "alpha beta", tokenDelayNanos: 1)
         let model = AppModel(client: client)
@@ -350,7 +337,7 @@ import Testing
         #expect(model.loadedRuntimeKey == nil)
         #expect(model.diagnostics == nil)
         #expect(model.error == nil)
-        #expect(model.presentation.label == "Model required")
+        #expect(model.presentation.label == AppLocalization.string("Model required"))
         #expect(!model.canRun)
     }
 

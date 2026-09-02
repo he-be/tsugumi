@@ -90,11 +90,11 @@ public struct AppPresentationState: Equatable, Sendable {
     public static func resolve(_ snapshot: AppPresentationSnapshot) -> Self {
         if snapshot.installState.isInstalling {
             if case .cancelling = snapshot.installState {
-                return Self(label: "Cancelling installation",
+                return Self(label: AppLocalization.string("Cancelling installation"),
                             severity: .active, showsActivity: true)
             }
             if case .discarding = snapshot.installState {
-                return Self(label: "Discarding download",
+                return Self(label: AppLocalization.string("Discarding download"),
                             severity: .active, showsActivity: true)
             }
             return Self(label: installLabel(snapshot.installState),
@@ -104,34 +104,34 @@ public struct AppPresentationState: Equatable, Sendable {
 
         if snapshot.requiresInstallation {
             if case .recoverable(let message) = snapshot.installState {
-                return Self(label: "Saved download needs attention", detail: message,
+                return Self(label: AppLocalization.string("Saved download needs attention"), detail: message,
                             severity: .warning)
             }
             if case .failed(let message) = snapshot.installState {
-                return Self(label: "Installation failed", detail: message,
+                return Self(label: AppLocalization.string("Installation failed"), detail: message,
                             severity: .error, primaryAction: .install)
             }
             if case .cancelled = snapshot.installState {
-                return Self(label: "Download paused", severity: .warning,
+                return Self(label: AppLocalization.string("Download paused"), severity: .warning,
                             primaryAction: .install)
             }
             if case .failed(let message) = snapshot.installReadiness {
-                return Self(label: "Storage check failed", detail: message,
+                return Self(label: AppLocalization.string("Storage check failed"), detail: message,
                             severity: .error)
             }
             if case .insufficientSpace(let requirement) = snapshot.installReadiness {
-                return Self(label: "Not enough storage",
-                            detail: "\(requirement.shortfallBytes) bytes more required",
+                return Self(label: AppLocalization.string("Not enough storage"),
+                            detail: AppLocalization.string("\(requirement.shortfallBytes) bytes more required"),
                             severity: .warning)
             }
             if case .checking = snapshot.installReadiness {
-                return Self(label: "Checking available space",
+                return Self(label: AppLocalization.string("Checking available space"),
                             severity: .active, showsActivity: true)
             }
             if case .ready = snapshot.installReadiness {
-                return Self(label: "Model required", primaryAction: .install)
+                return Self(label: AppLocalization.string("Model required"), primaryAction: .install)
             }
-            return Self(label: "Model required")
+            return Self(label: AppLocalization.string("Model required"))
         }
 
         switch snapshot.loadState {
@@ -139,11 +139,11 @@ public struct AppPresentationState: Equatable, Sendable {
             return Self(label: phase.label, severity: .active, showsActivity: true,
                         primaryAction: .cancelLoad)
         case .cancelling:
-            return Self(label: "Cancelling load", severity: .active, showsActivity: true)
+            return Self(label: AppLocalization.string("Cancelling load"), severity: .active, showsActivity: true)
         case .unloading:
-            return Self(label: "Unloading model", severity: .active, showsActivity: true)
+            return Self(label: AppLocalization.string("Unloading model"), severity: .active, showsActivity: true)
         case .failed(let error):
-            return Self(label: "Model load failed", detail: error.userMessage,
+            return Self(label: AppLocalization.string("Model load failed"), detail: error.userMessage,
                         severity: .error, primaryAction: .retryLoad)
         case .notLoaded, .ready:
             break
@@ -151,54 +151,55 @@ public struct AppPresentationState: Equatable, Sendable {
 
         if snapshot.isRunning {
             if snapshot.isGenerationCancellationPending {
-                return Self(label: "Stopping", severity: .active, showsActivity: true)
+                return Self(label: AppLocalization.string("Stopping"), severity: .active, showsActivity: true)
             }
             switch snapshot.generationPhase {
             case .prefill:
                 let label = snapshot.livePrefillTotal > 0
-                    ? "Prefill (\(snapshot.livePrefillDone)/\(snapshot.livePrefillTotal))"
-                    : "Prefill"
+                    ? AppLocalization.string(
+                        "Prefill (\(snapshot.livePrefillDone)/\(snapshot.livePrefillTotal))")
+                    : AppLocalization.string("Prefill")
                 return Self(label: label, severity: .active)
             case .decode:
-                return Self(label: "Generating", severity: .active)
+                return Self(label: AppLocalization.string("Generating"), severity: .active)
             case .tools:
-                return Self(label: "Searching the web", severity: .active,
+                return Self(label: AppLocalization.string("Searching the web"), severity: .active,
                             showsActivity: true)
             case .idle:
-                return Self(label: "Starting generation", severity: .active,
+                return Self(label: AppLocalization.string("Starting generation"), severity: .active,
                             showsActivity: true)
             }
         }
 
         if snapshot.hasStaleRuntime {
-            return Self(label: "Reload required", severity: .warning,
+            return Self(label: AppLocalization.string("Reload required"), severity: .warning,
                         primaryAction: .reload, secondaryAction: .unload)
         }
 
         if case .ready = snapshot.loadState {
             if let reason = snapshot.lastStopReason {
-                return Self(label: "Done · \(reason.rawValue)", severity: .success,
+                return Self(label: AppLocalization.string("Done · \(reason.rawValue)"), severity: .success,
                             secondaryAction: .unload)
             }
-            return Self(label: "Ready", severity: .success, secondaryAction: .unload)
+            return Self(label: AppLocalization.string("Ready"), severity: .success, secondaryAction: .unload)
         }
 
-        return Self(label: "Installed · Not loaded", primaryAction: .load)
+        return Self(label: AppLocalization.string("Installed · Not loaded"), primaryAction: .load)
     }
 
     private static func installLabel(_ state: AppModelInstallState) -> String {
         switch state {
-        case .checking: return "Checking installation"
-        case .downloadingMetadata: return "Downloading metadata"
-        case .planning: return "Planning installation"
-        case .reservingOutput: return "Reserving storage"
-        case .copyingPayload: return "Downloading model"
-        case .hashingOutput(let file): return "Verifying \(file)"
-        case .finalizing: return "Finalizing installation"
-        case .cancelling: return "Cancelling installation"
-        case .discarding: return "Discarding download"
+        case .checking: return AppLocalization.string("Checking installation")
+        case .downloadingMetadata: return AppLocalization.string("Downloading metadata")
+        case .planning: return AppLocalization.string("Planning installation")
+        case .reservingOutput: return AppLocalization.string("Reserving storage")
+        case .copyingPayload: return AppLocalization.string("Downloading model")
+        case .hashingOutput(let file): return AppLocalization.string("Verifying \(file)")
+        case .finalizing: return AppLocalization.string("Finalizing installation")
+        case .cancelling: return AppLocalization.string("Cancelling installation")
+        case .discarding: return AppLocalization.string("Discarding download")
         case .idle, .cancelled, .recoverable, .installed, .failed:
-            return "Model required"
+            return AppLocalization.string("Model required")
         }
     }
 }

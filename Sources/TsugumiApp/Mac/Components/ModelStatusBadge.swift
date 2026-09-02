@@ -29,7 +29,7 @@ struct ModelStatusBadge: View {
             .disabled(model.isRunning || model.isInstallingModel
                       || model.loadState.isLoading)
             .help(model.installDescriptor.repoID)
-            .accessibilityLabel("Model")
+            .accessibilityLabel(L("Model"))
             .accessibilityValue(model.selectedModelKind.displayName)
         }
     }

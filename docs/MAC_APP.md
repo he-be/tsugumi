@@ -107,6 +107,25 @@ drafter セクションの無い pack では OFF に落ちる。
 (`AppLoadedRuntimeKey`)。thinking・サンプラ・コンテキスト内の生成長は
 リクエスト時のまま。
 
+## 4b. 画面の言語 (2026-09-02)
+
+画面の文言は英語をキーにした `Localizable.strings` で持ち、日本語訳を同じ
+ファイル名で並べる (`Sources/TsugumiApp/Core/Resources/{en,ja}.lproj` が
+状態ラベルとエラー文、`Sources/TsugumiApp/Mac/Resources/{en,ja}.lproj` が
+画面の文言)。Mac 側は `L("…")`、Core 側は `AppLocalization.string("…")` を
+通す。どちらもキーが英語なので、訳が無い文言は英語のまま出る。
+
+言語は OS に従う (システム設定 > 一般 > 言語と地域 > アプリケーション で
+アプリごとに切り替えられる)。macOS は **main bundle が持つ言語を先に選び、
+リソース bundle をそれに合わせる**ので、`make_app.sh` は
+`Contents/Resources/{en,ja}.lproj` を .app に置く。これが無いと日本語環境でも
+英語のままになる。`swift build` した素の実行ファイルは main bundle に lproj が
+無いので常に英語になる。
+
+同時に、細かい説明文 (スロットの解説、サンプラの解説、Last run の (i) ポップ
+オーバー、プロンプトのコツ) と「Try an example」のカードは外し、Generation の
+サンプリング項目は畳んだ状態を既定にした。
+
 ## 5. 設定ファイル
 
 `mac-app-settings-<モデルdir名>.json` をモデルディレクトリの隣に 1 モデル 1 枚。

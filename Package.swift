@@ -3,6 +3,9 @@ import PackageDescription
 
 let package = Package(
     name: "Tsugumi",
+    // English is the key language of every `Localizable.strings`; Japanese
+    // is the one translation shipped (Sources/TsugumiApp/*/Resources/*.lproj).
+    defaultLocalization: "en",
     platforms: [
         .macOS(.v15),
         .iOS(.v26),
@@ -76,9 +79,10 @@ let package = Package(
             ],
             path: "Sources/TsugumiApp/Core",
             resources: [
-                .copy("Resources/app-prompts.json"),
                 .copy("Resources/web-search-system-prompt.txt"),
                 .copy("Resources/search-tool-prompts.json"),
+                .process("Resources/en.lproj"),
+                .process("Resources/ja.lproj"),
             ]
         ),
         .target(
@@ -117,6 +121,8 @@ let package = Package(
             path: "Sources/TsugumiApp/Mac",
             resources: [
                 .copy("Resources/tsugumi-app-icon.png"),
+                .process("Resources/en.lproj"),
+                .process("Resources/ja.lproj"),
             ]
         ),
         .target(

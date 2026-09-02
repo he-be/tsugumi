@@ -40,7 +40,6 @@ public final class AppModel {
     /// the Inspector; `saveWebSearchConfiguration` writes it back.
     public var webSearchConfiguration: WebSearchConfiguration
     public private(set) var newlineShortcut: AppNewlineShortcut = .return
-    public private(set) var showPromptExamples: Bool = true
     public private(set) var sentPromptBehavior: AppSentPromptBehavior = .keep
     public var diagnostics: AppDiagnostics?
     public var error: AppInferenceError?
@@ -153,7 +152,6 @@ public final class AppModel {
         self.thinkingEnabled = settings.thinkingEnabled
         self.webSearchMode = settings.webSearchMode
         self.newlineShortcut = settings.newlineShortcut
-        self.showPromptExamples = settings.showPromptExamples
         self.sentPromptBehavior = settings.sentPromptBehavior
         let provider: (AppModelKind) -> any AppModelInstallerClient
         if let installer {
@@ -371,20 +369,20 @@ public final class AppModel {
 
     public var installPhaseLabel: String {
         switch installState {
-        case .idle: return "Model required"
-        case .checking: return "Checking installation"
-        case .downloadingMetadata: return "Downloading metadata"
-        case .planning: return "Planning installation"
-        case .reservingOutput: return "Reserving storage"
-        case .copyingPayload: return "Downloading model"
-        case .hashingOutput(let file): return "Verifying \(file)"
-        case .finalizing: return "Finalizing installation"
-        case .cancelling: return "Cancelling"
-        case .discarding: return "Discarding download"
-        case .cancelled: return "Download paused"
-        case .recoverable: return "Saved download needs attention"
-        case .installed: return "Model installed"
-        case .failed: return "Installation failed"
+        case .idle: return AppLocalization.string("Model required")
+        case .checking: return AppLocalization.string("Checking installation")
+        case .downloadingMetadata: return AppLocalization.string("Downloading metadata")
+        case .planning: return AppLocalization.string("Planning installation")
+        case .reservingOutput: return AppLocalization.string("Reserving storage")
+        case .copyingPayload: return AppLocalization.string("Downloading model")
+        case .hashingOutput(let file): return AppLocalization.string("Verifying \(file)")
+        case .finalizing: return AppLocalization.string("Finalizing installation")
+        case .cancelling: return AppLocalization.string("Cancelling")
+        case .discarding: return AppLocalization.string("Discarding download")
+        case .cancelled: return AppLocalization.string("Download paused")
+        case .recoverable: return AppLocalization.string("Saved download needs attention")
+        case .installed: return AppLocalization.string("Model installed")
+        case .failed: return AppLocalization.string("Installation failed")
         }
     }
 
@@ -558,12 +556,6 @@ public final class AppModel {
     public func setNewlineShortcut(_ shortcut: AppNewlineShortcut) {
         guard newlineShortcut != shortcut else { return }
         newlineShortcut = shortcut
-        persistSettings()
-    }
-
-    public func setShowPromptExamples(_ show: Bool) {
-        guard showPromptExamples != show else { return }
-        showPromptExamples = show
         persistSettings()
     }
 
@@ -866,7 +858,6 @@ public final class AppModel {
         thinkingEnabled = settings.thinkingEnabled
         webSearchMode = settings.webSearchMode
         newlineShortcut = settings.newlineShortcut
-        showPromptExamples = settings.showPromptExamples
         sentPromptBehavior = settings.sentPromptBehavior
     }
 
@@ -884,7 +875,6 @@ public final class AppModel {
             mtpEnabled: runtimeOptions.mtpEnabled,
             thinkingEnabled: thinkingEnabled,
             newlineShortcut: newlineShortcut,
-            showPromptExamples: showPromptExamples,
             sentPromptBehavior: sentPromptBehavior,
             webSearchMode: webSearchMode)
         let modelDirectory = URL(fileURLWithPath: modelPathText, isDirectory: true)
@@ -1016,7 +1006,7 @@ public final class AppModel {
         if mode != .off {
             guard webSearchConfiguration.resolved().canUseTools else {
                 error = .invalidRequest(
-                    "Web search needs a Serper or Brave API key, or a local Wikipedia index. Add one in the Inspector, or turn Web search off.")
+                    AppLocalization.string("Web search needs a Serper or Brave API key, or a local Wikipedia index. Add one in the Inspector, or turn Web search off."))
                 return
             }
         }
@@ -1229,7 +1219,7 @@ public final class AppModel {
                     pageCharacterLimit: resolved.pageCharacterLimit))
             } catch {
                 throw AppInferenceError.invalidRequest(
-                    "The local Wikipedia index at \(url.path) cannot be used: \(error). Fix the path in the Inspector, or clear it.")
+                    AppLocalization.string("The local Wikipedia index at \(url.path) cannot be used: \(String(describing: error)). Fix the path in the Inspector, or clear it."))
             }
         }
         if resolved.canSearch {
@@ -1237,7 +1227,7 @@ public final class AppModel {
         }
         guard !executors.isEmpty else {
             throw AppInferenceError.invalidRequest(
-                "Web search needs a Serper or Brave API key, or a local Wikipedia index. Add one in the Inspector, or turn Web search off.")
+                AppLocalization.string("Web search needs a Serper or Brave API key, or a local Wikipedia index. Add one in the Inspector, or turn Web search off."))
         }
         return executors.count == 1 ? executors[0] : CompositeToolExecutor(executors)
     }

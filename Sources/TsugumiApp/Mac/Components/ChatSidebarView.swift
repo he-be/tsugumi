@@ -26,7 +26,7 @@ struct ChatSidebarView: View {
 
     private var header: some View {
         HStack {
-            Text("Chats")
+            Text(L("Chats"))
                 .font(.headline)
             Spacer()
             Button {
@@ -37,8 +37,8 @@ struct ChatSidebarView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.borderless)
-            .help("New chat")
-            .accessibilityLabel("New chat")
+            .help(L("New chat"))
+            .accessibilityLabel(L("New chat"))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
@@ -59,7 +59,7 @@ struct ChatSidebarView: View {
                 if isGenerating {
                     ProgressView()
                         .controlSize(.small)
-                        .accessibilityLabel("Generating")
+                        .accessibilityLabel(L("Generating"))
                 }
             }
             .padding(.horizontal, 10)
@@ -75,7 +75,7 @@ struct ChatSidebarView: View {
         }
         .buttonStyle(.plain)
         .contextMenu {
-            Button("Delete chat") {
+            Button(L("Delete chat")) {
                 model.deleteChat(chat.id)
             }
             .disabled(!model.canDeleteChat(chat.id))

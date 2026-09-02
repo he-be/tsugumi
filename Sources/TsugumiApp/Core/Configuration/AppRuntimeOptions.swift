@@ -16,7 +16,9 @@ public enum AppRDAdvicePolicy: String, CaseIterable, Sendable, Identifiable {
     case adaptive
 
     public var id: String { rawValue }
-    public var label: String { rawValue.capitalized }
+    public var label: String {
+        self == .off ? AppLocalization.string("Off") : rawValue.capitalized
+    }
 
     var runtimeValue: RDAdvicePolicyMode {
         switch self {
@@ -118,7 +120,7 @@ public struct AppRuntimeOptions: Equatable, Sendable {
         case 16: "16, -3.57 GB"
         case 24: "24, -2.68 GB"
         case 32: "32, -1.79 GB"
-        case 48: "48, Default"
+        case 48: AppLocalization.string("48, Default")
         case 64: "64, +1.79 GB"
         case 80: "80, +3.57 GB"
         case 96: "96, +5.36 GB"

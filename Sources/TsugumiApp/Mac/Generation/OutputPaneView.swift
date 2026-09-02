@@ -26,24 +26,24 @@ struct OutputPaneView: View {
             }
         }
         .contextMenu {
-            Button("Copy response") {
+            Button(L("Copy response")) {
                 copyResponse()
             }
             .disabled(model.outputResponsePlainText.isEmpty)
 
-            Button("Copy prompt") {
+            Button(L("Copy prompt")) {
                 copy(model.outputPromptText)
             }
             .disabled(model.outputPromptText.isEmpty)
 
-            Button("Copy conversation") {
+            Button(L("Copy conversation")) {
                 copy(model.outputConversationPlainText)
             }
             .disabled(model.outputConversationPlainText.isEmpty)
 
             Divider()
 
-            Button("Clear") { model.clearOutput() }
+            Button(L("Clear")) { model.clearOutput() }
                 .disabled(model.isRunning || !model.hasOutputTranscript)
         }
     }
@@ -130,7 +130,7 @@ struct OutputPaneView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "brain")
                         .font(.caption)
-                    Text(isThinkingLive ? "Thinking…" : "Thought process")
+                    Text(isThinkingLive ? L("Thinking…") : L("Thought process"))
                         .font(.caption.weight(.medium))
                     Image(systemName: reasoningExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2)
@@ -183,7 +183,7 @@ struct OutputPaneView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "globe")
                         .font(.caption)
-                    Text(isLive ? "Searching the web…" : "Web search (\(entries.count) steps)")
+                    Text(isLive ? L("Searching the web…") : L("Web search (\(entries.count) steps)"))
                         .font(.caption.weight(.medium))
                     Image(systemName: toolTraceExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2)
@@ -264,23 +264,19 @@ struct OutputPaneView: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(responseCopyFeedbackID == nil
-                            ? "Copy response"
-                            : "Response copied")
-        .accessibilityHint("Copies only the generated answer")
+                            ? L("Copy response")
+                            : L("Response copied"))
+        .accessibilityHint(L("Copies only the generated answer"))
         .help(responseCopyFeedbackID == nil
-              ? "Copy response"
-              : "Response copied")
+              ? L("Copy response")
+              : L("Response copied"))
     }
 
     private var emptyPlaceholderContent: some View {
         VStack(spacing: 8) {
             if !needsModelLoad {
-                Text("Choose a predefined example or write your own prompt.")
+                Text(L("Write a prompt to begin."))
                     .font(.headline)
-                Text("Describe the goal, relevant context, and any constraints.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
             }
             if isLoadingModel {
                 LoadingModelText()
@@ -298,18 +294,18 @@ struct OutputPaneView: View {
                     .multilineTextAlignment(.center)
             }
             if model.canLoadModel {
-                Button(model.loadState.isFailed ? "Retry Load" : "Load Model",
+                Button(model.loadState.isFailed ? L("Retry Load") : L("Load Model"),
                        action: model.loadModel)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
             } else if isLoadingModel {
-                Button("Load Model", action: {})
+                Button(L("Load Model"), action: {})
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .hidden()
                     .accessibilityHidden(true)
             } else if model.canReloadModel {
-                Button("Reload Model", action: model.reloadModel)
+                Button(L("Reload Model"), action: model.reloadModel)
                     .buttonStyle(.borderedProminent)
             }
         }
@@ -330,9 +326,9 @@ struct OutputPaneView: View {
     }
 
     private var placeholderHint: String? {
-        if model.loadState.isFailed { return "The model could not be loaded" }
-        if model.hasStaleLoadedRuntime { return "Reload the model to use changed settings" }
-        return needsModelLoad ? "Load the model to begin" : nil
+        if model.loadState.isFailed { return L("The model could not be loaded") }
+        if model.hasStaleLoadedRuntime { return L("Reload the model to use changed settings") }
+        return needsModelLoad ? L("Load the model to begin") : nil
     }
 
     private func copy(_ text: String) {
@@ -413,11 +409,11 @@ private struct LoadingModelText: View {
 
     private func label(dotCount: Int) -> some View {
         ZStack(alignment: .leading) {
-            Text("Loading Model...").hidden()
-            Text("Loading Model" + String(repeating: ".", count: dotCount))
+            Text(L("Loading Model") + "...").hidden()
+            Text(L("Loading Model") + String(repeating: ".", count: dotCount))
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Loading Model")
+        .accessibilityLabel(L("Loading Model"))
     }
 }
 
@@ -610,7 +606,7 @@ private struct IncrementalTranscriptView: NSViewRepresentable {
         textView.textContainer?.lineFragmentPadding = 0
         textView.isAutomaticLinkDetectionEnabled = false
         textView.isAutomaticDataDetectionEnabled = false
-        textView.setAccessibilityLabel("Conversation transcript")
+        textView.setAccessibilityLabel(L("Conversation transcript"))
         scrollView.documentView = textView
         return scrollView
     }
@@ -655,10 +651,8 @@ private struct TranscriptPreview: View {
         Image(systemName: "cube.transparent")
             .font(.title2)
             .foregroundStyle(.quaternary)
-        Text("Choose a predefined example or write your own prompt.")
+        Text("Write a prompt to begin.")
             .font(.headline)
-        Text("Describe the goal, relevant context, and any constraints.")
-            .foregroundStyle(.secondary)
     }
     .frame(width: 720, height: 420)
 }

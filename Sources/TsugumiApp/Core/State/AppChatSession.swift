@@ -34,7 +34,7 @@ public final class AppChatSession: Identifiable {
         let firstLine = source.split(whereSeparator: \.isNewline).first
             .map(String.init) ?? ""
         let trimmed = firstLine.trimmingCharacters(in: .whitespaces)
-        return trimmed.isEmpty ? "New Chat" : trimmed
+        return trimmed.isEmpty ? AppLocalization.string("New Chat") : trimmed
     }
 
     /// True when nothing has been typed, attached, sent, or generated.

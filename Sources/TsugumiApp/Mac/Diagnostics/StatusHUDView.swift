@@ -19,9 +19,9 @@ struct StatusHUDView: View {
             PhaseLabel(model: model)
             Spacer(minLength: 12)
             if showsMetrics {
-                HUDMetricView(value: rateText, label: "tok/s", animated: !model.isRunning)
-                HUDMetricView(value: tokensText, label: "tokens", animated: !model.isRunning)
-                HUDMetricView(value: memoryText, label: "memory", animated: !model.isRunning)
+                HUDMetricView(value: rateText, label: L("tok/s"), animated: !model.isRunning)
+                HUDMetricView(value: tokensText, label: L("tokens"), animated: !model.isRunning)
+                HUDMetricView(value: memoryText, label: L("memory"), animated: !model.isRunning)
             }
         }
         .frame(height: 30)
@@ -84,7 +84,7 @@ private struct PhaseLabel: View {
         .font(.caption.weight(.medium))
         .lineLimit(1)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Model status")
+        .accessibilityLabel(L("Model status"))
         .accessibilityValue(model.presentation.label)
     }
 

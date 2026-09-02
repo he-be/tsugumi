@@ -8,8 +8,8 @@ public enum AppNewlineShortcut: String, CaseIterable, Codable, Sendable, Identif
 
     public var sendMessageLabel: String {
         switch self {
-        case .return: return "Command-Return"
-        case .shiftReturn: return "Return"
+        case .return: return AppLocalization.string("Command-Return")
+        case .shiftReturn: return AppLocalization.string("Return")
         }
     }
 }
