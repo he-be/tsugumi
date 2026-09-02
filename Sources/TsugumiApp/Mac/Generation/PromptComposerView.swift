@@ -79,6 +79,9 @@ struct PromptComposerView: View {
             if model.supportsVision {
                 attachImagesButton
             }
+            if model.webSearchAvailable {
+                webSearchControl
+            }
             Spacer()
             clearAction
             GenerateControl(model: model)
@@ -104,6 +107,47 @@ struct PromptComposerView: View {
             guard case .success(let urls) = result else { return }
             model.attachImages(urls.map(\.path))
         }
+    }
+
+    /// Off / Auto / Always for the web tools. Tinted when on, so the state
+    /// is readable without opening the menu.
+    private var webSearchControl: some View {
+        Menu {
+            Picker("Web search", selection: $model.webSearchMode) {
+                ForEach(AppWebSearchMode.allCases) { mode in
+                    Text(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.inline)
+            .labelsHidden()
+            Divider()
+            Text(model.webSearchMode.help)
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "globe")
+                if model.webSearchMode != .off {
+                    Text(model.webSearchMode.label)
+                        .font(.caption.weight(.medium))
+                }
+            }
+            .frame(height: 28)
+            .padding(.horizontal, model.webSearchMode == .off ? 0 : 6)
+            .contentShape(Capsule())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .foregroundStyle(model.webSearchMode == .off
+                         ? AnyShapeStyle(.secondary)
+                         : AnyShapeStyle(TsugumiMacTheme.accentColor))
+        .background {
+            if model.webSearchMode != .off {
+                Capsule().fill(TsugumiMacTheme.accentColor.opacity(0.12))
+            }
+        }
+        .disabled(model.isRunning)
+        .help("Web search: \(model.webSearchMode.label) — \(model.webSearchMode.help)")
+        .accessibilityLabel("Web search \(model.webSearchMode.label)")
     }
 
     private var attachmentsRow: some View {

@@ -61,27 +61,67 @@ public struct DecodeLoadRequest: Codable, Sendable {
     }
 }
 
+/// One function call the model asked for, or one it asked for in an earlier
+/// turn and is being shown again. `argumentsJSON` is the argument object as
+/// JSON text; the service parses it when it redraws the turn.
+public struct DecodeToolCall: Codable, Sendable, Equatable {
+    public var id: String
+    public var name: String
+    public var argumentsJSON: String
+
+    public init(id: String, name: String, argumentsJSON: String) {
+        self.id = id
+        self.name = name
+        self.argumentsJSON = argumentsJSON
+    }
+}
+
+/// One function the request declares. `parametersJSON` is the JSON Schema
+/// object for the arguments, as JSON text.
+public struct DecodeToolDefinition: Codable, Sendable, Equatable {
+    public var name: String
+    public var description: String
+    public var parametersJSON: String
+
+    public init(name: String, description: String, parametersJSON: String) {
+        self.name = name
+        self.description = description
+        self.parametersJSON = parametersJSON
+    }
+}
+
 /// One completed conversation turn carried over the wire. `reasoningText`
 /// rides along on assistant turns so the service can redraw them exactly as
-/// they were generated.
+/// they were generated. A `tool` turn carries the result of one call
+/// (`toolCallID` names it); an assistant turn that asked for calls carries
+/// them in `toolCalls`.
 public struct DecodeChatTurn: Codable, Sendable, Equatable {
     public var role: String
     public var text: String
     public var reasoningText: String?
     public var imagePaths: [String]
+    public var toolCalls: [DecodeToolCall]
+    public var toolCallID: String?
+    public var toolName: String?
 
     public init(role: String,
                 text: String,
                 reasoningText: String? = nil,
-                imagePaths: [String] = []) {
+                imagePaths: [String] = [],
+                toolCalls: [DecodeToolCall] = [],
+                toolCallID: String? = nil,
+                toolName: String? = nil) {
         self.role = role
         self.text = text
         self.reasoningText = reasoningText
         self.imagePaths = imagePaths
+        self.toolCalls = toolCalls
+        self.toolCallID = toolCallID
+        self.toolName = toolName
     }
 
     private enum CodingKeys: String, CodingKey {
-        case role, text, reasoningText, imagePaths
+        case role, text, reasoningText, imagePaths, toolCalls, toolCallID, toolName
     }
 
     public init(from decoder: Decoder) throws {
@@ -90,12 +130,27 @@ public struct DecodeChatTurn: Codable, Sendable, Equatable {
         text = try container.decode(String.self, forKey: .text)
         reasoningText = try container.decodeIfPresent(String.self, forKey: .reasoningText)
         imagePaths = try container.decodeIfPresent([String].self, forKey: .imagePaths) ?? []
+        toolCalls = try container.decodeIfPresent([DecodeToolCall].self, forKey: .toolCalls) ?? []
+        toolCallID = try container.decodeIfPresent(String.self, forKey: .toolCallID)
+        toolName = try container.decodeIfPresent(String.self, forKey: .toolName)
     }
 }
 
 public struct DecodeGenerationRequest: Codable, Sendable {
     public var history: [DecodeChatTurn]
     public var prompt: String
+    /// A system message rendered before the history. Absent means none.
+    public var systemPrompt: String?
+    /// Turns that follow `prompt` inside the same user turn: the assistant's
+    /// tool calls and their results, when the client is running a tool loop.
+    public var continuation: [DecodeChatTurn]
+    /// Functions the model may call. Empty means no tool template.
+    public var tools: [DecodeToolDefinition]
+    /// `auto`, `required`, or `none`. Absent means `auto`.
+    public var toolChoice: String?
+    /// Tokens the thought channel may spend before the closing tag is forced
+    /// (RSN-4). Absent or negative means unlimited.
+    public var reasoningBudgetTokens: Int?
     public var maxNewTokens: Int
     public var maxContextTokens: Int
     public var temperature: Float
@@ -108,7 +163,13 @@ public struct DecodeGenerationRequest: Codable, Sendable {
     public var generationID: UUID
 
     public init(history: [DecodeChatTurn] = [],
-                prompt: String, maxNewTokens: Int, maxContextTokens: Int,
+                prompt: String,
+                systemPrompt: String? = nil,
+                continuation: [DecodeChatTurn] = [],
+                tools: [DecodeToolDefinition] = [],
+                toolChoice: String? = nil,
+                reasoningBudgetTokens: Int? = nil,
+                maxNewTokens: Int, maxContextTokens: Int,
                 temperature: Float, topK: Int? = nil, topP: Float? = nil,
                 repetitionPenalty: Float = 1,
                 enableThinking: Bool = false,
@@ -117,6 +178,11 @@ public struct DecodeGenerationRequest: Codable, Sendable {
                 generationID: UUID = UUID()) {
         self.history = history
         self.prompt = prompt
+        self.systemPrompt = systemPrompt
+        self.continuation = continuation
+        self.tools = tools
+        self.toolChoice = toolChoice
+        self.reasoningBudgetTokens = reasoningBudgetTokens
         self.maxNewTokens = maxNewTokens
         self.maxContextTokens = maxContextTokens
         self.temperature = temperature
@@ -130,7 +196,9 @@ public struct DecodeGenerationRequest: Codable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case history, prompt, maxNewTokens, maxContextTokens, temperature, topK, topP
+        case history, prompt, systemPrompt, continuation, tools, toolChoice
+        case reasoningBudgetTokens
+        case maxNewTokens, maxContextTokens, temperature, topK, topP
         case repetitionPenalty, enableThinking, imagePaths
         case runtimeOptions, generationID
     }
@@ -139,6 +207,12 @@ public struct DecodeGenerationRequest: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         history = try container.decodeIfPresent([DecodeChatTurn].self, forKey: .history) ?? []
         prompt = try container.decode(String.self, forKey: .prompt)
+        systemPrompt = try container.decodeIfPresent(String.self, forKey: .systemPrompt)
+        continuation = try container.decodeIfPresent(
+            [DecodeChatTurn].self, forKey: .continuation) ?? []
+        tools = try container.decodeIfPresent([DecodeToolDefinition].self, forKey: .tools) ?? []
+        toolChoice = try container.decodeIfPresent(String.self, forKey: .toolChoice)
+        reasoningBudgetTokens = try container.decodeIfPresent(Int.self, forKey: .reasoningBudgetTokens)
         maxNewTokens = try container.decode(Int.self, forKey: .maxNewTokens)
         maxContextTokens = try container.decode(Int.self, forKey: .maxContextTokens)
         temperature = try container.decode(Float.self, forKey: .temperature)
@@ -249,6 +323,10 @@ public struct DecodeServiceEvent: Codable, Sendable {
     public var peakMemoryBytes: UInt64?
     public var prefill: DecodePrefillDiagnostics?
     public var runner: DecodeRunnerDiagnostics?
+    /// The function calls the generation ended on, carried on the terminal
+    /// event (the stop reason is then `toolCalls`). Optional for wire
+    /// compatibility.
+    public var toolCalls: [DecodeToolCall]?
 
     public init(kind: DecodeServiceEventKind, generationID: UUID,
                 sequence: UInt64 = 0, textDelta: String = "",
@@ -265,7 +343,8 @@ public struct DecodeServiceEvent: Codable, Sendable {
                 stopReason: String? = nil, error: String? = nil,
                 currentMemoryBytes: UInt64? = nil, peakMemoryBytes: UInt64? = nil,
                 prefill: DecodePrefillDiagnostics? = nil,
-                runner: DecodeRunnerDiagnostics? = nil) {
+                runner: DecodeRunnerDiagnostics? = nil,
+                toolCalls: [DecodeToolCall]? = nil) {
         self.kind = kind
         self.generationID = generationID
         self.sequence = sequence
@@ -289,6 +368,7 @@ public struct DecodeServiceEvent: Codable, Sendable {
         self.peakMemoryBytes = peakMemoryBytes
         self.prefill = prefill
         self.runner = runner
+        self.toolCalls = toolCalls
     }
 }
 

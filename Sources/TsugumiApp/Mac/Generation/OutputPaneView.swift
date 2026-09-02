@@ -7,6 +7,7 @@ struct OutputPaneView: View {
     let model: AppModel
     @State private var responseCopyFeedbackID: UUID?
     @State private var reasoningExpanded = false
+    @State private var toolTraceExpanded = true
 
     var body: some View {
         Group {
@@ -70,9 +71,14 @@ struct OutputPaneView: View {
             case .user:
                 pendingPrompt = turn.text
             case .assistant:
+                // A tool-calling assistant turn has no answer of its own;
+                // the answer is the assistant turn after the tool results.
+                guard turn.toolCalls.isEmpty else { continue }
                 turns.append(InstructionTranscriptDocumentController.CompletedTurn(
                     prompt: pendingPrompt ?? "", response: turn.text))
                 pendingPrompt = nil
+            case .tool:
+                continue
             }
         }
         if let pendingPrompt {
@@ -84,6 +90,9 @@ struct OutputPaneView: View {
 
     private var transcript: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if !model.outputToolTrace.isEmpty {
+                toolTraceSection
+            }
             if !model.outputReasoningText.isEmpty {
                 reasoningSection
             }
@@ -157,6 +166,79 @@ struct OutputPaneView: View {
                     RoundedRectangle(cornerRadius: 12)
                         .fill(Color(nsColor: .controlBackgroundColor).opacity(0.6))
                 }
+            }
+        }
+    }
+
+    /// The web search steps of the live turn: each query and each page, with
+    /// what came back. Open while the loop runs; collapsible afterwards.
+    private var toolTraceSection: some View {
+        let entries = model.outputToolTrace
+        let isLive = model.isSelectedChatGenerating
+            && entries.contains { $0.status == .running }
+        return VStack(alignment: .leading, spacing: 6) {
+            Button {
+                toolTraceExpanded.toggle()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "globe")
+                        .font(.caption)
+                    Text(isLive ? "Searching the web…" : "Web search (\(entries.count) steps)")
+                        .font(.caption.weight(.medium))
+                    Image(systemName: toolTraceExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption2)
+                }
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if toolTraceExpanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(entries) { entry in
+                        toolTraceRow(entry)
+                    }
+                }
+                .padding(10)
+                .background {
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.6))
+                }
+            }
+        }
+    }
+
+    private func toolTraceRow(_ entry: AppToolTraceEntry) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: entry.name == "fetch_page" ? "doc.text" : "magnifyingglass")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .frame(width: 14)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(entry.subject)
+                    .font(.callout)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+                if !entry.summary.isEmpty {
+                    Text(entry.summary)
+                        .font(.caption)
+                        .foregroundStyle(entry.status == .failed ? .red : .secondary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 0)
+            switch entry.status {
+            case .running:
+                ProgressView().controlSize(.mini)
+            case .done:
+                Image(systemName: "checkmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            case .failed:
+                Image(systemName: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(.red)
             }
         }
     }

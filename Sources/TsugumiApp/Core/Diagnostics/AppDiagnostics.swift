@@ -138,6 +138,10 @@ public struct AppTokenEvent: Equatable, Sendable {
 public enum AppInferenceEvent: Equatable, Sendable {
     case prefillProgress(done: Int, total: Int)
     case token(AppTokenEvent)
+    /// A function call the model wrote. The generation then ends with
+    /// `stopReason == .toolCalls`; the app runs the call and starts the
+    /// next round.
+    case toolCall(AppToolCall)
     case finished(AppDiagnostics)
     case cancelled(AppDiagnostics)
     case failed(AppInferenceError, partial: AppDiagnostics?)

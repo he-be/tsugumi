@@ -77,6 +77,8 @@ let package = Package(
             path: "Sources/TsugumiApp/Core",
             resources: [
                 .copy("Resources/app-prompts.json"),
+                .copy("Resources/web-search-system-prompt.txt"),
+                .copy("Resources/search-tool-prompts.json"),
             ]
         ),
         .target(
@@ -160,7 +162,8 @@ let package = Package(
         .testTarget(
             name: "TsugumiAppCoreTests",
             dependencies: ["TsugumiAppCore", "Tsugumi", "TsugumiRepackCore", "TsugumiDecodeProtocol"],
-            path: "Tests/TsugumiApp/Core"
+            path: "Tests/TsugumiApp/Core",
+            resources: [.copy("Fixtures")]
         ),
         .testTarget(
             name: "TsugumiDecodeServiceTests",

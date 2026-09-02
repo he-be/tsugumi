@@ -97,20 +97,31 @@ import TsugumiDecodeProtocol
 
                 do {
                     let options = try appRuntimeOptions(request.runtimeOptions)
-                    let history: [AppChatTurn] = try request.history.map { turn in
-                        guard let role = AppChatTurn.Role(rawValue: turn.role) else {
+                    let history = try request.history.map(appChatTurn)
+                    let continuation = try request.continuation.map(appChatTurn)
+                    let toolChoice: AppToolChoice
+                    if let raw = request.toolChoice {
+                        guard let parsed = AppToolChoice(rawValue: raw) else {
                             throw AppInferenceError.invalidRequest(
-                                "unknown chat turn role \(turn.role)")
+                                "unknown tool choice \(raw)")
                         }
-                        return AppChatTurn(role: role,
-                                           text: turn.text,
-                                           reasoningText: turn.reasoningText ?? "",
-                                           imagePaths: turn.imagePaths)
+                        toolChoice = parsed
+                    } else {
+                        toolChoice = .auto
                     }
                     let generation = AppGenerationRequest(
                         modelDirectory: modelDirectory,
                         history: history,
                         prompt: request.prompt,
+                        systemPrompt: request.systemPrompt,
+                        continuation: continuation,
+                        tools: request.tools.map {
+                            AppToolDefinition(name: $0.name,
+                                              description: $0.description,
+                                              parametersJSON: $0.parametersJSON)
+                        },
+                        toolChoice: toolChoice,
+                        reasoningBudgetTokens: request.reasoningBudgetTokens ?? -1,
                         maxNewTokens: request.maxNewTokens,
                         maxContextTokens: request.maxContextTokens,
                         temperature: request.temperature,
@@ -160,6 +171,22 @@ import TsugumiDecodeProtocol
     private static func write(_ event: DecodeServiceEvent,
                               to handle: FileHandle) throws {
         try handle.write(contentsOf: DecodeFrameCodec.encode(event))
+    }
+
+    private static func appChatTurn(_ turn: DecodeChatTurn) throws -> AppChatTurn {
+        guard let role = AppChatTurn.Role(rawValue: turn.role) else {
+            throw AppInferenceError.invalidRequest("unknown chat turn role \(turn.role)")
+        }
+        return AppChatTurn(role: role,
+                           text: turn.text,
+                           reasoningText: turn.reasoningText ?? "",
+                           imagePaths: turn.imagePaths,
+                           toolCalls: turn.toolCalls.map {
+                               AppToolCall(id: $0.id, name: $0.name,
+                                           argumentsJSON: $0.argumentsJSON)
+                           },
+                           toolCallID: turn.toolCallID,
+                           toolName: turn.toolName)
     }
 
     private static func appRuntimeOptions(_ options: DecodeRuntimeOptions) throws

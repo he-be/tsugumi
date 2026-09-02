@@ -17,6 +17,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
     var newlineShortcut: AppNewlineShortcut = .return
     var showPromptExamples: Bool = true
     var sentPromptBehavior: AppSentPromptBehavior = .keep
+    var webSearchMode: AppWebSearchMode = .off
 
     private enum CodingKeys: String, CodingKey {
         case version
@@ -33,6 +34,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         case newlineShortcut
         case showPromptExamples
         case sentPromptBehavior
+        case webSearchMode
     }
 
     init(version: Int = currentVersion,
@@ -48,7 +50,8 @@ struct MacAppSettings: Codable, Equatable, Sendable {
          thinkingEnabled: Bool = false,
          newlineShortcut: AppNewlineShortcut = .return,
          showPromptExamples: Bool = true,
-         sentPromptBehavior: AppSentPromptBehavior = .keep) {
+         sentPromptBehavior: AppSentPromptBehavior = .keep,
+         webSearchMode: AppWebSearchMode = .off) {
         self.version = version
         self.contextTokens = contextTokens
         self.expertCacheSlots = expertCacheSlots
@@ -63,6 +66,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         self.newlineShortcut = newlineShortcut
         self.showPromptExamples = showPromptExamples
         self.sentPromptBehavior = sentPromptBehavior
+        self.webSearchMode = webSearchMode
     }
 
     /// The adopted operating point for one checkpoint: the official sampler,
@@ -99,6 +103,9 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         sentPromptBehavior = try container.decodeIfPresent(
             AppSentPromptBehavior.self,
             forKey: .sentPromptBehavior) ?? .keep
+        webSearchMode = try container.decodeIfPresent(
+            AppWebSearchMode.self,
+            forKey: .webSearchMode) ?? .off
     }
 
     func isValid() -> Bool {

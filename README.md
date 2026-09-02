@@ -18,6 +18,8 @@
 <p align="center">
   <a href="#使ってみる">使ってみる</a> ·
   <a href="docs/MAC_APP.md">Mac アプリ</a> ·
+  <a href="docs/WEB_SEARCH.md">Web 検索</a> ·
+  <a href="docs/LOCAL_WIKIPEDIA.md">ローカル Wikipedia</a> ·
   <a href="docs/CLI.md">CLI</a> ·
   <a href="docs/OPENAI_SERVER.md">ローカルサーバ</a> ·
   <a href="docs/SYSTEM_DESIGN.md">仕組み</a> ·

@@ -10,6 +10,7 @@ struct InspectorView: View {
             modelSection
             memorySection
             generationSection
+            webSearchSection
             runtimeSection
             RunnerDiagnosticsSection(diagnostics: model.diagnostics)
         }
@@ -136,6 +137,81 @@ struct InspectorView: View {
         .disabled(model.isRunning || model.loadState.isLoading)
     }
 
+    /// The web tools: mode, the keys, and the two limits that decide how
+    /// much of the context a turn may spend on search results.
+    private var webSearchSection: some View {
+        Section("Web search") {
+            if model.webSearchAvailable {
+                Picker("Mode", selection: $model.webSearchMode) {
+                    ForEach(AppWebSearchMode.allCases) { mode in
+                        Text(mode.label).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text(model.webSearchMode.help)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Web search is available with Gemma only.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            SecureField("Serper API key", text: $model.webSearchConfiguration.serperAPIKey)
+                .textFieldStyle(.roundedBorder)
+            SecureField("Brave Search API key (fallback)",
+                        text: $model.webSearchConfiguration.braveAPIKey)
+                .textFieldStyle(.roundedBorder)
+            SecureField("Jina Reader API key (optional)",
+                        text: $model.webSearchConfiguration.jinaAPIKey)
+                .textFieldStyle(.roundedBorder)
+            if !model.webSearchConfiguration.resolved().canUseTools {
+                Text("Add a Serper or Brave key, or a local Wikipedia index, to enable the tools. Keys are stored in ~/Library/Application Support/Tsugumi/web-search.json (owner-readable only).")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            LocalWikipediaField(path: $model.webSearchConfiguration.wikipediaIndexPath)
+            Toggle("Read pages with Jina Reader first",
+                   isOn: $model.webSearchConfiguration.preferJinaReader)
+                .toggleStyle(.switch)
+            Text(model.webSearchConfiguration.preferJinaReader
+                 ? "Jina Reader renders JavaScript pages; the app's own fetch is the fallback."
+                 : "The app fetches pages itself; Jina Reader is the fallback for pages with little text.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            LabeledContent("Page text limit") {
+                Stepper(value: $model.webSearchConfiguration.pageCharacterLimit,
+                        in: 1_000...40_000, step: 1_000) {
+                    Text("\(model.webSearchConfiguration.pageCharacterLimit) chars")
+                        .monospacedDigit()
+                }
+                .fixedSize()
+            }
+            Picker("Thinking before the first search",
+                   selection: $model.webSearchConfiguration.preSearchThinkingBudget) {
+                Text("Off").tag(0)
+                Text("256 tokens").tag(256)
+                Text("512 tokens").tag(512)
+                Text("1024 tokens").tag(1024)
+                Text("Unlimited").tag(-1)
+            }
+            Text("With Thinking on, the round that decides the first search is held to this many thought tokens; rounds that read results think freely. Gemma 4 otherwise spends this round doubting the date.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            LabeledContent("Tool rounds per answer") {
+                Stepper(value: $model.webSearchConfiguration.maxToolRounds,
+                        in: 1...12, step: 1) {
+                    Text("\(model.webSearchConfiguration.maxToolRounds)")
+                        .monospacedDigit()
+                }
+                .fixedSize()
+            }
+        }
+        .onChange(of: model.webSearchConfiguration) {
+            model.saveWebSearchConfiguration()
+        }
+        .disabled(model.isRunning)
+    }
+
     private var lockedSampling: some View {
         LabeledContent("Sampling") {
             let kind = model.selectedModelKind
@@ -213,4 +289,59 @@ struct InspectorView: View {
         .disabled(model.isRunning || model.loadState.isLoading)
     }
 
+}
+
+/// The local Wikipedia index: its path, a chooser, and what the file says
+/// about itself (or why it cannot be opened). The probe opens the file on
+/// a background task so a slow disk does not stall the Inspector.
+private struct LocalWikipediaField: View {
+    @Binding var path: String
+    @State private var status: String = ""
+    @State private var isError = false
+
+    var body: some View {
+        HStack {
+            TextField("Local Wikipedia index (wikipedia-ja.sqlite)", text: $path)
+                .textFieldStyle(.roundedBorder)
+            Button("Choose…") { choose() }
+        }
+        Text(status.isEmpty
+             ? "Optional. Built from a Wikimedia dump by Scripts/wiki/build_jawiki_index.py; the tools then search Wikipedia offline. Works without any API key."
+             : status)
+            .font(.caption)
+            .foregroundStyle(isError ? .orange : .secondary)
+            .task(id: path) { await probe() }
+    }
+
+    private func choose() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.allowedContentTypes = [.database, .data]
+        if panel.runModal() == .OK, let url = panel.url {
+            path = url.path
+        }
+    }
+
+    private func probe() async {
+        let trimmed = path.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            status = ""
+            isError = false
+            return
+        }
+        let expanded = (trimmed as NSString).expandingTildeInPath
+        let result = await Task.detached { LocalWikipediaIndex.probe(path: expanded) }.value
+        guard !Task.isCancelled else { return }
+        switch result {
+        case .success(let summary):
+            let date = summary.dumpDateJapanese ?? "unknown date"
+            status = "Japanese Wikipedia, \(summary.articles.formatted()) articles, dump of \(date)."
+            isError = false
+        case .failure(let error):
+            status = "\(error)"
+            isError = true
+        }
+    }
 }

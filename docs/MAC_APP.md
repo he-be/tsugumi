@@ -57,6 +57,15 @@ transcript mailbox は 1 本のクライアント所有チャネルなので所�
 トークンイベントが滞留 → 表示が実速度から遅れて這い、Stop も効かないように
 見える。完了後のディスクロージャは従来どおり全文。
 
+**Web 検索** (2026-09-02): Gemma のチャットに `web_search` / `fetch_page` の
+ツールループを足した (Off / Auto / Always)。Serper → Brave、Jina Reader →
+自前 fetch。設計・キーの置き場・実機スモークは [WEB_SEARCH.md](WEB_SEARCH.md)。
+
+**ローカル Wikipedia** (2026-09-02): 同じツールループに `wikipedia_search` /
+`wikipedia_page` を足した。Wikimedia の週次ダンプから自前で組む SQLite (FTS5、
+バイグラム) をこの Mac に置き、ネットに出ずに引く。キー無しでも動く。
+[LOCAL_WIKIPEDIA.md](LOCAL_WIKIPEDIA.md)。
+
 ## 2. ウェイトの供給 — 完成品の直DL
 
 ストリーミング repack は `sym` を作れず (staging の bias レンジが要る、

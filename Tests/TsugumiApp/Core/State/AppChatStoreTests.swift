@@ -210,3 +210,50 @@ private final class ReportingChatClient: AppInferenceClient,
 
     func cancel() {}
 }
+
+@Suite struct AppChatStoreToolTests {
+    @MainActor
+    @Test func continuationTurnsAndTraceSurviveARestart() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chat-store-tools-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = AppChatStore(fileURL: directory.appendingPathComponent("chats.json"))
+        let session = AppChatSession()
+        session.outputPromptText = "q"
+        session.outputContinuationTurns = [
+            AppChatTurn(role: .assistant, text: "",
+                        toolCalls: [AppToolCall(id: "c1", name: "web_search", argumentsJSON: "{}")]),
+            .toolResult(callID: "c1", name: "web_search", content: "r"),
+        ]
+        session.outputToolTrace = [
+            AppToolTraceEntry(id: "c1", name: "web_search", subject: "q", status: .done, summary: "s"),
+            AppToolTraceEntry(id: "c2", name: "fetch_page", subject: "u", status: .running),
+        ]
+        try store.save(PersistedChats(chats: [PersistedChat(session)]))
+
+        let restored = try #require(store.load()).chats[0].makeSession()
+        #expect(restored.outputContinuationTurns == session.outputContinuationTurns)
+        #expect(restored.outputToolTrace[0] == session.outputToolTrace[0])
+        // A step still running at quit is reported as interrupted.
+        #expect(restored.outputToolTrace[1].status == .failed)
+        #expect(restored.outputToolTrace[1].summary == "interrupted")
+    }
+
+    @Test func aChatsFileFromBeforeTheToolLoopStillLoads() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("chat-store-legacy-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let file = directory.appendingPathComponent("chats.json")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let json = """
+        {"version":1,"selectedChatIndex":0,"chats":[{"promptText":"d","attachedImagePaths":[],
+         "turns":[{"role":"user","text":"u","reasoningText":"","imagePaths":[]}],
+         "outputPromptText":"","outputImagePaths":[],"outputText":"","outputReasoningText":""}]}
+        """
+        try Data(json.utf8).write(to: file)
+        let loaded = try #require(AppChatStore(fileURL: file).load())
+        #expect(loaded.chats[0].turns.count == 1)
+        #expect(loaded.chats[0].outputContinuationTurns.isEmpty)
+        #expect(loaded.chats[0].outputToolTrace.isEmpty)
+    }
+}

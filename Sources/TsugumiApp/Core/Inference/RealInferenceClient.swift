@@ -317,11 +317,13 @@ actor RealInferenceSession {
                         textDelta: "",
                         elapsedDecodeSeconds: elapsed,
                         reasoningDelta: text)))
-                case .toolCall:
-                    // The app declares no tools, so a call cannot be asked
-                    // for; a `<tool_call>` the model writes unasked stays
-                    // text on the no-tools path and never reaches here.
-                    break
+                case .toolCall(let call):
+                    // Only a request that declared tools can reach here; a
+                    // `<tool_call>` the model writes unasked stays text on
+                    // the no-tools path. The app runs the loop.
+                    continuation.yield(.toolCall(AppToolCall(
+                        id: call.id, name: call.name,
+                        argumentsJSON: call.argumentsJSON)))
                 }
             }
 
@@ -379,6 +381,10 @@ actor RealInferenceSession {
     /// the UI shows them pinned). Assistant turns are redrawn with their
     /// `reasoningContent` (SPEC MSG-5) so the redraw extends the generated
     /// token sequence and the prompt cache stays warm across turns.
+    ///
+    /// A tool loop adds a system message, declared tools, assistant turns
+    /// with `toolCalls`, and `tool` turns; those go through the same
+    /// tool-calling template and grammar the HTTP server uses.
     static func validatedChatRequest(for request: AppGenerationRequest,
                                      kind: AppModelKind) throws -> ValidatedChatRequest {
         var messages: [GFTokenizer.Message] = []
@@ -389,7 +395,10 @@ actor RealInferenceSession {
         func append(role: GFTokenizer.Role,
                     text: String,
                     reasoning: String,
-                    imagePaths: [String]) throws {
+                    imagePaths: [String],
+                    toolCalls: [AppToolCall] = [],
+                    toolCallID: String? = nil,
+                    toolName: String? = nil) throws {
             guard imagePaths.isEmpty || kind.supportsVision else {
                 throw AppInferenceError.invalidRequest(
                     "\(kind.shortName) has no vision tower; remove the attached images.")
@@ -402,25 +411,66 @@ actor RealInferenceSession {
                     fromImageURL: dataURL, policy: policy, index: attachments.count))
             }
             let reasoningContent = reasoning.isEmpty ? nil : reasoning
+            let historical = try toolCalls.map { call in
+                GFTokenizer.HistoricalToolCall(
+                    id: call.id, name: call.name,
+                    arguments: try Self.jsonValue(call.argumentsJSON,
+                                                  what: "tool call \(call.name) arguments"))
+            }
             multimodal.append(GFTokenizer.MultimodalMessage(
                 role: role,
                 parts: imagePaths.map { _ in GFTokenizer.ContentPart.image }
                     + [GFTokenizer.ContentPart.text(text)],
                 reasoningContent: reasoningContent))
             messages.append(GFTokenizer.Message(
-                role: role, content: text, reasoningContent: reasoningContent))
+                role: role, content: text,
+                toolCalls: historical,
+                toolCallID: toolCallID,
+                name: toolName,
+                reasoningContent: reasoningContent))
         }
 
-        for turn in request.history {
-            try append(role: turn.role == .user ? .user : .assistant,
+        func appendTurn(_ turn: AppChatTurn) throws {
+            let role: GFTokenizer.Role = switch turn.role {
+            case .user: .user
+            case .assistant: .assistant
+            case .tool: .tool
+            }
+            try append(role: role,
                        text: turn.text,
                        reasoning: turn.reasoningText,
-                       imagePaths: turn.imagePaths)
+                       imagePaths: turn.imagePaths,
+                       toolCalls: turn.toolCalls,
+                       toolCallID: turn.toolCallID,
+                       toolName: turn.toolName)
+        }
+
+        if let systemPrompt = request.systemPrompt, !systemPrompt.isEmpty {
+            try append(role: .system, text: systemPrompt, reasoning: "", imagePaths: [])
+        }
+        for turn in request.history {
+            try appendTurn(turn)
         }
         try append(role: .user,
                    text: request.prompt,
                    reasoning: "",
                    imagePaths: request.imagePaths)
+        for turn in request.continuation {
+            try appendTurn(turn)
+        }
+
+        let tools = try request.tools.map { tool in
+            GFTokenizer.FunctionDefinition(
+                name: tool.name,
+                description: tool.description,
+                parameters: try Self.jsonValue(tool.parametersJSON,
+                                               what: "tool \(tool.name) parameters"))
+        }
+        let toolChoice: ChatToolChoice = switch request.toolChoice {
+        case .auto: .auto
+        case .required: .required
+        case .none: .none
+        }
 
         let vision = attachments.isEmpty
             ? nil
@@ -433,13 +483,23 @@ actor RealInferenceSession {
             repetitionPenalty: request.repetitionPenalty)
         return ValidatedChatRequest(
             messages: messages,
-            tools: [],
+            tools: tools,
             stream: true,
             includeUsage: false,
             generationConfig: config,
             maximumCompletionTokens: request.maxNewTokens,
             vision: vision,
-            enableThinking: request.enableThinking)
+            enableThinking: request.enableThinking,
+            toolChoice: toolChoice,
+            reasoningBudgetTokens: max(request.reasoningBudgetTokens, -1))
+    }
+
+    static func jsonValue(_ text: String, what: String) throws -> JSONValue {
+        do {
+            return try JSONDecoder().decode(JSONValue.self, from: Data(text.utf8))
+        } catch {
+            throw AppInferenceError.invalidRequest("\(what) is not valid JSON: \(error)")
+        }
     }
 
     static func mediaType(forPath path: String) -> String {

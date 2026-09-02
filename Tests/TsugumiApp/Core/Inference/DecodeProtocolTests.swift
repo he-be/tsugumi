@@ -227,3 +227,62 @@ import TsugumiDecodeProtocol
         }
     }
 }
+
+@Suite struct DecodeProtocolToolTests {
+    @Test func generationRequestCarriesToolsContinuationAndSystemPrompt() throws {
+        let call = DecodeToolCall(id: "c1", name: "web_search", argumentsJSON: #"{"query":"q"}"#)
+        let request = DecodeGenerationRequest(
+            history: [DecodeChatTurn(role: "user", text: "q0"),
+                      DecodeChatTurn(role: "assistant", text: "a0")],
+            prompt: "q1",
+            systemPrompt: "sys",
+            continuation: [
+                DecodeChatTurn(role: "assistant", text: "", reasoningText: "r", toolCalls: [call]),
+                DecodeChatTurn(role: "tool", text: "result", toolCallID: "c1", toolName: "web_search"),
+            ],
+            tools: [DecodeToolDefinition(name: "web_search", description: "d",
+                                         parametersJSON: #"{"type":"object"}"#)],
+            toolChoice: "required",
+            reasoningBudgetTokens: 512,
+            maxNewTokens: 8, maxContextTokens: 64, temperature: 1)
+        let data = try JSONEncoder().encode(request)
+        let decoded = try JSONDecoder().decode(DecodeGenerationRequest.self, from: data)
+        #expect(decoded.systemPrompt == "sys")
+        #expect(decoded.reasoningBudgetTokens == 512)
+        #expect(decoded.continuation == request.continuation)
+        #expect(decoded.continuation[0].toolCalls == [call])
+        #expect(decoded.continuation[1].toolCallID == "c1")
+        #expect(decoded.tools == request.tools)
+        #expect(decoded.toolChoice == "required")
+    }
+
+    @Test func aRequestFromBeforeTheToolFieldsStillDecodes() throws {
+        let json = """
+        {"prompt":"p","maxNewTokens":4,"maxContextTokens":64,"temperature":1,
+         "repetitionPenalty":1,"history":[{"role":"user","text":"u"}],
+         "runtimeOptions":{"expertCacheSlots":16,"expertCachePolicy":"lfu","prefillEnabled":true,
+         "prefillChunkTokens":2048,"rdadvisePolicy":"off","modelVerification":"full-sha256"},
+         "generationID":"\(UUID().uuidString)"}
+        """
+        let decoded = try JSONDecoder().decode(DecodeGenerationRequest.self, from: Data(json.utf8))
+        #expect(decoded.systemPrompt == nil)
+        #expect(decoded.continuation.isEmpty)
+        #expect(decoded.tools.isEmpty)
+        #expect(decoded.toolChoice == nil)
+        #expect(decoded.reasoningBudgetTokens == nil)
+        #expect(decoded.history[0].toolCalls.isEmpty)
+    }
+
+    @Test func terminalEventCarriesToolCalls() throws {
+        let event = DecodeServiceEvent(
+            kind: .finished, generationID: UUID(), stopReason: "toolCalls",
+            toolCalls: [DecodeToolCall(id: "c1", name: "fetch_page", argumentsJSON: #"{"url":"u"}"#)])
+        let data = try JSONEncoder().encode(event)
+        let decoded = try JSONDecoder().decode(DecodeServiceEvent.self, from: data)
+        #expect(decoded.toolCalls?.first?.name == "fetch_page")
+        let plain = try JSONDecoder().decode(
+            DecodeServiceEvent.self,
+            from: try JSONEncoder().encode(DecodeServiceEvent(kind: .finished, generationID: UUID())))
+        #expect(plain.toolCalls == nil)
+    }
+}

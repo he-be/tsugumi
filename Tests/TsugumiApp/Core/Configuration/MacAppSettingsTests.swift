@@ -287,3 +287,19 @@ import Testing
         return root
     }
 }
+
+@Suite struct MacAppSettingsWebSearchTests {
+    @Test func webSearchModeDefaultsToOffAndRoundTrips() throws {
+        let legacy = """
+        {"version":2,"contextTokens":32768,"expertCacheSlots":32,"temperature":1,
+         "topKEnabled":true,"topK":64,"topPEnabled":true,"topP":0.95,"prefillEnabled":true}
+        """
+        let decoded = try JSONDecoder().decode(MacAppSettings.self, from: Data(legacy.utf8))
+        #expect(decoded.webSearchMode == .off)
+        var settings = MacAppSettings()
+        settings.webSearchMode = .always
+        let roundTrip = try JSONDecoder().decode(
+            MacAppSettings.self, from: try JSONEncoder().encode(settings))
+        #expect(roundTrip.webSearchMode == .always)
+    }
+}

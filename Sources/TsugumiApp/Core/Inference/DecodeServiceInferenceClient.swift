@@ -79,15 +79,20 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
                     let generationID = UUID()
                     generationTranscriptMailbox.reset()
                     let command = DecodeGenerationRequest(
-                        history: request.history.map { turn in
-                            DecodeChatTurn(
-                                role: turn.role.rawValue,
-                                text: turn.text,
-                                reasoningText: turn.reasoningText.isEmpty
-                                    ? nil : turn.reasoningText,
-                                imagePaths: turn.imagePaths)
+                        history: request.history.map(Self.decodeChatTurn),
+                        prompt: request.prompt,
+                        systemPrompt: request.systemPrompt,
+                        continuation: request.continuation.map(Self.decodeChatTurn),
+                        tools: request.tools.map {
+                            DecodeToolDefinition(name: $0.name,
+                                                 description: $0.description,
+                                                 parametersJSON: $0.parametersJSON)
                         },
-                        prompt: request.prompt, maxNewTokens: request.maxNewTokens,
+                        toolChoice: request.toolChoice == .auto
+                            ? nil : request.toolChoice.rawValue,
+                        reasoningBudgetTokens: request.reasoningBudgetTokens < 0
+                            ? nil : request.reasoningBudgetTokens,
+                        maxNewTokens: request.maxNewTokens,
                         maxContextTokens: request.maxContextTokens,
                         temperature: request.temperature,
                         topK: request.topK,
@@ -150,6 +155,11 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
                             event, options: request.runtimeOptions)
                         switch event.kind {
                         case .finished:
+                            for call in event.toolCalls ?? [] {
+                                continuation.yield(.toolCall(AppToolCall(
+                                    id: call.id, name: call.name,
+                                    argumentsJSON: call.argumentsJSON)))
+                            }
                             continuation.yield(.finished(diagnostics))
                             continuation.finish()
                         case .cancelled:
@@ -338,6 +348,19 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
             rdadviseMegabytesPerToken: value.rdadviseMegabytesPerToken,
             rdadviseSkippedPerToken: value.rdadviseSkippedPerToken,
             rdadviseFailures: value.rdadviseFailures)
+    }
+
+    private static func decodeChatTurn(_ turn: AppChatTurn) -> DecodeChatTurn {
+        DecodeChatTurn(
+            role: turn.role.rawValue,
+            text: turn.text,
+            reasoningText: turn.reasoningText.isEmpty ? nil : turn.reasoningText,
+            imagePaths: turn.imagePaths,
+            toolCalls: turn.toolCalls.map {
+                DecodeToolCall(id: $0.id, name: $0.name, argumentsJSON: $0.argumentsJSON)
+            },
+            toolCallID: turn.toolCallID,
+            toolName: turn.toolName)
     }
 
     private static func decodeRuntimeOptions(_ options: AppRuntimeOptions)

@@ -46,4 +46,7 @@ public enum AppGenerationPhase: String, Equatable, Sendable {
     case idle
     case prefill
     case decode
+    /// Between rounds of a tool loop: the app is running the calls the
+    /// model asked for (a web search, a page fetch) before prefilling again.
+    case tools
 }

@@ -142,3 +142,66 @@ import Testing
         }
     }
 }
+
+@Suite struct AppGenerationRequestToolTests {
+    private func request(continuation: [AppChatTurn] = [],
+                         history: [AppChatTurn] = [],
+                         tools: [AppToolDefinition] = [],
+                         toolChoice: AppToolChoice = .auto) -> AppGenerationRequest {
+        AppGenerationRequest(modelDirectory: FileManager.default.temporaryDirectory,
+                             history: history, prompt: "p",
+                             continuation: continuation, tools: tools, toolChoice: toolChoice)
+    }
+
+    @Test func aWellFormedToolLoopValidates() throws {
+        let call = AppToolCall(id: "c1", name: "web_search", argumentsJSON: "{}")
+        try request(
+            continuation: [AppChatTurn(role: .assistant, text: "", toolCalls: [call]),
+                           .toolResult(callID: "c1", name: "web_search", content: "r")],
+            tools: [AppToolDefinition(name: "web_search", description: "", parametersJSON: "{}")])
+            .validate(requireModelDirectory: false)
+    }
+
+    @Test func continuationMustStartWithAnAssistantTurn() {
+        #expect(throws: AppInferenceError.self) {
+            try request(continuation: [.toolResult(callID: "c1", name: "t", content: "r")])
+                .validate(requireModelDirectory: false)
+        }
+        #expect(throws: AppInferenceError.self) {
+            try request(continuation: [AppChatTurn(role: .assistant, text: "a"),
+                                       AppChatTurn(role: .user, text: "u")])
+                .validate(requireModelDirectory: false)
+        }
+    }
+
+    @Test func toolTurnsNeedACallIDAndOnlyAssistantsCarryCalls() {
+        #expect(throws: AppInferenceError.self) {
+            try request(history: [AppChatTurn(role: .user, text: "u"),
+                                  AppChatTurn(role: .tool, text: "r")])
+                .validate(requireModelDirectory: false)
+        }
+        #expect(throws: AppInferenceError.self) {
+            try request(history: [AppChatTurn(
+                role: .user, text: "u",
+                toolCalls: [AppToolCall(id: "c", name: "n", argumentsJSON: "{}")])])
+                .validate(requireModelDirectory: false)
+        }
+    }
+
+    @Test func requiredNeedsATool() {
+        #expect(throws: AppInferenceError.self) {
+            try request(toolChoice: .required).validate(requireModelDirectory: false)
+        }
+    }
+
+    @Test func chatTurnDecodesWithoutTheToolFields() throws {
+        let json = #"{"role":"assistant","text":"a","reasoningText":"","imagePaths":[]}"#
+        let turn = try JSONDecoder().decode(AppChatTurn.self, from: Data(json.utf8))
+        #expect(turn.toolCalls.isEmpty)
+        #expect(turn.toolCallID == nil)
+        let tool = AppChatTurn.toolResult(callID: "c1", name: "web_search", content: "r")
+        let roundTrip = try JSONDecoder().decode(
+            AppChatTurn.self, from: try JSONEncoder().encode(tool))
+        #expect(roundTrip == tool)
+    }
+}

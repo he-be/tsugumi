@@ -8,6 +8,22 @@ public struct AppGenerationRequest: Equatable, Sendable {
     /// prompt cache needs.
     public var history: [AppChatTurn]
     public var prompt: String
+    /// A system message rendered before the history, or nil for none. The
+    /// tool loop uses it to say what the tools are for and what day it is.
+    public var systemPrompt: String?
+    /// Turns that belong to the current user turn but come *after* `prompt`:
+    /// the assistant's tool calls and their results, while a tool loop is
+    /// still deciding the answer. Starts with an assistant turn; never holds
+    /// a user turn.
+    public var continuation: [AppChatTurn]
+    /// Functions the model may call. Empty declares nothing and the request
+    /// renders through the plain template exactly as before.
+    public var tools: [AppToolDefinition]
+    public var toolChoice: AppToolChoice
+    /// Tokens the thought channel may spend before its closing tag is
+    /// forced; -1 for no bound. The tool loop bounds the round that has no
+    /// results to think about yet (`WebSearchConfiguration`).
+    public var reasoningBudgetTokens: Int
     public var maxNewTokens: Int
     public var maxContextTokens: Int
     public var temperature: Float
@@ -26,6 +42,11 @@ public struct AppGenerationRequest: Equatable, Sendable {
     public init(modelDirectory: URL,
                 history: [AppChatTurn] = [],
                 prompt: String,
+                systemPrompt: String? = nil,
+                continuation: [AppChatTurn] = [],
+                tools: [AppToolDefinition] = [],
+                toolChoice: AppToolChoice = .auto,
+                reasoningBudgetTokens: Int = -1,
                 maxNewTokens: Int = 4_096,
                 maxContextTokens: Int = 4096,
                 temperature: Float = 1.0,
@@ -38,6 +59,11 @@ public struct AppGenerationRequest: Equatable, Sendable {
         self.modelDirectory = modelDirectory
         self.history = history
         self.prompt = prompt
+        self.systemPrompt = systemPrompt
+        self.continuation = continuation
+        self.tools = tools
+        self.toolChoice = toolChoice
+        self.reasoningBudgetTokens = reasoningBudgetTokens
         self.maxNewTokens = maxNewTokens
         self.maxContextTokens = maxContextTokens
         self.temperature = temperature
@@ -95,7 +121,7 @@ public struct AppGenerationRequest: Equatable, Sendable {
         if let first = history.first, first.role != .user {
             throw AppInferenceError.invalidRequest("History must begin with a user turn.")
         }
-        for turn in history {
+        for turn in history + continuation {
             guard turn.role == .user || turn.imagePaths.isEmpty else {
                 throw AppInferenceError.invalidRequest("Images may only appear in user turns.")
             }
@@ -107,6 +133,26 @@ public struct AppGenerationRequest: Equatable, Sendable {
                     throw AppInferenceError.invalidRequest("Attached image is missing: \(path)")
                 }
             }
+            guard turn.role == .assistant || turn.toolCalls.isEmpty else {
+                throw AppInferenceError.invalidRequest("Only assistant turns may carry tool calls.")
+            }
+            if turn.role == .tool {
+                guard let id = turn.toolCallID, !id.isEmpty else {
+                    throw AppInferenceError.invalidRequest("A tool turn must name the call it answers.")
+                }
+            }
+        }
+        if let first = continuation.first, first.role != .assistant {
+            throw AppInferenceError.invalidRequest("A continuation must begin with an assistant turn.")
+        }
+        guard !continuation.contains(where: { $0.role == .user }) else {
+            throw AppInferenceError.invalidRequest("A continuation cannot hold a user turn.")
+        }
+        guard tools.isEmpty || tools.allSatisfy({ !$0.name.isEmpty }) else {
+            throw AppInferenceError.invalidRequest("Every declared tool needs a name.")
+        }
+        if toolChoice == .required, tools.isEmpty {
+            throw AppInferenceError.invalidRequest("Requiring a tool call needs at least one tool.")
         }
         try runtimeOptions.validate()
 

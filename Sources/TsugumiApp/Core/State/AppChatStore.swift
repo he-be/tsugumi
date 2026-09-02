@@ -90,6 +90,54 @@ struct PersistedChat: Codable, Equatable {
     var outputImagePaths: [String] = []
     var outputText: String = ""
     var outputReasoningText: String = ""
+    var outputContinuationTurns: [AppChatTurn] = []
+    var outputToolTrace: [AppToolTraceEntry] = []
+
+    init(promptText: String = "",
+         attachedImagePaths: [String] = [],
+         turns: [AppChatTurn] = [],
+         outputPromptText: String = "",
+         outputImagePaths: [String] = [],
+         outputText: String = "",
+         outputReasoningText: String = "",
+         outputContinuationTurns: [AppChatTurn] = [],
+         outputToolTrace: [AppToolTraceEntry] = []) {
+        self.promptText = promptText
+        self.attachedImagePaths = attachedImagePaths
+        self.turns = turns
+        self.outputPromptText = outputPromptText
+        self.outputImagePaths = outputImagePaths
+        self.outputText = outputText
+        self.outputReasoningText = outputReasoningText
+        self.outputContinuationTurns = outputContinuationTurns
+        self.outputToolTrace = outputToolTrace
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case promptText, attachedImagePaths, turns, outputPromptText, outputImagePaths
+        case outputText, outputReasoningText, outputContinuationTurns, outputToolTrace
+    }
+
+    /// Fields added after the first file version decode as their defaults,
+    /// so a chats file from before the tool loop still restores.
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        promptText = try container.decodeIfPresent(String.self, forKey: .promptText) ?? ""
+        attachedImagePaths = try container.decodeIfPresent(
+            [String].self, forKey: .attachedImagePaths) ?? []
+        turns = try container.decodeIfPresent([AppChatTurn].self, forKey: .turns) ?? []
+        outputPromptText = try container.decodeIfPresent(
+            String.self, forKey: .outputPromptText) ?? ""
+        outputImagePaths = try container.decodeIfPresent(
+            [String].self, forKey: .outputImagePaths) ?? []
+        outputText = try container.decodeIfPresent(String.self, forKey: .outputText) ?? ""
+        outputReasoningText = try container.decodeIfPresent(
+            String.self, forKey: .outputReasoningText) ?? ""
+        outputContinuationTurns = try container.decodeIfPresent(
+            [AppChatTurn].self, forKey: .outputContinuationTurns) ?? []
+        outputToolTrace = try container.decodeIfPresent(
+            [AppToolTraceEntry].self, forKey: .outputToolTrace) ?? []
+    }
 }
 
 extension PersistedChat {
@@ -102,7 +150,9 @@ extension PersistedChat {
             outputPromptText: session.outputPromptText,
             outputImagePaths: session.outputImagePaths,
             outputText: session.outputText,
-            outputReasoningText: session.outputReasoningText)
+            outputReasoningText: session.outputReasoningText,
+            outputContinuationTurns: session.outputContinuationTurns,
+            outputToolTrace: session.outputToolTrace)
     }
 
     /// Rebuilds a session, dropping image paths whose files are gone — a
@@ -125,6 +175,16 @@ extension PersistedChat {
             .filter { fileManager.fileExists(atPath: $0) }
         session.outputText = outputText
         session.outputReasoningText = outputReasoningText
+        session.outputContinuationTurns = outputContinuationTurns
+        // A step that was still running when the app quit never finished.
+        session.outputToolTrace = outputToolTrace.map { entry in
+            var entry = entry
+            if entry.status == .running {
+                entry.status = .failed
+                entry.summary = "interrupted"
+            }
+            return entry
+        }
         return session
     }
 }

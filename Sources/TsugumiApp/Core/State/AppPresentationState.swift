@@ -161,6 +161,9 @@ public struct AppPresentationState: Equatable, Sendable {
                 return Self(label: label, severity: .active)
             case .decode:
                 return Self(label: "Generating", severity: .active)
+            case .tools:
+                return Self(label: "Searching the web", severity: .active,
+                            showsActivity: true)
             case .idle:
                 return Self(label: "Starting generation", severity: .active,
                             showsActivity: true)

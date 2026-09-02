@@ -14,6 +14,7 @@ final class DecodeServiceOutbox: @unchecked Sendable {
         var pendingReasoning = ""
         var latestPrefill: PrefillProgress?
         var latestToken: AppTokenEvent?
+        var toolCalls: [DecodeToolCall] = []
         var terminal: DecodeServiceEvent?
         var terminalCommitted = false
         var finished = false
@@ -40,6 +41,11 @@ final class DecodeServiceOutbox: @unchecked Sendable {
             state.pendingText += token.textDelta
             state.pendingReasoning += token.reasoningDelta
             state.latestToken = token
+        case .toolCall(let call):
+            // Carried on the terminal event: the app needs the calls only
+            // once the generation has ended on them.
+            state.toolCalls.append(DecodeToolCall(
+                id: call.id, name: call.name, argumentsJSON: call.argumentsJSON))
         case .finished(let diagnostics):
             if !state.terminalCommitted {
                 state.terminal = terminal(.finished, diagnostics: diagnostics)
@@ -151,7 +157,8 @@ final class DecodeServiceOutbox: @unchecked Sendable {
             currentMemoryBytes: memorySampler.sample(),
             peakMemoryBytes: memorySampler.peakBytes,
             prefill: diagnostics?.prefill.map(Self.prefillDiagnostics),
-            runner: diagnostics?.runner.map(Self.runnerDiagnostics))
+            runner: diagnostics?.runner.map(Self.runnerDiagnostics),
+            toolCalls: state.toolCalls.isEmpty ? nil : state.toolCalls)
     }
 
     private static func prefillDiagnostics(_ value: PrefillExecutionDiagnostics)

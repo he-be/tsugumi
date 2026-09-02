@@ -18,6 +18,12 @@ public final class AppChatSession: Identifiable {
     public internal(set) var outputImagePaths: [String] = []
     public var outputText: String = ""
     public internal(set) var outputReasoningText: String = ""
+    /// The live turn's tool rounds so far: assistant turns that asked for
+    /// calls, and the `tool` turns answering them. Folded between the user
+    /// turn and the final answer.
+    public internal(set) var outputContinuationTurns: [AppChatTurn] = []
+    /// The same rounds as the UI lists them.
+    public internal(set) var outputToolTrace: [AppToolTraceEntry] = []
 
     public init() {}
 
@@ -35,6 +41,7 @@ public final class AppChatSession: Identifiable {
     public var isEmpty: Bool {
         conversationTurns.isEmpty && outputPromptText.isEmpty
             && outputText.isEmpty && outputReasoningText.isEmpty
+            && outputContinuationTurns.isEmpty
             && promptText.isEmpty && attachedImagePaths.isEmpty
     }
 }

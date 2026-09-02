@@ -32,6 +32,13 @@ public final class AppModel {
     public var topPEnabled: Bool = true
     public var topP: Double = 0.95
     public var thinkingEnabled: Bool = false
+    /// How the chat uses the web tools. Only Gemma declares them
+    /// (`webSearchAvailable`); for another model the mode is kept but
+    /// ignored.
+    public var webSearchMode: AppWebSearchMode = .off
+    /// Keys and limits for the web tools, one file for the app. Edited in
+    /// the Inspector; `saveWebSearchConfiguration` writes it back.
+    public var webSearchConfiguration: WebSearchConfiguration
     public private(set) var newlineShortcut: AppNewlineShortcut = .return
     public private(set) var showPromptExamples: Bool = true
     public private(set) var sentPromptBehavior: AppSentPromptBehavior = .keep
@@ -69,6 +76,17 @@ public final class AppModel {
     private var pendingExplicitLoadRuntimeKey: AppLoadedRuntimeKey?
     private var activeRunRuntimeKey: AppLoadedRuntimeKey?
     private var hasHandledTerminalEvent = false
+    /// The tool loop of the running turn: which executor answers the calls,
+    /// the calls the current round has asked for so far, how many rounds
+    /// have run, and the task executing the calls between rounds.
+    private let toolExecutorProvider: (WebSearchConfiguration) throws -> any AppToolExecutor
+    private let webSearchConfigurationURL: URL?
+    private var activeToolExecutor: (any AppToolExecutor)?
+    private var activeWebSearchMode: AppWebSearchMode = .off
+    private var activeSystemPrompt: String?
+    private var pendingToolCalls: [AppToolCall] = []
+    private var toolRoundsUsed = 0
+    private var toolTask: Task<Void, Never>?
     private let memorySampler: AppMemorySampler
     private let settingsPersistenceEnabled: Bool
     private let chatStore: AppChatStore?
@@ -85,8 +103,17 @@ public final class AppModel {
                 installer: (any AppModelInstallerClient)? = nil,
                 memorySampler: AppMemorySampler = AppMemorySampler(),
                 settingsPersistenceEnabled: Bool = false,
-                chatStore: AppChatStore? = nil) {
+                chatStore: AppChatStore? = nil,
+                webSearchConfigurationURL: URL? = nil,
+                toolExecutorProvider: ((WebSearchConfiguration) throws -> any AppToolExecutor)? = nil) {
         self.chatStore = chatStore
+        let configurationURL = webSearchConfigurationURL
+            ?? (settingsPersistenceEnabled ? WebSearchConfigurationStore.defaultFileURL : nil)
+        self.webSearchConfigurationURL = configurationURL
+        self.webSearchConfiguration = configurationURL.map { WebSearchConfigurationStore.load(from: $0) }
+            ?? WebSearchConfiguration()
+        self.toolExecutorProvider = toolExecutorProvider
+            ?? { try Self.makeToolExecutor(configuration: $0) }
         if let persisted = chatStore?.load(), !persisted.chats.isEmpty {
             let sessions = persisted.chats.map { $0.makeSession() }
             self.chats = sessions
@@ -124,6 +151,7 @@ public final class AppModel {
         self.topPEnabled = settings.topPEnabled
         self.topP = settings.topP
         self.thinkingEnabled = settings.thinkingEnabled
+        self.webSearchMode = settings.webSearchMode
         self.newlineShortcut = settings.newlineShortcut
         self.showPromptExamples = settings.showPromptExamples
         self.sentPromptBehavior = settings.sentPromptBehavior
@@ -185,6 +213,10 @@ public final class AppModel {
     }
 
     public var outputReasoningText: String { selectedChat.outputReasoningText }
+
+    public var outputToolTrace: [AppToolTraceEntry] { selectedChat.outputToolTrace }
+
+    public var outputContinuationTurns: [AppChatTurn] { selectedChat.outputContinuationTurns }
 
     public var attachedImagePaths: [String] {
         get { selectedChat.attachedImagePaths }
@@ -381,8 +413,13 @@ public final class AppModel {
     }
 
     public var outputConversationPlainText: String {
-        var sections = conversationTurns.map { turn in
-            turn.role == .user ? "You:\n\(turn.text)" : "Answer:\n\(turn.text)"
+        // Tool rounds are the model's working, not the conversation.
+        var sections = conversationTurns.compactMap { turn -> String? in
+            switch turn.role {
+            case .user: "You:\n\(turn.text)"
+            case .assistant: turn.toolCalls.isEmpty ? "Answer:\n\(turn.text)" : nil
+            case .tool: nil
+            }
         }
         if !outputPromptText.isEmpty {
             sections.append("You:\n\(outputPromptText)")
@@ -827,6 +864,7 @@ public final class AppModel {
         topPEnabled = settings.topPEnabled
         topP = settings.topP
         thinkingEnabled = settings.thinkingEnabled
+        webSearchMode = settings.webSearchMode
         newlineShortcut = settings.newlineShortcut
         showPromptExamples = settings.showPromptExamples
         sentPromptBehavior = settings.sentPromptBehavior
@@ -847,7 +885,8 @@ public final class AppModel {
             thinkingEnabled: thinkingEnabled,
             newlineShortcut: newlineShortcut,
             showPromptExamples: showPromptExamples,
-            sentPromptBehavior: sentPromptBehavior)
+            sentPromptBehavior: sentPromptBehavior,
+            webSearchMode: webSearchMode)
         let modelDirectory = URL(fileURLWithPath: modelPathText, isDirectory: true)
         try? MacAppSettingsFileStore.save(
             settings,
@@ -911,6 +950,8 @@ public final class AppModel {
         chat.outputImagePaths = []
         chat.outputText = ""
         chat.outputReasoningText = ""
+        chat.outputContinuationTurns = []
+        chat.outputToolTrace = []
         if chat.id == mailboxOwnerChatID {
             generationTranscriptMailbox?.reset()
             mailboxOwnerChatID = nil
@@ -936,6 +977,9 @@ public final class AppModel {
             chat.conversationTurns.append(AppChatTurn(role: .user,
                                                       text: chat.outputPromptText,
                                                       imagePaths: chat.outputImagePaths))
+            // The tool rounds sit between the question and the answer, as
+            // the model saw them; the next request redraws them the same way.
+            chat.conversationTurns.append(contentsOf: chat.outputContinuationTurns)
             chat.conversationTurns.append(AppChatTurn(role: .assistant,
                                                       text: response,
                                                       reasoningText: reasoning))
@@ -944,6 +988,8 @@ public final class AppModel {
         chat.outputImagePaths = []
         chat.outputText = ""
         chat.outputReasoningText = ""
+        chat.outputContinuationTurns = []
+        chat.outputToolTrace = []
     }
 
     public func attachImages(_ paths: [String]) {
@@ -963,9 +1009,24 @@ public final class AppModel {
         guard canRun else { return }
         let chat = selectedChat
         foldCompletedTurnIntoHistory(of: chat)
+        let mode = effectiveWebSearchMode
+        var executor: (any AppToolExecutor)?
+        let systemPrompt: String?
         let request: AppGenerationRequest
+        if mode != .off {
+            guard webSearchConfiguration.resolved().canUseTools else {
+                error = .invalidRequest(
+                    "Web search needs a Serper or Brave API key, or a local Wikipedia index. Add one in the Inspector, or turn Web search off.")
+                return
+            }
+        }
         do {
-            request = try makeRequest()
+            if mode != .off {
+                executor = try toolExecutorProvider(webSearchConfiguration)
+            }
+            systemPrompt = executor.map { makeSystemPrompt(for: $0, mode: mode) }
+            request = try makeFirstRoundRequest(mode: mode, executor: executor,
+                                                systemPrompt: systemPrompt)
         } catch let appError as AppInferenceError {
             error = appError
             return
@@ -983,21 +1044,22 @@ public final class AppModel {
         chat.outputImagePaths = request.imagePaths
         chat.outputText = ""
         chat.outputReasoningText = ""
+        chat.outputContinuationTurns = []
+        chat.outputToolTrace = []
         diagnostics = nil
         error = nil
-        hasHandledTerminalEvent = false
+        activeToolExecutor = executor
+        activeWebSearchMode = mode
+        activeSystemPrompt = systemPrompt
+        pendingToolCalls = []
+        toolRoundsUsed = 0
         activeRunRuntimeKey = AppLoadedRuntimeKey(
             modelDirectory: request.modelDirectory,
             maxContextTokens: request.maxContextTokens,
             options: request.runtimeOptions,
             forceLogitsHead: !request.isPureGreedy)
         isCancellationPending = false
-        liveTokenCount = 0
-        liveElapsedDecodeSeconds = 0
-        livePrefillDone = 0
-        livePrefillTotal = 0
         liveMemoryBytes = nil
-        phase = .prefill
         runState = .running
         if sentPromptBehavior == .clear {
             chat.promptText = ""
@@ -1008,7 +1070,18 @@ public final class AppModel {
         // The fold and the prompt snapshot are worth surviving a crash even
         // if the answer never lands.
         persistChatsNow()
+        startRound(request)
+    }
 
+    /// One generation of the running turn. A plain turn has exactly one; a
+    /// tool loop has one per round.
+    private func startRound(_ request: AppGenerationRequest) {
+        hasHandledTerminalEvent = false
+        liveTokenCount = 0
+        liveElapsedDecodeSeconds = 0
+        livePrefillDone = 0
+        livePrefillTotal = 0
+        phase = .prefill
         runTask = Task.detached { [weak self, client, request] in
             guard let self else { return }
             do {
@@ -1023,9 +1096,99 @@ public final class AppModel {
         }
     }
 
+    /// The round ended on tool calls: run them, append the assistant turn
+    /// and its results to the continuation, and prefill again. Every wait
+    /// on the network is on `toolTask`, which `cancel` can stop.
+    private func continueToolLoop(after diagnostics: AppDiagnostics) {
+        guard !hasHandledTerminalEvent else { return }
+        hasHandledTerminalEvent = true
+        materializeServiceTranscript()
+        self.diagnostics = diagnostics
+        let chat = generatingChat ?? selectedChat
+        let calls = pendingToolCalls
+        pendingToolCalls = []
+        let reasoning = chat.id == mailboxOwnerChatID
+            ? (generationTranscriptMailbox?.completeReasoningText ?? chat.outputReasoningText)
+            : chat.outputReasoningText
+        chat.outputContinuationTurns.append(AppChatTurn(
+            role: .assistant,
+            text: responsePlainText(of: chat),
+            reasoningText: reasoning,
+            toolCalls: calls))
+        toolRoundsUsed += 1
+        phase = .tools
+        persistChatsNow()
+        guard let executor = activeToolExecutor else {
+            finishTerminalRun()
+            return
+        }
+        toolTask = Task { [weak self] in
+            for call in calls {
+                if Task.isCancelled { return }
+                let result = await executor.execute(call)
+                if Task.isCancelled { return }
+                guard let self else { return }
+                self.recordToolResult(result, for: call, in: chat)
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.startNextRound(in: chat)
+        }
+    }
+
+    private func recordToolResult(_ result: AppToolResult,
+                                  for call: AppToolCall,
+                                  in chat: AppChatSession) {
+        chat.outputContinuationTurns.append(
+            .toolResult(callID: call.id, name: call.name, content: result.content))
+        if let index = chat.outputToolTrace.firstIndex(where: { $0.id == call.id }) {
+            chat.outputToolTrace[index].status = result.isError ? .failed : .done
+            chat.outputToolTrace[index].summary = result.summary
+        }
+    }
+
+    private func startNextRound(in chat: AppChatSession) {
+        toolTask = nil
+        guard runState == .running, !isCancellationPending else { return }
+        let maxRounds = webSearchConfiguration.resolved().maxToolRounds
+        let exhausted = toolRoundsUsed >= maxRounds
+        let request: AppGenerationRequest
+        do {
+            request = try makeRequest(
+                continuation: chat.outputContinuationTurns,
+                systemPrompt: activeSystemPrompt,
+                // Past the round budget the tools are withdrawn: the model
+                // has to answer with what it has.
+                tools: exhausted ? [] : (activeToolExecutor?.definitions ?? []),
+                toolChoice: exhausted ? .none : .auto,
+                prompt: chat.outputPromptText,
+                imagePaths: chat.outputImagePaths,
+                history: chat.conversationTurns)
+        } catch {
+            finishWithError(error as? AppInferenceError ?? .unknown("\(error)"))
+            return
+        }
+        chat.outputText = ""
+        chat.outputReasoningText = ""
+        startRound(request)
+    }
+
     public func cancel() {
         guard canCancel else { return }
         isCancellationPending = true
+        if phase == .tools {
+            // Between rounds nothing is generating; the wait is on a tool.
+            toolTask?.cancel()
+            toolTask = nil
+            let chat = generatingChat ?? selectedChat
+            for index in chat.outputToolTrace.indices
+            where chat.outputToolTrace[index].status == .running {
+                chat.outputToolTrace[index].status = .failed
+                chat.outputToolTrace[index].summary = "cancelled"
+            }
+            error = .cancelled
+            finishTerminalRun()
+            return
+        }
         client.cancel()
     }
 
@@ -1036,7 +1199,101 @@ public final class AppModel {
 
     public var supportsVision: Bool { selectedModelKind.supportsVision }
 
+    /// Only Gemma declares the web tools for now; its tool template, grammar
+    /// and call parser are the ones the server path has exercised.
+    public var webSearchAvailable: Bool { selectedModelKind == .gemmaQATSym }
+
+    public var effectiveWebSearchMode: AppWebSearchMode {
+        webSearchAvailable ? webSearchMode : .off
+    }
+
+    public func saveWebSearchConfiguration() {
+        guard let webSearchConfigurationURL else { return }
+        try? WebSearchConfigurationStore.save(webSearchConfiguration, to: webSearchConfigurationURL)
+    }
+
+    /// The executor a turn declares: the web tools when a key is set, the
+    /// local Wikipedia tools when an index is set, both together when both
+    /// are. Nothing to declare is an error the user can act on — the
+    /// Inspector names both ways to fix it.
+    nonisolated static func makeToolExecutor(configuration: WebSearchConfiguration,
+                                             transport: any HTTPTransport = URLSessionTransport()) throws
+        -> any AppToolExecutor {
+        let resolved = configuration.resolved()
+        var executors: [any AppToolExecutor] = []
+        if let url = resolved.wikipediaIndexURL {
+            do {
+                let index = try LocalWikipediaIndex(path: url.path)
+                executors.append(WikipediaToolExecutor(
+                    index: index, maxResults: resolved.maxSearchResults,
+                    pageCharacterLimit: resolved.pageCharacterLimit))
+            } catch {
+                throw AppInferenceError.invalidRequest(
+                    "The local Wikipedia index at \(url.path) cannot be used: \(error). Fix the path in the Inspector, or clear it.")
+            }
+        }
+        if resolved.canSearch {
+            executors.append(WebSearchToolExecutor(configuration: resolved, transport: transport))
+        }
+        guard !executors.isEmpty else {
+            throw AppInferenceError.invalidRequest(
+                "Web search needs a Serper or Brave API key, or a local Wikipedia index. Add one in the Inspector, or turn Web search off.")
+        }
+        return executors.count == 1 ? executors[0] : CompositeToolExecutor(executors)
+    }
+
+    private func makeSystemPrompt(for executor: any AppToolExecutor, mode: AppWebSearchMode) -> String {
+        WebSearchPrompt.system(maxRounds: webSearchConfiguration.resolved().maxToolRounds,
+                               mode: mode, tools: executor.promptFacts)
+    }
+
+    /// The request the next `run` would send for the current mode: the tools
+    /// and system prompt when web search is on, nothing extra when it is off.
     public func makeRequest() throws -> AppGenerationRequest {
+        let mode = effectiveWebSearchMode
+        let executor = mode == .off ? nil : try toolExecutorProvider(webSearchConfiguration)
+        return try makeFirstRoundRequest(
+            mode: mode, executor: executor,
+            systemPrompt: executor.map { makeSystemPrompt(for: $0, mode: mode) })
+    }
+
+    /// The round that has no results yet. The thought channel is where
+    /// Gemma 4 argues with the date instead of searching (`WebSearchPrompt`),
+    /// and before the first result there is little else to think about, so
+    /// this round is bounded: closed in Always mode (the grammar has already
+    /// decided the call), and held to `preSearchThinkingBudget` in Auto.
+    /// Rounds that see results think without a bound.
+    private func makeFirstRoundRequest(mode: AppWebSearchMode,
+                                       executor: (any AppToolExecutor)?,
+                                       systemPrompt: String?) throws -> AppGenerationRequest {
+        let plan = Self.firstRoundThinking(
+            mode: mode, thinking: thinkingEnabled,
+            budget: webSearchConfiguration.resolved().preSearchThinkingBudget)
+        return try makeRequest(
+            continuation: [],
+            systemPrompt: systemPrompt,
+            tools: executor?.definitions ?? [],
+            toolChoice: mode == .always ? .required : .auto,
+            enableThinking: plan.enabled,
+            reasoningBudgetTokens: plan.budget)
+    }
+
+    nonisolated static func firstRoundThinking(mode: AppWebSearchMode, thinking: Bool, budget: Int)
+        -> (enabled: Bool, budget: Int) {
+        guard thinking, mode != .off else { return (thinking, -1) }
+        if mode == .always || budget == 0 { return (false, -1) }
+        return (true, budget)
+    }
+
+    private func makeRequest(continuation: [AppChatTurn],
+                             systemPrompt: String?,
+                             tools: [AppToolDefinition],
+                             toolChoice: AppToolChoice,
+                             enableThinking: Bool? = nil,
+                             reasoningBudgetTokens: Int = -1,
+                             prompt: String? = nil,
+                             imagePaths: [String]? = nil,
+                             history: [AppChatTurn]? = nil) throws -> AppGenerationRequest {
         let kind = selectedModelKind
         let temperature = kind.samplingIsLocked ? kind.officialTemperature : temperature
         let topK = kind.samplingIsLocked ? kind.officialTopK : (topKEnabled ? topK : nil)
@@ -1045,8 +1302,13 @@ public final class AppModel {
             : (topKEnabled && topPEnabled ? topP : nil)
         let request = AppGenerationRequest(
             modelDirectory: URL(fileURLWithPath: modelPathText),
-            history: conversationTurns,
-            prompt: promptText,
+            history: history ?? conversationTurns,
+            prompt: prompt ?? promptText,
+            systemPrompt: systemPrompt,
+            continuation: continuation,
+            tools: tools,
+            toolChoice: toolChoice,
+            reasoningBudgetTokens: reasoningBudgetTokens,
             maxNewTokens: maxNewTokensOverride ?? maxContextTokens,
             maxContextTokens: maxContextTokens,
             temperature: Float(temperature),
@@ -1054,8 +1316,8 @@ public final class AppModel {
             topP: topP.map(Float.init),
             repetitionPenalty: 1.0,
             runtimeOptions: runtimeOptions,
-            enableThinking: thinkingEnabled,
-            imagePaths: kind.supportsVision ? attachedImagePaths : [])
+            enableThinking: enableThinking ?? thinkingEnabled,
+            imagePaths: imagePaths ?? (kind.supportsVision ? attachedImagePaths : []))
         try request.validate(requireModelDirectory: true)
         return request
     }
@@ -1082,8 +1344,19 @@ public final class AppModel {
             if !token.reasoningDelta.isEmpty {
                 chat.outputReasoningText += token.reasoningDelta
             }
+        case .toolCall(let call):
+            pendingToolCalls.append(call)
+            let chat = generatingChat ?? selectedChat
+            chat.outputToolTrace.append(AppToolTraceEntry(
+                id: call.id,
+                name: call.name,
+                subject: activeToolExecutor?.subject(of: call) ?? call.argumentsJSON))
         case .finished(let diagnostics):
-            finishSuccessfully(diagnostics)
+            if !pendingToolCalls.isEmpty, activeToolExecutor != nil {
+                continueToolLoop(after: diagnostics)
+            } else {
+                finishSuccessfully(diagnostics)
+            }
         case .cancelled(let diagnostics):
             finishCancelled(diagnostics)
         case .failed(let appError, let partial):
@@ -1136,6 +1409,10 @@ public final class AppModel {
         activeRunRuntimeKey = nil
         generatingChat = nil
         runTask = nil
+        toolTask = nil
+        activeToolExecutor = nil
+        activeSystemPrompt = nil
+        pendingToolCalls = []
         persistChatsNow()
     }
 
