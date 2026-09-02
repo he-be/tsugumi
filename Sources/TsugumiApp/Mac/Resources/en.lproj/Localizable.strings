@@ -47,6 +47,7 @@
 "Downloaded ranges will be removed. The installed model, if any, is preserved." = "Downloaded ranges will be removed. The installed model, if any, is preserved.";
 "Enough space to install" = "Enough space to install";
 "First token wait" = "First token wait";
+"Free for the model" = "Free for the model";
 "From prompt cache" = "From prompt cache";
 "Generate" = "Generate";
 "Generating" = "Generating";
@@ -54,6 +55,7 @@
 "Generation" = "Generation";
 "Goes at the top of every turn's system prompt, for either model. Empty fields are left out." = "Goes at the top of every turn's system prompt, for either model. Empty fields are left out.";
 "Head / token" = "Head / token";
+"How much of the model this Mac can hold in memory right now. More room means faster answers; less only means slower, never broken." = "How much of the model this Mac can hold in memory right now. More room means faster answers; less only means slower, never broken.";
 "How to answer" = "How to answer";
 "I/O / token" = "I/O / token";
 "Install" = "Install";
@@ -78,6 +80,7 @@
 "Model download" = "Model download";
 "Model required" = "Model required";
 "Model status" = "Model status";
+"Most of the model streams from the SSD." = "Most of the model streams from the SSD.";
 "MTP acceptance" = "MTP acceptance";
 "MTP speculative decoding" = "MTP speculative decoding";
 "New chat" = "New chat";
@@ -88,9 +91,11 @@
 "Off" = "Off";
 "On" = "On";
 "Optional. Searches Wikipedia offline; needs no API key." = "Optional. Searches Wikipedia offline; needs no API key.";
+"Other apps and macOS" = "Other apps and macOS";
 "Output tokens" = "Output tokens";
 "P value" = "P value";
 "Page text limit" = "Page text limit";
+"Part of the model streams from the SSD." = "Part of the model streams from the SSD.";
 "Path" = "Path";
 "Peak memory" = "Peak memory";
 "Performance" = "Performance";
@@ -120,6 +125,7 @@
 "Retry Load" = "Retry Load";
 "Reused %@ from the saved download" = "Reused %@ from the saved download";
 "Reveal Model in Finder" = "Reveal Model in Finder";
+"Room for the model" = "Room for the model";
 "Runtime" = "Runtime";
 "Sampling" = "Sampling";
 "Searching the web…" = "Searching the web…";
@@ -137,16 +143,19 @@
 "temp %@ · top-k %lld · top-p %@ (official, fixed)" = "temp %@ · top-k %lld · top-p %@ (official, fixed)";
 "Temperature" = "Temperature";
 "The answer came from the model alone." = "The answer came from the model alone.";
+"The model" = "The model";
 "The model could not be loaded" = "The model could not be loaded";
 "The model could not be loaded." = "The model could not be loaded.";
 "The model is unloaded. Load it to generate." = "The model is unloaded. Load it to generate.";
 "The model searched but named no page or URL: the answer was written from memory." = "The model searched but named no page or URL: the answer was written from memory.";
 "The model searched but read no page: it saw snippets only." = "The model searched but read no page: it saw snippets only.";
+"The whole model is in memory." = "The whole model is in memory.";
 "Thinking" = "Thinking";
 "Thinking before the first search" = "Thinking before the first search";
 "Thinking is off: the model answers directly." = "Thinking is off: the model answers directly.";
 "Thinking is on: the model reasons before it answers. Slower, better on hard questions." = "Thinking is on: the model reasons before it answers. Slower, better on hard questions.";
 "Thinking…" = "Thinking…";
+"This Mac" = "This Mac";
 "Thought process" = "Thought process";
 "tok/s" = "tok/s";
 "tokens" = "tokens";

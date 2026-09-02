@@ -179,6 +179,78 @@ CommonMark と Gemma の日本語の食い違いで、実回答から見つけ�
 テスト: `Tests/TsugumiApp/Core/State/AppModelAnswerActionsTests.swift` (再生成・別回答・追随・検索して答え直す・
 指示層・コンテキスト・再起動後の復元)、`ResponseMarkdownRendererTests` (リンクと裸 URL)。
 
+## 4e. 速度計 — この Mac の空きを針で出す (2026-09-02)
+
+HUD の右端に速度計 (`HeadroomGaugeView`) を置いた。針は **この Mac がいまモデルの重みをどれだけ
+メモリに載せられるか** で、decode の tok/s ではない (MTP の受理率でタスクごとに揺れる数字は
+針にしない)。アイコンの横に説明文は添えない — 針の位置が意味で、数字はクリックのポップオーバーに置く。
+
+- **針** = 借りられるメモリ ÷ モデルがストリームする重み (`AppMachineHeadroom.level`、0〜1)。
+  重みは `packed_experts/` の合計 (Gemma 4 で 12.02 GB)。無ければインストール総量で代用。
+- **借りられるメモリ** = 物理 − (アプリメモリ + wired + 圧縮)。Activity Monitor の「使用済みメモリ」と
+  同じ内訳を `host_statistics64` から読む (`AppHostMemory`)。ページキャッシュに載った重みは使用済みに
+  入らないので、**回答の前後で針は動かない**。他のアプリが RAM を取ると下がり、閉じると上がる。
+- 2 秒ごとに `AppModel.refreshMachineHeadroom()` (HUD の `.task`)。ロードの前後を問わず出す。
+- 帯: 0.9 以上 = まるごと載る、0.25〜0.9 = 一部は SSD から (どちらもアクセント色)、0.25 未満 = 橙。
+  境界 0.25 は測定から: 借りられる量が 0.21 (2.5 GB) を割る手前で macOS は
+  **モデルではなく他のアプリをスワップし始めた** (hog 11 GB のセルで借りられる量がそれ以上下がらず、
+  Swapouts が跳ねた)。モデルは動き続け、機械の残りが払う。
+- ctx 32K でロードすると decode service が KV と常駐要求で約 10 GB を wired で持つので、
+  **18 GB のこの Mac ではロードした時点で針は 0.5〜0.65**。それがこの機械の最速の状態で、満点は
+  24 GB 以上で見える。針は「Mac を買い替えると速い」と「16 GB でも遅くなるだけ」の両方を同じ目盛で言う。
+
+### 針と速さの対応 (M3 Pro 18 GB、2026-09-02)
+
+同じ課題・公式サンプリング (temp 1.0 / top-k 64 / top-p 0.95、Thinking off)・ctx 32K・32 スロット・MTP on。
+「他のアプリ」の代わりに乱数で埋めた anonymous メモリを 1 秒ごとに触り続ける hog を置き、
+セルごとに 3 回、クールダウン 10 秒。先頭と末尾の hog 0 GB は熱ドリフトの検定 (差はすべて 5% 未満)。
+ドライバは `bench/app_headroom_eval.py` (hog は `bench/memory_hog.py`)。
+
+| 課題 | hog | 針 (借りられる量) | tok/s ×3 | プレフィル秒 ×3 |
+| --- | --- | --- | --- | --- |
+| 四季を 3 文ずつ (256 tok) | 0 GB | 0.53 (6.4 GB) | 41.9 / 44.4 / 42.5 | — |
+| 〃 | 4 GB | 0.31 (3.8 GB) | 39.9 / 38.0 / 39.7 | — |
+| 〃 | 8 GB | 0.22 (2.7 GB) | 37.0 / 39.7 / 42.5 | — |
+| 〃 | 11 GB | 0.21 (2.5 GB) | 36.5 / 40.3 / 40.8 | — |
+| 〃 | 0 GB (末尾) | 0.65〜0.82 | 39.0 / 40.8 / 44.4 | — |
+| 8 話題を 3 文ずつ (512 tok) | 0 GB | 0.65 (7.9 GB) | 40.9 / 41.7 / 41.5 | — |
+| 〃 | 8 GB | 0.23 (2.7 GB) | 34.6 / 34.3 / 35.3 | — |
+| 〃 | 0 GB (末尾) | 0.63〜0.78 | 40.4 / 43.5 / 41.2 | — |
+| 2,177 トークンの文書を要約 (48 tok、cache なし) | 0 GB | 0.64 (7.7 GB) | 42.9 / 36.2 / 40.3 | 8.13 / 8.15 / 8.12 |
+| 〃 | 8 GB | 0.22 (2.6 GB) | 20.4 / 18.9 / 21.3 | 17.7 / 9.08 / 9.53 |
+| 〃 | 0 GB (末尾) | 0.68〜0.74 | 39.7 / 45.3 / 44.9 | 8.02 / 7.84 / 8.05 |
+
+読み方:
+
+- **対応は単調だが比例ではなく、効きはタスクと文脈長で決まる。** 短い雑談 (1 行目の 4 セル) は針が
+  0.53 → 0.21 になっても tok/s は 5% しか落ちない。ホットなエキスパートは `MTLResidencySet` で
+  wired されていて、ページキャッシュが削られても SSD に行くのはミス分だけだから。
+- 話題を散らすと −16%、**長い文脈では decode が半分 (40 → 20 tok/s)、プレフィルは 1.1〜2.2 倍**。
+  Online の「検索 → ページを読む」はこの形なので、針が下にあるときに体感で遅いのはそこ。
+- hog 11 GB のセルで借りられる量は 2.5 GB より下がらなかった。macOS が hog をスワップしたためで
+  (Swapouts 2,250 万ページ)、**モデルは速度を保ち、他のアプリが遅くなる**。「落ちない・止まらない」は
+  この意味で、機械全体が軽いという意味ではない。
+- 針の満点をエキスパートキャッシュの作業集合 (32 スロットで 3.2 GB) に取れば、どの Mac でも常に満点に
+  なって「あれば速い」が消える。満点はモデル全体 (12 GB) のままにした。
+
+### ターンごとのログ (2026-09-03)
+
+主張を実使用から積むために、ラウンドが終わるたびに 1 行の JSON を
+`~/Library/Application Support/Tsugumi/turn-metrics.jsonl` に足す (`AppTurnMetricsRecord`、`AppTurnMetricsLog`)。
+書き換えはしないので、動かしながら `tail -f` できる。
+
+- **ラウンド開始時の機械**: 針 (`headroomLevel`、`borrowableBytes`、`wantedBytes`、アプリ / wired / 圧縮 / キャッシュの内訳) と、
+  **重みの実際の常駐率** `weightsResidentFraction` (`AppWeightResidencyProbe`: `packed_experts/*.bin` を読み取り専用で mmap して
+  `mincore` で数える。ページに触らないのでメモリは増えない。針は予測、こちらが実測)。
+- **ラウンドの費用**: `promptTokens` / `cachedPromptTokens` / `prefillSeconds` / `timeToFirstTokenSeconds` /
+  `generatedTokens` / `decodeSeconds` / `tokensPerSecond` / `draftAccepted` / `draftProposed` / `stopReason` /
+  `toolCalls`、service が返せば `ioMillisecondsPerToken` と cb1 / cb2 / rdadvise MB/tok。
+- **条件**: `model` / `contextTokens` / `slots` / `mtp` / `thinking` / `network` / `directive`、`turnID` と `round`
+  (Online の検索 → 取得 → 回答は 1 ターン 3 ラウンド)、`outcome` (finished / tools / cancelled)。
+
+読むには `python3 bench/turn_metrics_summary.py`: 全行の表と、針 0.25 刻みの中央値 (tok/s、プレフィル tok/s、常駐率)。
+「空きが多いほど速い」はこの散布で言う。針と常駐率が並んでいるので、針の式が外れていればここに出る。
+
 ## 5. 設定ファイル
 
 `mac-app-settings-<モデルdir名>.json` をモデルディレクトリの隣に 1 モデル 1 枚。

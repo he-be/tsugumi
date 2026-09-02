@@ -1,0 +1,171 @@
+import Foundation
+import Testing
+@testable import TsugumiAppCore
+
+/// The gauge behind the speedometer: how much of the streamed weights the
+/// page cache can hold, from the machine's memory as Activity Monitor
+/// splits it.
+@Suite struct AppMachineHeadroomTests {
+    private let gib: UInt64 = 1 << 30
+
+    /// vm_stat page counts add up the way Activity Monitor adds them:
+    /// app = anonymous − purgeable, used = app + wired + compressed,
+    /// cached = file-backed + purgeable.
+    @Test func hostMemoryFollowsActivityMonitorsSplit() {
+        let host = AppHostMemory(
+            pageSize: 16_384, physicalBytes: 18 * gib,
+            anonymousPages: 207_760, purgeablePages: 7_776,
+            wiredPages: 157_661, compressorPages: 71_665,
+            fileBackedPages: 641_493)
+        #expect(host.appBytes == (207_760 - 7_776) * 16_384)
+        #expect(host.wiredBytes == 157_661 * 16_384)
+        #expect(host.compressedBytes == 71_665 * 16_384)
+        #expect(host.cachedFileBytes == (641_493 + 7_776) * 16_384)
+        #expect(host.usedBytes == host.appBytes + host.wiredBytes + host.compressedBytes)
+        #expect(host.borrowableBytes == 18 * gib - host.usedBytes)
+    }
+
+    @Test func borrowableNeverGoesNegative() {
+        let host = AppHostMemory(physicalBytes: 8 * gib, appBytes: 6 * gib,
+                                 wiredBytes: 3 * gib, compressedBytes: 0, cachedFileBytes: 0)
+        #expect(host.borrowableBytes == 0)
+    }
+
+    @Test func levelIsTheBorrowableShareOfWhatTheModelWants() {
+        let host = AppHostMemory(physicalBytes: 18 * gib, appBytes: 4 * gib,
+                                 wiredBytes: 2 * gib, compressedBytes: 0, cachedFileBytes: 10 * gib)
+        let headroom = AppMachineHeadroom(host: host, wantedBytes: 12 * gib)
+        #expect(headroom.borrowableBytes == 12 * gib)
+        #expect(headroom.level == 1)
+        #expect(headroom.shortfallBytes == 0)
+
+        let crowded = AppMachineHeadroom(
+            host: AppHostMemory(physicalBytes: 18 * gib, appBytes: 10 * gib,
+                                wiredBytes: 2 * gib, compressedBytes: 0, cachedFileBytes: 4 * gib),
+            wantedBytes: 12 * gib)
+        #expect(crowded.level == 0.5)
+        #expect(crowded.shortfallBytes == 6 * gib)
+    }
+
+    /// The page cache holding the weights is not "used": after an answer
+    /// the level reads the same as before it.
+    @Test func cachedWeightsDoNotLowerTheLevel() {
+        let before = AppMachineHeadroom(
+            host: AppHostMemory(physicalBytes: 18 * gib, appBytes: 5 * gib,
+                                wiredBytes: 2 * gib, compressedBytes: 1 * gib, cachedFileBytes: 1 * gib),
+            wantedBytes: 12 * gib)
+        let after = AppMachineHeadroom(
+            host: AppHostMemory(physicalBytes: 18 * gib, appBytes: 5 * gib,
+                                wiredBytes: 2 * gib, compressedBytes: 1 * gib, cachedFileBytes: 10 * gib),
+            wantedBytes: 12 * gib)
+        #expect(before.level == after.level)
+    }
+
+    @Test func levelIsClampedAndTolerantOfAnUnknownModelSize() {
+        let roomy = AppHostMemory(physicalBytes: 64 * gib, appBytes: 4 * gib,
+                                  wiredBytes: 2 * gib, compressedBytes: 0, cachedFileBytes: 0)
+        #expect(AppMachineHeadroom(host: roomy, wantedBytes: 12 * gib).level == 1)
+        #expect(AppMachineHeadroom(host: roomy, wantedBytes: 0).level == 1)
+    }
+
+    @Test func bandsSplitAtNinetyAndTwentyFivePercent() {
+        func headroom(borrowing gib: UInt64, of wanted: UInt64) -> AppMachineHeadroom {
+            AppMachineHeadroom(
+                host: AppHostMemory(physicalBytes: gib * self.gib, appBytes: 0, wiredBytes: 0,
+                                    compressedBytes: 0, cachedFileBytes: 0),
+                wantedBytes: wanted * self.gib)
+        }
+        #expect(headroom(borrowing: 12, of: 12).band == .full)
+        #expect(headroom(borrowing: 11, of: 12).band == .full)
+        #expect(headroom(borrowing: 10, of: 12).band == .partial)
+        #expect(headroom(borrowing: 3, of: 12).band == .partial)
+        #expect(headroom(borrowing: 2, of: 12).band == .tight)
+        #expect(headroom(borrowing: 0, of: 12).band == .tight)
+    }
+
+    @Test func streamedBytesAreTheExpertFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("headroom-\(UUID().uuidString)")
+        let experts = directory.appendingPathComponent("packed_experts")
+        try FileManager.default.createDirectory(at: experts, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(count: 1_000).write(to: experts.appendingPathComponent("layer_00.bin"))
+        try Data(count: 2_500).write(to: experts.appendingPathComponent("layer_01.bin"))
+        try Data(count: 99_999).write(to: directory.appendingPathComponent("model_weights.bin"))
+
+        #expect(AppMachineHeadroom.streamedWeightBytes(modelDirectory: directory) == 3_500)
+        #expect(AppMachineHeadroom.streamedWeightBytes(
+            modelDirectory: directory.appendingPathComponent("missing")) == nil)
+    }
+
+    @Test func realSamplerReadsSomethingPlausible() throws {
+        let host = try #require(AppHostMemorySampler().sample())
+        #expect(host.physicalBytes == ProcessInfo.processInfo.physicalMemory)
+        #expect(host.usedBytes > 0)
+        #expect(host.usedBytes <= host.physicalBytes)
+    }
+}
+
+@Suite struct AppModelMachineHeadroomTests {
+    private let gib: UInt64 = 1 << 30
+
+    @MainActor
+    @Test func refreshMeasuresTheMachineAgainstTheInstalledExperts() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("headroom-model-\(UUID().uuidString)")
+        let experts = directory.appendingPathComponent("packed_experts")
+        try FileManager.default.createDirectory(at: experts, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try Data(count: 4_096).write(to: experts.appendingPathComponent("layer_00.bin"))
+
+        let host = AppHostMemory(physicalBytes: 18 * gib, appBytes: 5 * gib,
+                                 wiredBytes: 2 * gib, compressedBytes: 1 * gib, cachedFileBytes: 0)
+        let model = AppModel(modelDirectory: directory,
+                             hostMemorySampler: AppHostMemorySampler(read: { host }))
+        #expect(model.machineHeadroom == nil)
+
+        model.refreshMachineHeadroom()
+        let headroom = try #require(model.machineHeadroom)
+        #expect(headroom.wantedBytes == 4_096)
+        #expect(headroom.borrowableBytes == 10 * gib)
+        #expect(headroom.level == 1)
+    }
+
+    @MainActor
+    @Test func refreshFallsBackToTheInstallSizeWithoutExpertFiles() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("headroom-empty-\(UUID().uuidString)")
+        let host = AppHostMemory(physicalBytes: 18 * gib, appBytes: 12 * gib,
+                                 wiredBytes: 2 * gib, compressedBytes: 0, cachedFileBytes: 0)
+        let model = AppModel(modelDirectory: directory,
+                             hostMemorySampler: AppHostMemorySampler(read: { host }))
+        model.refreshMachineHeadroom()
+        let headroom = try #require(model.machineHeadroom)
+        #expect(headroom.wantedBytes == model.installDescriptor.installedBytes)
+        #expect(headroom.borrowableBytes == 4 * gib)
+        #expect(headroom.level < 1)
+    }
+
+    @MainActor
+    @Test func aFailedSampleKeepsTheLastReading() throws {
+        let host = AppHostMemory(physicalBytes: 18 * gib, appBytes: 5 * gib,
+                                 wiredBytes: 2 * gib, compressedBytes: 0, cachedFileBytes: 0)
+        let box = LockedBox<AppHostMemory?>(host)
+        let model = AppModel(hostMemorySampler: AppHostMemorySampler(read: { box.value }))
+        model.refreshMachineHeadroom()
+        let first = try #require(model.machineHeadroom)
+        box.value = nil
+        model.refreshMachineHeadroom()
+        #expect(model.machineHeadroom == first)
+    }
+}
+
+private final class LockedBox<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Value
+    init(_ value: Value) { stored = value }
+    var value: Value {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); stored = newValue; lock.unlock() }
+    }
+}

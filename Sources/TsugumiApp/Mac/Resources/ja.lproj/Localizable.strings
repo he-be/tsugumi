@@ -47,6 +47,7 @@
 "Downloaded ranges will be removed. The installed model, if any, is preserved." = "ダウンロード済みの部分を削除します。インストール済みのモデルがあれば残ります。";
 "Enough space to install" = "インストールに十分な空き容量があります";
 "First token wait" = "最初のトークンまで";
+"Free for the model" = "モデルに使える";
 "From prompt cache" = "プロンプトキャッシュから";
 "Generate" = "生成";
 "Generating" = "生成中";
@@ -54,6 +55,7 @@
 "Generation" = "生成";
 "Goes at the top of every turn's system prompt, for either model. Empty fields are left out." = "どちらのモデルでも、毎ターンのシステムプロンプトの先頭に入ります。空欄は入りません。";
 "Head / token" = "Head / トークン";
+"How much of the model this Mac can hold in memory right now. More room means faster answers; less only means slower, never broken." = "この Mac のメモリにいまモデルがどれだけ載るか。空きが多いほど速く答え、足りなくても遅くなるだけで止まりません。";
 "How to answer" = "答え方";
 "I/O / token" = "I/O / トークン";
 "Install" = "インストール";
@@ -78,6 +80,7 @@
 "Model download" = "モデルのダウンロード";
 "Model required" = "モデルが必要です";
 "Model status" = "モデルの状態";
+"Most of the model streams from the SSD." = "モデルの大半は SSD から読みます。";
 "MTP acceptance" = "MTP 採択率";
 "MTP speculative decoding" = "MTP 投機的デコード";
 "New chat" = "新しいチャット";
@@ -88,9 +91,11 @@
 "Off" = "オフ";
 "On" = "オン";
 "Optional. Searches Wikipedia offline; needs no API key." = "任意。オフラインで Wikipedia を検索します。API キーは不要です。";
+"Other apps and macOS" = "他のアプリと macOS";
 "Output tokens" = "出力トークン";
 "P value" = "P の値";
 "Page text limit" = "ページ本文の上限";
+"Part of the model streams from the SSD." = "モデルの一部は SSD から読みます。";
 "Path" = "パス";
 "Peak memory" = "最大メモリ";
 "Performance" = "性能";
@@ -120,6 +125,7 @@
 "Retry Load" = "読み込みを再試行";
 "Reused %@ from the saved download" = "保存済みのダウンロードから %@ を再利用";
 "Reveal Model in Finder" = "モデルを Finder で表示";
+"Room for the model" = "モデルの空き";
 "Runtime" = "ランタイム";
 "Sampling" = "サンプリング";
 "Searching the web…" = "Web を検索中…";
@@ -137,16 +143,19 @@
 "temp %@ · top-k %lld · top-p %@ (official, fixed)" = "temp %@ · top-k %lld · top-p %@ (公式値、固定)";
 "Temperature" = "温度";
 "The answer came from the model alone." = "この回答はモデルの知識だけで書かれています。";
+"The model" = "モデル";
 "The model could not be loaded" = "モデルを読み込めませんでした";
 "The model could not be loaded." = "モデルを読み込めませんでした。";
 "The model is unloaded. Load it to generate." = "モデルは解放されています。生成するには読み込んでください。";
 "The model searched but named no page or URL: the answer was written from memory." = "検索はしたのにページも URL も挙げていません。回答は記憶から書かれています。";
 "The model searched but read no page: it saw snippets only." = "検索はしたのにページを読んでいません。見たのはスニペットだけです。";
+"The whole model is in memory." = "モデルはまるごとメモリに載っています。";
 "Thinking" = "思考";
 "Thinking before the first search" = "最初の検索前の思考";
 "Thinking is off: the model answers directly." = "Thinking オフ: すぐに答えます。";
 "Thinking is on: the model reasons before it answers. Slower, better on hard questions." = "Thinking オン: 答える前に考えます。遅くなりますが、難しい質問に強くなります。";
 "Thinking…" = "思考中…";
+"This Mac" = "この Mac";
 "Thought process" = "思考の過程";
 "tok/s" = "tok/s";
 "tokens" = "トークン";

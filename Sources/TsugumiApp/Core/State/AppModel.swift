@@ -60,6 +60,10 @@ public final class AppModel {
     public private(set) var livePrefillDone: Int = 0
     public private(set) var livePrefillTotal: Int = 0
     public private(set) var liveMemoryBytes: UInt64?
+    /// The speedometer: how much of the streamed weights this Mac can hold
+    /// right now. Refreshed by `refreshMachineHeadroom()`, which the HUD
+    /// calls on a timer; nil until the first sample.
+    public private(set) var machineHeadroom: AppMachineHeadroom?
     public private(set) var isCancellationPending: Bool = false
 
     private let client: any AppInferenceClient
@@ -104,6 +108,16 @@ public final class AppModel {
     private var toolRoundsUsed = 0
     private var toolTask: Task<Void, Never>?
     private let memorySampler: AppMemorySampler
+    private let hostMemorySampler: AppHostMemorySampler
+    /// Where each round's metrics line goes (`AppTurnMetricsRecord`); nil
+    /// in tests that do not ask for it.
+    private let turnMetricsLog: AppTurnMetricsLog?
+    private var activeTurnID = UUID()
+    private var activeTurnRound = 0
+    private var roundHeadroom: AppMachineHeadroom?
+    private var roundResidencyTask: Task<Double?, Never>?
+    /// The expert-file bytes of `modelPathText`, read once per directory.
+    private var streamedWeightBytesCache: (path: String, bytes: UInt64?)?
     private let settingsPersistenceEnabled: Bool
     private let chatStore: AppChatStore?
     private var chatSaveTask: Task<Void, Never>?
@@ -118,6 +132,8 @@ public final class AppModel {
                 client: any AppInferenceClient = RealInferenceClient(),
                 installer: (any AppModelInstallerClient)? = nil,
                 memorySampler: AppMemorySampler = AppMemorySampler(),
+                hostMemorySampler: AppHostMemorySampler = AppHostMemorySampler(),
+                turnMetricsLog: AppTurnMetricsLog? = nil,
                 settingsPersistenceEnabled: Bool = false,
                 chatStore: AppChatStore? = nil,
                 webSearchConfigurationURL: URL? = nil,
@@ -187,6 +203,9 @@ public final class AppModel {
             at: directory, descriptor: provider(kind).descriptor)
         self.client = client
         self.memorySampler = memorySampler
+        self.hostMemorySampler = hostMemorySampler
+        self.turnMetricsLog = turnMetricsLog
+            ?? (settingsPersistenceEnabled ? AppTurnMetricsLog(fileURL: AppTurnMetricsLog.defaultFileURL) : nil)
         self.settingsPersistenceEnabled = settingsPersistenceEnabled
         self.installETAClock = installETAClock
         self.installETAOrigin = installETAClock.now
@@ -529,6 +548,27 @@ public final class AppModel {
             return bytes
         }
         return memorySampler.sample()
+    }
+
+    /// Samples the machine and updates `machineHeadroom`. Cheap (one
+    /// `host_statistics64` call); the model's streamed size is cached per
+    /// directory. Falls back to the install's total size when the
+    /// directory has no expert files yet.
+    public func refreshMachineHeadroom() {
+        guard let host = hostMemorySampler.sample() else { return }
+        let wanted = streamedWeightBytes() ?? installDescriptor.installedBytes
+        let next = AppMachineHeadroom(host: host, wantedBytes: wanted)
+        if next != machineHeadroom { machineHeadroom = next }
+    }
+
+    private func streamedWeightBytes() -> UInt64? {
+        if let cached = streamedWeightBytesCache, cached.path == modelPathText {
+            return cached.bytes
+        }
+        let bytes = AppMachineHeadroom.streamedWeightBytes(
+            modelDirectory: URL(fileURLWithPath: modelPathText, isDirectory: true))
+        streamedWeightBytesCache = (modelPathText, bytes)
+        return bytes
     }
 
     public var generationTranscriptMailbox: GenerationTranscriptMailbox? {
@@ -1195,6 +1235,8 @@ public final class AppModel {
         activeOnlinePolicy = mode == .online
             && request.tools.contains { $0.name == WebSearchToolExecutor.searchToolName }
         structuredRetriesUsed = 0
+        activeTurnID = UUID()
+        activeTurnRound = 0
         pendingToolCalls = []
         toolRoundsUsed = 0
         activeRunRuntimeKey = AppLoadedRuntimeKey(
@@ -1277,6 +1319,7 @@ public final class AppModel {
         activeRoundRequest = request
         roundGeneration &+= 1
         let round = roundGeneration
+        beginRoundMetrics()
         runTask = Task.detached { [weak self, client, request] in
             guard let self else { return }
             do {
@@ -1324,6 +1367,7 @@ public final class AppModel {
         let chat = generatingChat ?? selectedChat
         let calls = pendingToolCalls
         pendingToolCalls = []
+        recordRoundMetrics(diagnostics, outcome: "tools", toolCalls: calls.count)
         let reasoning = chat.id == mailboxOwnerChatID
             ? (generationTranscriptMailbox?.completeReasoningText ?? chat.outputReasoningText)
             : chat.outputReasoningText
@@ -1642,6 +1686,7 @@ public final class AppModel {
         hasHandledTerminalEvent = true
         materializeServiceTranscript()
         self.diagnostics = diagnostics
+        recordRoundMetrics(diagnostics, outcome: "finished", toolCalls: 0)
         finishTerminalRun()
     }
 
@@ -1650,8 +1695,52 @@ public final class AppModel {
         hasHandledTerminalEvent = true
         materializeServiceTranscript()
         self.diagnostics = diagnostics
+        recordRoundMetrics(diagnostics, outcome: "cancelled", toolCalls: 0)
         error = .cancelled
         finishTerminalRun()
+    }
+
+    /// The round is about to prefill: note the speedometer and start
+    /// measuring how much of the weights is really in memory (off the main
+    /// actor; the answer is picked up when the round ends).
+    private func beginRoundMetrics() {
+        activeTurnRound += 1
+        guard turnMetricsLog != nil else { return }
+        refreshMachineHeadroom()
+        roundHeadroom = machineHeadroom
+        let directory = URL(fileURLWithPath: modelPathText, isDirectory: true)
+        roundResidencyTask = Task.detached(priority: .utility) {
+            AppWeightResidencyProbe.residentFraction(modelDirectory: directory)
+        }
+    }
+
+    private func recordRoundMetrics(_ diagnostics: AppDiagnostics, outcome: String, toolCalls: Int) {
+        guard let log = turnMetricsLog else { return }
+        let chat = generatingChat ?? selectedChat
+        var record = AppTurnMetricsRecord(
+            recordedAt: AppTurnMetricsLog.isoTimestamp(),
+            turnID: activeTurnID.uuidString,
+            round: activeTurnRound,
+            chatID: chat.id.uuidString,
+            outcome: outcome,
+            model: selectedModelKind.rawValue,
+            contextTokens: maxContextTokens,
+            slots: runtimeOptions.expertCacheSlots,
+            mtp: runtimeOptions.mtpEnabled,
+            thinking: thinkingEnabled,
+            network: activeNetworkMode.rawValue,
+            directive: chat.outputDirective?.rawValue,
+            headroom: roundHeadroom,
+            weightsResidentFraction: nil,
+            diagnostics: diagnostics,
+            toolCalls: toolCalls)
+        let residency = roundResidencyTask
+        roundResidencyTask = nil
+        roundHeadroom = nil
+        Task.detached(priority: .utility) {
+            record.weightsResidentFraction = await residency?.value
+            log.append(record)
+        }
     }
 
     private func materializeServiceTranscript() {

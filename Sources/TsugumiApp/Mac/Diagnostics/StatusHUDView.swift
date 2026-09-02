@@ -25,6 +25,10 @@ struct StatusHUDView: View {
                     .help(L("Tokens the last round occupied, of the context the model was loaded with."))
                 HUDMetricView(value: memoryText, label: L("memory"), animated: !model.isRunning)
             }
+            if !model.requiresModelInstallation {
+                Divider().frame(height: 16)
+                HeadroomGaugeView(headroom: model.machineHeadroom)
+            }
         }
         .frame(height: 30)
         .padding(.horizontal, 16)
@@ -37,6 +41,14 @@ struct StatusHUDView: View {
                 }
         }
         .gesture(WindowDragGesture())
+        .task {
+            // The speedometer's clock: one host_statistics64 call every
+            // two seconds, generating or not.
+            while !Task.isCancelled {
+                model.refreshMachineHeadroom()
+                try? await Task.sleep(for: .seconds(2))
+            }
+        }
     }
 
     private var rateText: String {
