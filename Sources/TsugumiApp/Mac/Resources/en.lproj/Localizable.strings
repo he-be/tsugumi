@@ -161,6 +161,7 @@
 "tokens" = "tokens";
 "Tokens the last round occupied, of the context the model was loaded with." = "Tokens the last round occupied, of the context the model was loaded with.";
 "Tool rounds per answer" = "Tool rounds per answer";
+"Tsugumi itself (context and hot experts)" = "Tsugumi itself (context and hot experts)";
 "Tsugumi needs %@ before it can generate text." = "Tsugumi needs %@ before it can generate text.";
 "unknown" = "unknown";
 "unknown date" = "unknown date";

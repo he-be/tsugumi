@@ -61,6 +61,19 @@ import Testing
         #expect(before.level == after.level)
     }
 
+    /// What the runtime holds for itself is named, not charged to other
+    /// apps; the level does not change, the breakdown does.
+    @Test func ownBytesComeOutOfOtherAppsNotOutOfTheLevel() {
+        let host = AppHostMemory(physicalBytes: 18 * gib, appBytes: 3 * gib,
+                                 wiredBytes: 10 * gib, compressedBytes: 0, cachedFileBytes: 4 * gib)
+        let anonymous = AppMachineHeadroom(host: host, wantedBytes: 12 * gib)
+        let named = AppMachineHeadroom(host: host, wantedBytes: 12 * gib, ownBytes: 9 * gib)
+        #expect(named.level == anonymous.level)
+        #expect(anonymous.otherBytes == 13 * gib)
+        #expect(named.otherBytes == 4 * gib)
+        #expect(AppMachineHeadroom(host: host, wantedBytes: 12 * gib, ownBytes: 20 * gib).otherBytes == 0)
+    }
+
     @Test func levelIsClampedAndTolerantOfAnUnknownModelSize() {
         let roomy = AppHostMemory(physicalBytes: 64 * gib, appBytes: 4 * gib,
                                   wiredBytes: 2 * gib, compressedBytes: 0, cachedFileBytes: 0)

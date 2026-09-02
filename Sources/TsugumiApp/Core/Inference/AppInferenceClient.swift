@@ -19,6 +19,15 @@ public protocol AppInferenceMemoryReporting: AnyObject {
     var currentInferenceMemoryBytes: UInt64? { get }
 }
 
+/// What the loaded runtime holds for itself while the model is loaded:
+/// the resident weights, the KV cache for the context length, the experts
+/// it asks Metal to keep resident. Wired or private either way, so the
+/// speedometer can tell it apart from other apps. Nil when unknown (not
+/// loaded, or a runtime that does not budget).
+public protocol AppInferenceRuntimeReporting: AnyObject {
+    var loadedRuntimeOwnBytes: UInt64? { get }
+}
+
 public protocol AppInferenceTranscriptReporting: AnyObject {
     var generationTranscriptMailbox: GenerationTranscriptMailbox { get }
 }

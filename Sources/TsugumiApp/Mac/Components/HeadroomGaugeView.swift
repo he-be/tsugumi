@@ -106,7 +106,10 @@ struct HeadroomDetailView: View {
             Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 6) {
                 row(L("Free for the model"), MetricFormat.memory(headroom.borrowableBytes))
                 row(L("The model"), MetricFormat.memory(headroom.wantedBytes))
-                row(L("Other apps and macOS"), MetricFormat.memory(headroom.host.usedBytes))
+                if headroom.ownBytes > 0 {
+                    row(L("Tsugumi itself (context and hot experts)"), MetricFormat.memory(headroom.ownBytes))
+                }
+                row(L("Other apps and macOS"), MetricFormat.memory(headroom.otherBytes))
                 row(L("This Mac"), MetricFormat.memory(headroom.host.physicalBytes))
             }
         }

@@ -60,10 +60,16 @@ final class GenerationTaskRegistry: Sendable {
 /// stream, with an explicit load lifecycle so the resident weights stay warm
 /// across generations. The prompt goes through each checkpoint's own chat
 /// template, with the thought channel opened or closed by the request.
-public final class RealInferenceClient: AppModelLifecycleClient, @unchecked Sendable {
+public final class RealInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeReporting,
+    @unchecked Sendable {
     private let session: RealInferenceSession
     private let memorySampler: AppMemorySampler
     private let generationTasks = GenerationTaskRegistry()
+    private let runtimeOwn = Mutex<UInt64?>(nil)
+
+    public var loadedRuntimeOwnBytes: UInt64? {
+        runtimeOwn.withLock { $0 }
+    }
 
     public init(memorySampler: AppMemorySampler = AppMemorySampler()) {
         self.memorySampler = memorySampler
@@ -81,10 +87,13 @@ public final class RealInferenceClient: AppModelLifecycleClient, @unchecked Send
                                 options: options,
                                 forceLogitsHead: forceLogitsHead),
             onState: onState)
+        let own = await session.loadedRuntimeOwnBytes
+        runtimeOwn.withLock { $0 = own }
     }
 
     public func unload() async {
         await session.unload()
+        runtimeOwn.withLock { $0 = nil }
     }
 
     public func generate(_ request: AppGenerationRequest) -> AsyncThrowingStream<AppInferenceEvent, Error> {
@@ -151,6 +160,9 @@ actor RealInferenceSession {
     /// to off when the checkpoint has no drafter section (Gemma) or no head
     /// sidecar (Ornith).
     private(set) var loadedMTPEnabled = false
+    /// The Gemma session's budget (`ServerModelSession.runtimeOwnBytes`);
+    /// nil for Ornith, whose runner does not budget.
+    private(set) var loadedRuntimeOwnBytes: UInt64?
 
     func ensureLoaded(key: SessionLoadKey,
                       onState: @Sendable (AppModelLoadState) -> Void) async throws {
@@ -191,6 +203,7 @@ actor RealInferenceSession {
                     integrityPolicy: integrity,
                     draftBlockSize: draftBlockSize)
                 backend = .gemma(session)
+                loadedRuntimeOwnBytes = await session.runtimeOwnBytes
             case .ornith:
                 let session = try await QwenServerSession.load(
                     modelDirectory: key.directory,
@@ -201,6 +214,7 @@ actor RealInferenceSession {
                     mtpHeadDirectory: Self.mtpSidecarDirectory(
                         forModelDirectory: key.directory))
                 backend = .ornith(session)
+                loadedRuntimeOwnBytes = nil
             }
             try Task.checkCancellation()
 
@@ -263,6 +277,7 @@ actor RealInferenceSession {
     func unload() {
         backend = nil
         loadedKey = nil
+        loadedRuntimeOwnBytes = nil
         loadedKind = nil
         loadedMTPEnabled = false
     }

@@ -92,10 +92,21 @@ public struct AppMachineHeadroom: Equatable, Sendable {
     /// The bytes the model streams (its expert files): what the cache would
     /// hold if it could.
     public let wantedBytes: UInt64
+    /// What the loaded runtime holds for itself (resident weights, the KV
+    /// cache for the context length, the experts kept resident). Part of
+    /// `host.usedBytes`, so the breakdown can name it instead of charging
+    /// it to other apps. 0 when nothing is loaded or the runtime does not say.
+    public let ownBytes: UInt64
 
-    public init(host: AppHostMemory, wantedBytes: UInt64) {
+    public init(host: AppHostMemory, wantedBytes: UInt64, ownBytes: UInt64 = 0) {
         self.host = host
         self.wantedBytes = wantedBytes
+        self.ownBytes = ownBytes
+    }
+
+    /// Used memory that is not this app's: other apps, macOS, the compressor.
+    public var otherBytes: UInt64 {
+        host.usedBytes > ownBytes ? host.usedBytes - ownBytes : 0
     }
 
     public var borrowableBytes: UInt64 { host.borrowableBytes }

@@ -557,7 +557,10 @@ public final class AppModel {
     public func refreshMachineHeadroom() {
         guard let host = hostMemorySampler.sample() else { return }
         let wanted = streamedWeightBytes() ?? installDescriptor.installedBytes
-        let next = AppMachineHeadroom(host: host, wantedBytes: wanted)
+        let own = loadState.isReady
+            ? (client as? any AppInferenceRuntimeReporting)?.loadedRuntimeOwnBytes ?? 0
+            : 0
+        let next = AppMachineHeadroom(host: host, wantedBytes: wanted, ownBytes: own)
         if next != machineHeadroom { machineHeadroom = next }
     }
 

@@ -28,6 +28,8 @@ public struct AppTurnMetricsRecord: Codable, Equatable, Sendable {
     public var wiredBytes: UInt64?
     public var compressedBytes: UInt64?
     public var cachedFileBytes: UInt64?
+    /// What the runtime held for itself (KV cache, resident weights and experts).
+    public var runtimeOwnBytes: UInt64?
     /// `mincore` over the expert files: the share of pages in memory.
     public var weightsResidentFraction: Double?
 
@@ -73,6 +75,7 @@ public struct AppTurnMetricsRecord: Codable, Equatable, Sendable {
         self.wiredBytes = headroom?.host.wiredBytes
         self.compressedBytes = headroom?.host.compressedBytes
         self.cachedFileBytes = headroom?.host.cachedFileBytes
+        self.runtimeOwnBytes = headroom?.ownBytes
         self.weightsResidentFraction = weightsResidentFraction
         self.promptTokens = diagnostics.promptTokenCount
         self.cachedPromptTokens = diagnostics.cachedPromptTokens

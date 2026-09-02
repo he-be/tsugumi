@@ -161,6 +161,7 @@
 "tokens" = "トークン";
 "Tokens the last round occupied, of the context the model was loaded with." = "直前のラウンドが占めたトークン数と、モデルを読み込んだときのコンテキスト長";
 "Tool rounds per answer" = "回答あたりのツール往復回数";
+"Tsugumi itself (context and hot experts)" = "Tsugumi 自身 (コンテキストと常駐エキスパート)";
 "Tsugumi needs %@ before it can generate text." = "テキストを生成するには %@ が必要です。";
 "unknown" = "不明";
 "unknown date" = "日付不明";

@@ -485,6 +485,12 @@ public actor ServerCoordinator {
 }
 
 public actor ServerModelSession: ServerInferenceBackend {
+    /// What this session holds for itself: the runner's budget (resident
+    /// weights, KV cache, scratch) plus the experts it asks Metal to keep
+    /// resident. The app's speedometer subtracts it from "other apps".
+    public var runtimeOwnBytes: UInt64 {
+        runner.memoryBudget.totalBytes &+ runner.memoryBudget.expertResidencyRequestBytes
+    }
     private let context: MetalContext
     private let model: Model
     private let tokenizer: GFTokenizer

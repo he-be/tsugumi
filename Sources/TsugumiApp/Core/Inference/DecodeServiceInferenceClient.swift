@@ -5,7 +5,8 @@ import Tsugumi
 import TsugumiDecodeProtocol
 
 public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
-    AppInferenceMemoryReporting, AppInferenceTranscriptReporting, @unchecked Sendable {
+    AppInferenceMemoryReporting, AppInferenceRuntimeReporting, AppInferenceTranscriptReporting,
+    @unchecked Sendable {
     private struct Connection {
         var input: FileHandle?
         var responses: DecodeServiceResponseRouter?
@@ -17,10 +18,15 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
     private let connection = Mutex(Connection())
     private let serviceURL: URL
     private let inferenceMemory = Mutex<UInt64?>(nil)
+    private let runtimeOwn = Mutex<UInt64?>(nil)
     public let generationTranscriptMailbox = GenerationTranscriptMailbox()
 
     public var currentInferenceMemoryBytes: UInt64? {
         inferenceMemory.withLock { $0 }
+    }
+
+    public var loadedRuntimeOwnBytes: UInt64? {
+        runtimeOwn.withLock { $0 }
     }
 
     public init(serviceURL: URL? = nil) {
@@ -52,6 +58,7 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
                 "decode service returned \(event.kind.rawValue) for a load request")
         }
         inferenceMemory.withLock { $0 = event.currentMemoryBytes }
+        runtimeOwn.withLock { $0 = event.runtimeOwnBytes }
         connection.withLock { $0.loadedDirectory = modelDirectory.standardizedFileURL }
         onState(.ready(modelDirectory: modelDirectory, loadSeconds: 0))
     }

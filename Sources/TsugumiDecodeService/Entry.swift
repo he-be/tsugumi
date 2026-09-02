@@ -60,7 +60,8 @@ import TsugumiDecodeProtocol
                     let memory = AppMemorySampler().sample()
                     try write(DecodeServiceEvent(
                         kind: .ready, generationID: request.requestID,
-                        currentMemoryBytes: memory, peakMemoryBytes: memory),
+                        currentMemoryBytes: memory, peakMemoryBytes: memory,
+                        runtimeOwnBytes: (client as? any AppInferenceRuntimeReporting)?.loadedRuntimeOwnBytes),
                         to: handles.output)
                 } catch {
                     try? write(DecodeServiceEvent(

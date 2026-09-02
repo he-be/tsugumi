@@ -191,6 +191,11 @@ HUD の右端に速度計 (`HeadroomGaugeView`) を置いた。針は **この M
   同じ内訳を `host_statistics64` から読む (`AppHostMemory`)。ページキャッシュに載った重みは使用済みに
   入らないので、**回答の前後で針は動かない**。他のアプリが RAM を取ると下がり、閉じると上がる。
 - 2 秒ごとに `AppModel.refreshMachineHeadroom()` (HUD の `.task`)。ロードの前後を問わず出す。
+- ポップオーバーの内訳は「モデルに使える / モデル / Tsugumi 自身 / 他のアプリと macOS / この Mac」。
+  **Tsugumi 自身**はロード中の runtime の予算 (`ServerModelSession.runtimeOwnBytes` = `ExpertCacheBudget.totalBytes` +
+  常駐要求。ctx 32K の KV と 32 スロットの常駐エキスパートで約 10 GB) で、`ready` イベントの `runtimeOwnBytes` で
+  service から届く。針の式は変えず、内訳で「他のアプリ」に混ぜないだけ (2026-09-03、ユーザー指摘)。Ornith は runner が
+  予算を持たないので行が出ない。
 - 帯: 0.9 以上 = まるごと載る、0.25〜0.9 = 一部は SSD から (どちらもアクセント色)、0.25 未満 = 橙。
   境界 0.25 は測定から: 借りられる量が 0.21 (2.5 GB) を割る手前で macOS は
   **モデルではなく他のアプリをスワップし始めた** (hog 11 GB のセルで借りられる量がそれ以上下がらず、

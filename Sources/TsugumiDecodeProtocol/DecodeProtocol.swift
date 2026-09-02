@@ -321,6 +321,9 @@ public struct DecodeServiceEvent: Codable, Sendable {
     public var error: String?
     public var currentMemoryBytes: UInt64?
     public var peakMemoryBytes: UInt64?
+    /// On `ready`: what the runtime holds for itself (resident weights, KV
+    /// cache, resident experts). Optional for wire compatibility.
+    public var runtimeOwnBytes: UInt64?
     public var prefill: DecodePrefillDiagnostics?
     public var runner: DecodeRunnerDiagnostics?
     /// The function calls the generation ended on, carried on the terminal
@@ -342,6 +345,7 @@ public struct DecodeServiceEvent: Codable, Sendable {
                 decodeSeconds: Double = 0, tokensPerSecond: Double = 0,
                 stopReason: String? = nil, error: String? = nil,
                 currentMemoryBytes: UInt64? = nil, peakMemoryBytes: UInt64? = nil,
+                runtimeOwnBytes: UInt64? = nil,
                 prefill: DecodePrefillDiagnostics? = nil,
                 runner: DecodeRunnerDiagnostics? = nil,
                 toolCalls: [DecodeToolCall]? = nil) {
@@ -366,6 +370,7 @@ public struct DecodeServiceEvent: Codable, Sendable {
         self.error = error
         self.currentMemoryBytes = currentMemoryBytes
         self.peakMemoryBytes = peakMemoryBytes
+        self.runtimeOwnBytes = runtimeOwnBytes
         self.prefill = prefill
         self.runner = runner
         self.toolCalls = toolCalls
