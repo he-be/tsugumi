@@ -8,6 +8,12 @@ import Foundation
 public struct WikipediaToolExecutor: AppToolExecutor {
     public static let searchToolName = "wikipedia_search"
     public static let pageToolName = "wikipedia_page"
+    /// The round the app runs itself before the model's first: not
+    /// declared, so the model cannot call it, only read it.
+    public static let lookupToolName = "wikipedia_lookup"
+    /// How many articles a lookup shows, and how much of each opening.
+    public static let lookupLimit = 3
+    public static let lookupOpeningLimit = 400
 
     let index: LocalWikipediaIndex
     let maxResults: Int
@@ -68,22 +74,80 @@ public struct WikipediaToolExecutor: AppToolExecutor {
         }
     }
 
+    /// The openings of the articles the prompt names — a small, dated
+    /// reference the model gets for free, so that what a 4B model half
+    /// remembers about 淀城 or えきねっと is corrected before it decides
+    /// whether to search. The prompt's own words pick the articles
+    /// (`LocalWikipediaIndex.mentions`); nothing is guessed.
+    public func lookups(prompt: String, callIDPrefix: String) async -> [AppToolLookup] {
+        let mentions = index.mentions(in: prompt, limit: Self.lookupLimit)
+        guard !mentions.isEmpty else { return [] }
+        let titles = mentions.map(\.title)
+        var lines = ["参考: 質問に含まれる語を Wikipedia (\(dateStamp)の複製) で引いた記事の導入部です。質問に関係なければ無視してください。本文は wikipedia_page で読めます。"]
+        for mention in mentions {
+            lines.append("")
+            let alias = mention.mention == mention.title ? "" : " (質問中の「\(mention.mention)」)"
+            lines.append("■ \(mention.title)\(alias)")
+            lines.append(Self.clip(mention.opening, to: Self.lookupOpeningLimit))
+        }
+        let arguments = try? JSONSerialization.data(withJSONObject: ["titles": titles], options: [.withoutEscapingSlashes])
+        let call = AppToolCall(id: callIDPrefix + "1", name: Self.lookupToolName,
+                               argumentsJSON: arguments.flatMap { String(data: $0, encoding: .utf8) } ?? "{}")
+        return [AppToolLookup(call: call,
+                              result: AppToolResult(content: lines.joined(separator: "\n"),
+                                                    summary: "Wikipedia · \(titles.count) 件"),
+                              subject: titles.joined(separator: " / "))]
+    }
+
+    static func clip(_ text: String, to limit: Int) -> String {
+        guard text.count > limit else { return text }
+        return String(text.prefix(limit)) + "…"
+    }
+
+    /// What every result says about the copy it comes from, so the model
+    /// reads a dated encyclopedia rather than a live one (the system prompt
+    /// says the same; the result is what it actually quotes from).
+    var dateStamp: String {
+        index.summary.dumpDateJapanese.map { "\($0) 時点" } ?? "日付不明"
+    }
+
+    /// Wikipedia's own search box "goes" straight to the article when the
+    /// query is a title; this does the same inside the result. When the
+    /// first hit is a title or redirect match, or the query is one term (the
+    /// model named an article rather than describing one), the article's
+    /// text follows the list in the same result — no second round, and no
+    /// decision the model has to make to read what it asked for. The list
+    /// still comes first so a wrong guess can be corrected.
+    static func shouldGo(_ hits: [LocalWikipediaIndex.Hit], query: String) -> Bool {
+        guard let first = hits.first else { return false }
+        return first.isExactTitle || !query.contains(where: \.isWhitespace)
+    }
+
     func search(_ query: String) -> AppToolResult {
         let hits = index.search(query, limit: maxResults)
         guard !hits.isEmpty else {
             return AppToolResult(
-                content: "Wikipedia 検索: \(query) — 該当する記事はありません。別の語や記事名で検索してください。",
+                content: "Wikipedia 検索: \(query) (\(dateStamp)) — 該当する記事はありません。別の語や記事名で検索してください。",
                 summary: "Wikipedia · 0 hits")
         }
-        var lines = ["Wikipedia 検索: \(query) (\(hits.count) 件)"]
+        var lines = ["Wikipedia 検索: \(query) (\(hits.count) 件、\(dateStamp)の複製)"]
         for (number, hit) in hits.enumerated() {
             lines.append("[\(number + 1)] \(hit.title)")
             if !hit.snippet.isEmpty { lines.append("    \(hit.snippet)") }
         }
         lines.append("")
-        lines.append("本文を読むには wikipedia_page に題名を渡します。")
-        return AppToolResult(content: lines.joined(separator: "\n"),
-                             summary: "Wikipedia · \(hits.count) hits")
+        var summary = "Wikipedia · \(hits.count) hits"
+        if Self.shouldGo(hits, query: query), let page = index.page(id: hits[0].pageID) {
+            let body = Self.body(of: page, from: 0, limit: pageCharacterLimit)
+            lines.append("[1] \(page.title) の本文:")
+            lines.append(contentsOf: body.lines)
+            lines.append("")
+            lines.append("他の記事を読むには wikipedia_page に題名を渡します。")
+            summary += " + \(page.title) \(body.shown.formatted()) chars\(body.clipped ? " (clipped)" : "")"
+        } else {
+            lines.append("本文を読むには wikipedia_page に題名を渡します。")
+        }
+        return AppToolResult(content: lines.joined(separator: "\n"), summary: summary)
     }
 
     func page(_ title: String, from: Int) -> AppToolResult {
@@ -97,22 +161,30 @@ public struct WikipediaToolExecutor: AppToolExecutor {
             return AppToolResult(content: lines.joined(separator: "\n"),
                                  isError: true, summary: "Wikipedia · not found")
         }
+        let body = Self.body(of: page, from: from, limit: pageCharacterLimit)
+        var lines = ["Wikipedia 記事: \(page.title) (\(dateStamp))"]
+        if body.start > 0 { lines.append("(\(body.start) 文字目から)") }
+        lines.append("")
+        lines.append(contentsOf: body.lines)
+        return AppToolResult(content: lines.joined(separator: "\n"),
+                             summary: "Wikipedia · \(body.shown.formatted()) / \(page.text.count.formatted()) chars\(body.clipped ? " (clipped)" : "")")
+    }
+
+    /// The article text from `from`, clipped to `limit` characters, with
+    /// the line that says how to read on.
+    static func body(of page: LocalWikipediaIndex.Page, from: Int, limit: Int)
+        -> (lines: [String], start: Int, shown: Int, clipped: Bool) {
         let total = page.text.count
-        let start = min(from, total)
+        let start = min(max(0, from), total)
         let startIndex = page.text.index(page.text.startIndex, offsetBy: start)
-        let endIndex = page.text.index(startIndex, offsetBy: pageCharacterLimit,
+        let endIndex = page.text.index(startIndex, offsetBy: limit,
                                        limitedBy: page.text.endIndex) ?? page.text.endIndex
         let clipped = endIndex < page.text.endIndex
-        var lines = ["Wikipedia 記事: \(page.title)"]
-        if start > 0 { lines.append("(\(start) 文字目から)") }
-        lines.append("")
-        lines.append(String(page.text[startIndex..<endIndex]))
+        var lines = [String(page.text[startIndex..<endIndex])]
         if clipped {
             let next = page.text.distance(from: page.text.startIndex, to: endIndex)
-            lines.append("…(本文はここで打ち切り。全 \(total) 文字。続きは from=\(next) で読めます)")
+            lines.append("…(本文はここで打ち切り。全 \(total) 文字。続きは wikipedia_page の from=\(next) で読めます)")
         }
-        let shown = page.text.distance(from: startIndex, to: endIndex)
-        return AppToolResult(content: lines.joined(separator: "\n"),
-                             summary: "Wikipedia · \(shown.formatted()) / \(total.formatted()) chars\(clipped ? " (clipped)" : "")")
+        return (lines, start, page.text.distance(from: startIndex, to: endIndex), clipped)
     }
 }

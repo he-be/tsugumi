@@ -143,3 +143,9 @@
 "Web search (%lld steps)" = "Web search (%lld steps)";
 "Web search is available with Gemma only." = "Web search is available with Gemma only.";
 "Write a prompt to begin." = "Write a prompt to begin.";
+"Network" = "Network";
+"Offline" = "Offline";
+"Online" = "Online";
+"Nothing leaves this Mac. Wikipedia is read from the local index when one is set." = "Nothing leaves this Mac. Wikipedia is read from the local index when one is set.";
+"Search queries go to Serper or Brave; pages are fetched from their sites, thin ones through Jina Reader." = "Search queries go to Serper or Brave; pages are fetched from their sites, thin ones through Jina Reader.";
+"Online needs a Serper or Brave API key. Add one in the Inspector, or switch to Offline." = "Online needs a Serper or Brave API key. Add one in the Inspector, or switch to Offline.";

@@ -130,15 +130,16 @@ struct InspectorView: View {
     /// The web tools: mode, the keys, and the two limits that decide how
     /// much of the context a turn may spend on search results.
     private var webSearchSection: some View {
-        Section(L("Web search")) {
-            if model.webSearchAvailable {
-                Picker(L("Mode"), selection: $model.webSearchMode) {
-                    ForEach(AppWebSearchMode.allCases) { mode in
+        Section(L("Network")) {
+            if model.toolsAvailable {
+                Picker(L("Network"), selection: $model.networkMode) {
+                    ForEach(AppNetworkMode.allCases) { mode in
                         Text(mode.label).tag(mode)
                     }
                 }
                 .pickerStyle(.segmented)
-                Text(model.webSearchMode.help)
+                .labelsHidden()
+                Text(model.networkMode.help)
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -154,8 +155,8 @@ struct InspectorView: View {
             SecureField(L("Jina Reader API key (optional)"),
                         text: $model.webSearchConfiguration.jinaAPIKey)
                 .textFieldStyle(.roundedBorder)
-            if !model.webSearchConfiguration.resolved().canUseTools {
-                Text(L("Add a Serper or Brave key, or a local Wikipedia index."))
+            if model.networkMode == .online, !model.webSearchConfiguration.resolved().canSearch {
+                Text(L("Online needs a Serper or Brave API key. Add one in the Inspector, or switch to Offline."))
                     .font(.caption)
                     .foregroundStyle(.orange)
             }

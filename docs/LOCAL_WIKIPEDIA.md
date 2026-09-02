@@ -7,14 +7,26 @@
 
 ## 1. 何ができるか
 
-Inspector の Web search セクションに **Local Wikipedia index** の欄がある。ここに
-組んだ SQLite (§3) のパスを入れると、Web search のモード (Auto / Always) で
-Gemma に 2 つのツールが増える。API キーが無くても、この 2 つだけで動く。
+Inspector の Network セクションに **Local Wikipedia index** の欄がある。ここに
+組んだ SQLite (§3) のパスを入れると、Offline でも Online でも Gemma に 2 つの
+ツールが増える。Offline で宣言されるのはこの 2 つだけで、API キーは要らない。
 
 | ツール | 引数 | 返すもの |
 | --- | --- | --- |
-| `wikipedia_search` | `query` | 記事の題名と導入部の一行 (既定 8 件)。全文検索 |
+| `wikipedia_search` | `query` | 記事の題名と導入部の一行 (既定 8 件)。全文検索。**1 位が題名一致か、問い合わせが 1 語なら、その記事の本文を同じ結果に続けて返す** (Go) |
 | `wikipedia_page` | `title`, `from` (任意) | 記事本文。Page text limit (既定 6,000 字) で打ち切り、`from` で続きを読む |
+
+**Go。** Wikipedia の検索窓は題名が一致すると一覧を出さず記事へ飛ぶ。同じことを
+検索結果の中でやる: 1 位が題名・転送名の一致、または問い合わせが空白を含まない
+1 語 (モデルが記事を「名指し」した形) なら、一覧の後に `[1] 題名 の本文:` として
+本文 (Page text limit で打ち切り) を続ける。実機の履歴で「城崎シーワールド」を
+引いて 1 位の「城崎マリンワールド」を開かずに Web へ行った取りこぼしがあり、
+thinking OFF ではこの判断が抜けやすい。本文を畳めば判断もラウンドも要らない。
+複数語で題名一致が無いとき (「NVIDIA Volta アーキテクチャ」) は一覧だけ。
+
+**日付。** 結果の 1 行目に「2026年8月30日 時点の複製」、記事にも「(… 時点)」と
+入れる。system prompt にも同じ日付があるが、モデルが引用するのは結果の方なので、
+結果自身が日付を名乗る。
 
 Web 検索のキーもあれば 4 つ全部を宣言し、system prompt に使い分けの一文が入る
 (百科事典にある事柄は Wikipedia から、刻々と変わることは Web から、Wikipedia で
@@ -103,7 +115,64 @@ FTS5 の標準の字句解析は日本語を切れず、内蔵の trigram は 2 
 書き、読む側は開くときに自分で切った結果と突き合わせる。違えば
 `tokenizerMismatch` で開かない。規則を変えるときは両方を変えて版を上げる。
 
-## 5. 実機で確かめたこと (2026-09-02, M3 Pro, Gemma 4 QAT, ctx 8K, thinking ON)
+## 5. 質問の固有名詞を先に引く (`wikipedia_lookup`)
+
+モデルの 1 ラウンド目の前に、アプリが質問文そのものを索引で引き、名指しされた
+記事の導入部を「参考」として渡す。モデルは呼べない (宣言しない) が、継続ターン
+には普通のツール呼び出しと結果の対として積まれ、Inspector のトレースにも
+`wikipedia_lookup` として出る。当たりが無ければ何も積まず、従来どおり始まる。
+
+```
+run() → executor.lookups(prompt)           (toolTask、数 ms〜数百 ms。URL があれば fetch も)
+      → 当たりあり: continuation = [assistant(wikipedia_lookup{titles} …), tool(参考) …]
+      → 1 ラウンド目 (tool_choice auto、思考予算はそのまま)
+```
+
+Web 側の URL 事前フェッチも同じ口から出る (docs/WEB_SEARCH.md §1)。
+
+**なぜ。** 4B のモデルが半分だけ覚えている固有名詞 (淀城、えきねっと) を、
+検索するかどうか決める前に正しておく。履歴 17 問では、Wikipedia を使った 3 問の
+うち 1 問 (城崎) が正解記事を開かずに Web へ行き、残りの Web 検索の質問にも
+百科事典にある名前が含まれていた。
+
+**候補の切り出し** (`WikipediaMentionFinder`)。URL を除き、`NLTokenizer` で語に
+切る (macOS の NaturalLanguage は日本語の品詞・固有表現を返さないが、語の境界は
+返す)。1〜4 語の窓を長い順に全部試し、題名か転送名に一致した窓はその語を占有する
+(「城崎シーワールド」を試してから「城崎」)。
+
+**残す判断は link probability。** 題名に一致する文字列は普通名詞の記事
+(ニュース、天気、工事) も拾う。entity linking の定石 (Milne & Witten 2008、
+TagMe) は「その文字列が Wikipedia 本文に現れたとき、リンクになっている割合」で
+名前と語を分ける。索引にはアンカー統計が無いので、**被リンク数 ÷ その文字列を
+頭 1,000 字に含む文書数** (FTS5 の phrase で数える) で近似する。実機索引での値:
+
+| 文字列 | 被リンク | 文書数 | 比 | 判断 |
+| --- | ---: | ---: | ---: | --- |
+| 城崎マリンワールド | 164 | 13 | 12.6 | 残す |
+| 米国 (→アメリカ合衆国) | 154,751 | 28,142 | 5.5 | 残す |
+| 淀城 | 78 | 61 | 1.28 | 残す |
+| えきねっと | 626 | 565 | 1.11 | 残す |
+| IBM | 2,552 | 2,566 | 0.99 | 残す (英字は 0.5 以上) |
+| 熊本地震 | 109 | 637 | 0.17 | 残す (複数語の CJK は 0.1 以上) |
+| 遺構 | 1,316 | 3,954 | 0.33 | 落とす (1 語の CJK は 1.0 以上) |
+| クーデター | 2,317 | 4,081 | 0.57 | 落とす |
+| 天気 | 781 | 6,044 | 0.13 | 落とす |
+| ニュース | 1,553 | 42,729 | 0.04 | 落とす |
+| granite (岩石) | 7 | 58 | 0.12 | 落とす |
+
+規則 (`WikipediaMentionFinder.keeps`): 比 1.0 以上は無条件、英字で始まる語は 0.5
+以上、CJK の複数語は 0.1 以上、CJK の 1 語はそれ以外落とす。履歴 17 問と追加 5 問で
+正しく拾えたのが 15、誤りが 2 (「業界」→ 業種: 転送先の被リンクが別名の分まで
+数えられている、「シーワールド」: 城崎シーワールドの部分一致)。比の高い順に
+3 件まで、導入部は 400 字で切る。
+
+**制約。** アンカー統計の代用なので、転送先に別名が多い普通名詞 (業界) は
+すり抜ける。厳密にやるなら pages-articles の XML からアンカー文字列を数える
+(Wikipedia2Vec の mention DB と同じもの)。`Scripts/wiki/build_jawiki_index.py` の
+`search` にはこの引き当ては無い (NLTokenizer が Python から使えない)。実機での
+体感 (プレフィルの増分、モデルが参考を無視できるか) は未確認。
+
+## 6. 実機で確かめたこと (2026-09-02, M3 Pro, Gemma 4 QAT, ctx 8K, thinking ON)
 
 2 万記事の標本索引に対して、アプリと同じ経路 (DecodeService の unix socket) で
 1 周:
@@ -138,7 +207,7 @@ python3 Scripts/app/smoke_decode.py wiki "2026年にアメリカがイランを�
 Wikipedia のツールは「この Mac に保存された {日付} 時点の複製」と説明していて、
 「本物のインターネットに 2026 年は無いはず」という反射の足場が無い。
 
-## 6. 分かっている制約
+## 7. 分かっている制約
 
 - **Gemma のみ**、Web 検索と同じ (Ornith はツールを宣言しない)。
 - **本文の頭 1,000 字までしか索引に入らない。** 長い記事の後ろの節だけに書かれた
@@ -146,18 +215,22 @@ Wikipedia のツールは「この Mac に保存された {日付} 時点の複�
 - **見出しは残らない。** ダンプの `text` は節見出しを含まないので、`wikipedia_page`
   は平文を頭から返す。`from` で読み進めるしかない。
 - **順位付けは素朴。** 語の重みも被リンク補正も手で決めた値で、評価はしていない。
+- **Go は 1 語の問い合わせなら 1 位を必ず畳む。** 「東京」で東京駅が 1 位なら
+  東京駅の本文が付く。一覧は先に出るので選び直せるが、プレフィルはその分増える。
 - **取り込みは手作業** (スクリプト実行)。アプリからの取得・更新は未実装。
 - 索引ファイルは Web 検索の設定ファイル (`web-search.json`) にパスだけ入る。
   移動したら Inspector で直す。
 
-## 7. 主な実装箇所
+## 8. 主な実装箇所
 
 | 場所 | 役割 |
 | --- | --- |
 | `Scripts/wiki/build_jawiki_index.py` | download / build / search / page / tokenize |
 | `Sources/TsugumiApp/Core/LocalWikipedia/WikipediaTokenizer.swift` | 字句規則、MATCH 式、題名の正規化 |
 | `Sources/TsugumiApp/Core/LocalWikipedia/LocalWikipediaIndex.swift` | SQLite の読み (検索・記事・meta の検査・deflate 展開) |
-| `Sources/TsugumiApp/Core/LocalWikipedia/WikipediaToolExecutor.swift` | 2 つのツールの宣言と結果の文面 |
+| `Sources/TsugumiApp/Core/LocalWikipedia/WikipediaToolExecutor.swift` | 2 つのツールの宣言と結果の文面、Go の畳み込み、`wikipedia_lookup` の文面 |
+| `Sources/TsugumiApp/Core/LocalWikipedia/WikipediaMentionFinder.swift` | 質問文から候補の窓を切る (NLTokenizer)、link probability の閾値 |
+| `AppModel.run` → `startFirstRound(seeding:)` | 1 ラウンド目の前に `executor.lookup` を走らせ、当たりを継続ターンに積む |
 | `Sources/TsugumiApp/Core/LocalWikipedia/CompositeToolExecutor.swift` | Web と Wikipedia を 1 つの宣言にまとめる |
 | `Sources/TsugumiApp/Core/Resources/search-tool-prompts.json` | system prompt の穴埋め (web / wikipedia / both) |
 | `AppModel.makeToolExecutor` | キーと索引から実行器を組む。どちらも無ければエラー |

@@ -17,7 +17,7 @@ public struct WebSearchConfiguration: Codable, Equatable, Sendable {
     public var jinaAPIKey: String = ""
     /// Whether page reads go to Jina Reader first and fall back to the
     /// app's own fetch, or the other way round.
-    public var preferJinaReader: Bool = true
+    public var preferJinaReader: Bool = false
     public var maxSearchResults: Int = 8
     /// Characters of page text one `fetch_page` may hand the model.
     public var pageCharacterLimit: Int = 6_000
@@ -51,7 +51,7 @@ public struct WebSearchConfiguration: Codable, Equatable, Sendable {
         serperAPIKey = try container.decodeIfPresent(String.self, forKey: .serperAPIKey) ?? ""
         braveAPIKey = try container.decodeIfPresent(String.self, forKey: .braveAPIKey) ?? ""
         jinaAPIKey = try container.decodeIfPresent(String.self, forKey: .jinaAPIKey) ?? ""
-        preferJinaReader = try container.decodeIfPresent(Bool.self, forKey: .preferJinaReader) ?? true
+        preferJinaReader = try container.decodeIfPresent(Bool.self, forKey: .preferJinaReader) ?? false
         maxSearchResults = try container.decodeIfPresent(Int.self, forKey: .maxSearchResults) ?? 8
         pageCharacterLimit = try container.decodeIfPresent(Int.self, forKey: .pageCharacterLimit) ?? 6_000
         maxToolRounds = try container.decodeIfPresent(Int.self, forKey: .maxToolRounds) ?? 6

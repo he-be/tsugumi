@@ -80,6 +80,15 @@ public enum WikipediaTokenizer {
         return phrases.joined(separator: mode == .allTerms ? " AND " : " OR ")
     }
 
+    /// One phrase of every token of `text` — the MATCH expression that
+    /// counts the documents containing the string as written ("mac mini"
+    /// adjacent, not "mac" and "mini" anywhere). Nil when nothing indexes.
+    public static func phraseExpression(_ text: String) -> String? {
+        let tokens = tokenize(text)
+        guard !tokens.isEmpty else { return nil }
+        return "\"" + tokens.joined(separator: " ") + "\""
+    }
+
     /// The key the `titles` table is looked up by: NFKC, underscores to
     /// spaces, runs of whitespace collapsed, case-folded.
     public static func normalizeTitle(_ title: String) -> String {

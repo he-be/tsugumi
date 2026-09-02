@@ -15,9 +15,13 @@ public struct WebSearchToolExecutor: AppToolExecutor {
     let configuration: WebSearchConfiguration
     let searchProviders: [any WebSearchProvider]
     let pageReaders: [any WebPageReader]
+    /// When the results are fetched — stamped on each so the model reads
+    /// them as today's internet, not as undated text it must place in time.
+    let today: Date
 
     public init(configuration: WebSearchConfiguration,
-                transport: any HTTPTransport = URLSessionTransport()) {
+                transport: any HTTPTransport = URLSessionTransport(),
+                today: Date = Date()) {
         let resolved = configuration.resolved()
         var providers: [any WebSearchProvider] = []
         if !resolved.serperAPIKey.isEmpty {
@@ -34,15 +38,58 @@ public struct WebSearchToolExecutor: AppToolExecutor {
         let direct = DirectPageReader(transport: transport)
         self.init(configuration: resolved,
                   searchProviders: providers,
-                  pageReaders: resolved.preferJinaReader ? [jina, direct] : [direct, jina])
+                  pageReaders: resolved.preferJinaReader ? [jina, direct] : [direct, jina],
+                  today: today)
     }
 
     public init(configuration: WebSearchConfiguration,
                 searchProviders: [any WebSearchProvider],
-                pageReaders: [any WebPageReader]) {
+                pageReaders: [any WebPageReader],
+                today: Date = Date()) {
         self.configuration = configuration
         self.searchProviders = searchProviders
         self.pageReaders = pageReaders
+        self.today = today
+    }
+
+    /// "取得日 2026年9月2日" — the same calendar the system prompt uses.
+    var dateStamp: String { "取得日 " + WebSearchPrompt.japaneseDate(today) }
+
+    /// How many of the prompt's URLs are read before the first round.
+    public static let lookupURLLimit = 2
+
+    /// A URL in the prompt is a page the user wants read. Left to the
+    /// model, that reading is a decision it gets wrong: with a search's
+    /// snippets in hand it has been seen to conclude "I have enough
+    /// information, I don't need more tools" and describe a page it never
+    /// opened. So the app opens it first, as a `fetch_page` the transcript
+    /// shows already done. The result is what `fetch_page` would return,
+    /// errors included — an unreachable page is still worth telling.
+    public func lookups(prompt: String, callIDPrefix: String) async -> [AppToolLookup] {
+        var lookups: [AppToolLookup] = []
+        for (index, url) in Self.urls(in: prompt).prefix(Self.lookupURLLimit).enumerated() {
+            let result = await fetch(url)
+            let arguments = try? JSONSerialization.data(withJSONObject: ["url": url], options: [.withoutEscapingSlashes])
+            let call = AppToolCall(id: "\(callIDPrefix)\(index + 1)", name: Self.fetchToolName,
+                                   argumentsJSON: arguments.flatMap { String(data: $0, encoding: .utf8) } ?? "{}")
+            lookups.append(AppToolLookup(call: call, result: result, subject: url))
+        }
+        return lookups
+    }
+
+    /// The http(s) URLs written in `text`, in order, once each, trailing
+    /// punctuation a sentence puts after a link removed.
+    static func urls(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"https?://[^\s<>"'）」』]+"#) else { return [] }
+        var seen = Set<String>()
+        var urls: [String] = []
+        for match in regex.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+            guard let range = Range(match.range, in: text) else { continue }
+            var url = String(text[range])
+            while let last = url.last, ".,;:!?。、)]".contains(last) { url.removeLast() }
+            if seen.insert(url).inserted { urls.append(url) }
+        }
+        return urls
     }
 
     public var definitions: [AppToolDefinition] {
@@ -99,7 +146,7 @@ public struct WebSearchToolExecutor: AppToolExecutor {
         for provider in searchProviders {
             do {
                 let response = try await provider.search(query, count: configuration.maxSearchResults)
-                return AppToolResult(content: Self.render(response, query: query),
+                return AppToolResult(content: Self.render(response, query: query, dateStamp: dateStamp),
                                      summary: "\(response.provider) · \(response.hits.count) hits")
             } catch {
                 failures.append("\(provider.name): \(error)")
@@ -110,9 +157,9 @@ public struct WebSearchToolExecutor: AppToolExecutor {
                              isError: true, summary: failures.joined(separator: "; "))
     }
 
-    static func render(_ response: WebSearchResponse, query: String) -> String {
+    static func render(_ response: WebSearchResponse, query: String, dateStamp: String) -> String {
         var lines: [String] = []
-        lines.append("検索: \(query) (\(response.provider), \(response.hits.count) 件)")
+        lines.append("検索: \(query) (\(response.provider), \(response.hits.count) 件、\(dateStamp))")
         for highlight in response.highlights {
             lines.append("★ \(highlight)")
         }
@@ -148,24 +195,27 @@ public struct WebSearchToolExecutor: AppToolExecutor {
                     failures.append("\(reader.name): only \(page.text.count) characters")
                     continue
                 }
-                return Self.result(for: page, url: url, limit: configuration.pageCharacterLimit)
+                return Self.result(for: page, url: url, limit: configuration.pageCharacterLimit,
+                                   dateStamp: dateStamp)
             } catch {
                 failures.append("\(reader.name): \(error)")
             }
         }
         if let thin {
-            return Self.result(for: thin, url: url, limit: configuration.pageCharacterLimit)
+            return Self.result(for: thin, url: url, limit: configuration.pageCharacterLimit,
+                               dateStamp: dateStamp)
         }
         return AppToolResult(content: "error: could not read \(url.absoluteString) — "
                                 + failures.joined(separator: "; "),
                              isError: true, summary: failures.joined(separator: "; "))
     }
 
-    static func result(for page: WebPageText, url: URL, limit: Int) -> AppToolResult {
+    static func result(for page: WebPageText, url: URL, limit: Int, dateStamp: String) -> AppToolResult {
         let (clippedText, clipped) = HTMLTextExtractor.clip(page.text, to: limit)
         var lines: [String] = []
         if !page.title.isEmpty { lines.append("タイトル: \(page.title)") }
         lines.append("URL: \(url.absoluteString)")
+        lines.append(dateStamp)
         lines.append("")
         lines.append(clippedText)
         if clipped { lines.append("…(本文はここで打ち切り)") }
@@ -193,13 +243,19 @@ public struct WebSearchToolExecutor: AppToolExecutor {
 /// the fix is in `AppModel`: a round whose only job is to start the search
 /// does not open the thought channel.
 public enum WebSearchPrompt {
-    public static func system(date: Date = Date(), maxRounds: Int,
-                              mode: AppWebSearchMode,
-                              tools: AppToolPromptFacts = AppToolPromptFacts(web: true, wikipediaDate: nil)) -> String {
+    /// "2026年9月2日" in Japan's calendar day — the form the prompt, the
+    /// Wikipedia stamp and the web stamp all use, so the model sees one
+    /// date written one way.
+    public static func japaneseDate(_ date: Date, weekday: Bool = false) -> String {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "ja_JP")
         formatter.timeZone = TimeZone(identifier: "Asia/Tokyo")
-        formatter.dateFormat = "yyyy年M月d日 (EEE)"
+        formatter.dateFormat = weekday ? "yyyy年M月d日 (EEE)" : "yyyy年M月d日"
+        return formatter.string(from: date)
+    }
+
+    public static func system(date: Date = Date(), maxRounds: Int,
+                              tools: AppToolPromptFacts = AppToolPromptFacts(web: true, wikipediaDate: nil)) -> String {
         let web = tools.web || tools.wikipediaDate == nil
         let wikipedia = tools.wikipediaDate != nil
         let wikiDate = tools.wikipediaDate.flatMap { $0.isEmpty ? nil : $0 } ?? "不明な日付"
@@ -224,17 +280,14 @@ public enum WebSearchPrompt {
         }
         let choice = wikipedia && web ? snippet("both", "choice")
             : wikipedia ? snippet("wikipedia", "choice_alone") : ""
-        var text = template
-            .replacingOccurrences(of: "{today}", with: formatter.string(from: date))
+        let text = template
+            .replacingOccurrences(of: "{today}", with: japaneseDate(date, weekday: true))
             .replacingOccurrences(of: "{max_rounds}", with: String(maxRounds))
             .replacingOccurrences(of: "{tool_names}", with: names.joined(separator: "、"))
             .replacingOccurrences(of: "{tool_access}", with: access.joined(separator: "\n"))
             .replacingOccurrences(of: "{tool_choice}\n", with: choice.isEmpty ? "" : choice + "\n")
             .replacingOccurrences(of: "{tool_reading}", with: reading.joined(separator: "\n"))
             .replacingOccurrences(of: "{reference_format}", with: reference.joined(separator: "や"))
-        if mode == .always {
-            text += "\nこの会話では、まず必ず検索してから答えます。"
-        }
         return text
     }
 
@@ -277,14 +330,14 @@ public enum WebSearchPrompt {
         "web": [
             "names": "web_search と fetch_page (いまのインターネット)",
             "access": "web_search と fetch_page は、いまの実際のインターネットにアクセスします。",
-            "reading": "web_search の結果から有望な URL を選び、必要なら fetch_page で本文を読んでから答えます。",
+            "reading": "web_search の結果から有望な URL を選び、必要なら fetch_page で本文を読んでから答えます。質問に URL があれば、最初に fetch_page でその本文が添えられているので、それを読んで答えます。",
             "reference": "URL",
         ],
         "wikipedia": [
             "names": "wikipedia_search と wikipedia_page (この Mac に保存された日本語版 Wikipedia、{wiki_date} 時点)",
             "access": "wikipedia_search と wikipedia_page は、この Mac に保存された日本語版 Wikipedia の複製 ({wiki_date} 時点) を読みます。インターネットには接続しません。",
             "choice_alone": "刻々と変わることは Wikipedia にはないので、検索せずにその旨を答えます。",
-            "reading": "wikipedia_search の結果から記事を選び、wikipedia_page で本文を読んでから答えます。",
+            "reading": "wikipedia_search の結果から記事を選び、wikipedia_page で本文を読んでから答えます。最初に wikipedia_lookup として添えられた導入部は参考で、関係なければ無視して構いません。",
             "reference": "Wikipedia の記事名",
         ],
         "both": [
@@ -293,29 +346,32 @@ public enum WebSearchPrompt {
     ]
 }
 
-/// How the chat uses the web tools. Off declares nothing; Auto declares
-/// them and lets the model decide; Always forces the first round to be a
-/// search (the grammar pins a call) and then lets the model decide.
-public enum AppWebSearchMode: String, CaseIterable, Codable, Sendable, Identifiable {
-    case off
-    case auto
-    case always
+/// Whether a turn may leave this Mac. Offline declares only the local
+/// Wikipedia tools (nothing when no index is set); Online adds the web
+/// tools — queries to Serper or Brave, pages from their sites, thin ones
+/// through Jina Reader. The model decides when to call what in both.
+///
+/// One switch rather than the earlier Off / Auto / Always: what a user of
+/// a local model wants to know is whether anything is sent, and the
+/// forced first search (Always) was a workaround the app no longer needs
+/// now that it reads the prompt's URLs and Wikipedia names itself.
+public enum AppNetworkMode: String, CaseIterable, Codable, Sendable, Identifiable {
+    case offline
+    case online
 
     public var id: String { rawValue }
 
     public var label: String {
         switch self {
-        case .off: AppLocalization.string("Off")
-        case .auto: AppLocalization.string("Auto")
-        case .always: AppLocalization.string("Always")
+        case .offline: AppLocalization.string("Offline")
+        case .online: AppLocalization.string("Online")
         }
     }
 
     public var help: String {
         switch self {
-        case .off: AppLocalization.string("No search tools. The model answers from its weights.")
-        case .auto: AppLocalization.string("The model searches when it decides it needs to.")
-        case .always: AppLocalization.string("Every answer starts with a search.")
+        case .offline: AppLocalization.string("Nothing leaves this Mac. Wikipedia is read from the local index when one is set.")
+        case .online: AppLocalization.string("Search queries go to Serper or Brave; pages are fetched from their sites, thin ones through Jina Reader.")
         }
     }
 }

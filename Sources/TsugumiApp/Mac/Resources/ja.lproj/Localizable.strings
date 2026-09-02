@@ -143,3 +143,9 @@
 "Web search (%lld steps)" = "Web 検索 (%lld 手順)";
 "Web search is available with Gemma only." = "Web 検索は Gemma でのみ使えます。";
 "Write a prompt to begin." = "プロンプトを書いて始めましょう。";
+"Network" = "ネットワーク";
+"Offline" = "オフライン";
+"Online" = "オンライン";
+"Nothing leaves this Mac. Wikipedia is read from the local index when one is set." = "この Mac から何も送信しません。Wikipedia はローカルの索引があればそれを読みます。";
+"Search queries go to Serper or Brave; pages are fetched from their sites, thin ones through Jina Reader." = "検索クエリは Serper か Brave へ、ページは相手のサイトから取得します (薄いページは Jina Reader 経由)。";
+"Online needs a Serper or Brave API key. Add one in the Inspector, or switch to Offline." = "オンラインには Serper か Brave の API キーが要ります。Inspector で設定するか、オフラインに切り替えてください。";

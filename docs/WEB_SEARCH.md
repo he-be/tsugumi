@@ -19,6 +19,11 @@ Jina Reader → 自前 fetch のページ読みを、モデルの関数呼び出
   → Gemma が回答。最後に「参照:」で URL を列挙
 ```
 
+検索結果の 1 行目と本文の URL の次の行に「取得日 2026年9月2日」が入る。
+system prompt の日付と同じ暦・同じ書き方 (`WebSearchPrompt.japaneseDate`)。
+結果が自分で日付を名乗ることで、モデルが日付の無い文章を時間軸に置き直す
+手間 (§6 の「待てよ、今日は…」) を減らす。
+
 ツールループは**アプリ側** (`AppModel`) が回す。推論プロセス
 (`TsugumiDecodeService`) と `ServerModelSession` には手を入れておらず、HTTP
 サーバが pi などに使わせているのと同じ tool template・lazy grammar・
@@ -33,25 +38,51 @@ Jina Reader → 自前 fetch のページ読みを、モデルの関数呼び出
 | `continuation` | 同じ user ターンに続く assistant(tool_calls) と tool の各ターン |
 | 終端イベントの `toolCalls` | 生成が `toolCalls` で止まったときの呼び出し一覧 |
 
+**1 ラウンド目の前にアプリ自身が引くもの** (`AppToolExecutor.lookups`、
+`AppModel.startFirstRound(seeding:)`)。ラウンド数には数えず、トレースには普通の
+ステップとして出る。継続ターンには「assistant が呼んだ → tool が返した」の対として
+積まれるので、モデルにはすでに済んだ呼び出しに見える。
+
+- **質問中の URL を `fetch_page` で読む** (2 本まで、`WebSearchToolExecutor.lookups`)。
+  履歴で `https://localpc.horiemon.ai/ 何これ？` に対し、モデルは URL をそのまま
+  `web_search` に渡してスニペット 5 件を得た時点で「十分な情報がある、もうツールは
+  要らない」と考え、開いていないページを説明した (2026-09-02、thinking ON でも同じ)。
+  読むかどうかをモデルに決めさせる限り直らないので、アプリが先に読む。読めなかった
+  ときもエラーの結果を積む (届かない、という事実も答えの材料)。system prompt には
+  「添えられた本文を読んで答える」の一文がある。
+- **質問中の固有名詞を Wikipedia で引く** (`wikipedia_lookup`、docs/LOCAL_WIKIPEDIA.md §5)。
+
+Composite のときは宣言順 (Wikipedia → Web) にまとめ、呼び出し id は
+`lookup-<8桁>-<実行器番号>-<連番>`。
+
 1 ラウンド = 1 生成。ラウンドがツール呼び出しで終わると、アプリは呼び出しを順に
 実行し、assistant(tool_calls) ターンと tool ターンを `continuation` に積んで
 次の生成を始める。完了した会話は user → (assistant(tool_calls) → tool)* →
 assistant の順で履歴に畳まれ、次の送信でそのまま再描画される (prompt cache は
 継続ターンでも当たる — §4 の実測)。
 
-## 2. モード
+## 2. オフライン / オンライン
 
-コンポーザ左下の地球アイコン (Inspector の Web search セクションでも同じ):
+コンポーザ左下の地球アイコン (Inspector の Network セクションでも同じ)。
+ローカルモデルの使い手が知りたいのは「何かが外に出るか」なので、切り替えは
+この 1 つだけ (`AppNetworkMode`):
 
-| モード | 宣言 | 1 ラウンド目の `tool_choice` | 意味 |
-| --- | --- | --- | --- |
-| Off | なし | — | 従来どおり。テンプレートも plain のまま |
-| Auto | あり | `auto` | 検索するかはモデルの自己判断 |
-| Always | あり | `required` (2 ラウンド目以降 `auto`) | 文法が最初の呼び出しを固定するので、必ず一度は検索する |
+| | 宣言するツール | この Mac から出るもの |
+| --- | --- | --- |
+| Offline | ローカル Wikipedia の 2 つ (索引があれば。無ければ何も宣言しない = 従来の素のターン) | 何も出ない |
+| Online | 上に加えて `web_search` / `fetch_page`。Serper か Brave のキーが無ければエラー | 検索クエリ (モデルが書いたもの) が Serper/Brave へ。ページ取得は相手サイトへ。薄いページは Jina Reader へ URL が渡る |
+
+`tool_choice` はどちらも `auto` で、呼ぶかどうかはモデルの判断。以前の Always
+(1 ラウンド目を `required` で固定) は、URL と固有名詞をアプリが先に引くように
+なったので外した (§1)。Jina は既定で後回し (自前 fetch → 薄ければ Jina)。
+Jina に URL を渡したくなければ Inspector のスイッチはそのまま off で、それでも
+薄いページでは Jina に落ちる — Online は「なんでもあり」の側。完全に出さないのは
+Offline だけ。
 
 ラウンド上限 (既定 6) に達すると、次の生成はツールを引っ込めて
 (`tools: []`, `tool_choice: none`) 手持ちの情報で答えさせる。モデルごとの設定
-ファイル (`mac-app-settings-<model>.json`) の `webSearchMode` に保存。
+ファイル (`mac-app-settings-<model>.json`) の `networkMode` に保存。旧キー
+`webSearchMode` は off → offline、auto / always → online と読み替える。
 
 ## 3. キーと設定
 
@@ -65,7 +96,7 @@ Inspector の **Web search** セクションに入れる。保存先は
 | Serper API key | — | 最初に試す。無料枠 2,500 クエリ |
 | Brave Search API key | — | Serper が無い/失敗したときのフォールバック |
 | Jina Reader API key | 空 | 無くても動く (20 RPM)。あると 200 RPM |
-| Read pages with Jina Reader first | on | off にすると自前 fetch → Jina の順 |
+| Read pages with Jina Reader first | off | 自前 fetch → 薄ければ Jina の順。on にすると Jina が先 |
 | Page text limit | 6,000 字 | 1 回の fetch_page がモデルに渡す上限 |
 | Tool rounds per answer | 6 | 1 回答あたりのラウンド上限 |
 | Thinking before the first search | 512 tokens | Thinking ON のとき、最初の検索を決めるラウンドの思考予算。Off / 256 / 512 / 1024 / Unlimited (§6) |
@@ -141,8 +172,8 @@ Gemma 4 の既知の癖 (system prompt の未来日付を「シミュレーシ�
 | 段 | 何をしたか | 効き方 |
 | --- | --- | --- |
 | プロンプト | 矛盾そのものを解く: 日付が学習データより新しいのは学習が先に終わったから。ツールはいまのインターネットを見る。年無し日付の解釈規則 (9/1 → 直近の過去)。「最初の検索の前に 1〜2 文で決めて呼ぶ、本格的に考えるのは結果が返ってから」。否定形 (「シミュレーションではない」) は概念を呼び込むので書かない | 1,150 → 221 / 717 / 349 トークン。効くが再発する |
-| Always | 1 ラウンド目は文法が呼び出しを固定するので思考を開かない (`AppModel.firstRoundThinking`) | この経路では消える |
-| Auto | 結果がまだ無いラウンドだけ思考予算 (既定 512、RSN-4 の閉じタグ強制)。結果を読んでからのラウンドは無制限 | 上限が立つ。予算に達したラウンドは投機デコードが外れる (DEV-14) が、そのラウンドの出力は呼び出し 30 トークン程度なので代償は小さい |
+| Always (廃止) | 1 ラウンド目を `required` で固定して思考を開かなかった。URL と固有名詞をアプリが先に引くようになり外した (§2) | この経路では消えていた |
+| 通常 | 結果がまだ無いラウンドだけ思考予算 (既定 512、RSN-4 の閉じタグ強制)。結果を読んでからのラウンドは無制限 | 上限が立つ。予算に達したラウンドは投機デコードが外れる (DEV-14) が、そのラウンドの出力は呼び出し 30 トークン程度なので代償は小さい |
 
 実測 (M3 Pro, ctx 8K, temp 1.0, thinking ON, Auto):
 

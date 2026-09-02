@@ -109,6 +109,23 @@ public struct AppToolPromptFacts: Equatable, Sendable {
     }
 }
 
+/// A tool round the app ran on its own before the model's first round: the
+/// call as the transcript will show it and what it returned. The model
+/// reads it like any other tool result (the template draws a tool turn by
+/// its name; the name need not be declared).
+public struct AppToolLookup: Equatable, Sendable {
+    public var call: AppToolCall
+    public var result: AppToolResult
+    /// What the trace shows the step is about (the article names).
+    public var subject: String
+
+    public init(call: AppToolCall, result: AppToolResult, subject: String) {
+        self.call = call
+        self.result = result
+        self.subject = subject
+    }
+}
+
 /// Executes the tools the app declares. The model never runs anything; the
 /// app decides what each name means and what its result text is.
 public protocol AppToolExecutor: Sendable {
@@ -121,9 +138,15 @@ public protocol AppToolExecutor: Sendable {
     func execute(_ call: AppToolCall) async -> AppToolResult
     /// The one argument the trace shows for a call — the query, the URL.
     func subject(of call: AppToolCall) -> String
+    /// Results worth handing the model before it decides anything — the
+    /// pages the prompt links to, the Wikipedia openings of the things it
+    /// names. Call ids are `callIDPrefix` plus a number from 1. Empty when
+    /// there is nothing to add; then the first round starts as usual.
+    func lookups(prompt: String, callIDPrefix: String) async -> [AppToolLookup]
 }
 
 extension AppToolExecutor {
     public func subject(of call: AppToolCall) -> String { call.argumentsJSON }
+    public func lookups(prompt: String, callIDPrefix: String) async -> [AppToolLookup] { [] }
     public var promptFacts: AppToolPromptFacts { AppToolPromptFacts(web: true, wikipediaDate: nil) }
 }

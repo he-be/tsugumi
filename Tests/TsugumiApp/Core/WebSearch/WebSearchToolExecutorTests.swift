@@ -63,7 +63,45 @@ final class StubTransport: HTTPTransport, @unchecked Sendable {
         configuration.braveAPIKey = brave
         configuration.preferJinaReader = preferJina
         configuration.pageCharacterLimit = 500
-        return WebSearchToolExecutor(configuration: configuration, transport: transport)
+        return WebSearchToolExecutor(configuration: configuration, transport: transport,
+                                     today: Self.fixedDay)
+    }
+
+    /// 2026-09-02 in Japan (the day the fixtures were written).
+    static var fixedDay: Date {
+        var components = DateComponents()
+        components.year = 2026; components.month = 9; components.day = 2; components.hour = 12
+        components.timeZone = TimeZone(identifier: "Asia/Tokyo")
+        return Calendar(identifier: .gregorian).date(from: components)!
+    }
+
+    @Test func urlsInThePromptAreFetchedBeforeTheFirstRound() async throws {
+        // Long enough not to count as a thin page (which would try the direct reader too).
+        let body = "事前登録フォーム。FAQ が 11 個。" + String(repeating: "画面写真はイメージです。", count: 20)
+        let jina = Data(#"{"data":{"title":"ホリエモンAIローカルPC","content":"\#(body)"}}"#.utf8)
+        let transport = StubTransport([
+            "r.jina.ai": [.init(status: 200, body: jina), .init(status: 200, body: jina)],
+        ])
+        let executor = executor(transport: transport)
+        let lookups = await executor.lookups(
+            prompt: "https://localpc.horiemon.ai/ 何これ？ https://example.jp/a）も見て。 https://localpc.horiemon.ai/",
+            callIDPrefix: "lookup-")
+        // Two distinct URLs, once each, the closing bracket not part of the second.
+        #expect(lookups.map(\.call) == [
+            AppToolCall(id: "lookup-1", name: "fetch_page", argumentsJSON: #"{"url":"https://localpc.horiemon.ai/"}"#),
+            AppToolCall(id: "lookup-2", name: "fetch_page", argumentsJSON: #"{"url":"https://example.jp/a"}"#),
+        ])
+        #expect(lookups.map(\.subject) == ["https://localpc.horiemon.ai/", "https://example.jp/a"])
+        #expect(lookups[0].result.content.hasPrefix("タイトル: ホリエモンAIローカルPC\nURL: https://localpc.horiemon.ai/\n取得日 2026年9月2日\n\n事前登録フォーム。"))
+        #expect(!lookups[0].result.isError)
+        #expect(transport.requests.map { $0.url?.absoluteString } == [
+            "https://r.jina.ai/https://localpc.horiemon.ai/", "https://r.jina.ai/https://example.jp/a"])
+        // No URL, nothing to seed; a private address is refused as a result, not silently.
+        #expect(await executor.lookups(prompt: "東京の天気", callIDPrefix: "lookup-").isEmpty)
+        let refused = await executor.lookups(prompt: "http://192.168.0.1/admin を見て", callIDPrefix: "lookup-")
+        #expect(refused.count == 1 && refused[0].result.isError)
+        #expect(WebSearchToolExecutor.urls(in: "見て https://a.jp/x. そして「https://b.jp/y」。") == ["https://a.jp/x", "https://b.jp/y"])
+        #expect(WebSearchToolExecutor.urls(in: "ftp://a.jp/x や a.jp").isEmpty)
     }
 
     @Test func serperResultsRenderAsANumberedListWithHighlights() async throws {
@@ -74,7 +112,7 @@ final class StubTransport: HTTPTransport, @unchecked Sendable {
             AppToolCall(id: "c1", name: "web_search", argumentsJSON: #"{"query":"東京 人口"}"#))
         #expect(!result.isError)
         #expect(result.summary == "Serper · 2 hits")
-        #expect(result.content.hasPrefix("検索: 東京 人口 (Serper, 2 件)"))
+        #expect(result.content.hasPrefix("検索: 東京 人口 (Serper, 2 件、取得日 2026年9月2日)"))
         #expect(result.content.contains("★ 東京の人口: 約1,400万人"))
         #expect(result.content.contains("[1] 東京都の人口\n    https://example.jp/tokyo\n    2026-08-01 東京都の推計人口は…"))
         #expect(result.content.contains("[2] 統計局"))
@@ -140,7 +178,7 @@ final class StubTransport: HTTPTransport, @unchecked Sendable {
         let result = await executor(transport: transport).execute(
             AppToolCall(id: "c2", name: "fetch_page", argumentsJSON: #"{"url":"https://example.jp/tokyo"}"#))
         #expect(!result.isError)
-        #expect(result.content.hasPrefix("タイトル: 記事\nURL: https://example.jp/tokyo\n\n本文の一行。"))
+        #expect(result.content.hasPrefix("タイトル: 記事\nURL: https://example.jp/tokyo\n取得日 2026年9月2日\n\n本文の一行。"))
         #expect(result.content.hasSuffix("…(本文はここで打ち切り)"))
         #expect(result.content.count < 700)
         #expect(result.summary.hasPrefix("Jina Reader · "))
@@ -212,16 +250,14 @@ final class StubTransport: HTTPTransport, @unchecked Sendable {
         }
     }
 
-    @Test func systemPromptNamesTheDateAndTheAlwaysRule() {
+    @Test func systemPromptNamesTheDateAndTheRoundBudget() {
         let date = Calendar(identifier: .gregorian).date(
             from: DateComponents(timeZone: TimeZone(identifier: "Asia/Tokyo"),
                                  year: 2026, month: 9, day: 2))!
-        let auto = WebSearchPrompt.system(date: date, maxRounds: 6, mode: .auto)
-        #expect(auto.contains("2026年9月2日"))
-        #expect(auto.contains("6 回まで"))
-        #expect(!auto.contains("まず必ず"))
-        let always = WebSearchPrompt.system(date: date, maxRounds: 6, mode: .always)
-        #expect(always.contains("まず必ず検索してから"))
+        let text = WebSearchPrompt.system(date: date, maxRounds: 6)
+        #expect(text.contains("2026年9月2日"))
+        #expect(text.contains("6 回まで"))
+        #expect(text.contains("添えられた本文を読んで答えます"))
     }
 
     @Test func configurationRoundTripsAndAppliesTheEnvironment() throws {

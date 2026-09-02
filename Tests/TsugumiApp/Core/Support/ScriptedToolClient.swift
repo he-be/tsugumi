@@ -98,10 +98,26 @@ final class ScriptedToolExecutor: AppToolExecutor, @unchecked Sendable {
     private let results: [String: AppToolResult]
     private let seen = Mutex<[AppToolCall]>([])
     let delayNanos: UInt64
+    /// What `lookups` hands the app before the first round (call ids are
+    /// renumbered under the prefix the app asks for); empty for nothing.
+    let seeds: [AppToolLookup]
+    private let lookedUp = Mutex<[String]>([])
 
-    init(results: [String: AppToolResult], delayNanos: UInt64 = 0) {
+    init(results: [String: AppToolResult], delayNanos: UInt64 = 0, seeds: [AppToolLookup] = []) {
         self.results = results
         self.delayNanos = delayNanos
+        self.seeds = seeds
+    }
+
+    var lookups: [String] { lookedUp.withLock { $0 } }
+
+    func lookups(prompt: String, callIDPrefix: String) async -> [AppToolLookup] {
+        lookedUp.withLock { $0.append(prompt) }
+        return seeds.enumerated().map { index, seed in
+            var seed = seed
+            seed.call.id = "\(callIDPrefix)\(index + 1)"
+            return seed
+        }
     }
 
     var calls: [AppToolCall] { seen.withLock { $0 } }

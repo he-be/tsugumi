@@ -19,44 +19,24 @@ import Testing
     }
 
     @MainActor
-    @Test func autoDeclaresTheToolsAndAlwaysForcesTheFirstCall() throws {
+    @Test func onlineDeclaresTheToolsAndLeavesTheChoiceToTheModel() throws {
         let model = readyModel(client: ScriptedToolClient([]), executor: ScriptedToolExecutor(results: [:]))
         model.promptText = "hi"
-        model.webSearchMode = .auto
-        let auto = try model.makeRequest()
-        #expect(auto.tools.map(\.name) == ["web_search", "fetch_page"])
-        #expect(auto.toolChoice == .auto)
-        #expect(auto.systemPrompt?.contains("web_search") == true)
-        model.webSearchMode = .always
-        #expect(try model.makeRequest().toolChoice == .required)
-    }
-
-    @MainActor
-    @Test func alwaysSkipsThinkingOnTheForcedRoundOnly() async throws {
-        let client = ScriptedToolClient([.calls([searchCall]), .answer("ok")])
-        let executor = ScriptedToolExecutor(results: [
-            "call-1": AppToolResult(content: "r", summary: "s"),
-        ])
-        let model = readyModel(client: client, executor: executor)
-        model.thinkingEnabled = true
-        model.webSearchMode = .always
-        model.promptText = "q"
-        #expect(try !model.makeRequest().enableThinking)
-        model.run()
-        await waitForIdle(model)
-        #expect(client.requests.count == 2)
-        #expect(!client.requests[0].enableThinking)
-        #expect(client.requests[1].enableThinking)
-        model.webSearchMode = .auto
-        model.promptText = "q2"
-        #expect(try model.makeRequest().enableThinking)
+        model.networkMode = .online
+        let online = try model.makeRequest()
+        #expect(online.tools.map(\.name) == ["web_search", "fetch_page"])
+        #expect(online.toolChoice == .auto)
+        #expect(online.systemPrompt?.contains("web_search") == true)
+        // Offline the provider has nothing to declare here (no index in this test).
+        model.networkMode = .offline
+        #expect(try model.makeRequest().tools.isEmpty)
     }
 
     @MainActor
     @Test func runRefusesWithoutAKey() {
         let model = readyModel(client: ScriptedToolClient([]), executor: ScriptedToolExecutor(results: [:]))
         model.webSearchConfiguration = WebSearchConfiguration()
-        model.webSearchMode = .auto
+        model.networkMode = .online
         model.promptText = "hi"
         model.run()
         #expect(!model.isRunning)
@@ -76,7 +56,7 @@ import Testing
             "call-2": AppToolResult(content: "URL: https://example.jp/w\n\n晴れ", summary: "Jina Reader · 2 chars"),
         ])
         let model = readyModel(client: client, executor: executor)
-        model.webSearchMode = .auto
+        model.networkMode = .online
         model.promptText = "東京の天気は?"
         model.run()
         await waitForIdle(model)
@@ -110,7 +90,7 @@ import Testing
         // The next run folds question, rounds, answer into history in order
         // (the new turn itself stays live until the run after it).
         model.promptText = "ありがとう"
-        model.webSearchMode = .off
+        model.networkMode = .offline
         model.run()
         await waitForIdle(model)
         let roles = model.conversationTurns.map(\.role)
@@ -126,6 +106,74 @@ import Testing
     }
 
     @MainActor
+    @Test func theAppsOwnLookupSeedsTheFirstRound() async throws {
+        let seeds = [
+            AppToolLookup(
+                call: AppToolCall(id: "x", name: "fetch_page", argumentsJSON: #"{"url":"https://example.jp/yodo"}"#),
+                result: AppToolResult(content: "URL: https://example.jp/yodo\n\n淀城の遺構が…", summary: "Jina Reader · 9 chars"),
+                subject: "https://example.jp/yodo"),
+            AppToolLookup(
+                call: AppToolCall(id: "y", name: "wikipedia_lookup", argumentsJSON: #"{"titles":["淀城"]}"#),
+                result: AppToolResult(content: "参考: …\n\n■ 淀城\n淀城は…", summary: "Wikipedia · 1 件"),
+                subject: "淀城"),
+        ]
+        let client = ScriptedToolClient([.answer("本当です。\n参照: 淀城"), .answer("はい")])
+        let executor = ScriptedToolExecutor(results: [:], seeds: seeds)
+        let model = readyModel(client: client, executor: executor)
+        model.networkMode = .online
+        model.promptText = "淀城の遺構が見つかったって本当？"
+        model.run()
+        await waitForIdle(model)
+
+        #expect(model.error == nil)
+        #expect(executor.lookups == ["淀城の遺構が見つかったって本当？"])
+        #expect(executor.calls.isEmpty)
+        // The one generation already carries the lookup as a finished round.
+        #expect(client.requests.count == 1)
+        let first = try #require(client.requests.first)
+        // One assistant turn carrying both calls, then a result per call.
+        try #require(first.continuation.count == 3)
+        #expect(first.continuation[0].role == .assistant)
+        #expect(first.continuation[0].toolCalls.map(\.name) == ["fetch_page", "wikipedia_lookup"])
+        let ids = first.continuation[0].toolCalls.map(\.id)
+        #expect(ids.allSatisfy { $0.hasPrefix("lookup-") } && ids[0] != ids[1])
+        #expect(first.continuation[1].role == .tool && first.continuation[1].toolCallID == ids[0])
+        #expect(first.continuation[1].text.contains("淀城の遺構が"))
+        #expect(first.continuation[2].role == .tool && first.continuation[2].toolCallID == ids[1])
+        #expect(first.continuation[2].text.contains("■ 淀城"))
+        // The seed is not a round: the model's first call is still its own choice.
+        #expect(first.toolChoice == .auto)
+        #expect(model.outputToolTrace.map(\.subject) == ["https://example.jp/yodo", "淀城"])
+        #expect(model.outputToolTrace.allSatisfy { $0.status == .done })
+        #expect(model.outputToolTrace.map(\.summary) == ["Jina Reader · 9 chars", "Wikipedia · 1 件"])
+        #expect(model.outputResponsePlainText.contains("本当です"))
+
+        // The lookup folds into history with the rest of the turn.
+        model.promptText = "次"
+        model.run()
+        await waitForIdle(model)
+        try #require(client.requests.count == 2)
+        let history = client.requests[1].history
+        #expect(history.map(\.role) == [.user, .assistant, .tool, .tool, .assistant])
+        #expect(history.dropFirst().first?.toolCalls.map(\.name) == ["fetch_page", "wikipedia_lookup"])
+    }
+
+    @MainActor
+    @Test func nothingToLookUpStartsTheFirstRoundBare() async throws {
+        let client = ScriptedToolClient([.answer("ok")])
+        let executor = ScriptedToolExecutor(results: [:])
+        let model = readyModel(client: client, executor: executor)
+        model.networkMode = .online
+        model.promptText = "hi"
+        model.run()
+        await waitForIdle(model)
+        #expect(executor.lookups == ["hi"])
+        #expect(client.requests.count == 1)
+        #expect(client.requests[0].continuation.isEmpty)
+        #expect(model.outputToolTrace.isEmpty)
+    }
+
+    @MainActor
     @Test func exhaustedRoundsWithdrawTheTools() async throws {
         let calls = (1...3).map {
             AppToolCall(id: "c\($0)", name: "web_search", argumentsJSON: #"{"query":"q\#($0)"}"#)
@@ -137,13 +185,13 @@ import Testing
             uniqueKeysWithValues: calls.map { ($0.id, AppToolResult(content: "r", summary: "s")) }))
         let model = readyModel(client: client, executor: executor)
         model.webSearchConfiguration.maxToolRounds = 2
-        model.webSearchMode = .always
+        model.networkMode = .online
         model.promptText = "q"
         model.run()
         await waitForIdle(model)
 
         #expect(client.requests.count == 4)
-        #expect(client.requests[0].toolChoice == .required)
+        #expect(client.requests[0].toolChoice == .auto)
         #expect(client.requests[1].toolChoice == .auto)
         // Two rounds used: the third request withdraws the tools.
         #expect(client.requests[2].tools.isEmpty)
@@ -163,7 +211,7 @@ import Testing
                                     summary: "Serper: HTTP 429"),
         ])
         let model = readyModel(client: client, executor: executor)
-        model.webSearchMode = .auto
+        model.networkMode = .online
         model.promptText = "q"
         model.run()
         await waitForIdle(model)
@@ -180,10 +228,12 @@ import Testing
             results: ["call-1": AppToolResult(content: "r", summary: "s")],
             delayNanos: 300_000_000)
         let model = readyModel(client: client, executor: executor)
-        model.webSearchMode = .auto
+        model.networkMode = .online
         model.promptText = "q"
         model.run()
-        for _ in 0..<200 where model.phase != .tools {
+        // The app's own lookup is a tools phase too, before any generation;
+        // the one to cancel in is the model's, after its first round.
+        for _ in 0..<200 where !(model.phase == .tools && client.requests.count == 1) {
             try? await Task.sleep(nanoseconds: 5_000_000)
         }
         #expect(model.phase == .tools)
@@ -204,17 +254,17 @@ import Testing
         let model = readyModel(client: ScriptedToolClient([]), executor: ScriptedToolExecutor(results: [:]))
         model.selectModel(.ornith)
         model.modelPathText = FileManager.default.temporaryDirectory.path
-        model.webSearchMode = .always
+        model.networkMode = .online
         model.promptText = "q"
-        #expect(!model.webSearchAvailable)
-        #expect(model.effectiveWebSearchMode == .off)
+        #expect(!model.toolsAvailable)
+        #expect(model.effectiveNetworkMode == .offline)
         #expect(try model.makeRequest().tools.isEmpty)
     }
 
     @MainActor
     private func readyModel(client: any AppInferenceClient,
                             executor: ScriptedToolExecutor) -> AppModel {
-        let model = AppModel(client: client, toolExecutorProvider: { _ in executor })
+        let model = AppModel(client: client, toolExecutorProvider: { _, mode in mode == .online ? executor : nil })
         model.modelPathText = FileManager.default.temporaryDirectory.path
         model.loadState = .ready(modelDirectory: FileManager.default.temporaryDirectory, loadSeconds: 1)
         var configuration = WebSearchConfiguration()
@@ -232,16 +282,15 @@ import Testing
 }
 
 @Suite struct AppModelFirstRoundThinkingTests {
-    @Test func offAndThinkingOffAreUntouched() {
-        #expect(AppModel.firstRoundThinking(mode: .off, thinking: true, budget: 512) == (true, -1))
-        #expect(AppModel.firstRoundThinking(mode: .auto, thinking: false, budget: 512) == (false, -1))
+    @Test func noToolsAndThinkingOffAreUntouched() {
+        #expect(AppModel.firstRoundThinking(tools: false, thinking: true, budget: 512) == (true, -1))
+        #expect(AppModel.firstRoundThinking(tools: true, thinking: false, budget: 512) == (false, -1))
     }
 
-    @Test func autoBoundsTheFirstRoundAndAlwaysClosesIt() {
-        #expect(AppModel.firstRoundThinking(mode: .auto, thinking: true, budget: 512) == (true, 512))
-        #expect(AppModel.firstRoundThinking(mode: .auto, thinking: true, budget: 0) == (false, -1))
-        #expect(AppModel.firstRoundThinking(mode: .auto, thinking: true, budget: -1) == (true, -1))
-        #expect(AppModel.firstRoundThinking(mode: .always, thinking: true, budget: 512) == (false, -1))
+    @Test func toolsBoundTheFirstRound() {
+        #expect(AppModel.firstRoundThinking(tools: true, thinking: true, budget: 512) == (true, 512))
+        #expect(AppModel.firstRoundThinking(tools: true, thinking: true, budget: 0) == (false, -1))
+        #expect(AppModel.firstRoundThinking(tools: true, thinking: true, budget: -1) == (true, -1))
     }
 
     @MainActor
@@ -249,13 +298,13 @@ import Testing
         let call = AppToolCall(id: "c1", name: "web_search", argumentsJSON: #"{"query":"q"}"#)
         let client = ScriptedToolClient([.calls([call]), .answer("ok")])
         let executor = ScriptedToolExecutor(results: ["c1": AppToolResult(content: "r", summary: "s")])
-        let model = AppModel(client: client, toolExecutorProvider: { _ in executor })
+        let model = AppModel(client: client, toolExecutorProvider: { _, mode in mode == .online ? executor : nil })
         model.modelPathText = FileManager.default.temporaryDirectory.path
         model.loadState = .ready(modelDirectory: FileManager.default.temporaryDirectory, loadSeconds: 1)
         model.webSearchConfiguration.serperAPIKey = "k"
         model.webSearchConfiguration.preSearchThinkingBudget = 300
         model.thinkingEnabled = true
-        model.webSearchMode = .auto
+        model.networkMode = .online
         model.promptText = "q"
         model.run()
         for _ in 0..<400 where model.isRunning { try? await Task.sleep(nanoseconds: 5_000_000) }

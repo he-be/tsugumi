@@ -32,10 +32,10 @@ public final class AppModel {
     public var topPEnabled: Bool = true
     public var topP: Double = 0.95
     public var thinkingEnabled: Bool = false
-    /// How the chat uses the web tools. Only Gemma declares them
-    /// (`webSearchAvailable`); for another model the mode is kept but
-    /// ignored.
-    public var webSearchMode: AppWebSearchMode = .off
+    /// Whether a turn may leave this Mac (`AppNetworkMode`). Only Gemma
+    /// declares tools (`toolsAvailable`); for another model the switch is
+    /// kept but ignored.
+    public var networkMode: AppNetworkMode = .offline
     /// Keys and limits for the web tools, one file for the app. Edited in
     /// the Inspector; `saveWebSearchConfiguration` writes it back.
     public var webSearchConfiguration: WebSearchConfiguration
@@ -78,10 +78,10 @@ public final class AppModel {
     /// The tool loop of the running turn: which executor answers the calls,
     /// the calls the current round has asked for so far, how many rounds
     /// have run, and the task executing the calls between rounds.
-    private let toolExecutorProvider: (WebSearchConfiguration) throws -> any AppToolExecutor
+    private let toolExecutorProvider: (WebSearchConfiguration, AppNetworkMode) throws -> (any AppToolExecutor)?
     private let webSearchConfigurationURL: URL?
     private var activeToolExecutor: (any AppToolExecutor)?
-    private var activeWebSearchMode: AppWebSearchMode = .off
+    private var activeNetworkMode: AppNetworkMode = .offline
     private var activeSystemPrompt: String?
     private var pendingToolCalls: [AppToolCall] = []
     private var toolRoundsUsed = 0
@@ -104,7 +104,7 @@ public final class AppModel {
                 settingsPersistenceEnabled: Bool = false,
                 chatStore: AppChatStore? = nil,
                 webSearchConfigurationURL: URL? = nil,
-                toolExecutorProvider: ((WebSearchConfiguration) throws -> any AppToolExecutor)? = nil) {
+                toolExecutorProvider: ((WebSearchConfiguration, AppNetworkMode) throws -> (any AppToolExecutor)?)? = nil) {
         self.chatStore = chatStore
         let configurationURL = webSearchConfigurationURL
             ?? (settingsPersistenceEnabled ? WebSearchConfigurationStore.defaultFileURL : nil)
@@ -112,7 +112,7 @@ public final class AppModel {
         self.webSearchConfiguration = configurationURL.map { WebSearchConfigurationStore.load(from: $0) }
             ?? WebSearchConfiguration()
         self.toolExecutorProvider = toolExecutorProvider
-            ?? { try Self.makeToolExecutor(configuration: $0) }
+            ?? { try Self.makeToolExecutor(configuration: $0, mode: $1) }
         if let persisted = chatStore?.load(), !persisted.chats.isEmpty {
             let sessions = persisted.chats.map { $0.makeSession() }
             self.chats = sessions
@@ -150,7 +150,7 @@ public final class AppModel {
         self.topPEnabled = settings.topPEnabled
         self.topP = settings.topP
         self.thinkingEnabled = settings.thinkingEnabled
-        self.webSearchMode = settings.webSearchMode
+        self.networkMode = settings.networkMode
         self.newlineShortcut = settings.newlineShortcut
         self.sentPromptBehavior = settings.sentPromptBehavior
         let provider: (AppModelKind) -> any AppModelInstallerClient
@@ -856,7 +856,7 @@ public final class AppModel {
         topPEnabled = settings.topPEnabled
         topP = settings.topP
         thinkingEnabled = settings.thinkingEnabled
-        webSearchMode = settings.webSearchMode
+        networkMode = settings.networkMode
         newlineShortcut = settings.newlineShortcut
         sentPromptBehavior = settings.sentPromptBehavior
     }
@@ -876,7 +876,7 @@ public final class AppModel {
             thinkingEnabled: thinkingEnabled,
             newlineShortcut: newlineShortcut,
             sentPromptBehavior: sentPromptBehavior,
-            webSearchMode: webSearchMode)
+            networkMode: networkMode)
         let modelDirectory = URL(fileURLWithPath: modelPathText, isDirectory: true)
         try? MacAppSettingsFileStore.save(
             settings,
@@ -999,24 +999,19 @@ public final class AppModel {
         guard canRun else { return }
         let chat = selectedChat
         foldCompletedTurnIntoHistory(of: chat)
-        let mode = effectiveWebSearchMode
-        var executor: (any AppToolExecutor)?
+        let mode = effectiveNetworkMode
+        let executor: (any AppToolExecutor)?
         let systemPrompt: String?
         let request: AppGenerationRequest
-        if mode != .off {
-            guard webSearchConfiguration.resolved().canUseTools else {
-                error = .invalidRequest(
-                    AppLocalization.string("Web search needs a Serper or Brave API key, or a local Wikipedia index. Add one in the Inspector, or turn Web search off."))
-                return
-            }
+        if mode == .online, !webSearchConfiguration.resolved().canSearch {
+            error = .invalidRequest(
+                AppLocalization.string("Online needs a Serper or Brave API key. Add one in the Inspector, or switch to Offline."))
+            return
         }
         do {
-            if mode != .off {
-                executor = try toolExecutorProvider(webSearchConfiguration)
-            }
-            systemPrompt = executor.map { makeSystemPrompt(for: $0, mode: mode) }
-            request = try makeFirstRoundRequest(mode: mode, executor: executor,
-                                                systemPrompt: systemPrompt)
+            executor = toolsAvailable ? try toolExecutorProvider(webSearchConfiguration, mode) : nil
+            systemPrompt = executor.map { makeSystemPrompt(for: $0) }
+            request = try makeFirstRoundRequest(executor: executor, systemPrompt: systemPrompt)
         } catch let appError as AppInferenceError {
             error = appError
             return
@@ -1039,7 +1034,7 @@ public final class AppModel {
         diagnostics = nil
         error = nil
         activeToolExecutor = executor
-        activeWebSearchMode = mode
+        activeNetworkMode = mode
         activeSystemPrompt = systemPrompt
         pendingToolCalls = []
         toolRoundsUsed = 0
@@ -1060,7 +1055,53 @@ public final class AppModel {
         // The fold and the prompt snapshot are worth surviving a crash even
         // if the answer never lands.
         persistChatsNow()
-        startRound(request)
+        guard let executor else {
+            startRound(request)
+            return
+        }
+        // Before the model's first round the app looks the prompt up itself
+        // (the Wikipedia openings of what it names). The wait is a few
+        // SQLite queries, on `toolTask` like any tool so `cancel` can stop it.
+        phase = .tools
+        let prompt = request.prompt
+        let callIDPrefix = "lookup-" + UUID().uuidString.lowercased().prefix(8) + "-"
+        toolTask = Task { [weak self] in
+            let lookups = await executor.lookups(prompt: prompt, callIDPrefix: callIDPrefix)
+            guard let self, !Task.isCancelled else { return }
+            self.startFirstRound(seeding: lookups, in: chat)
+        }
+    }
+
+    /// The first generation of a tool-loop turn, after the app's own
+    /// lookups: with something found, the transcript starts with those
+    /// calls (one assistant turn, as a model's round would be) and their
+    /// results; without, as if no lookup had run.
+    private func startFirstRound(seeding lookups: [AppToolLookup], in chat: AppChatSession) {
+        toolTask = nil
+        guard runState == .running, !isCancellationPending else { return }
+        if !lookups.isEmpty {
+            chat.outputContinuationTurns.append(
+                AppChatTurn(role: .assistant, text: "", toolCalls: lookups.map(\.call)))
+            for lookup in lookups {
+                chat.outputContinuationTurns.append(
+                    .toolResult(callID: lookup.call.id, name: lookup.call.name, content: lookup.result.content))
+                chat.outputToolTrace.append(AppToolTraceEntry(
+                    id: lookup.call.id, name: lookup.call.name, subject: lookup.subject,
+                    status: lookup.result.isError ? .failed : .done, summary: lookup.result.summary))
+            }
+            persistChatsNow()
+        }
+        do {
+            let request = try makeFirstRoundRequest(
+                executor: activeToolExecutor,
+                systemPrompt: activeSystemPrompt,
+                continuation: chat.outputContinuationTurns,
+                prompt: chat.outputPromptText, imagePaths: chat.outputImagePaths,
+                history: chat.conversationTurns)
+            startRound(request)
+        } catch {
+            finishWithError(error as? AppInferenceError ?? .unknown("\(error)"))
+        }
     }
 
     /// One generation of the running turn. A plain turn has exactly one; a
@@ -1191,10 +1232,11 @@ public final class AppModel {
 
     /// Only Gemma declares the web tools for now; its tool template, grammar
     /// and call parser are the ones the server path has exercised.
-    public var webSearchAvailable: Bool { selectedModelKind == .gemmaQATSym }
+    /// Tools are a Gemma affair; Ornith declares none whatever the switch.
+    public var toolsAvailable: Bool { selectedModelKind == .gemmaQATSym }
 
-    public var effectiveWebSearchMode: AppWebSearchMode {
-        webSearchAvailable ? webSearchMode : .off
+    public var effectiveNetworkMode: AppNetworkMode {
+        toolsAvailable ? networkMode : .offline
     }
 
     public func saveWebSearchConfiguration() {
@@ -1202,14 +1244,19 @@ public final class AppModel {
         try? WebSearchConfigurationStore.save(webSearchConfiguration, to: webSearchConfigurationURL)
     }
 
-    /// The executor a turn declares: the web tools when a key is set, the
-    /// local Wikipedia tools when an index is set, both together when both
-    /// are. Nothing to declare is an error the user can act on — the
-    /// Inspector names both ways to fix it.
+    /// The executor a turn declares. Offline: the local Wikipedia tools when
+    /// an index is set, nothing otherwise (a plain turn). Online: those plus
+    /// the web tools, which need a search key — going online without one
+    /// is an error the user can act on, the Inspector names both ways out.
     nonisolated static func makeToolExecutor(configuration: WebSearchConfiguration,
+                                             mode: AppNetworkMode,
                                              transport: any HTTPTransport = URLSessionTransport()) throws
-        -> any AppToolExecutor {
+        -> (any AppToolExecutor)? {
         let resolved = configuration.resolved()
+        if mode == .online, !resolved.canSearch {
+            throw AppInferenceError.invalidRequest(
+                AppLocalization.string("Online needs a Serper or Brave API key. Add one in the Inspector, or switch to Offline."))
+        }
         var executors: [any AppToolExecutor] = []
         if let url = resolved.wikipediaIndexURL {
             do {
@@ -1222,56 +1269,57 @@ public final class AppModel {
                     AppLocalization.string("The local Wikipedia index at \(url.path) cannot be used: \(String(describing: error)). Fix the path in the Inspector, or clear it."))
             }
         }
-        if resolved.canSearch {
+        if mode == .online {
             executors.append(WebSearchToolExecutor(configuration: resolved, transport: transport))
         }
-        guard !executors.isEmpty else {
-            throw AppInferenceError.invalidRequest(
-                AppLocalization.string("Web search needs a Serper or Brave API key, or a local Wikipedia index. Add one in the Inspector, or turn Web search off."))
-        }
+        guard !executors.isEmpty else { return nil }
         return executors.count == 1 ? executors[0] : CompositeToolExecutor(executors)
     }
 
-    private func makeSystemPrompt(for executor: any AppToolExecutor, mode: AppWebSearchMode) -> String {
+    private func makeSystemPrompt(for executor: any AppToolExecutor) -> String {
         WebSearchPrompt.system(maxRounds: webSearchConfiguration.resolved().maxToolRounds,
-                               mode: mode, tools: executor.promptFacts)
+                               tools: executor.promptFacts)
     }
 
     /// The request the next `run` would send for the current mode: the tools
-    /// and system prompt when web search is on, nothing extra when it is off.
+    /// and system prompt when any are declared, nothing extra otherwise.
     public func makeRequest() throws -> AppGenerationRequest {
-        let mode = effectiveWebSearchMode
-        let executor = mode == .off ? nil : try toolExecutorProvider(webSearchConfiguration)
+        let executor = toolsAvailable ? try toolExecutorProvider(webSearchConfiguration, effectiveNetworkMode) : nil
         return try makeFirstRoundRequest(
-            mode: mode, executor: executor,
-            systemPrompt: executor.map { makeSystemPrompt(for: $0, mode: mode) })
+            executor: executor,
+            systemPrompt: executor.map { makeSystemPrompt(for: $0) })
     }
 
     /// The round that has no results yet. The thought channel is where
     /// Gemma 4 argues with the date instead of searching (`WebSearchPrompt`),
     /// and before the first result there is little else to think about, so
-    /// this round is bounded: closed in Always mode (the grammar has already
-    /// decided the call), and held to `preSearchThinkingBudget` in Auto.
+    /// with tools declared this round is held to `preSearchThinkingBudget`.
     /// Rounds that see results think without a bound.
-    private func makeFirstRoundRequest(mode: AppWebSearchMode,
-                                       executor: (any AppToolExecutor)?,
-                                       systemPrompt: String?) throws -> AppGenerationRequest {
+    private func makeFirstRoundRequest(executor: (any AppToolExecutor)?,
+                                       systemPrompt: String?,
+                                       continuation: [AppChatTurn] = [],
+                                       prompt: String? = nil,
+                                       imagePaths: [String]? = nil,
+                                       history: [AppChatTurn]? = nil) throws -> AppGenerationRequest {
         let plan = Self.firstRoundThinking(
-            mode: mode, thinking: thinkingEnabled,
+            tools: executor != nil, thinking: thinkingEnabled,
             budget: webSearchConfiguration.resolved().preSearchThinkingBudget)
         return try makeRequest(
-            continuation: [],
+            continuation: continuation,
             systemPrompt: systemPrompt,
             tools: executor?.definitions ?? [],
-            toolChoice: mode == .always ? .required : .auto,
+            toolChoice: .auto,
             enableThinking: plan.enabled,
-            reasoningBudgetTokens: plan.budget)
+            reasoningBudgetTokens: plan.budget,
+            prompt: prompt,
+            imagePaths: imagePaths,
+            history: history)
     }
 
-    nonisolated static func firstRoundThinking(mode: AppWebSearchMode, thinking: Bool, budget: Int)
+    nonisolated static func firstRoundThinking(tools: Bool, thinking: Bool, budget: Int)
         -> (enabled: Bool, budget: Int) {
-        guard thinking, mode != .off else { return (thinking, -1) }
-        if mode == .always || budget == 0 { return (false, -1) }
+        guard thinking, tools else { return (thinking, -1) }
+        if budget == 0 { return (false, -1) }
         return (true, budget)
     }
 

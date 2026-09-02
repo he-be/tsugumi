@@ -236,7 +236,7 @@ def tool_session(model_path, ctx):
                      tool_choice="required", **sampler)
             calls = list(LAST_TOOL_CALLS)
             if calls:
-                result = ("検索: 東京 天気 (Serper, 2 件)\n"
+                result = ("検索: 東京 天気 (Serper, 2 件、取得日 2026年9月2日)\n"
                           "[1] 東京都の天気 - 気象庁\n    https://www.jma.go.jp/bosai/forecast/\n"
                           "    2026-09-02 東京地方 今日は晴れ時々曇り、最高気温 31 度。\n"
                           "[2] tenki.jp 東京\n    https://tenki.jp/forecast/3/16/\n"
@@ -290,8 +290,8 @@ def wiki_session(model_path, ctx, index_path, question):
         if call["name"] == "wikipedia_search":
             hits = wiki.search(index_path, args.get("query", ""), 8)
             if not hits:
-                return f"Wikipedia 検索: {args.get('query')} — 該当する記事はありません。"
-            lines = [f"Wikipedia 検索: {args.get('query')} ({len(hits)} 件)"]
+                return f"Wikipedia 検索: {args.get('query')} ({wiki_date} 時点) — 該当する記事はありません。"
+            lines = [f"Wikipedia 検索: {args.get('query')} ({len(hits)} 件、{wiki_date} 時点の複製)"]
             for i, (pid, title, snip, _) in enumerate(hits, 1):
                 lines.append(f"[{i}] {title}\n    {snip}")
             lines.append("\n本文を読むには wikipedia_page に題名を渡します。")

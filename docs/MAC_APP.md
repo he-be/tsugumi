@@ -58,8 +58,11 @@ transcript mailbox は 1 本のクライアント所有チャネルなので所�
 見える。完了後のディスクロージャは従来どおり全文。
 
 **Web 検索** (2026-09-02): Gemma のチャットに `web_search` / `fetch_page` の
-ツールループを足した (Off / Auto / Always)。Serper → Brave、Jina Reader →
-自前 fetch。設計・キーの置き場・実機スモークは [WEB_SEARCH.md](WEB_SEARCH.md)。
+ツールループを足した。切り替えは Offline / Online の 1 つ (Offline はローカル
+Wikipedia のみ、Online で Serper → Brave と自前 fetch → 薄ければ Jina Reader)。
+質問中の URL と固有名詞はモデルの 1 ラウンド目の前にアプリが引く。設計・キーの
+置き場・実機スモークは [WEB_SEARCH.md](WEB_SEARCH.md)、Wikipedia は
+[LOCAL_WIKIPEDIA.md](LOCAL_WIKIPEDIA.md)。
 
 **ローカル Wikipedia** (2026-09-02): 同じツールループに `wikipedia_search` /
 `wikipedia_page` を足した。Wikimedia の週次ダンプから自前で組む SQLite (FTS5、

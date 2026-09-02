@@ -33,6 +33,16 @@ public struct CompositeToolExecutor: AppToolExecutor {
         owner(of: call)?.subject(of: call) ?? call.argumentsJSON
     }
 
+    /// Everything every executor has to say, in declaration order; each
+    /// executor numbers its own calls under its own prefix.
+    public func lookups(prompt: String, callIDPrefix: String) async -> [AppToolLookup] {
+        var lookups: [AppToolLookup] = []
+        for (index, executor) in executors.enumerated() {
+            lookups += await executor.lookups(prompt: prompt, callIDPrefix: "\(callIDPrefix)\(index + 1)-")
+        }
+        return lookups
+    }
+
     private func owner(of call: AppToolCall) -> (any AppToolExecutor)? {
         executors.first { executor in executor.definitions.contains { $0.name == call.name } }
     }

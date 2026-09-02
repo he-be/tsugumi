@@ -77,7 +77,7 @@ struct PromptComposerView: View {
             if model.supportsVision {
                 attachImagesButton
             }
-            if model.webSearchAvailable {
+            if model.toolsAvailable {
                 webSearchControl
             }
             Spacer()
@@ -107,45 +107,45 @@ struct PromptComposerView: View {
         }
     }
 
-    /// Off / Auto / Always for the web tools. Tinted when on, so the state
-    /// is readable without opening the menu.
+    /// Offline / Online. Tinted when online, so that anything leaving the
+    /// Mac is readable without opening the menu.
     private var webSearchControl: some View {
         Menu {
-            Picker(L("Web search"), selection: $model.webSearchMode) {
-                ForEach(AppWebSearchMode.allCases) { mode in
+            Picker(L("Network"), selection: $model.networkMode) {
+                ForEach(AppNetworkMode.allCases) { mode in
                     Text(mode.label).tag(mode)
                 }
             }
             .pickerStyle(.inline)
             .labelsHidden()
             Divider()
-            Text(model.webSearchMode.help)
+            Text(model.networkMode.help)
         } label: {
             HStack(spacing: 4) {
                 Image(systemName: "globe")
-                if model.webSearchMode != .off {
-                    Text(model.webSearchMode.label)
+                if model.networkMode == .online {
+                    Text(model.networkMode.label)
                         .font(.caption.weight(.medium))
                 }
             }
             .frame(height: 28)
-            .padding(.horizontal, model.webSearchMode == .off ? 0 : 6)
+            .padding(.horizontal, model.networkMode == .offline ? 0 : 6)
             .contentShape(Capsule())
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .foregroundStyle(model.webSearchMode == .off
+        .foregroundStyle(model.networkMode == .offline
                          ? AnyShapeStyle(.secondary)
                          : AnyShapeStyle(TsugumiMacTheme.accentColor))
         .background {
-            if model.webSearchMode != .off {
+            if model.networkMode == .online {
                 Capsule().fill(TsugumiMacTheme.accentColor.opacity(0.12))
             }
         }
         .disabled(model.isRunning)
-        .help("\(L("Web search")): \(model.webSearchMode.label) — \(model.webSearchMode.help)")
-        .accessibilityLabel("\(L("Web search")) \(model.webSearchMode.label)")
+        .help("\(L("Network")): \(model.networkMode.label) — \(model.networkMode.help)")
+        .accessibilityLabel("\(L("Network")) \(model.networkMode.label)")
     }
 
     private var attachmentsRow: some View {

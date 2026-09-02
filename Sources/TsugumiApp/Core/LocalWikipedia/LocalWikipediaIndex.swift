@@ -31,6 +31,24 @@ public final class LocalWikipediaIndex: Sendable {
         public var title: String
         public var snippet: String
         public var incomingLinks: Int
+        /// True when the article's title or one of its redirect names is
+        /// the whole query — the hit `search` puts first whatever the scores.
+        public var isExactTitle: Bool = false
+    }
+
+    /// An article the prompt names, with the numbers that said so.
+    public struct Mention: Equatable, Sendable {
+        public var pageID: Int
+        public var title: String
+        /// The string in the prompt (a redirect name when it differs: 米国).
+        public var mention: String
+        public var opening: String
+        public var incomingLinks: Int
+        /// Documents whose indexed head contains the mention string.
+        public var documentFrequency: Int
+        /// `incomingLinks / documentFrequency` — how much of the time the
+        /// string is a link when it appears (§ WikipediaMentionFinder).
+        public var linkProbability: Double
     }
 
     public struct Page: Equatable, Sendable {
@@ -149,8 +167,47 @@ public final class LocalWikipediaIndex: Sendable {
             }
             scored.sort { $0.score < $1.score }
             var hits = scored.map(\.hit)
-            if let exact, let row = rows[exact] { hits.insert(hit(exact, row), at: 0) }
+            if let exact, let row = rows[exact] {
+                var first = hit(exact, row)
+                first.isExactTitle = true
+                hits.insert(first, at: 0)
+            }
             return Array(hits.prefix(max(limit, 1)))
+        }
+    }
+
+    /// The articles `text` names, best first, at most `limit`. Candidate
+    /// spans come from `WikipediaMentionFinder`; a span that is a title or
+    /// redirect name claims its words (its sub-spans are not tried), and is
+    /// kept when its link probability says it is a name rather than a word.
+    /// Two spans naming the same article count once.
+    public func mentions(in text: String, limit: Int) -> [Mention] {
+        let candidates = WikipediaMentionFinder.candidates(in: WikipediaMentionFinder.words(in: text))
+        return db.withLock { handle in
+            guard let handle else { return [] }
+            var claimed: [Range<Int>] = []
+            var pages = Set<Int>()
+            var found: [Mention] = []
+            for candidate in candidates {
+                if claimed.contains(where: { $0.lowerBound <= candidate.words.lowerBound
+                                             && candidate.words.upperBound <= $0.upperBound }) { continue }
+                let key = WikipediaTokenizer.normalizeTitle(candidate.text)
+                guard let id = Self.pageID(handle, normalizedTitle: key) else { continue }
+                claimed.append(candidate.words)
+                guard let row = Self.pageRows(handle, ids: [id])[id], row.incoming > 0 else { continue }
+                let frequency = Self.documentFrequency(handle, text: key)
+                guard frequency > 0 else { continue }
+                let probability = Double(row.incoming) / Double(frequency)
+                guard WikipediaMentionFinder.keeps(linkProbability: probability,
+                                                   wordCount: candidate.wordCount,
+                                                   isLatin: candidate.isLatin),
+                      pages.insert(id).inserted else { continue }
+                found.append(Mention(pageID: id, title: row.title, mention: candidate.text,
+                                     opening: row.opening, incomingLinks: row.incoming,
+                                     documentFrequency: frequency, linkProbability: probability))
+            }
+            found.sort { $0.linkProbability > $1.linkProbability }
+            return Array(found.prefix(max(limit, 0)))
         }
     }
 
@@ -230,6 +287,18 @@ public final class LocalWikipediaIndex: Sendable {
                 incoming: Int(sqlite3_column_int64(statement, 3)))
         }
         return rows
+    }
+
+    /// How many indexed documents contain `text` as a phrase.
+    private static func documentFrequency(_ handle: OpaquePointer, text: String) -> Int {
+        guard let expression = WikipediaTokenizer.phraseExpression(text) else { return 0 }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, "SELECT count(*) FROM search WHERE search MATCH ?",
+                                 -1, &statement, nil) == SQLITE_OK, let statement else { return 0 }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_text(statement, 1, expression, -1, transient)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int64(statement, 0))
     }
 
     private static func pageID(_ handle: OpaquePointer, normalizedTitle: String) -> Int? {

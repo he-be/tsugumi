@@ -16,7 +16,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
     var thinkingEnabled: Bool = false
     var newlineShortcut: AppNewlineShortcut = .return
     var sentPromptBehavior: AppSentPromptBehavior = .keep
-    var webSearchMode: AppWebSearchMode = .off
+    var networkMode: AppNetworkMode = .offline
 
     private enum CodingKeys: String, CodingKey {
         case version
@@ -32,6 +32,11 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         case thinkingEnabled
         case newlineShortcut
         case sentPromptBehavior
+        case networkMode
+    }
+
+    /// The key before the Offline / Online switch (Off / Auto / Always).
+    private enum LegacyCodingKeys: String, CodingKey {
         case webSearchMode
     }
 
@@ -48,7 +53,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
          thinkingEnabled: Bool = false,
          newlineShortcut: AppNewlineShortcut = .return,
          sentPromptBehavior: AppSentPromptBehavior = .keep,
-         webSearchMode: AppWebSearchMode = .off) {
+         networkMode: AppNetworkMode = .offline) {
         self.version = version
         self.contextTokens = contextTokens
         self.expertCacheSlots = expertCacheSlots
@@ -62,7 +67,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         self.thinkingEnabled = thinkingEnabled
         self.newlineShortcut = newlineShortcut
         self.sentPromptBehavior = sentPromptBehavior
-        self.webSearchMode = webSearchMode
+        self.networkMode = networkMode
     }
 
     /// The adopted operating point for one checkpoint: the official sampler,
@@ -96,9 +101,15 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         sentPromptBehavior = try container.decodeIfPresent(
             AppSentPromptBehavior.self,
             forKey: .sentPromptBehavior) ?? .keep
-        webSearchMode = try container.decodeIfPresent(
-            AppWebSearchMode.self,
-            forKey: .webSearchMode) ?? .off
+        if let mode = try container.decodeIfPresent(AppNetworkMode.self, forKey: .networkMode) {
+            networkMode = mode
+        } else if let old = try decoder.container(keyedBy: LegacyCodingKeys.self)
+                    .decodeIfPresent(String.self, forKey: .webSearchMode) {
+            // Auto and Always both meant the web was in use.
+            networkMode = old == "off" ? .offline : .online
+        } else {
+            networkMode = .offline
+        }
     }
 
     func isValid() -> Bool {
