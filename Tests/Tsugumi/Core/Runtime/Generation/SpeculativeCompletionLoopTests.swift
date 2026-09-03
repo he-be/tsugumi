@@ -131,10 +131,12 @@ import Metal
 
     private func plainRun(seq: [Int32], end: Int32,
                           config: GenerationConfig,
-                          constraint: (any GenerationConstraint)? = nil) async throws -> Run {
+                          constraint: (any GenerationConstraint)? = nil,
+                          forcer: (any ForcedTokenSource)? = nil,
+                          automaton override: [Int32: Int32]? = nil) async throws -> Run {
         let ctx = try MetalContext()
         let tok = try await GFTokenizer.load()
-        let next = automaton(seq, end: end)
+        let next = override ?? automaton(seq, end: end)
         let producer = ScriptedSpeculativeProducer(vocabSize: tok.vocabSize,
                                                    next: next,
                                                    firstToken: seq[0]) { _, _ in [] }
@@ -149,6 +151,7 @@ import Metal
         run.result = try await runRawCompletion(producer: producer, tokenizer: tok,
                                                 promptIds: promptIds, config: config,
                                                 constraint: constraint,
+                                                forcer: forcer,
                                                 context: ctx, scratch: scratch,
                                                 prefillConfig: .defaultChunked) { progress in
             if case .token(_, let id, let delta) = progress {
@@ -164,12 +167,14 @@ import Metal
                                 config: GenerationConfig,
                                 blockTokens: Int,
                                 constraint: (any GenerationConstraint)? = nil,
+                                forcer: (any ForcedTokenSource)? = nil,
+                                automaton override: [Int32: Int32]? = nil,
                                 onDrawnToken: (Int32) -> Void = { _ in },
                                 propose: @escaping @Sendable (Int32, Int) -> [Int32])
         async throws -> (Run, ScriptedSpeculativeProducer) {
         let ctx = try MetalContext()
         let tok = try await GFTokenizer.load()
-        let next = automaton(seq, end: end)
+        let next = override ?? automaton(seq, end: end)
         let producer = ScriptedSpeculativeProducer(vocabSize: tok.vocabSize,
                                                    next: next,
                                                    firstToken: seq[0],
@@ -190,6 +195,7 @@ import Metal
         let result = try await runSpeculativeCompletion(producer: producer, tokenizer: tok,
                                                         promptIds: promptIds, config: config,
                                                         constraint: constraint,
+                                                        forcer: forcer,
                                                         context: ctx, scratch: scratch,
                                                         speculative: speculative,
                                                         prefillConfig: .defaultChunked,
@@ -420,6 +426,73 @@ import Metal
         #expect(spec.result.reason == plain.result.reason, "\(drafter)")
         #expect(spec.result.kvPosition == plain.result.kvPosition, "\(drafter)")
         #expect(spec.result.kvBackedTokenIDs == plain.result.kvBackedTokenIDs, "\(drafter)")
+    }
+
+    /// RSN-4 in the speculative loop (DEV-14 lost this member on 2026-09-04):
+    /// the endless thinker of `RawCompletionForcedTokenTests`, run under a
+    /// budget through both loops, emits the same tokens — the forced closing
+    /// tag at the same position, the answer after it — whatever the drafter
+    /// proposed. The perfect drafter is the hard case: it walks the automaton,
+    /// so at the forced position it proposes another thought token and the
+    /// round has to be cut at the forced one.
+    @Test("RSN-4: a budgeted speculative run emits the budgeted plain tokens",
+          arguments: ["perfect", "useless", "partial"])
+    func RSN_4_budgetedSpeculationMatchesBudgetedPlainDecode(drafter: String) async throws {
+        let tok = try await GFTokenizer.load()
+        let thought = tok.encode("a", addBOS: false).first!
+        let answer = tok.encode("b", addBOS: false).first!
+        let endless: [Int32: Int32] = [
+            tok.channelStartID: thought,
+            thought: thought,
+            tok.channelEndID: answer,
+            answer: tok.eosID,
+        ]
+        func forcer() -> ReasoningBudgetForcer {
+            ReasoningBudgetForcer(startTokenID: tok.channelStartID,
+                                  endTokenID: tok.channelEndID,
+                                  forcedTokenIDs: [tok.channelEndID],
+                                  budget: 4,
+                                  deadline: Int.max)
+        }
+        let config = GenerationConfig(maxNewTokens: 32, temperature: 0, seed: 1)
+        let propose: @Sendable (Int32, Int) -> [Int32]
+        switch drafter {
+        case "perfect":
+            propose = perfectDrafter(endless, firstToken: tok.channelStartID)
+        case "useless":
+            propose = { _, count in Array(repeating: Int32(9999), count: count) }
+        default:
+            propose = { bonus, count in
+                [endless[bonus] ?? 9999]
+                    + Array(repeating: Int32(9999), count: max(0, count - 1))
+            }
+        }
+
+        let plain = try await plainRun(seq: [tok.channelStartID], end: tok.eosID,
+                                       config: config, forcer: forcer(),
+                                       automaton: endless)
+        let (spec, producer) = try await speculativeRun(
+            seq: [tok.channelStartID], end: tok.eosID, config: config, blockTokens: 4,
+            forcer: forcer(), automaton: endless, propose: propose)
+
+        // The budget really bit, in both: the tag is placed after four thought
+        // tokens, and the answer follows it.
+        let expected = [tok.channelStartID] + [Int32](repeating: thought, count: 4)
+            + [tok.channelEndID, answer]
+        #expect(plain.tokens == expected)
+        #expect(spec.tokens == plain.tokens, "\(drafter)")
+        #expect(spec.text == plain.text, "\(drafter)")
+        #expect(spec.result.reason == .eos, "\(drafter)")
+        #expect(spec.result.newTokens == plain.result.newTokens, "\(drafter)")
+        #expect(spec.result.kvPosition == plain.result.kvPosition, "\(drafter)")
+        #expect(spec.result.kvBackedTokenIDs == plain.result.kvBackedTokenIDs, "\(drafter)")
+        // The forced tag was never in the K/V ahead of its turn: every block
+        // the producer verified is a prefix of what was emitted, or of what
+        // was emitted plus drafts the round then cut.
+        for block in producer.blocks {
+            #expect(!block.dropFirst().contains(tok.channelEndID) || drafter != "perfect",
+                    "the perfect drafter never proposes the closing tag")
+        }
     }
 
     /// GEN-14: the constraint advances on adopted tokens only. A draft the

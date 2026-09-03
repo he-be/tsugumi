@@ -113,13 +113,24 @@ public struct SpeculativeDecodeResult: Sendable {
 /// grammar up to `bs - 1` tokens behind the thought channel it is gated on.
 /// This fires per adopted token, in order, immediately after `accept`.
 ///
-/// **DEV-14** still holds for the other two: a `repetitionPenalty != 1` is
-/// refused below, and RSN-4's forced insertion has no parameter here at all.
+/// **RSN-4 / DEV-14 (2026-09-04).** A forcer runs inside this loop too. A
+/// forced token is not drawn, so it cannot be *verified* against a draft — but
+/// it does not have to be: it is adopted at its position exactly as the plain
+/// loop adopts it (before any draw, no logits read), and the round is cut there
+/// unless the draft happened to propose the very same token. Every position
+/// after the cut is discarded, which is what happens at any other mismatch, so
+/// the text stays the plain loop's text. The forcer is fed in adoption order
+/// with the detokenizer's own `completesCharacter` verdict, from a shadow
+/// detokenizer that sees the adopted stream a block ahead of the emitted one —
+/// the two streams are the same tokens in the same order, so the verdicts are
+/// the same. Only `repetitionPenalty != 1` still takes the plain path (refused
+/// below).
 public func runSpeculativeCompletion(producer: any LogitProducer,
                                      tokenizer: GFTokenizer,
                                      promptIds: [Int32],
                                      config: GenerationConfig,
                                      constraint: (any GenerationConstraint)? = nil,
+                                     forcer: (any ForcedTokenSource)? = nil,
                                      context: MetalContext,
                                      scratch: RawCompletionScratch,
                                      speculative: SpeculativeScratch,
@@ -191,6 +202,15 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
     let fusedGreedy = prepared.fusedGreedy
     var detok = GFDetokenizer(tokenizer: tokenizer,
                               barrierTokenIDs: tokenizer.structuralMarkerIDs)
+    // RSN-4. The forcer judges each position by the state the previous
+    // *adopted* token left behind, and one of its inputs is whether that token
+    // completed a character — the detokenizer's verdict. Adoption runs a block
+    // ahead of emission, so this second detokenizer walks the adopted stream;
+    // it sees the same tokens in the same order as `detok`, and so says the
+    // same thing about each of them.
+    var adoptDetok = GFDetokenizer(tokenizer: tokenizer,
+                                   barrierTokenIDs: tokenizer.structuralMarkerIDs)
+    let endOfGenerationIDs = tokenizer.stopTokenIDs.union(config.extraStopTokens)
     var stopMatcher = StreamingStopMatcher(stops: config.stopStrings)
     var history = prepared.history
     /// Where the next uncommitted token belongs; the K/V holds `[0, position)`.
@@ -229,10 +249,30 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
     // (15-M4 §2) and not the speculation.
     let draftCap = ProcessInfo.processInfo.environment["TF_MTP_DRAFTS"].flatMap { Int($0) }
 
+    /// A token the round keeps at `generationIndex`: into the constraint, to
+    /// `onDrawnToken`, and to the forcer — in that order, once, before the next
+    /// position is decided. The forcer is not told about an end-of-generation
+    /// token, as in `runRawCompletion`, where the loop breaks before feeding
+    /// it; generation ends at that token either way.
+    func adopt(_ token: Int32, generationIndex: Int) throws {
+        try gate?.accept(token)
+        onDrawnToken(token)
+        guard let forcer, !endOfGenerationIDs.contains(token) else { return }
+        let delta = adoptDetok.push(token)
+        forcer.accept(tokenID: token,
+                      generationIndex: generationIndex,
+                      completesCharacter: !delta.isEmpty)
+    }
+
     /// The target's own token for row `row` of the verified block, drawn the way
     /// the non-speculative loop would have drawn the token with that generation
     /// index (D5), **and adopted** — accepted into the constraint and announced
     /// to `onDrawnToken` — before the caller looks at it (GEN-14).
+    ///
+    /// RSN-4 comes first, as it does in the plain loop: a position the forcer
+    /// names is that token, drawn from nothing, and the verified row is left
+    /// unread. The caller compares it with the draft like any other token, so
+    /// a draft that guessed the forced token is kept and any other is cut.
     ///
     /// Adoption belongs here rather than at the call sites because the state it
     /// leaves behind is the state the *next* row is drawn against, and there
@@ -243,11 +283,17 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
     /// budget — but generation ends there, so the over-advanced constraint has
     /// no next draw to be wrong for. The reference does the same.)
     func targetToken(row: Int, generationIndex: Int) throws -> Int32 {
+        if let forced = forcer?.nextForcedToken() {
+            try adopt(forced, generationIndex: generationIndex)
+            return forced
+        }
         if fusedGreedy {
             // Unreachable under a constraint: the guard at the top refused the
-            // fused greedy head, and nothing adopts a token here.
-            return Int32(bitPattern: speculative.greedyRows.contents().load(
+            // fused greedy head. Adopted all the same, for the forcer's count.
+            let token = Int32(bitPattern: speculative.greedyRows.contents().load(
                 fromByteOffset: row * MemoryLayout<UInt32>.stride, as: UInt32.self))
+            try adopt(token, generationIndex: generationIndex)
+            return token
         }
         // The sampler reads one vocabulary-wide buffer, so the row is staged
         // into it. 512 KiB per drawn row, and only for rows the accept loop
@@ -273,27 +319,35 @@ public func runSpeculativeCompletion(producer: any LogitProducer,
                                    history: history, config: config,
                                    position: generationIndex,
                                    constraint: gate).id
-        try gate?.accept(token)
-        onDrawnToken(token)
+        try adopt(token, generationIndex: generationIndex)
         return token
     }
 
     // The first bonus token is the prompt's own continuation, drawn exactly as
     // `runRawCompletion` draws it.
     let seedToken: Int32
-    switch prefillSeed {
-    case .greedyToken(let token):
-        // The fused-greedy prefill seed: refused above when there is a gate,
-        // because a GPU argmax leaves no logits to mask (GEN-7).
-        seedToken = Int32(bitPattern: token)
-    case .logitsWritten:
-        seedToken = try sampleOnce(scratch: scratch, context: context,
-                                   history: history, config: config, position: 0,
-                                   constraint: gate).id
-        // Generation index 0 is a position like any other: it is drawn under the
-        // constraint and adopted before anything else is drawn (GEN-14).
-        try gate?.accept(seedToken)
-        onDrawnToken(seedToken)
+    if let forced = forcer?.nextForcedToken() {
+        // RSN-4 at index 0, as in the plain loop. A budget forcer is idle until
+        // it sees a start tag, so this is reached only by a source that forces
+        // from the first position.
+        seedToken = forced
+        try adopt(seedToken, generationIndex: 0)
+    } else {
+        switch prefillSeed {
+        case .greedyToken(let token):
+            // The fused-greedy prefill seed: refused above when there is a gate,
+            // because a GPU argmax leaves no logits to mask (GEN-7). Adopted
+            // for the forcer's count, as every kept token is.
+            seedToken = Int32(bitPattern: token)
+            try adopt(seedToken, generationIndex: 0)
+        case .logitsWritten:
+            seedToken = try sampleOnce(scratch: scratch, context: context,
+                                       history: history, config: config, position: 0,
+                                       constraint: gate).id
+            // Generation index 0 is a position like any other: it is drawn under the
+            // constraint and adopted before anything else is drawn (GEN-14).
+            try adopt(seedToken, generationIndex: 0)
+        }
     }
     queue.append((seedToken, position))
     /// The token a round is anchored on: the one emitted last, still uncommitted.

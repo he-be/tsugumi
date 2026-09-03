@@ -295,7 +295,7 @@ python3 Scripts/app/smoke_decode.py ornith
 | 走り | ロード | 結果 |
 | --- | --- | --- |
 | gemma-plain | 2.3 s | `2です。` draft 3/3、15.9 tok/s |
-| gemma-think | 〃 | 思考 223 字が別チャネル → `56`、cached=2、29.5 tok/s (RSN-4 の締切が立つと投機は仕様どおり素通り) |
+| gemma-think | 〃 | 思考 223 字が別チャネル → `56`、cached=2、29.5 tok/s (当時は RSN-4 の締切が立つと投機が外れた。2026-09-04 に forcer を投機ループへ通した) |
 | gemma-vision (ロゴ画像) | 2.4 s | 一文で正しく説明、draft 19/36、35.5 tok/s |
 | ornith-think | 2.4 s | 思考 205 字 → `2`、**draft 32/39**、19.5 tok/s |
 | ornith-plain | 〃 | `56`、36.3 tok/s |

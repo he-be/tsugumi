@@ -993,14 +993,13 @@ public actor ServerModelSession: ServerInferenceBackend {
                 promptTokens: effectivePromptIDs.count - cachedPromptTokens,
                 startedAt: Date())
         }
-        // RSN-4 is DEV-14's other member, for the reason a grammar no longer is:
-        // a forced token is *placed* rather than drawn, so the block was never
-        // verified against it. `runRawCompletion` is where the forcer is
-        // consulted, and `runSpeculativeCompletion` has no parameter for it — a
-        // request that reached the loop with one would silently generate an
-        // unbudgeted thought block.
-        if let speculative, config.repetitionPenalty == 1.0, plan.allowsSpeculativeDecoding,
-           reasoning.allowsSpeculativeDecoding {
+        // RSN-4 left DEV-14 on 2026-09-04: the forcer is threaded into the
+        // speculative loop, which adopts a forced token at its position without
+        // a draw and cuts the block there unless the draft proposed that very
+        // token. The Mac app bounds the thought of every first round that
+        // declares tools (WEB_SEARCH §6), and those rounds — 450〜540 tokens
+        // of thinking at half speed — were what the plain path was costing.
+        if let speculative, config.repetitionPenalty == 1.0, plan.allowsSpeculativeDecoding {
             let spec = try await runSpeculativeCompletion(
                 producer: runner,
                 tokenizer: tokenizer,
@@ -1011,6 +1010,9 @@ public actor ServerModelSession: ServerInferenceBackend {
                 // out of here is left to escape into a 500 `server_error`
                 // rather than a silently unconstrained answer.
                 constraint: constraint,
+                // RSN-4, the same object and the same rule as the plain branch
+                // below: nil unless the thought channel is open and bounded.
+                forcer: forcer,
                 context: context,
                 scratch: scratch,
                 speculative: speculative,

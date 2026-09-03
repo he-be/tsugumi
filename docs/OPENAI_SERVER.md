@@ -126,18 +126,17 @@ on and off.
 Declaring `tools` — or a `response_format`, or any `tool_choice` — does **not**
 turn speculation off. A constrained request is drawn one position at a time with
 the grammar applied and verified the same way an unconstrained one is
-(SPEC §6 GEN-14). Two kinds of request still run on the plain decode path for
-that request alone: one asking for a `repeat_penalty` other than `1.0`, and one
-whose thought channel is open *and* bounded, because the closing tag the budget
-forces is a token that was placed rather than drawn (SPEC §12 DEV-14).
+(SPEC §6 GEN-14). A bounded thought channel does not turn it off either: the
+closing tag the budget forces is placed at its position inside the speculative
+loop, and the block is cut there (SPEC §12 DEV-14, since 2026-09-04). The one
+request that still runs on the plain decode path, for that request alone, is
+one asking for a `repeat_penalty` other than `1.0`.
 
 "Bounded" is measured against what the context has left, not against whether the
 field was written: a `max_tokens` at or above the remaining context bounds
-nothing that `max_tokens: -1` would not bound, so it sets no deadline and the
-request keeps speculating (SPEC §8 RSN-4). A client that simply echoes the
-model's advertised limit — most do — is therefore not giving up MTP by sending
-it. A `reasoning_budget_tokens`, or a `max_tokens` genuinely shorter than the
-remaining context, does set one.
+nothing that `max_tokens: -1` would not bound, so it sets no deadline (SPEC §8
+RSN-4). A `reasoning_budget_tokens`, or a `max_tokens` genuinely shorter than
+the remaining context, does set one.
 
 **To see whether it ran**, read `timings.draft_n` on the response: it is the
 number of tokens the drafter proposed, and `timings.draft_n_accepted` how many

@@ -422,21 +422,17 @@ struct ServerReasoningPlanTests {
         #expect(measured.deadline == 80 - ServerReasoningPlan.answerReserve(maxNewTokens: 80) - 1)
         #expect(measured.deadline == 59)
         #expect(measured.forcesClosingTag)
-        // DEV-14's rule: a forced token invalidates a verified block.
-        #expect(!measured.allowsSpeculativeDecoding)
     }
 
     /// `max_tokens: -1` is unlimited (REQ-max-tokens), so there is no deadline
     /// to derive from it. With an unlimited budget too, nothing is forced —
-    /// which is what "無制限" means — and speculative decoding stays available
-    /// for pi's default session (tools + 画像 + Reasoning + MTP).
+    /// which is what "無制限" means.
     @Test func RSN_4_an_unbounded_request_forces_nothing() throws {
         let unbounded = try plan(thinkingRequest, maxNewTokens: 4_096,
                                  contextRemaining: 4_096)
         #expect(unbounded.budget == -1)
         #expect(unbounded.deadline == Int.max)
         #expect(!unbounded.forcesClosingTag)
-        #expect(unbounded.allowsSpeculativeDecoding)
     }
 
     /// RSN-4's own sentence, read off the **effective** limit rather than off
@@ -451,8 +447,8 @@ struct ServerReasoningPlanTests {
     ///
     /// The numbers are the 2026-08-21 measurement (CONFORMANCE §2): a 65536
     /// context, a prompt of 8889, an answer of 1293 tokens, and a deadline
-    /// 42485 tokens away that could never fire — yet cost the request its
-    /// speculative decoding through DEV-14.
+    /// 42485 tokens away that could never fire — which, until 2026-09-04, cost
+    /// the request its speculative decoding through DEV-14.
     @Test func RSN_4_a_max_tokens_at_the_context_ceiling_sets_no_deadline() throws {
         let remaining = 65_536 - 8_889
         let capability = try plan(#"""
@@ -462,9 +458,6 @@ struct ServerReasoningPlanTests {
 
         #expect(capability.deadline == Int.max)
         #expect(!capability.forcesClosingTag)
-        // The whole point: this is what pi's default session needs (GEN-14 gave
-        // it the grammar half; this is the reasoning half).
-        #expect(capability.allowsSpeculativeDecoding)
 
         // Token for token the same request as `max_tokens: -1`, so token for
         // token the same plan.
@@ -493,7 +486,6 @@ struct ServerReasoningPlanTests {
         #expect(bound.deadline
                 == effective - ServerReasoningPlan.answerReserve(maxNewTokens: effective) - 1)
         #expect(bound.forcesClosingTag)
-        #expect(!bound.allowsSpeculativeDecoding)
     }
 
     /// A closed thought channel cannot overrun a budget, so it never carries a

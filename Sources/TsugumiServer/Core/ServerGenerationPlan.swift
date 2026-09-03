@@ -48,10 +48,10 @@ struct ServerGenerationPlan: Equatable, Sendable {
     /// (参照実装 `common_sampler_sample_and_accept_n`), so the redraw GEN-7 can
     /// perform is still that position's own draw by the target.
     ///
-    /// The two requests that still take the plain path are DEV-14's remainder,
-    /// and neither is decided here: RSN-4's forced closing tag is
-    /// `ServerReasoningPlan.allowsSpeculativeDecoding`, and
-    /// `repeat_penalty != 1` is read off the generation config.
+    /// The one request that still takes the plain path is DEV-14's remainder,
+    /// `repeat_penalty != 1`, and it is read off the generation config, not
+    /// decided here. RSN-4's forced closing tag left the list on 2026-09-04:
+    /// the forcer runs inside the speculative loop.
     var allowsSpeculativeDecoding: Bool { true }
 
     /// GEN-7: masking needs logits, and the fused greedy head answers with a
@@ -150,14 +150,6 @@ struct ServerReasoningPlan: Equatable, Sendable {
     var forcesClosingTag: Bool {
         isThinking && (budget >= 0 || deadline != Int.max)
     }
-
-    /// DEV-14's remaining rule: forcing changes the token at a position without
-    /// drawing it, and every later position of a verified block was drafted
-    /// against a prefix that then never happened. The caller branches to
-    /// `runRawCompletion`, as it does for a repetition penalty. A grammar left
-    /// this list on 2026-08-21 (GEN-14) — it *is* drawn, so the block stays
-    /// verifiable; forcing is not.
-    var allowsSpeculativeDecoding: Bool { !forcesClosingTag }
 
     /// - Parameters:
     ///   - defaultBudget: `--reasoning-budget` (RSN-1).
