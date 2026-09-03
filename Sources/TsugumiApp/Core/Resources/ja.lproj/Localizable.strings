@@ -65,3 +65,9 @@
 "Verifying %@" = "%@ を検証中";
 "Verifying weights" = "重みを検証中";
 "Web search needs a Serper or Brave API key, or a local Wikipedia index. Add one in the Inspector, or turn Web search off." = "Web 検索には Serper か Brave の API キー、またはローカル Wikipedia インデックスが必要です。インスペクタで設定するか、Web 検索をオフにしてください。";
+"Model only" = "モデルのみ";
+"Offline" = "オフライン";
+"Online" = "オンライン";
+"Nothing is looked up. The model answers from what it knows, and thinks without a budget from the start." = "何も調べません。モデルが知っていることだけで答え、Thinking オンなら最初から予算なしで考えます。";
+"Nothing leaves this Mac. Wikipedia is read from the local index when one is set." = "この Mac から何も送信しません。Wikipedia はローカルの索引があればそれを読みます。";
+"Search queries go to Serper or Brave; pages are fetched from their sites, thin ones through Jina Reader." = "検索クエリは Serper か Brave へ、ページは相手のサイトから取得します (薄いページは Jina Reader 経由)。";

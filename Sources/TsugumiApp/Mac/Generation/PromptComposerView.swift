@@ -78,6 +78,7 @@ struct PromptComposerView: View {
                 attachImagesButton
             }
             if model.toolsAvailable {
+                searchControl
                 webSearchControl
             }
             thinkingControl
@@ -108,81 +109,80 @@ struct PromptComposerView: View {
         }
     }
 
-    /// Offline / Online. Tinted when online, so that anything leaving the
-    /// Mac is readable without opening the menu.
+    /// Two toggles for the three modes (`AppNetworkMode`): whether the
+    /// turn looks anything up, and whether it may leave the Mac. Both off is
+    /// Model only; Online switches Search on with it, and Search off takes
+    /// Online down too, so each press is one sensible step.
+    private var searchControl: some View {
+        modeToggle(on: model.networkMode.usesTools,
+                   systemImage: "magnifyingglass",
+                   title: L("Search"),
+                   help: model.networkMode.usesTools
+                       ? L("Search is on: the model may look things up (Wikipedia from the local index; the web when Online).")
+                       : model.networkMode.help,
+                   accessibilityLabel: L("Search")) {
+            model.networkMode = model.networkMode.usesTools ? .modelOnly : .offline
+        }
+    }
+
     private var webSearchControl: some View {
-        Menu {
-            Picker(L("Network"), selection: $model.networkMode) {
-                ForEach(AppNetworkMode.allCases) { mode in
-                    Text(mode.label).tag(mode)
-                }
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
-            Divider()
-            Text(model.networkMode.help)
-        } label: {
+        modeToggle(on: model.networkMode == .online,
+                   systemImage: "globe",
+                   title: AppNetworkMode.online.label,
+                   help: model.networkMode == .online
+                       ? AppNetworkMode.online.help
+                       : L("Online is off: nothing leaves this Mac."),
+                   accessibilityLabel: L("Network")) {
+            model.networkMode = model.networkMode == .online ? .offline : .online
+        }
+    }
+
+    /// The chip the three mode controls share: icon only when off, icon and
+    /// title tinted when on.
+    private func modeToggle(on: Bool, systemImage: String, title: String, help: String,
+                            accessibilityLabel: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
             HStack(spacing: 4) {
-                Image(systemName: "globe")
-                if model.networkMode == .online {
-                    Text(model.networkMode.label)
+                Image(systemName: systemImage)
+                if on {
+                    Text(title)
                         .font(.caption.weight(.medium))
                 }
             }
             .frame(height: 28)
-            .padding(.horizontal, model.networkMode == .offline ? 0 : 6)
+            .padding(.horizontal, on ? 6 : 0)
             .contentShape(Capsule())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
         .fixedSize()
-        .foregroundStyle(model.networkMode == .offline
-                         ? AnyShapeStyle(.secondary)
-                         : AnyShapeStyle(TsugumiMacTheme.accentColor))
+        .foregroundStyle(on
+                         ? AnyShapeStyle(TsugumiMacTheme.accentColor)
+                         : AnyShapeStyle(.secondary))
         .background {
-            if model.networkMode == .online {
+            if on {
                 Capsule().fill(TsugumiMacTheme.accentColor.opacity(0.12))
             }
         }
         .disabled(model.isRunning)
-        .help("\(L("Network")): \(model.networkMode.label) — \(model.networkMode.help)")
-        .accessibilityLabel("\(L("Network")) \(model.networkMode.label)")
+        .help(help)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityValue(on ? L("On") : L("Off"))
     }
 
     /// The thought channel, on or off for the next turn. The same value as
     /// the Inspector's switch; here because it is the one knob that changes
     /// how long an answer takes.
     private var thinkingControl: some View {
-        Button {
+        modeToggle(on: model.thinkingEnabled,
+                   systemImage: "brain",
+                   title: L("Thinking"),
+                   help: model.thinkingEnabled
+                       ? L("Thinking is on: the model reasons before it answers. Slower, better on hard questions.")
+                       : L("Thinking is off: the model answers directly."),
+                   accessibilityLabel: L("Thinking")) {
             model.thinkingEnabled.toggle()
-        } label: {
-            HStack(spacing: 4) {
-                Image(systemName: "brain")
-                if model.thinkingEnabled {
-                    Text(L("Thinking"))
-                        .font(.caption.weight(.medium))
-                }
-            }
-            .frame(height: 28)
-            .padding(.horizontal, model.thinkingEnabled ? 6 : 0)
-            .contentShape(Capsule())
         }
-        .buttonStyle(.plain)
-        .fixedSize()
-        .foregroundStyle(model.thinkingEnabled
-                         ? AnyShapeStyle(TsugumiMacTheme.accentColor)
-                         : AnyShapeStyle(.secondary))
-        .background {
-            if model.thinkingEnabled {
-                Capsule().fill(TsugumiMacTheme.accentColor.opacity(0.12))
-            }
-        }
-        .disabled(model.isRunning)
-        .help(model.thinkingEnabled
-              ? L("Thinking is on: the model reasons before it answers. Slower, better on hard questions.")
-              : L("Thinking is off: the model answers directly."))
-        .accessibilityLabel(L("Thinking"))
-        .accessibilityValue(model.thinkingEnabled ? L("On") : L("Off"))
     }
 
     private var attachmentsRow: some View {

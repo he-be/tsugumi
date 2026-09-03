@@ -32,6 +32,48 @@ import Testing
         #expect(try model.makeRequest().tools.isEmpty)
     }
 
+    /// Model only declares nothing even when the provider has an executor
+    /// (a local index), and so the first round thinks without the
+    /// pre-search budget: the mode for a screenshot to read or an
+    /// equation to solve.
+    @MainActor
+    @Test func modelOnlyDeclaresNothingAndThinksWithoutABudget() throws {
+        let executor = ScriptedToolExecutor(results: [:])
+        let model = AppModel(client: ScriptedToolClient([]), toolExecutorProvider: { _, _ in executor })
+        model.modelPathText = FileManager.default.temporaryDirectory.path
+        model.loadState = .ready(modelDirectory: FileManager.default.temporaryDirectory, loadSeconds: 1)
+        model.webSearchConfiguration.serperAPIKey = "k"
+        model.webSearchConfiguration.preSearchThinkingBudget = 300
+        model.thinkingEnabled = true
+        model.promptText = "x^3 - 6x^2 + 11x - 6 = 0 を解いて"
+
+        model.networkMode = .offline
+        let offline = try model.makeRequest()
+        #expect(!offline.tools.isEmpty)
+        #expect(offline.reasoningBudgetTokens == 300)
+
+        model.networkMode = .modelOnly
+        let alone = try model.makeRequest()
+        #expect(alone.tools.isEmpty)
+        #expect(alone.systemPrompt == nil)
+        #expect(alone.enableThinking)
+        #expect(alone.reasoningBudgetTokens == -1)
+    }
+
+    /// The row under the answer needs to know the turn was sent as Model
+    /// only, or it would flag a search the user chose not to have.
+    @MainActor
+    @Test func theTurnRemembersItWasSentAsModelOnly() async throws {
+        let model = readyModel(client: ScriptedToolClient([.answer("x = 1, 2, 3")]),
+                               executor: ScriptedToolExecutor(results: [:]))
+        model.networkMode = .modelOnly
+        model.promptText = "q"
+        model.run()
+        await waitForIdle(model)
+        #expect(model.outputNetworkMode == .modelOnly)
+        #expect(model.canSearchAgain)
+    }
+
     @MainActor
     @Test func runRefusesWithoutAKey() {
         let model = readyModel(client: ScriptedToolClient([]), executor: ScriptedToolExecutor(results: [:]))
@@ -262,7 +304,7 @@ import Testing
         model.networkMode = .online
         model.promptText = "q"
         #expect(!model.toolsAvailable)
-        #expect(model.effectiveNetworkMode == .offline)
+        #expect(model.effectiveNetworkMode == .modelOnly)
         #expect(try model.makeRequest().tools.isEmpty)
     }
 

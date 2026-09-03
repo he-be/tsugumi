@@ -93,6 +93,7 @@ struct PersistedChat: Codable, Equatable {
     var outputContinuationTurns: [AppChatTurn] = []
     var outputToolTrace: [AppToolTraceEntry] = []
     var outputDirective: AppAnswerDirective?
+    var outputNetworkMode: AppNetworkMode?
     var outputVariants: [AppAnswerVariant] = []
     var selectedVariantIndex: Int = 0
 
@@ -106,6 +107,7 @@ struct PersistedChat: Codable, Equatable {
          outputContinuationTurns: [AppChatTurn] = [],
          outputToolTrace: [AppToolTraceEntry] = [],
          outputDirective: AppAnswerDirective? = nil,
+         outputNetworkMode: AppNetworkMode? = nil,
          outputVariants: [AppAnswerVariant] = [],
          selectedVariantIndex: Int = 0) {
         self.promptText = promptText
@@ -118,6 +120,7 @@ struct PersistedChat: Codable, Equatable {
         self.outputContinuationTurns = outputContinuationTurns
         self.outputToolTrace = outputToolTrace
         self.outputDirective = outputDirective
+        self.outputNetworkMode = outputNetworkMode
         self.outputVariants = outputVariants
         self.selectedVariantIndex = selectedVariantIndex
     }
@@ -125,7 +128,7 @@ struct PersistedChat: Codable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case promptText, attachedImagePaths, turns, outputPromptText, outputImagePaths
         case outputText, outputReasoningText, outputContinuationTurns, outputToolTrace
-        case outputDirective, outputVariants, selectedVariantIndex
+        case outputDirective, outputNetworkMode, outputVariants, selectedVariantIndex
     }
 
     /// Fields added after the first file version decode as their defaults,
@@ -149,6 +152,8 @@ struct PersistedChat: Codable, Equatable {
             [AppToolTraceEntry].self, forKey: .outputToolTrace) ?? []
         outputDirective = try container.decodeIfPresent(
             AppAnswerDirective.self, forKey: .outputDirective)
+        outputNetworkMode = try container.decodeIfPresent(
+            AppNetworkMode.self, forKey: .outputNetworkMode)
         outputVariants = try container.decodeIfPresent(
             [AppAnswerVariant].self, forKey: .outputVariants) ?? []
         selectedVariantIndex = min(
@@ -171,6 +176,7 @@ extension PersistedChat {
             outputContinuationTurns: session.outputContinuationTurns,
             outputToolTrace: session.outputToolTrace,
             outputDirective: session.outputDirective,
+            outputNetworkMode: session.outputNetworkMode,
             outputVariants: session.outputVariants,
             selectedVariantIndex: session.selectedVariantIndex)
     }
@@ -206,6 +212,7 @@ extension PersistedChat {
             return entry
         }
         session.outputDirective = outputDirective
+        session.outputNetworkMode = outputNetworkMode
         session.outputVariants = outputVariants
         session.selectedVariantIndex = selectedVariantIndex
         return session

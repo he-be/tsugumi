@@ -31,8 +31,11 @@ public struct ResponseMarkdownRenderer {
         guard !source.isEmpty else {
             return Result(attributedString: NSAttributedString(), usedFallback: false)
         }
-        let document = Document(parsing: Self.presentationSource(for: source))
-        var builder = Builder()
+        // Math first: its `_` and `*` are not Markdown, and its `$` must
+        // not meet the emphasis rewrites below.
+        let (withPlaceholders, math) = ResponseMath.extract(from: source)
+        let document = Document(parsing: Self.presentationSource(for: withPlaceholders))
+        var builder = Builder(math: math)
         builder.visit(document)
         let output = builder.finish()
         guard output.length > 0 else { return fallback(source) }
@@ -40,10 +43,20 @@ public struct ResponseMarkdownRenderer {
     }
 
     /// The rendered text with the in-paragraph line separators the renderer
-    /// uses for soft breaks and `<br>` turned back into newlines.
+    /// uses for soft breaks and `<br>` turned back into newlines, and the
+    /// math as the TeX it was written as.
     public func plainText(_ source: String) -> String {
-        render(source).attributedString.string
-            .replacingOccurrences(of: "\u{2028}", with: "\n")
+        let rendered = render(source).attributedString
+        var text = ""
+        rendered.enumerateAttribute(ResponseMath.sourceKey,
+                                    in: NSRange(location: 0, length: rendered.length)) { value, range, _ in
+            if let tex = value as? String {
+                text += tex
+            } else {
+                text += rendered.attributedSubstring(from: range).string
+            }
+        }
+        return text.replacingOccurrences(of: "\u{2028}", with: "\n")
     }
 
     // MARK: - Source rewrites
@@ -249,6 +262,7 @@ private struct Builder: @MainActor MarkupVisitor {
     typealias Result = Void
 
     private var output = NSMutableAttributedString()
+    private let math: [ResponseMath.Span]
     private var inline = Style.Inline()
     private var quoteDepth = 0
     private var listDepth = 0
@@ -256,6 +270,10 @@ private struct Builder: @MainActor MarkupVisitor {
     /// Set by a list item so the paragraph that carries its text continues
     /// the prefixed line instead of opening a new block.
     private var joinNextBlockToPrefix = false
+
+    init(math: [ResponseMath.Span] = []) {
+        self.math = math
+    }
 
     func finish() -> NSMutableAttributedString { output }
 
@@ -440,7 +458,7 @@ private struct Builder: @MainActor MarkupVisitor {
             if inline.link || inline.code {
                 append(text.string, block: block)
             } else {
-                appendAutolinked(text.string, block: block)
+                appendWithMath(text.string, block: block)
             }
         case is SoftBreak, is LineBreak:
             // A line break inside the paragraph, not a new paragraph: the
@@ -480,6 +498,43 @@ private struct Builder: @MainActor MarkupVisitor {
             for child in markup.children {
                 visitInline(child, block: block)
             }
+        }
+    }
+
+    /// The math placeholders `ResponseMath.extract` left in the text become
+    /// attachments (or readable text when SwiftMath cannot draw them);
+    /// the text between them is autolinked as before.
+    private mutating func appendWithMath(_ text: String, block: Style.BlockKind) {
+        var cursor = text.startIndex
+        for match in text.matches(of: ResponseMath.placeholder) {
+            appendAutolinked(String(text[cursor..<match.range.lowerBound]), block: block)
+            if let index = Int(match.output.1), math.indices.contains(index) {
+                appendMath(math[index], block: block)
+            }
+            cursor = match.range.upperBound
+        }
+        appendAutolinked(String(text[cursor...]), block: block)
+    }
+
+    private mutating func appendMath(_ span: ResponseMath.Span, block: Style.BlockKind) {
+        var attributes = Style.attributes(inline: inline, block: block)
+        attributes[ResponseMath.sourceKey] = span.source
+        if span.display, block == .paragraph,
+           let style = (attributes[.paragraphStyle] as? NSParagraphStyle)?.mutableCopy() as? NSMutableParagraphStyle {
+            // A displayed equation on its own line sits centred, as on paper.
+            // The paragraph takes its style from its first character, so a
+            // formula after text in the same paragraph changes nothing.
+            style.alignment = .center
+            attributes[.paragraphStyle] = style
+        }
+        let baseSize = (attributes[.font] as? NSFont)?.pointSize ?? NSFont.systemFontSize
+        if let attachment = ResponseMath.attachment(for: span, baseFontSize: baseSize) {
+            let run = NSMutableAttributedString(attachment: attachment)
+            run.addAttributes(attributes, range: NSRange(location: 0, length: run.length))
+            output.append(run)
+        } else {
+            output.append(NSAttributedString(string: ResponseMath.fallbackText(for: span),
+                                             attributes: attributes))
         }
     }
 

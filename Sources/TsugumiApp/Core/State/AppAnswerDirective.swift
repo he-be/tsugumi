@@ -70,13 +70,16 @@ public struct AppAnswerVariant: Codable, Equatable, Sendable {
     public var reasoningText: String
     public var continuationTurns: [AppChatTurn]
     public var toolTrace: [AppToolTraceEntry]
+    public var networkMode: AppNetworkMode?
 
     public init(directive: AppAnswerDirective?,
                 text: String,
                 reasoningText: String = "",
                 continuationTurns: [AppChatTurn] = [],
-                toolTrace: [AppToolTraceEntry] = []) {
+                toolTrace: [AppToolTraceEntry] = [],
+                networkMode: AppNetworkMode? = nil) {
         self.directive = directive
+        self.networkMode = networkMode
         self.text = text
         self.reasoningText = reasoningText
         self.continuationTurns = continuationTurns

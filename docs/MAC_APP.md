@@ -58,8 +58,9 @@ transcript mailbox は 1 本のクライアント所有チャネルなので所�
 見える。完了後のディスクロージャは従来どおり全文。
 
 **Web 検索** (2026-09-02): Gemma のチャットに `web_search` / `fetch_page` の
-ツールループを足した。切り替えは Offline / Online の 1 つ (Offline はローカル
-Wikipedia のみ、Online で Serper → Brave と自前 fetch → 薄ければ Jina Reader)。
+ツールループを足した。モードは 3 つ (モデルのみ / Offline / Online) で、コンポーザでは
+Search と Online の 2 トグル (両方オフがモデルのみ = ツール無し・思考予算なし。Offline は
+ローカル Wikipedia のみ、Online で Serper → Brave と自前 fetch → 薄ければ Jina Reader)。
 質問中の URL と固有名詞はモデルの 1 ラウンド目の前にアプリが引く。設計・キーの
 置き場・実機スモークは [WEB_SEARCH.md](WEB_SEARCH.md)、Wikipedia は
 [LOCAL_WIKIPEDIA.md](LOCAL_WIKIPEDIA.md)。
@@ -147,6 +148,17 @@ CommonMark と Gemma の日本語の食い違いで、実回答から見つけ�
 `TSUGUMI_MARKDOWN_CORPUS_JSON=~/Library/Application\ Support/Tsugumi/chats.json`
 で手元の会話履歴にも同じ検査を掛けられ、`TSUGUMI_MARKDOWN_PNG_DIR=<dir>` を足すと
 1 回答 1 枚の PNG が出るので目視できる (どちらもリポジトリには入れない)。
+
+**数式** (2026-09-03): `$…$` / `$$…$$` / `\(…\)` / `\[…\]` を `ResponseMath.extract` が
+Markdown パースの前に抜き出し (`x_1 * x_2` を強調にしないため。コードスパンとフェンスの
+中は触らない。`$5 and $10` は閉じ `$` の前が空白なので数式にしない)、SwiftMath (iosMath の
+Swift 移植、Latin Modern Math を CoreText で描く。`Sources/ThirdParty/SwiftMath` に取り込み済み —
+上流の `Bundle.module` は .app の中でフォントを見つけられないので `PackagedResourceBundle` に差し替えた、
+`VENDORED.md`) で描いた画像を `NSTextAttachment` として
+文中に置く。色は明暗 2 枚を描いておき、描画時の appearance で選ぶ。`$$` が段落の頭なら中央寄せ。
+Latin Modern に CJK の字形が無いので `\text{定数項}` のような式は文字に落とす
+(`fallbackText`: `\frac` → `(a)/(b)`、`\neq` → ≠ など)。コピーは書かれた TeX のまま
+(`plainText` が `TsugumiMathSource` 属性から戻す)。
 
 ## 4d. 回答の下の操作行と指示層 (2026-09-02)
 

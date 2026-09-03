@@ -57,10 +57,15 @@ struct AnswerActionsRow: View {
     /// with no page read is orange, the model saw snippets only), Wikipedia
     /// alone second, nothing third. "No search" is orange when the model
     /// could have searched: that is the case the app exists to make visible.
+    /// A turn sent as Model only chose not to, and says so in grey.
     private var groundingBadge: some View {
         let grounding = model.outputGrounding
         let couldHaveSearched = model.webSearchConfiguration.resolved().canSearch
+            && model.outputNetworkMode != .modelOnly
         let (symbol, text, color): (String, String, Color) = {
+            if grounding.isEmpty, model.outputNetworkMode == .modelOnly {
+                return ("cpu", AppNetworkMode.modelOnly.label, .secondary)
+            }
             if grounding.webSteps > 0 {
                 return ("globe",
                         L("Web · \(grounding.webSearches) searched · \(grounding.pagesRead) read"),
@@ -75,7 +80,9 @@ struct AnswerActionsRow: View {
         return Label(text, systemImage: symbol)
             .foregroundStyle(color)
             .help(grounding.isEmpty
-                  ? L("The answer came from the model alone.")
+                  ? (model.outputNetworkMode == .modelOnly
+                     ? AppNetworkMode.modelOnly.help
+                     : L("The answer came from the model alone."))
                   : grounding.webSearches > 0 && grounding.pagesRead == 0
                   ? L("The model searched but read no page: it saw snippets only.")
                   : L("Steps the answer was grounded on; open the list above for each one."))

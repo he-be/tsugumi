@@ -85,6 +85,7 @@ RESOURCE_BUNDLES=(
     Tsugumi_Tsugumi            # Metal/ と Templates/ (シェーダは実行時に compile する)
     Tsugumi_TsugumiAppCore     # 検索プロンプトと状態ラベルの文言 (en/ja)
     Tsugumi_TsugumiMac         # アプリアイコンと画面の文言 (en/ja)
+    Tsugumi_SwiftMath          # 数式の描画に使う Latin Modern Math フォント (Sources/ThirdParty/SwiftMath)
 )
 for bundle in "${RESOURCE_BUNDLES[@]}"; do
     if [[ ! -d "$BIN_PATH/$bundle.bundle" ]]; then

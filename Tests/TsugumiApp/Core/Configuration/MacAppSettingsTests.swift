@@ -279,5 +279,9 @@ import Testing
         let roundTrip = try JSONDecoder().decode(
             MacAppSettings.self, from: try JSONEncoder().encode(settings))
         #expect(roundTrip.networkMode == .online)
+        settings.networkMode = .modelOnly
+        let alone = try JSONDecoder().decode(
+            MacAppSettings.self, from: try JSONEncoder().encode(settings))
+        #expect(alone.networkMode == .modelOnly)
     }
 }

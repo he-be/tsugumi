@@ -177,6 +177,11 @@
 "Wikipedia · %lld" = "Wikipedia · %lld 件";
 "Write a prompt to begin." = "プロンプトを書いて始めましょう。";
 "Network" = "ネットワーク";
+"Model only" = "モデルのみ";
+"Search" = "検索";
+"Nothing is looked up. The model answers from what it knows, and thinks without a budget from the start." = "何も調べません。モデルが知っていることだけで答え、Thinking オンなら最初から予算なしで考えます。";
+"Search is on: the model may look things up (Wikipedia from the local index; the web when Online)." = "検索オン: モデルが調べものをできます (ローカル索引の Wikipedia、オンラインなら Web も)。";
+"Online is off: nothing leaves this Mac." = "オンライン オフ: この Mac から何も出ません。";
 "Offline" = "オフライン";
 "Online" = "オンライン";
 "Nothing leaves this Mac. Wikipedia is read from the local index when one is set." = "この Mac から何も送信しません。Wikipedia はローカルの索引があればそれを読みます。";

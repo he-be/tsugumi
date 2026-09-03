@@ -251,13 +251,15 @@ import Testing
             .underlineStyle, at: linkRange.location, effectiveRange: nil) != nil)
     }
 
-    @Test func latexRemainsReadableText() {
+    @Test func latexIsDrawnAndSurvivesACopy() {
         let source = "Cosine is $\\frac{u \\cdot v}{||u|| ||v||}$."
-        let result = ResponseMarkdownRenderer().render(source)
+        let renderer = ResponseMarkdownRenderer()
+        let result = renderer.render(source)
 
         #expect(!result.usedFallback)
-        #expect(result.attributedString.string.contains("\\frac"))
-        #expect(result.attributedString.string.contains("\\cdot"))
+        #expect(attachmentCount(result.attributedString) == 1)
+        #expect(result.attributedString.string.hasPrefix("Cosine is "))
+        #expect(renderer.plainText(source) == source)
     }
 
     @Test func boldOnlyModelHeadingStaysOnItsOwnLine() {
@@ -267,6 +269,67 @@ import Testing
         #expect(!result.usedFallback)
         #expect(result.attributedString.string
             == "Origins\n\nFieldfares arrive from northern Europe.")
+    }
+
+    // MARK: Math
+
+    private func attachmentCount(_ rendered: NSAttributedString) -> Int {
+        var count = 0
+        rendered.enumerateAttribute(.attachment, in: NSRange(location: 0, length: rendered.length)) { value, _, _ in
+            if value is NSTextAttachment { count += 1 }
+        }
+        return count
+    }
+
+    @Test func inlineMathIsDrawnAndCopiesAsTeX() {
+        let source = #"候補は $\pm 1$ だけで、$f(1) = 1 - 3 = -2 \neq 1$ となる。"#
+        let renderer = ResponseMarkdownRenderer()
+        let rendered = renderer.render(source).attributedString
+        #expect(attachmentCount(rendered) == 2)
+        #expect(rendered.string.contains("候補は"))
+        #expect(!rendered.string.contains("\\pm"))
+        #expect(renderer.plainText(source) == source)
+    }
+
+    @Test func displayMathOnItsOwnLinesIsDrawn() {
+        let source = "次の方程式を解け。\n\n$$x^3 - 3x = 1$$\n\nただし実数解のみ。"
+        let renderer = ResponseMarkdownRenderer()
+        let rendered = renderer.render(source).attributedString
+        #expect(attachmentCount(rendered) == 1)
+        #expect(renderer.plainText(source) == source)
+    }
+
+    @Test func mathUnderscoresAreNotEmphasis() {
+        let rendered = ResponseMarkdownRenderer().render(#"$x_1 * x_2$ と \(a_1\) と \[b_2 = 3\]"#).attributedString
+        #expect(attachmentCount(rendered) == 3)
+        #expect(!rendered.string.contains("_"))
+    }
+
+    @Test func moneyAndCodeKeepTheirDollars() {
+        let source = "$5 and $10, plus `$HOME` and\n\n```sh\necho $PATH $x$\n```\n"
+        let rendered = ResponseMarkdownRenderer().render(source).attributedString
+        #expect(attachmentCount(rendered) == 0)
+        #expect(rendered.string.contains("$5 and $10"))
+        #expect(rendered.string.contains("$HOME"))
+        #expect(rendered.string.contains("$PATH $x$"))
+    }
+
+    @Test func mathWithJapaneseTextFallsBackToReadableText() {
+        let source = #"有理数解の候補は $\frac{\text{定数項の約数}}{\text{最高次係数の約数}}$ に限られる。"#
+        let renderer = ResponseMarkdownRenderer()
+        let rendered = renderer.render(source).attributedString
+        #expect(attachmentCount(rendered) == 0)
+        #expect(rendered.string.contains("(定数項の約数)/(最高次係数の約数)"))
+        #expect(renderer.plainText(source) == source)
+    }
+
+    @Test func extractionFindsTheFourDelimiters() {
+        let (text, spans) = ResponseMath.extract(from: #"a $x$ b $$y$$ c \(z\) d \[w\] e \$5"#)
+        #expect(spans.map(\.latex) == ["x", "y", "z", "w"])
+        #expect(spans.map(\.display) == [false, true, false, true])
+        #expect(text.hasSuffix(#" e \$5"#))
+        #expect(ResponseMath.fallbackText(for: ResponseMath.Span(
+            source: "", latex: #"q = -3 \implies -q/2 = 1.5"#, display: false)) == "q = -3 ⟹ -q/2 = 1.5")
     }
 }
 
@@ -552,4 +615,5 @@ import Testing
             wasAtBottom: false,
             mutation: .appended))
     }
+
 }

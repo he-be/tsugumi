@@ -27,6 +27,9 @@ public final class AppChatSession: Identifiable {
     /// The line added to the question for this answer (a regeneration), or
     /// nil for the question as typed. `outputPromptText` stays the question.
     public internal(set) var outputDirective: AppAnswerDirective?
+    /// The mode the live turn was sent in, so the row under the answer can
+    /// tell "chose not to search" from "could have searched and did not".
+    public internal(set) var outputNetworkMode: AppNetworkMode?
     /// Earlier answers to the live turn, oldest first, set aside by
     /// regenerations. The live output fields hold the one on display.
     public internal(set) var outputVariants: [AppAnswerVariant] = []

@@ -177,6 +177,11 @@
 "Wikipedia · %lld" = "Wikipedia · %lld";
 "Write a prompt to begin." = "Write a prompt to begin.";
 "Network" = "Network";
+"Model only" = "Model only";
+"Search" = "Search";
+"Nothing is looked up. The model answers from what it knows, and thinks without a budget from the start." = "Nothing is looked up. The model answers from what it knows, and thinks without a budget from the start.";
+"Search is on: the model may look things up (Wikipedia from the local index; the web when Online)." = "Search is on: the model may look things up (Wikipedia from the local index; the web when Online).";
+"Online is off: nothing leaves this Mac." = "Online is off: nothing leaves this Mac.";
 "Offline" = "Offline";
 "Online" = "Online";
 "Nothing leaves this Mac. Wikipedia is read from the local index when one is set." = "Nothing leaves this Mac. Wikipedia is read from the local index when one is set.";

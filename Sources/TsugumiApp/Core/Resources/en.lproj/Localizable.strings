@@ -65,3 +65,9 @@
 "Verifying %@" = "Verifying %@";
 "Verifying weights" = "Verifying weights";
 "Web search needs a Serper or Brave API key, or a local Wikipedia index. Add one in the Inspector, or turn Web search off." = "Web search needs a Serper or Brave API key, or a local Wikipedia index. Add one in the Inspector, or turn Web search off.";
+"Model only" = "Model only";
+"Offline" = "Offline";
+"Online" = "Online";
+"Nothing is looked up. The model answers from what it knows, and thinks without a budget from the start." = "Nothing is looked up. The model answers from what it knows, and thinks without a budget from the start.";
+"Nothing leaves this Mac. Wikipedia is read from the local index when one is set." = "Nothing leaves this Mac. Wikipedia is read from the local index when one is set.";
+"Search queries go to Serper or Brave; pages are fetched from their sites, thin ones through Jina Reader." = "Search queries go to Serper or Brave; pages are fetched from their sites, thin ones through Jina Reader.";

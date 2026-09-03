@@ -89,7 +89,7 @@ public final class AppModel {
     private let webSearchConfigurationURL: URL?
     private let personaURL: URL?
     private var activeToolExecutor: (any AppToolExecutor)?
-    private var activeNetworkMode: AppNetworkMode = .offline
+    private var activeNetworkMode: AppNetworkMode = .modelOnly
     private var activeSystemPrompt: String?
     /// Online with the web tools declared: the turn must search, then read
     /// a page, before it may answer (`AppModel.onlineToolChoice`). The
@@ -258,6 +258,10 @@ public final class AppModel {
     public var outputContinuationTurns: [AppChatTurn] { selectedChat.outputContinuationTurns }
 
     public var outputDirective: AppAnswerDirective? { selectedChat.outputDirective }
+
+    /// The mode the answer on display was sent in (nil for a chat saved
+    /// before the mode was recorded).
+    public var outputNetworkMode: AppNetworkMode? { selectedChat.outputNetworkMode }
 
     public var outputVariants: [AppAnswerVariant] { selectedChat.outputVariants }
 
@@ -1060,6 +1064,7 @@ public final class AppModel {
         chat.outputContinuationTurns = []
         chat.outputToolTrace = []
         chat.outputDirective = nil
+        chat.outputNetworkMode = nil
         chat.outputVariants = []
         chat.selectedVariantIndex = 0
         if chat.id == mailboxOwnerChatID {
@@ -1084,7 +1089,8 @@ public final class AppModel {
             text: responsePlainText(of: chat),
             reasoningText: chat.outputReasoningText,
             continuationTurns: chat.outputContinuationTurns,
-            toolTrace: chat.outputToolTrace)
+            toolTrace: chat.outputToolTrace,
+            networkMode: chat.outputNetworkMode)
         chat.outputVariants.insert(displayed, at: chat.selectedVariantIndex)
         let chosen = chat.outputVariants.remove(at: index)
         if chat.id == mailboxOwnerChatID {
@@ -1093,6 +1099,7 @@ public final class AppModel {
             mailboxOwnerChatID = nil
         }
         chat.outputDirective = chosen.directive
+        chat.outputNetworkMode = chosen.networkMode
         chat.outputText = chosen.text
         chat.outputReasoningText = chosen.reasoningText
         chat.outputContinuationTurns = chosen.continuationTurns
@@ -1131,6 +1138,7 @@ public final class AppModel {
         chat.outputContinuationTurns = []
         chat.outputToolTrace = []
         chat.outputDirective = nil
+        chat.outputNetworkMode = nil
         chat.outputVariants = []
         chat.selectedVariantIndex = 0
     }
@@ -1170,7 +1178,8 @@ public final class AppModel {
             text: responsePlainText(of: chat),
             reasoningText: chat.outputReasoningText,
             continuationTurns: chat.outputContinuationTurns,
-            toolTrace: chat.outputToolTrace)
+            toolTrace: chat.outputToolTrace,
+            networkMode: chat.outputNetworkMode)
         chat.outputVariants.insert(displayed, at: chat.selectedVariantIndex)
         chat.selectedVariantIndex = chat.outputVariants.count
         let mode: AppNetworkMode = directive == .searched ? .online : effectiveNetworkMode
@@ -1204,7 +1213,7 @@ public final class AppModel {
             return
         }
         do {
-            executor = toolsAvailable ? try toolExecutorProvider(webSearchConfiguration, mode) : nil
+            executor = try toolExecutor(for: mode)
             systemPrompt = makeSystemPrompt(tools: executor)
             request = try makeFirstRoundRequest(
                 executor: executor, systemPrompt: systemPrompt,
@@ -1226,6 +1235,7 @@ public final class AppModel {
         chat.outputPromptText = question
         chat.outputImagePaths = request.imagePaths
         chat.outputDirective = directive
+        chat.outputNetworkMode = mode
         chat.outputText = ""
         chat.outputReasoningText = ""
         chat.outputContinuationTurns = []
@@ -1471,7 +1481,15 @@ public final class AppModel {
     public var toolsAvailable: Bool { selectedModelKind == .gemmaQATSym }
 
     public var effectiveNetworkMode: AppNetworkMode {
-        toolsAvailable ? networkMode : .offline
+        toolsAvailable ? networkMode : .modelOnly
+    }
+
+    /// The executor a turn in `mode` gets: none for a model without tools,
+    /// none when the mode declares none, otherwise whatever the provider
+    /// has for the mode (nothing Offline without a local index).
+    private func toolExecutor(for mode: AppNetworkMode) throws -> (any AppToolExecutor)? {
+        guard toolsAvailable, mode.usesTools else { return nil }
+        return try toolExecutorProvider(webSearchConfiguration, mode)
     }
 
     public func saveWebSearchConfiguration() {
@@ -1487,6 +1505,7 @@ public final class AppModel {
                                              mode: AppNetworkMode,
                                              transport: any HTTPTransport = URLSessionTransport()) throws
         -> (any AppToolExecutor)? {
+        guard mode.usesTools else { return nil }
         let resolved = configuration.resolved()
         if mode == .online, !resolved.canSearch {
             throw AppInferenceError.invalidRequest(
@@ -1530,7 +1549,7 @@ public final class AppModel {
     /// The request the next `run` would send for the current mode: the tools
     /// and system prompt when any are declared, nothing extra otherwise.
     public func makeRequest() throws -> AppGenerationRequest {
-        let executor = toolsAvailable ? try toolExecutorProvider(webSearchConfiguration, effectiveNetworkMode) : nil
+        let executor = try toolExecutor(for: effectiveNetworkMode)
         let tools = executor?.definitions ?? []
         let online = effectiveNetworkMode == .online
             && tools.contains { $0.name == WebSearchToolExecutor.searchToolName }

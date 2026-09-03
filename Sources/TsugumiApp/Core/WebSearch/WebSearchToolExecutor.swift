@@ -356,13 +356,23 @@ public enum WebSearchPrompt {
 /// forced first search (Always) was a workaround the app no longer needs
 /// now that it reads the prompt's URLs and Wikipedia names itself.
 public enum AppNetworkMode: String, CaseIterable, Codable, Sendable, Identifiable {
+    /// No tools at all: the model answers from what it knows, and with
+    /// thinking on it thinks without the pre-search budget from the start.
+    /// For the questions that need no looking up (a screenshot to text, an
+    /// equation) and every bit of reasoning.
+    case modelOnly = "model"
     case offline
     case online
 
     public var id: String { rawValue }
 
+    /// Whether a turn in this mode declares tools (given a model that has
+    /// any, and a local index for `.offline`).
+    public var usesTools: Bool { self != .modelOnly }
+
     public var label: String {
         switch self {
+        case .modelOnly: AppLocalization.string("Model only")
         case .offline: AppLocalization.string("Offline")
         case .online: AppLocalization.string("Online")
         }
@@ -370,6 +380,7 @@ public enum AppNetworkMode: String, CaseIterable, Codable, Sendable, Identifiabl
 
     public var help: String {
         switch self {
+        case .modelOnly: AppLocalization.string("Nothing is looked up. The model answers from what it knows, and thinks without a budget from the start.")
         case .offline: AppLocalization.string("Nothing leaves this Mac. Wikipedia is read from the local index when one is set.")
         case .online: AppLocalization.string("Search queries go to Serper or Brave; pages are fetched from their sites, thin ones through Jina Reader.")
         }

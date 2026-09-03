@@ -28,6 +28,8 @@
 | U14 | 関連質問の提案 | Perplexity, Gemini | 否 | decode を余計に使う |
 | U15 | 引用番号を本文に埋める | Perplexity | 否 | モデル側の出力形式の問題。「参照:」の列挙で足りる |
 | U16 | チャット内検索・ピン留め | 全部 | 保留 | 件数が増えてから |
+| U18 | ツール無し・全力思考のモード | ChatGPT の「検索なし」、Claude の extended thinking (ツールと独立) | 採 | 「モデルのみ」。Search と Online の 2 トグル (両方オフがモデルのみ)。ツールを宣言せず、ツール用システムプロンプトも載せず、1 ラウンド目の思考予算も外す。スクリーンショットの文字起こしや方程式のため |
+| U19 | 数式の描画 | ChatGPT, Claude, Open WebUI (KaTeX) | 採 | SwiftMath で `$…$` / `$$…$$` を CoreText 描画、コピーは TeX のまま (docs/MAC_APP.md §4c) |
 | U17 | マシンの空きを速度計で | Activity Monitor のメモリプレッシャー、LM Studio の RAM 表示 | 採 | HUD 右端の針。借りられるメモリ ÷ モデルの重み。針の横に説明は置かず、クリックで内訳 (docs/MAC_APP.md §4e) |
 
 ## 2. 意味論 (Core)

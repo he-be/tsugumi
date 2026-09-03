@@ -65,10 +65,12 @@ assistant の順で履歴に畳まれ、次の送信でそのまま再描画さ�
 
 コンポーザ左下の地球アイコン (Inspector の Network セクションでも同じ)。
 ローカルモデルの使い手が知りたいのは「何かが外に出るか」なので、切り替えは
-この 1 つだけ (`AppNetworkMode`):
+この 1 つだけ (`AppNetworkMode`)。コンポーザでは Search と Online の 2 トグルに見せる
+(両方オフ = モデルのみ、Search だけ = Offline、Online を押すと Search も点く):
 
 | | 宣言するツール | この Mac から出るもの |
 | --- | --- | --- |
+| モデルのみ | 何も宣言しない。ツール用システムプロンプトも載せず、1 ラウンド目の思考予算 (§4) も掛けない。スクリーンショットの文字起こしや方程式など、調べものが要らず最初から全力で考えてほしい質問のため | 何も出ない |
 | Offline | ローカル Wikipedia の 2 つ (索引があれば。無ければ何も宣言しない = 従来の素のターン) | 何も出ない |
 | Online | 上に加えて `web_search` / `fetch_page`。Serper か Brave のキーが無ければエラー | 検索クエリ (モデルが書いたもの) が Serper/Brave へ。ページ取得は相手サイトへ。薄いページは Jina Reader へ URL が渡る |
 
@@ -232,4 +234,4 @@ Gemma 4 の既知の癖 (system prompt の未来日付を「シミュレーシ�
 | `Sources/TsugumiApp/Core/Inference/AppToolTypes.swift` | `AppToolCall` / `AppToolDefinition` / `AppToolExecutor` / トレース |
 | `Sources/TsugumiApp/Core/Inference/RealInferenceClient.swift` | system・tool ターン・宣言を `ValidatedChatRequest` へ |
 | `Sources/TsugumiDecodeProtocol/DecodeProtocol.swift` | ワイヤの追加フィールド (旧クライアントの JSON はそのまま読める) |
-| `Sources/TsugumiApp/Mac/…` | コンポーザのモードメニュー、Inspector の Web search、出力ペインのトレース |
+| `Sources/TsugumiApp/Mac/…` | コンポーザの Offline/Online トグル、Inspector の Web search、出力ペインのトレース |

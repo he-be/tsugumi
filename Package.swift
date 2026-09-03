@@ -88,11 +88,21 @@ let package = Package(
                 .process("Resources/ja.lproj"),
             ]
         ),
+        // Vendored (MIT): see Sources/ThirdParty/SwiftMath/VENDORED.md.
+        .target(
+            name: "SwiftMath",
+            dependencies: ["TsugumiBundleLocation"],
+            path: "Sources/ThirdParty/SwiftMath",
+            exclude: ["LICENSE", "VENDORED.md"],
+            resources: [.copy("mathFonts.bundle")],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
         .target(
             name: "TsugumiMacPresentation",
             dependencies: [
                 "TsugumiAppCore",
                 .product(name: "Markdown", package: "swift-markdown"),
+                "SwiftMath",
             ],
             path: "Sources/TsugumiApp/MacPresentation"
         ),
