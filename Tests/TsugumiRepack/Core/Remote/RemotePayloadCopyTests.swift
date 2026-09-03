@@ -195,12 +195,69 @@ enum FakeFailure: Equatable {
     case truncatedBody
 }
 
+/// The fake Hub is one process-wide server: its files, failures and counters
+/// are static, so two tests talking to it at once see each other's state.
+/// `.serialized` only orders the tests inside one suite; this trait orders
+/// them across suites by holding one lock for the length of each test.
+struct FakeHFServerTrait: SuiteTrait, TestTrait, TestScoping {
+    var isRecursive: Bool { true }
+
+    func provideScope(for test: Test,
+                      testCase: Test.Case?,
+                      performing function: @Sendable () async throws -> Void) async throws {
+        await FakeHFServerLock.shared.acquire()
+        defer { FakeHFServerLock.shared.release() }
+        try await function()
+    }
+}
+
+extension Trait where Self == FakeHFServerTrait {
+    /// Marks a suite whose tests use `FakeHFURLProtocol`.
+    static var fakeHFServer: Self { Self() }
+}
+
+/// A FIFO lock that can be awaited from a test body.
+final class FakeHFServerLock: Sendable {
+    static let shared = FakeHFServerLock()
+
+    private struct State {
+        var held = false
+        var waiters: [CheckedContinuation<Void, Never>] = []
+    }
+    private let state = Mutex(State())
+
+    func acquire() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let acquired = state.withLock { state -> Bool in
+                if state.held {
+                    state.waiters.append(continuation)
+                    return false
+                }
+                state.held = true
+                return true
+            }
+            if acquired { continuation.resume() }
+        }
+    }
+
+    func release() {
+        let next = state.withLock { state -> CheckedContinuation<Void, Never>? in
+            if state.waiters.isEmpty {
+                state.held = false
+                return nil
+            }
+            return state.waiters.removeFirst()
+        }
+        next?.resume()
+    }
+}
+
 let remoteTokenizerJSON = Data(#"{"model":{"type":"BPE"}}"#.utf8)
 let remoteTokenizerConfigJSON = Data(#"{"tokenizer_class":"PreTrainedTokenizerFast"}"#.utf8)
 let remoteSpecialTokensMapJSON = Data(#"{"eos_token":"<eos>"}"#.utf8)
 let remoteChatTemplateJinja = Data("{{ bos_token }}".utf8)
 
-@Suite(.serialized)
+@Suite(.serialized, .fakeHFServer)
 struct RemotePayloadCopyTests {
 
 }

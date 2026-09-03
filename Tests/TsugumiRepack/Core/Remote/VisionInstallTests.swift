@@ -3,7 +3,7 @@ import Testing
 @testable import MoEPackFormat
 @testable import TsugumiRepackCore
 
-@Suite(.serialized)
+@Suite(.serialized, .fakeHFServer)
 struct VisionInstallTests {
 
     /// The staged-snapshot path copies tokenizer sidecars, so a snapshot under

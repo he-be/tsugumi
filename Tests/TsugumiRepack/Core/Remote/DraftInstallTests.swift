@@ -3,7 +3,7 @@ import Testing
 @testable import MoEPackFormat
 @testable import TsugumiRepackCore
 
-@Suite(.serialized)
+@Suite(.serialized, .fakeHFServer)
 struct DraftInstallTests {
 
     /// A refusal is only worth having if it is the refusal we meant, so the

@@ -9,7 +9,7 @@ import Testing
 /// weights are not re-downloaded, not rewritten, and not even reopened for
 /// writing, and what is left behind is indistinguishable from an install that
 /// had `--include-vision` from the start.
-@Suite(.serialized)
+@Suite(.serialized, .fakeHFServer)
 struct VisionAppendInstallTests {
 
     private func installOptions(snapshotDir: String,

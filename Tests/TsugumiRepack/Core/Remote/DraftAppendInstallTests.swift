@@ -8,7 +8,7 @@ import Testing
 /// the property worth having is not "a drafter appears" but "nothing else
 /// moves": the 15 GB of text weights are not re-downloaded, not rewritten, and
 /// not even reopened for writing.
-@Suite(.serialized)
+@Suite(.serialized, .fakeHFServer)
 struct DraftAppendInstallTests {
 
     private func installOptions(snapshotDir: String,
