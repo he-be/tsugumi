@@ -109,6 +109,7 @@ public final class AppModel {
     private var toolTask: Task<Void, Never>?
     private let memorySampler: AppMemorySampler
     private let hostMemorySampler: AppHostMemorySampler
+    private var headroomSampleGate = AppHeadroomSampleGate()
     /// Where each round's metrics line goes (`AppTurnMetricsRecord`); nil
     /// in tests that do not ask for it.
     private let turnMetricsLog: AppTurnMetricsLog?
@@ -558,8 +559,15 @@ public final class AppModel {
     /// `host_statistics64` call); the model's streamed size is cached per
     /// directory. Falls back to the install's total size when the
     /// directory has no expert files yet.
-    public func refreshMachineHeadroom() {
+    ///
+    /// Held while a turn runs and until the machine settles after it
+    /// (`AppHeadroomSampleGate`): a sample taken then would read Tsugumi's
+    /// own wired weights as other apps crowding the RAM. `force` bypasses
+    /// the gate for the one sample a turn takes before it touches the machine.
+    public func refreshMachineHeadroom(force: Bool = false) {
         guard let host = hostMemorySampler.sample() else { return }
+        let generating = !force && phase != .idle
+        guard headroomSampleGate.admits(host, generating: generating, at: Date()) else { return }
         let wanted = streamedWeightBytes() ?? installDescriptor.installedBytes
         let own = loadState.isReady
             ? (client as? any AppInferenceRuntimeReporting)?.loadedRuntimeOwnBytes ?? 0
@@ -1728,7 +1736,10 @@ public final class AppModel {
     private func beginRoundMetrics() {
         activeTurnRound += 1
         guard turnMetricsLog != nil else { return }
-        refreshMachineHeadroom()
+        // The first round samples the machine as the turn found it; later
+        // rounds of the same turn keep that reading, because by then the
+        // wired memory is the previous round's, not other apps' (§4e).
+        if activeTurnRound == 1 { refreshMachineHeadroom(force: true) }
         roundHeadroom = machineHeadroom
         let directory = URL(fileURLWithPath: modelPathText, isDirectory: true)
         roundResidencyTask = Task.detached(priority: .utility) {

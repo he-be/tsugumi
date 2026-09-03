@@ -324,7 +324,11 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
             peakMemoryBytes: event.peakMemoryBytes,
             runtimeOptions: options,
             prefill: prefillDiagnostics(event.prefill, options: options),
-            runner: event.runner.map(runnerDiagnostics))
+            runner: event.runner.map(runnerDiagnostics),
+            diskRead: event.decodeDiskReadBytes.map {
+                AppDiskReadDiagnostics(prefillBytes: event.prefillDiskReadBytes ?? 0,
+                                       decodeBytes: $0)
+            })
     }
 
     private static func prefillDiagnostics(

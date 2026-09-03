@@ -79,6 +79,9 @@ public struct AppDiagnostics: Equatable, Sendable {
     public var runtimeOptions: AppRuntimeOptions
     public var prefill: PrefillExecutionDiagnostics?
     public var runner: AppRunnerDiagnostics?
+    /// Bytes the round read from the SSD, prefill and decode apart. Present
+    /// when the decode service measured them.
+    public var diskRead: AppDiskReadDiagnostics?
 
     public var requestStartTimeToFirstTokenSeconds: Double? {
         guard let prefillSeconds, let timeToFirstTokenSeconds else { return nil }
@@ -109,7 +112,8 @@ public struct AppDiagnostics: Equatable, Sendable {
                 peakMemoryBytes: UInt64?,
                 runtimeOptions: AppRuntimeOptions,
                 prefill: PrefillExecutionDiagnostics? = nil,
-                runner: AppRunnerDiagnostics? = nil) {
+                runner: AppRunnerDiagnostics? = nil,
+                diskRead: AppDiskReadDiagnostics? = nil) {
         self.generatedTokens = generatedTokens
         self.stopReason = stopReason
         self.promptTokenCount = promptTokenCount
@@ -123,6 +127,7 @@ public struct AppDiagnostics: Equatable, Sendable {
         self.runtimeOptions = runtimeOptions
         self.prefill = prefill
         self.runner = runner
+        self.diskRead = diskRead
     }
 }
 

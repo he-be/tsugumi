@@ -51,3 +51,4 @@
 - **コンテキスト使用量 (U1)** は直前ラウンドの `promptTokenCount + generatedTokens`。生成中は前回値に生成分を足します。
 - **速度計 (U17)** は `AppMachineHeadroom`: 借りられるメモリ (物理 − アプリ − wired − 圧縮) ÷ ストリームする重み。
   decode の速さではなく機械の空き。速さとの対応は docs/MAC_APP.md §4e の表 (短い雑談ではほぼ効かず、長い文脈で半減)。
+  ターン中と直後は読まない (`AppHeadroomSampleGate`、2026-09-04): 生成中は Tsugumi 自身の wired で針が落ちてしまうため。

@@ -2,8 +2,14 @@
 """Same task, official sampling, under a memory hog of 0/4/8/11 GiB.
 
 Records the gauge (borrowable / streamed weights, the app's formula from
-vm_stat) next to tok/s of each run. Cells: 0, 4, 8, 11, then 0 again as
-the head/tail drift check."""
+vm_stat) next to tok/s of each run. Cells: 0, 3, 6, then 0 again as the
+head/tail drift check.
+
+**Swap guard (2026-09-04).** The 6, 8 and 11 GiB cells made macOS swap the hog
+itself and wrote on the order of a terabyte to the SSD. `memory_hog.py` now
+refuses what the Mac cannot lend and exits when Swapouts grows; this driver
+skips a refused cell, aborts if the hog dies, and aborts if Swapouts grew
+during a run."""
 import json, os, socket, subprocess, sys, time, uuid, re, signal, pathlib
 REPO = os.environ.get("TSUGUMI_REPO") or str(pathlib.Path(__file__).resolve().parents[1])
 sys.path.insert(0, f"{REPO}/scripts/app")
@@ -19,7 +25,8 @@ if os.environ.get("PROMPT_FILE"):
 PREFIX_REP = os.environ.get("PREFIX_REP") == "1"
 REP_COUNTER = [0]
 COOL = int(os.environ.get("COOL_S", "10"))
-CELLS = [float(x) for x in os.environ.get("CELLS", "0,4,8,11,0").split(",")]
+CELLS = [float(x) for x in os.environ.get("CELLS", "0,3,5,0").split(",")]
+SWAP_ABORT_PAGES = int(os.environ.get("SWAP_ABORT_PAGES", "4096"))
 REPS = int(os.environ.get("REPS", "3"))
 PAGE = os.sysconf("SC_PAGESIZE")
 PHYS = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]))
@@ -36,7 +43,7 @@ def vm():
     borrow = max(0, PHYS - used)
     return dict(app_gb=(anon - purg) / 2**30, wired_gb=wired / 2**30, comp_gb=comp / 2**30,
                 cached_gb=(filebacked + purg) / 2**30, borrow_gb=borrow / 2**30,
-                level=min(1.0, borrow / WANTED))
+                level=min(1.0, borrow / WANTED), swapouts=g("Swapouts") // PAGE)
 
 def generate(sock):
     gid = str(uuid.uuid4()).upper()
@@ -73,11 +80,20 @@ def main():
             if cell > 0:
                 hog = subprocess.Popen([sys.executable, str(pathlib.Path(__file__).resolve().parent / "memory_hog.py"), str(cell)],
                                        stdout=subprocess.PIPE, text=True)
-                assert hog.stdout.readline().strip() == "ready"
+                first = hog.stdout.readline().strip()
+                if first != "ready":
+                    print(f"[hog {cell} GiB] {first} — skipping this cell", flush=True)
+                    hog.wait(); hog = None
+                    continue
                 time.sleep(5)
             for rep in range(REPS):
+                if hog is not None and hog.poll() is not None:
+                    raise SystemExit(f"hog exited ({hog.stdout.read().strip()}): macOS was swapping; experiment aborted")
                 before = vm()
                 ev = generate(sock)
+                swapped = vm()["swapouts"] - before["swapouts"]
+                if swapped > SWAP_ABORT_PAGES:
+                    raise SystemExit(f"Swapouts +{swapped} pages during one run; experiment aborted")
                 runner = ev.get("runner") or {}
                 row = dict(tag=TAG, hog_gib=cell, rep=rep, ts=time.time(), io_ms_tok=runner.get("ioMillisecondsPerToken"), prefill_s=ev.get("prefillSeconds"), prompt_tokens=ev.get("promptTokenCount"), cached_tokens=ev.get("cachedPromptTokens"), cb1_ms_tok=runner.get("cb1MillisecondsPerToken"), rdadvise_mb_tok=runner.get("rdadviseMegabytesPerToken"),
                            tok_s=ev["tokensPerSecond"], tokens=ev["tokenCount"],

@@ -83,6 +83,58 @@ public final class AppHostMemorySampler: Sendable {
     }
 }
 
+/// When a host sample may become the gauge's reading.
+///
+/// The gauge is about *other* apps crowding the RAM, and the formula charges
+/// everything that is not page cache to "used". While Tsugumi generates, the
+/// GPU driver wires the weights it is running (measured 2026-09-04 on the
+/// 18 GB M3 Pro: wired 5.5 → 10〜12 GB within a second of decode starting,
+/// back to 5.5 within two seconds of it ending), so a sample taken then
+/// reads Tsugumi's own work as a crowded machine — the needle fell to 0.3 at
+/// the moment answers were fastest. So: no sample is admitted while a turn
+/// runs (tool rounds included), and after it ends the first sample whose
+/// wired memory is back within `settleMarginBytes` of the last admitted one
+/// reopens the gate; `settleTimeout` reopens it regardless, so a machine that
+/// really did change between turns is not held forever.
+public struct AppHeadroomSampleGate: Equatable, Sendable {
+    public static let settleMarginBytes: UInt64 = 512 << 20
+    public static let settleTimeout: TimeInterval = 30
+
+    private var lastAdmittedWiredBytes: UInt64?
+    private var wasGenerating = false
+    /// Non-nil while waiting for the wired memory to come back down.
+    private var generationEndedAt: Date?
+
+    public init() {}
+
+    /// Whether `host`, sampled now, should replace the reading. `generating`
+    /// is the app's own state; the transition to false starts the settling
+    /// window at `now`.
+    public mutating func admits(_ host: AppHostMemory, generating: Bool, at now: Date) -> Bool {
+        if generating {
+            wasGenerating = true
+            generationEndedAt = nil
+            return false
+        }
+        if wasGenerating {
+            wasGenerating = false
+            generationEndedAt = now
+        }
+        if let ended = generationEndedAt {
+            let settled = lastAdmittedWiredBytes.map { host.wiredBytes <= $0 &+ Self.settleMarginBytes } ?? true
+            guard settled || now.timeIntervalSince(ended) >= Self.settleTimeout else { return false }
+            generationEndedAt = nil
+        }
+        lastAdmittedWiredBytes = host.wiredBytes
+        return true
+    }
+
+    /// True while a sample would be refused for the machine's sake rather
+    /// than the app's: the turn is over and the wired memory has not come
+    /// back yet.
+    public var isSettling: Bool { generationEndedAt != nil }
+}
+
 /// The gauge: how much of the weights the model streams can live in memory
 /// right now. 1.0 means the whole model fits and decode runs as fast as this
 /// Mac goes; lower means a share of every token's experts comes from the

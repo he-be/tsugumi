@@ -326,6 +326,11 @@ public struct DecodeServiceEvent: Codable, Sendable {
     public var runtimeOwnBytes: UInt64?
     public var prefill: DecodePrefillDiagnostics?
     public var runner: DecodeRunnerDiagnostics?
+    /// On a terminal event: bytes the service read from the SSD during the
+    /// prefill and during the decode (`proc_pid_rusage`). Optional for wire
+    /// compatibility.
+    public var prefillDiskReadBytes: UInt64?
+    public var decodeDiskReadBytes: UInt64?
     /// The function calls the generation ended on, carried on the terminal
     /// event (the stop reason is then `toolCalls`). Optional for wire
     /// compatibility.
@@ -348,6 +353,8 @@ public struct DecodeServiceEvent: Codable, Sendable {
                 runtimeOwnBytes: UInt64? = nil,
                 prefill: DecodePrefillDiagnostics? = nil,
                 runner: DecodeRunnerDiagnostics? = nil,
+                prefillDiskReadBytes: UInt64? = nil,
+                decodeDiskReadBytes: UInt64? = nil,
                 toolCalls: [DecodeToolCall]? = nil) {
         self.kind = kind
         self.generationID = generationID
@@ -373,6 +380,8 @@ public struct DecodeServiceEvent: Codable, Sendable {
         self.runtimeOwnBytes = runtimeOwnBytes
         self.prefill = prefill
         self.runner = runner
+        self.prefillDiskReadBytes = prefillDiskReadBytes
+        self.decodeDiskReadBytes = decodeDiskReadBytes
         self.toolCalls = toolCalls
     }
 }

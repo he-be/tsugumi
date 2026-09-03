@@ -50,6 +50,10 @@ public struct AppTurnMetricsRecord: Codable, Equatable, Sendable {
     public var cb2MillisecondsPerToken: Double?
     public var rdadviseMegabytesPerToken: Double?
     public var peakMemoryBytes: UInt64?
+    /// What the round read from the SSD (`AppDiskReadDiagnostics`): the
+    /// effect the speedometer's cause is supposed to predict.
+    public var prefillDiskReadBytes: UInt64?
+    public var decodeDiskReadBytes: UInt64?
 
     public init(recordedAt: String, turnID: String, round: Int, chatID: String,
                 outcome: String, model: String, contextTokens: Int, slots: Int,
@@ -93,6 +97,8 @@ public struct AppTurnMetricsRecord: Codable, Equatable, Sendable {
         self.cb2MillisecondsPerToken = diagnostics.runner?.cb2MillisecondsPerToken
         self.rdadviseMegabytesPerToken = diagnostics.runner?.rdadviseMegabytesPerToken
         self.peakMemoryBytes = diagnostics.peakMemoryBytes
+        self.prefillDiskReadBytes = diagnostics.diskRead?.prefillBytes
+        self.decodeDiskReadBytes = diagnostics.diskRead?.decodeBytes
     }
 }
 

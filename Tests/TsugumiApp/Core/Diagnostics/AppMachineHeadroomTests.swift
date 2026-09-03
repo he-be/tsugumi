@@ -182,3 +182,75 @@ private final class LockedBox<Value: Sendable>: @unchecked Sendable {
         set { lock.lock(); stored = newValue; lock.unlock() }
     }
 }
+
+/// The gate in front of the gauge: Tsugumi's own generation must not read
+/// as other apps crowding the RAM (docs/MAC_APP.md §4e, 2026-09-04).
+@Suite struct AppHeadroomSampleGateTests {
+    private let gib: UInt64 = 1 << 30
+    /// `#expect` cannot call a mutating member on a `var`, so the gate rides
+    /// in a box.
+    private final class GateBox {
+        var gate = AppHeadroomSampleGate()
+        init() {}
+        func admits(_ host: AppHostMemory, generating: Bool, at now: Date) -> Bool {
+            gate.admits(host, generating: generating, at: now)
+        }
+        var isSettling: Bool { gate.isSettling }
+    }
+    private func host(wired: UInt64) -> AppHostMemory {
+        AppHostMemory(physicalBytes: 18 * gib, appBytes: 3 * gib,
+                      wiredBytes: wired, compressedBytes: 1 * gib, cachedFileBytes: 5 * gib)
+    }
+    private let t0 = Date(timeIntervalSinceReferenceDate: 1_000)
+
+    @Test func idleSamplesAreAdmitted() {
+        let gate = GateBox()
+        #expect(gate.admits(host(wired: 5 * gib), generating: false, at: t0))
+        #expect(gate.admits(host(wired: 12 * gib), generating: false, at: t0 + 2))
+        #expect(!gate.isSettling)
+    }
+
+    @Test func nothingIsAdmittedWhileGenerating() {
+        let gate = GateBox()
+        #expect(gate.admits(host(wired: 5 * gib), generating: false, at: t0))
+        #expect(!gate.admits(host(wired: 11 * gib), generating: true, at: t0 + 2))
+        #expect(!gate.admits(host(wired: 12 * gib), generating: true, at: t0 + 4))
+    }
+
+    /// The measured shape: wired 5.5 → 10〜12 GB while decoding, back within
+    /// two seconds. The first sample after the turn still carries the
+    /// transient and is refused; the one that is back near the last admitted
+    /// reading reopens the gate.
+    @Test func afterATurnTheGateWaitsForWiredToComeBack() {
+        let gate = GateBox()
+        #expect(gate.admits(host(wired: 5_500 << 20), generating: false, at: t0))
+        #expect(!gate.admits(host(wired: 11 * gib), generating: true, at: t0 + 2))
+        #expect(!gate.admits(host(wired: 10 * gib), generating: false, at: t0 + 4))
+        #expect(gate.isSettling)
+        #expect(!gate.admits(host(wired: 8 * gib), generating: false, at: t0 + 6))
+        #expect(gate.admits(host(wired: 5_700 << 20), generating: false, at: t0 + 8))
+        #expect(!gate.isSettling)
+        #expect(gate.admits(host(wired: 5_700 << 20), generating: false, at: t0 + 10))
+    }
+
+    /// A machine that really changed between turns (another app took the
+    /// RAM as wired) must not be held forever: the timeout reopens the gate.
+    @Test func theTimeoutReopensTheGateOnAChangedMachine() {
+        let gate = GateBox()
+        #expect(gate.admits(host(wired: 5 * gib), generating: false, at: t0))
+        #expect(!gate.admits(host(wired: 11 * gib), generating: true, at: t0 + 2))
+        #expect(!gate.admits(host(wired: 9 * gib), generating: false, at: t0 + 4))
+        #expect(!gate.admits(host(wired: 9 * gib), generating: false, at: t0 + 20))
+        #expect(gate.admits(host(wired: 9 * gib), generating: false,
+                            at: t0 + 4 + AppHeadroomSampleGate.settleTimeout))
+        #expect(!gate.isSettling)
+    }
+
+    /// A gate that never admitted anything has nothing to compare with and
+    /// takes the first idle sample after a turn.
+    @Test func withNoBaselineTheFirstIdleSampleIsTaken() {
+        let gate = GateBox()
+        #expect(!gate.admits(host(wired: 11 * gib), generating: true, at: t0))
+        #expect(gate.admits(host(wired: 10 * gib), generating: false, at: t0 + 2))
+    }
+}

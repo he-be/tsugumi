@@ -218,6 +218,13 @@ HUD の右端に速度計 (`HeadroomGaugeView`) を置いた。針は **この M
 
 ### 針と速さの対応 (M3 Pro 18 GB、2026-09-02)
 
+> **SSD 書き込みの事故 (2026-09-04)。** 下の表の hog 8 GB / 11 GB のセルと、2026-09-04 の `bench/gauge_eval.py` の
+> hog 6 GB / 11 GB のセルは、macOS が hog 自身をスワップに出していた (乱数なので 1 ページも圧縮できず全量が書かれる。
+> 1 秒ごとに触るので出し入れが続く)。この 2 回で SSD への書き込みが TB 級になった (Swapouts 3,260 万ページ / 起動後)。
+> 以後、`bench/memory_hog.py` は「物理 − 使用中 − 2.5 GB」を超える要求を拒み、Swapouts が 64 MB ぶん増えた瞬間に
+> 自分を落とす。ドライバは hog が落ちたら実験ごと止める。**モデルをロードした状態でこの Mac が貸せるのは 5 GB 前後**で、
+> それより大きいセルは測定にならない (測っているのはスワップ)。表の 8 / 11 GB の行はその意味で読む。
+
 同じ課題・公式サンプリング (temp 1.0 / top-k 64 / top-p 0.95、Thinking off)・ctx 32K・32 スロット・MTP on。
 「他のアプリ」の代わりに乱数で埋めた anonymous メモリを 1 秒ごとに触り続ける hog を置き、
 セルごとに 3 回、クールダウン 10 秒。先頭と末尾の hog 0 GB は熱ドリフトの検定 (差はすべて 5% 未満)。
@@ -250,6 +257,23 @@ HUD の右端に速度計 (`HeadroomGaugeView`) を置いた。針は **この M
 - 針の満点をエキスパートキャッシュの作業集合 (32 スロットで 3.2 GB) に取れば、どの Mac でも常に満点に
   なって「あれば速い」が消える。満点はモデル全体 (12 GB) のままにした。
 
+### 針が生成中に落ちていた欠陥 (2026-09-04)
+
+ターンログ 23 行では針と tok/s の順位相関が +0.12 で、針は速さと無関係に見えた。原因は式ではなく**読む時刻**である。
+service 単体で wired を 1 秒ごとに記録すると、decode が始まって 1 秒で wired が 5.5 → 10〜12 GB に跳ね (GPU ドライバが
+走らせている重みを wire する)、終わって 2 秒で 5.5 GB に戻る。HUD は生成中も 2 秒ごとに読んでいたので、
+**回答が最速の瞬間に針が 0.3 まで落ちる**という逆の表示になっていた。ツール呼び出しの 2 ラウンド目以降の
+ログ行 (直前ラウンドの直後にサンプルする) が wired 12 GB・針 0.19〜0.35・tok/s 37〜53 だったのもこれ。
+
+同じ式を生成の外で読めば、他のアプリの分 (hog 0 → 3 → 6 GB) に応じて 0.55 → 0.25 と単調に動く (`bench/gauge_eval.py` の
+before 列)。針の意味は U17 のまま「他の常駐アプリで RAM が混んでいる」で、直したのは読む時刻だけ:
+
+- `AppHeadroomSampleGate`: ターンが走っている間 (ツールのラウンドも含む) はサンプルを取り込まない。
+  終わった後は、wired が最後に取り込んだ値 + 512 MB まで戻った最初のサンプルで再開する。30 秒経てば無条件に再開
+  (他のアプリが本当に wired を取ったときに止まったままにならないため)。
+- ターンログの針は 1 ラウンド目でだけ取り直し (`force`)、同じターンの後続ラウンドはその値を使う。
+- SSD の読み込み量や tok/s を針に混ぜない。針は原因 (RAM の混み具合) を出す部品で、結果を出す部品ではない。
+
 ### ターンごとのログ (2026-09-03)
 
 主張を実使用から積むために、ラウンドが終わるたびに 1 行の JSON を
@@ -262,6 +286,11 @@ HUD の右端に速度計 (`HeadroomGaugeView`) を置いた。針は **この M
 - **ラウンドの費用**: `promptTokens` / `cachedPromptTokens` / `prefillSeconds` / `timeToFirstTokenSeconds` /
   `generatedTokens` / `decodeSeconds` / `tokensPerSecond` / `draftAccepted` / `draftProposed` / `stopReason` /
   `toolCalls`、service が返せば `ioMillisecondsPerToken` と cb1 / cb2 / rdadvise MB/tok。
+- **SSD から読んだ量** (2026-09-04): `prefillDiskReadBytes` / `decodeDiskReadBytes`。decode service が自分の
+  `proc_pid_rusage` (`ri_diskio_bytesread`) をラウンドの開始・最初のトークン・終了で読んだ差。mmap した重みの
+  ページキャッシュミスも含めて、カーネルがこのプロセスのために SSD から取ったバイト数そのもの。針が言う
+  「混んでいると SSD から来る」の結果側で、`bench/gauge_eval.py` では hog で雑談 7 倍・長文脈 2 倍に増えた。
+  HUD には出さない (針は原因を出す部品)。読み手の `ssd MB/tok` 列。
 - **条件**: `model` / `contextTokens` / `slots` / `mtp` / `thinking` / `network` / `directive`、`turnID` と `round`
   (Online の検索 → 取得 → 回答は 1 ターン 3 ラウンド)、`outcome` (finished / tools / cancelled)。
 

@@ -25,10 +25,16 @@ final class DecodeServiceOutbox: @unchecked Sendable {
     private var state = State()
     private let generationID: UUID
     private let memorySampler = AppMemorySampler()
+    /// SSD reads: at the round's start, at its first token, at its end
+    /// (`AppDiskReadSampler`). The outbox is built when the request is
+    /// accepted, so `init` is the start.
+    private let diskReadAtStart: UInt64?
+    private var diskReadAtFirstToken: UInt64?
 
     init(generationID: UUID) {
         self.generationID = generationID
         memorySampler.resetPeak()
+        diskReadAtStart = AppDiskReadSampler.bytesRead()
     }
 
     func publish(_ event: AppInferenceEvent) {
@@ -38,6 +44,9 @@ final class DecodeServiceOutbox: @unchecked Sendable {
             state.latestPrefill = PrefillProgress(done: done, total: total)
             condition.signal()
         case .token(let token):
+            if diskReadAtFirstToken == nil {
+                diskReadAtFirstToken = AppDiskReadSampler.bytesRead()
+            }
             state.pendingText += token.textDelta
             state.pendingReasoning += token.reasoningDelta
             state.latestToken = token
@@ -140,7 +149,11 @@ final class DecodeServiceOutbox: @unchecked Sendable {
     private func terminal(_ kind: DecodeServiceEventKind,
                           diagnostics: AppDiagnostics?,
                           error: String? = nil) -> DecodeServiceEvent {
-        DecodeServiceEvent(
+        let diskRead = AppDiskReadSampler.diagnostics(
+            start: diskReadAtStart,
+            firstToken: diskReadAtFirstToken,
+            end: AppDiskReadSampler.bytesRead())
+        return DecodeServiceEvent(
             kind: kind, generationID: generationID,
             tokenCount: diagnostics?.generatedTokens ?? 0,
             promptTokenCount: diagnostics?.promptTokenCount,
@@ -158,6 +171,8 @@ final class DecodeServiceOutbox: @unchecked Sendable {
             peakMemoryBytes: memorySampler.peakBytes,
             prefill: diagnostics?.prefill.map(Self.prefillDiagnostics),
             runner: diagnostics?.runner.map(Self.runnerDiagnostics),
+            prefillDiskReadBytes: diskRead?.prefillBytes,
+            decodeDiskReadBytes: diskRead?.decodeBytes,
             toolCalls: state.toolCalls.isEmpty ? nil : state.toolCalls)
     }
 

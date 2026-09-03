@@ -95,3 +95,41 @@ import Testing
         #expect(record.contextTokens == model.maxContextTokens)
     }
 }
+
+/// The SSD reads a round costs (2026-09-04): the decode service reads its
+/// own `proc_pid_rusage` at start, first token and end; the differences
+/// are the prefill and decode shares, and they land on the turn log.
+@Suite struct AppDiskReadTests {
+    @Test func theSamplerReadsThisProcess() throws {
+        let first = try #require(AppDiskReadSampler.bytesRead())
+        let again = try #require(AppDiskReadSampler.bytesRead())
+        #expect(again >= first)
+        #expect(AppDiskReadSampler.bytesRead(pid: -1) == nil)
+    }
+
+    @Test func threeReadingsBecomeTwoShares() {
+        let split = AppDiskReadSampler.diagnostics(start: 100, firstToken: 160, end: 400)
+        #expect(split == AppDiskReadDiagnostics(prefillBytes: 60, decodeBytes: 240))
+        // Cancelled in prefill: no first token, so everything is prefill.
+        let prefillOnly = AppDiskReadSampler.diagnostics(start: 100, firstToken: nil, end: 400)
+        #expect(prefillOnly == AppDiskReadDiagnostics(prefillBytes: 300, decodeBytes: 0))
+        #expect(AppDiskReadSampler.diagnostics(start: nil, firstToken: 1, end: 2) == nil)
+        #expect(AppDiskReadSampler.diagnostics(start: 1, firstToken: 1, end: nil) == nil)
+    }
+
+    @Test func theSharesReachTheTurnLogRecord() {
+        let diagnostics = AppDiagnostics(
+            generatedTokens: 64, stopReason: .eos, promptTokenCount: 3_000,
+            timeToFirstTokenSeconds: 0.2, decodeSeconds: 2, tokensPerSecond: 32,
+            peakMemoryBytes: nil, runtimeOptions: AppRuntimeOptions(),
+            diskRead: AppDiskReadDiagnostics(prefillBytes: 11 << 30, decodeBytes: 2 << 30))
+        let record = AppTurnMetricsRecord(
+            recordedAt: "2026-09-04T00:00:00Z", turnID: "t", round: 1, chatID: "c",
+            outcome: "finished", model: "gemma4-qat-sym", contextTokens: 32_768, slots: 32,
+            mtp: true, thinking: false, network: "model", directive: nil,
+            headroom: nil, weightsResidentFraction: nil,
+            diagnostics: diagnostics, toolCalls: 0)
+        #expect(record.prefillDiskReadBytes == 11 << 30)
+        #expect(record.decodeDiskReadBytes == 2 << 30)
+    }
+}
