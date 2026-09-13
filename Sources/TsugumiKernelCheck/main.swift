@@ -1634,6 +1634,41 @@ if arguments.contains("--qwen") {
 // It needs no model and no expert cache, so the k-scaling that
 // `docs/mtp/19-M4.7-RESULTS.md` §5 attributes to arithmetic can be read
 // directly. It is a measurement, not a check, so it runs and exits.
+// `--qwen38-decode <reference log>`: Qwen3.8-Flash-Next Q2 decode (`Qwen38Runner`)
+// token for token against `Scripts/qwen38/reference_forward.py` (Qwen38DecodeCheck.swift).
+if let index = arguments.firstIndex(of: "--qwen38-decode"), index + 1 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    let passed = try runQwen38DecodeCheck(
+        refLog: arguments[index + 1], refLogits: opt("--q38-ref-logits"),
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf",
+        indexerTopK: opt("--q38-indexer-top-k").flatMap { Int($0) })
+    exit(passed ? 0 : 1)
+}
+
+// `--ggml-dense <gguf>`: Q8_0 / F16 / F32 GEMV straight off GGUF tensors
+// (GGMLDenseCheck.swift), the dense half of the Qwen3.8-Flash-Next Q2 runner.
+if let index = arguments.firstIndex(of: "--ggml-dense"), index + 1 < arguments.count {
+    exit(try runGGMLDenseCheck(ggufPath: arguments[index + 1]) ? 0 : 1)
+}
+
+// `--q2-expert <fixture dir>`: IQ2_XXS gate/up + Q2_K down routed expert kernels
+// (`moe_ggml.metal`) against the gguf-py reference from
+// `Scripts/qwen38/expert_kernel_fixture.py`; `--q2-expert-bench N` adds the GPU
+// time against affine int4 g64 at the same D/F (Q2ExpertCheck.swift).
+if let index = arguments.firstIndex(of: "--q2-expert"), index + 1 < arguments.count {
+    let passed = try runQ2ExpertCheck(fixtureDir: arguments[index + 1])
+    if let i = arguments.firstIndex(of: "--q2-expert-bench"), i + 1 < arguments.count,
+       let iterations = Int(arguments[i + 1]) {
+        print("")
+        try runQ2ExpertBench(fixtureDir: arguments[index + 1], iterations: iterations)
+    }
+    exit(passed ? 0 : 1)
+}
+
 if arguments.contains("--rows-bench") {
     var rowsBenchIterations = 20
     if let index = arguments.firstIndex(of: "--rows-bench-iterations"),

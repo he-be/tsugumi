@@ -51,6 +51,7 @@ Vendored source (not in the package graph):
 | Component | Version | Location | License |
 | --- | --- | --- | --- |
 | [SwiftMath](https://github.com/mgriebling/SwiftMath) | 1.7.3 | `Sources/ThirdParty/SwiftMath` | MIT; ships only the Latin Modern Math font, under the GUST Font License (`mathFonts.bundle/GUST-FONT-LICENSE.txt`) |
+| [ds4-metal](https://github.com/ivanfioravanti/ds4-metal) (portions, descending from [llama.cpp](https://github.com/ggml-org/llama.cpp)) | `3030554` | `Sources/Tsugumi/Metal/MoE/moe_ggml.metal` (IQ2_XXS / Q2_K row arithmetic and lookup tables) | MIT (Copyright (c) 2026 The ds4.c authors; llama.cpp: Copyright (c) 2023-2026 The ggml authors) |
 
 No copyleft or custom non-commercial license was found in this resolved graph.
 The dependency license files remain authoritative. For binary distribution,
