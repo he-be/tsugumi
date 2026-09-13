@@ -260,6 +260,39 @@ public final class GGUFFile: @unchecked Sendable {
         _ = fcntl(fd, F_RDADVISE, &ra)
     }
 
+    /// Reads file ranges with `pread` on `threads` threads in `blockBytes` pieces and throws the bytes
+    /// away: the point is the page cache the mapping shares. Cold expert ranges of the Qwen3.8 GGUF read
+    /// this way at 6.2-6.6 GB/s on the M3 Pro, against 0.7 GB/s faulting them through the mapping and
+    /// 1.0 GB/s after `F_RDADVISE` (`docs/qwen38/05-EXPERT-READ.md`).
+    public func preadRanges(_ ranges: [(offset: Int, byteCount: Int)], threads: Int, blockBytes: Int = 16 << 20) {
+        var blocks: [(Int, Int)] = []
+        for r in ranges {
+            var o = r.offset
+            let end = min(r.offset + r.byteCount, fileSize)
+            while o < end {
+                blocks.append((o, min(blockBytes, end - o)))
+                o += blockBytes
+            }
+        }
+        guard !blocks.isEmpty else { return }
+        let n = max(1, min(threads, blocks.count))
+        DispatchQueue.concurrentPerform(iterations: n) { lane in
+            let buffer = UnsafeMutableRawPointer.allocate(byteCount: blockBytes, alignment: 16384)
+            defer { buffer.deallocate() }
+            var i = lane
+            while i < blocks.count {
+                var (o, left) = blocks[i]
+                while left > 0 {
+                    let r = pread(fd, buffer, left, off_t(o))
+                    if r <= 0 { break }
+                    o += r
+                    left -= r
+                }
+                i += n
+            }
+        }
+    }
+
     public func noCopyBuffer(device: MTLDevice, tensor: Tensor) -> (buffer: MTLBuffer, offset: Int)? {
         noCopyBuffer(device: device, offset: tensor.offset, byteCount: tensor.byteCount)
     }

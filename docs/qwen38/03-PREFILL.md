@@ -130,6 +130,8 @@ Q38_SPLIT_PRE=1 $B --qwen38-prefill-bench scratch/qwen38/prompt-code.tokens --q3
 
 ## 6. 再開手順 (新しいセッションで続けるとき)
 
+**最新は [05 §6](05-EXPERT-READ.md)。**以下は 03 時点のもの。
+
 ### 6-1. 状態
 
 - コードはこの文書と同じコミットまで入っている (prefill 本体は `e0f7ebe`)。ランナーは `Sources/Tsugumi/Runtime/Qwen38/Qwen38Runner.swift` 1 本 (`forward` が T ≥ 1、`step` は T=1)。
@@ -161,7 +163,7 @@ $B --qwen38-prefill scratch/qwen38/ref-fuji-ple.log --q38-chunk 53
 
 ### 6-3. 次にやること (§4 の順を、32K に効く順に並べ直したもの)
 
-**1 番は済んだ ([04](04-QSA-GPU.md)、8K で 46.5 tok/s)。続きは 04 §4。**
+**1・2 番は済んだ ([04](04-QSA-GPU.md)、[05](05-EXPERT-READ.md))。再開手順は 05 §6 に移した。**
 
 1. **QSA 選択ありの注意を GPU に** (1 チャンク 10.6 s + host のソート)。場所は `attention(_:il:pos0:T:)` の
    「Per query: top kBlocks」のループ (host で `sorted()`) と、その後の 5 パス。案:

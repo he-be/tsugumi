@@ -128,6 +128,12 @@ package final class Qwen38Runner {
     /// recent experts on top did not help (`docs/qwen38/02` §3).
     /// `Q38_ADVISE=0` turns it off; `Q38_COUNT_MISS=1` counts non-resident bytes (costs ~15 ms/token).
     package var adviseExperts = ProcessInfo.processInfo.environment["Q38_ADVISE"] != "0"
+    /// Batches of at least this many tokens read their selected experts with `pread` on `readThreads`
+    /// threads before the routed buffer instead of `F_RDADVISE`: at 8K / chunk 4096 the routed wait fell
+    /// from 18 s to ~0 for a 5.6 s read (`docs/qwen38/05-EXPERT-READ.md`). Decode keeps the advise
+    /// (`Q38_PREAD_MIN_T`, 0 = never; `Q38_READ_THREADS`).
+    package var preadMinTokens = Int(ProcessInfo.processInfo.environment["Q38_PREAD_MIN_T"] ?? "") ?? 32
+    package var readThreads = Int(ProcessInfo.processInfo.environment["Q38_READ_THREADS"] ?? "") ?? 4
     package var countMisses = ProcessInfo.processInfo.environment["Q38_COUNT_MISS"] == "1"
     /// Unselected experts an advise run may bridge (`Q38_ADVISE_GAP`, default 0: adjacent only).
     package var adviseGap = Int(ProcessInfo.processInfo.environment["Q38_ADVISE_GAP"] ?? "") ?? 0
@@ -969,6 +975,8 @@ package final class Qwen38Runner {
             for (t, _) in parts { file.adviseRead(offset: t.offset, byteCount: t.byteCount) }
             prof.adviseCalls += parts.count
         } else {
+        var runs: [(offset: Int, byteCount: Int)] = []
+        let preadThisBatch = adviseExperts && preadMinTokens > 0 && T >= preadMinTokens
         for (t, bytes) in parts {
             var i = 0
             while i < sorted.count {
@@ -981,11 +989,13 @@ package final class Qwen38Runner {
                         prof.missBytes += file.nonResidentBytes(offset: t.offset + ex * bytes, byteCount: bytes)
                     }
                 }
-                if adviseExperts { file.adviseRead(offset: fileOffset, byteCount: length) }
+                if adviseExperts && !preadThisBatch { file.adviseRead(offset: fileOffset, byteCount: length) }
+                runs.append((fileOffset, length))
                 prof.adviseCalls += 1
                 i = j + 1
             }
         }
+        if preadThisBatch { file.preadRanges(runs, threads: readThreads) }
         }
         let tAdvise = CFAbsoluteTimeGetCurrent()
         prof.routeViews += tViews - tTopK
