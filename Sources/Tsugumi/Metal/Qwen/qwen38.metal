@@ -277,6 +277,152 @@ kernel void q38_gdn_norm_gate(
 }
 
 // ---------------------------------------------------------------------------
+// GDN step, chunked (WY) form for prefill (`Qwen38GDNChunk`, docs/qwen38/07)
+//
+// Per value head, a chunk of L tokens from state S0 (Dv x Dk), with g_t the decay and
+// r(t, s) = g_{s+1} ... g_t, gamma_t = r(t, -1):
+//   u_t = beta_t (v_t - gamma_t S0 k_t) - sum_{s<t} beta_t r(t, s) (k_s.k_t) u_s   -> (I + A) U = R
+//   o_t = gamma_t S0 q_t + sum_{s<=t} r(t, s) (k_s.q_t) u_s                          -> O = gamma Y + M U
+//   S_L = gamma_{L-1} S0 + sum_s r(L-1, s) u_s k_s^T
+// Chunk buffers are laid out [hv][rows][cols] with the chunk's L as the row stride.
+
+struct Q38WYParams {
+    uint hk;
+    uint hv;
+    uint d;
+    uint L;
+    uint t0;   // first token of the chunk in the batch
+    uint C;    // conv row width
+};
+
+/// kq[hv] = (k_0..k_{L-1}, q_0..q_{L-1}), k[hv] = k rows, value head hv paired with key head hv % hk.
+/// Thread (dk, t, hv).
+kernel void q38_wy_gather(
+    device const float* conv [[buffer(0)]],
+    device float* kq [[buffer(1)]],
+    device float* k [[buffer(2)]],
+    constant Q38WYParams& p [[buffer(3)]],
+    uint3 pos [[thread_position_in_grid]]
+) {
+    const uint dk = pos.x, t = pos.y, hv = pos.z, D = p.d, L = p.L;
+    const uint kh = hv % p.hk;
+    device const float* row = conv + (p.t0 + t) * p.C;
+    const float kv = row[(p.hk + kh) * D + dk];
+    kq[(hv * 2 * L + t) * D + dk] = kv;
+    kq[(hv * 2 * L + L + t) * D + dk] = row[kh * D + dk];
+    k[(hv * L + t) * D + dk] = kv;
+}
+
+/// From G[hv] = kq k^T ([2L][L]): row t of A = I + (beta_t r(t, s) k_s.k_t)_{s<t}, of
+/// M = (r(t, s) k_s.q_t)_{s<=t}, gamma_t, and for t = L-1 the state weights w_s = r(L-1, s).
+/// Thread (t, hv); the loop over s is at most L.
+kernel void q38_wy_tri(
+    device const float* a [[buffer(0)]],
+    device const float* b [[buffer(1)]],
+    device const float* G [[buffer(2)]],
+    device float* A [[buffer(3)]],
+    device float* M [[buffer(4)]],
+    device float* gam [[buffer(5)]],
+    device float* w [[buffer(6)]],
+    constant Q38WYParams& p [[buffer(7)]],
+    uint2 pos [[thread_position_in_grid]]
+) {
+    const uint t = pos.x, hv = pos.y, L = p.L;
+    const uint row = (hv * L + t) * L;
+    device const float* gk = G + (hv * 2 * L + t) * L;
+    device const float* gq = G + (hv * 2 * L + L + t) * L;
+    const float beta = b[(p.t0 + t) * p.hv + hv];
+    for (uint s = t + 1; s < L; ++s) {
+        A[row + s] = 0.0f;
+        M[row + s] = 0.0f;
+    }
+    float r = 1.0f;
+    for (int s = int(t); s >= 0; --s) {
+        M[row + s] = r * gq[s];
+        A[row + s] = uint(s) == t ? 1.0f : beta * r * gk[s];
+        if (t == L - 1) w[hv * L + s] = r;
+        r *= a[(p.t0 + s) * p.hv + hv];
+    }
+    gam[hv * L + t] = r;
+}
+
+/// X[hv] = A[hv]^-1 for the unit lower-triangular A from `q38_wy_tri`, one column per thread (c, hv):
+/// x[i][c] = -sum_{s=c..i-1} A[i][s] x[s][c]. (MPSMatrixSolveTriangular solves only the first matrix of a
+/// batch, and 48 separate solves per chunk were 165 ms of a 190 ms layer at T = 4096.) L <= 512.
+kernel void q38_wy_tinv(
+    device const float* A [[buffer(0)]],
+    device float* X [[buffer(1)]],
+    constant Q38WYParams& p [[buffer(2)]],
+    uint2 pos [[thread_position_in_grid]]
+) {
+    const uint c = pos.x, hv = pos.y, L = p.L;
+    const uint base = hv * L * L;
+    float col[512];
+    for (uint i = 0; i < c; ++i) X[base + i * L + c] = 0.0f;
+    col[c] = 1.0f;
+    X[base + c * L + c] = 1.0f;
+    for (uint i = c + 1; i < L; ++i) {
+        device const float* ai = A + base + i * L;
+        float acc = 0.0f;
+        for (uint s = c; s < i; ++s) acc += ai[s] * col[s];
+        col[i] = -acc;
+        X[base + i * L + c] = -acc;
+    }
+}
+
+/// R[hv][t] = beta_t (v_t - gamma_t S0 k_t), with S0 k_t in XY[hv][t]. Thread (dv, t, hv).
+kernel void q38_wy_rhs(
+    device const float* conv [[buffer(0)]],
+    device const float* b [[buffer(1)]],
+    device const float* gam [[buffer(2)]],
+    device const float* XY [[buffer(3)]],
+    device float* R [[buffer(4)]],
+    constant Q38WYParams& p [[buffer(5)]],
+    uint3 pos [[thread_position_in_grid]]
+) {
+    const uint dv = pos.x, t = pos.y, hv = pos.z, D = p.d, L = p.L;
+    const float v = conv[(p.t0 + t) * p.C + (2 * p.hk + hv) * D + dv];
+    const float beta = b[(p.t0 + t) * p.hv + hv];
+    R[(hv * L + t) * D + dv] = beta * (v - gam[hv * L + t] * XY[(hv * 2 * L + t) * D + dv]);
+}
+
+/// o[t0 + t][hv] = (M U)[hv][t] + gamma_t S0 q_t (XY[hv][L + t]). Thread (dv, t, hv).
+kernel void q38_wy_out(
+    device const float* MU [[buffer(0)]],
+    device const float* XY [[buffer(1)]],
+    device const float* gam [[buffer(2)]],
+    device float* o [[buffer(3)]],
+    constant Q38WYParams& p [[buffer(4)]],
+    uint3 pos [[thread_position_in_grid]]
+) {
+    const uint dv = pos.x, t = pos.y, hv = pos.z, D = p.d, L = p.L;
+    o[((p.t0 + t) * p.hv + hv) * D + dv] = MU[(hv * L + t) * D + dv]
+        + gam[hv * L + t] * XY[(hv * 2 * L + L + t) * D + dv];
+}
+
+/// k[hv][s] *= w_s (the chunk's k rows turned into the state update's right factor). Thread (dk, s, hv).
+kernel void q38_wy_kw(
+    device float* k [[buffer(0)]],
+    device const float* w [[buffer(1)]],
+    constant Q38WYParams& p [[buffer(2)]],
+    uint3 pos [[thread_position_in_grid]]
+) {
+    const uint dk = pos.x, s = pos.y, hv = pos.z;
+    k[(hv * p.L + s) * p.d + dk] *= w[hv * p.L + s];
+}
+
+/// S0[hv] *= gamma_{L-1}. Thread (dk, dv, hv).
+kernel void q38_wy_decay_state(
+    device float* S [[buffer(0)]],
+    device const float* gam [[buffer(1)]],
+    constant Q38WYParams& p [[buffer(2)]],
+    uint3 pos [[thread_position_in_grid]]
+) {
+    const uint dk = pos.x, dv = pos.y, hv = pos.z;
+    S[(hv * p.d + dv) * p.d + dk] *= gam[hv * p.L + p.L - 1];
+}
+
+// ---------------------------------------------------------------------------
 // Gated full attention with QSA
 
 struct Q38AttnParams {

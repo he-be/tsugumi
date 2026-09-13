@@ -45,6 +45,7 @@ package final class Qwen38Runner {
     private let dense: GGMLDenseGEMV
 
     private let psoRmsScale, psoRmsApply, psoUnary, psoMix, psoCombine, psoAddScaled, psoSiluMul: MTLComputePipelineState
+    private let qwen38Lib: MTLLibrary
     private let psoConv, psoConvHist, psoQKNorm, psoGates, psoStep, psoNormGate, psoAttnPrep: MTLComputePipelineState
     private let psoAttnScore, psoAttnStat, psoAttnWeight, psoAttnMix: MTLComputePipelineState
     private let psoAttnGatherQ, psoAttnGatherKV, psoAttnScatter: MTLComputePipelineState
@@ -142,6 +143,12 @@ package final class Qwen38Runner {
     /// (`docs/qwen38/06`). `Q38_GEMM_MIN_T`, 0 = never; `Q38_GEMM_GROUP` experts dequantized per dispatch.
     package var gemmMinTokens = Int(ProcessInfo.processInfo.environment["Q38_GEMM_MIN_T"] ?? "") ?? 1024
     package var gemmGroup = Int(ProcessInfo.processInfo.environment["Q38_GEMM_GROUP"] ?? "") ?? 4
+    /// Batches of at least `gdnMinTokens` run the GDN step in chunks of `gdnChunk` tokens (WY form,
+    /// `Qwen38GDNChunk`) instead of the token-serial `q38_gdn_step`: one layer at T = 4096 took 170 -> 40 ms
+    /// with chunk 32 (`docs/qwen38/07`). `Q38_GDN_CHUNK` (0 = never), `Q38_GDN_MIN_T`.
+    package var gdnChunk = Int(ProcessInfo.processInfo.environment["Q38_GDN_CHUNK"] ?? "") ?? 32
+    package var gdnMinTokens = Int(ProcessInfo.processInfo.environment["Q38_GDN_MIN_T"] ?? "") ?? 16
+    private var gdnChunked: Qwen38GDNChunk?
     private var gemmRows, gemmGateUp, gemmWGateUp, gemmWDown, gemmOrder, gemmAt: MTLBuffer?
     /// Checks only: batches of at least 1024 tokens write `<prefix>-l<layer>.bin` (Int32 T, then T x topK
     /// Int32 experts and T x topK Float32 routing weights), the input of `--q2-gemm-bench` (`Q38_DUMP_ROUTE`).
@@ -192,6 +199,7 @@ package final class Qwen38Runner {
         dense = try GGMLDenseGEMV(device: device)
 
         let lib = try MetalContext.moduleLibrary(device: device, module: "qwen38")
+        qwen38Lib = lib
         func pso(_ library: MTLLibrary, _ name: String) throws -> MTLComputePipelineState {
             guard let fn = library.makeFunction(name: name) else {
                 throw GGUFFile.Error.format("kernel \(name) missing")
@@ -437,14 +445,22 @@ package final class Qwen38Runner {
             try? setF32(enc, pre + "ssm_dt.bias", index: 3)
             enc.setBytes(&gp, length: gpLen, index: 4)
         }
-        lanes(cb, psoStep, size(Dl, Hv)) { enc in
-            enc.setBuffer(conv, offset: 0, index: 0)
-            enc.setBuffer(ga, offset: 0, index: 1)
-            enc.setBuffer(gb, offset: 0, index: 2)
-            enc.setBuffer(state, offset: 0, index: 5)
-            enc.setBuffer(lo6144, offset: 0, index: 6)
-            enc.setBytes(&gp, length: gpLen, index: 7)
-            enc.setBytes(&cV, length: 4, index: 8)
+        if gdnChunk > 0 && T >= gdnMinTokens {
+            if gdnChunked?.chunk != gdnChunk {
+                gdnChunked = try Qwen38GDNChunk(device: device, library: qwen38Lib, keyHeads: Hk, valueHeads: Hv,
+                                                headDim: Dl, chunk: gdnChunk)
+            }
+            gdnChunked!.encode(cb, conv: conv, a: ga, b: gb, state: state, out: lo6144, T: T)
+        } else {
+            lanes(cb, psoStep, size(Dl, Hv)) { enc in
+                enc.setBuffer(conv, offset: 0, index: 0)
+                enc.setBuffer(ga, offset: 0, index: 1)
+                enc.setBuffer(gb, offset: 0, index: 2)
+                enc.setBuffer(state, offset: 0, index: 5)
+                enc.setBuffer(lo6144, offset: 0, index: 6)
+                enc.setBytes(&gp, length: gpLen, index: 7)
+                enc.setBytes(&cV, length: 4, index: 8)
+            }
         }
         cb = try section("gdn_step")
         let nw = try view(pre + "ssm_norm.weight")

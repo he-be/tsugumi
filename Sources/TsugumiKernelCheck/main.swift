@@ -1682,6 +1682,16 @@ if let index = arguments.firstIndex(of: "--qwen38-prefill"), index + 1 < argumen
 
 // `--ggml-dense <gguf>`: Q8_0 / F16 / F32 GEMV straight off GGUF tensors
 // (GGMLDenseCheck.swift), the dense half of the Qwen3.8-Flash-Next Q2 runner.
+// `--q38-wy-bench [tokens] [chunks,...] [iterations]`: one GDN layer, serial step against the chunked
+// WY form (Q38WYBench.swift, docs/qwen38/07).
+if let index = arguments.firstIndex(of: "--q38-wy-bench") {
+    let tokens = index + 1 < arguments.count ? Int(arguments[index + 1]) ?? 4096 : 4096
+    let chunks = index + 2 < arguments.count ? arguments[index + 2].split(separator: ",").compactMap { Int($0) } : [64]
+    let iterations = index + 3 < arguments.count ? Int(arguments[index + 3]) ?? 3 : 3
+    try runQ38WYBench(tokens: tokens, chunks: chunks, iterations: iterations)
+    exit(0)
+}
+
 // `--q2-gemm-bench <gguf> <route .bin> [group] [iterations] [tokens]`: one layer of routed experts, per-pair
 // kernels against dequantize + MPS sgemm (Q2GemmBench.swift, docs/qwen38/06).
 if let index = arguments.firstIndex(of: "--q2-gemm-bench"), index + 2 < arguments.count {
