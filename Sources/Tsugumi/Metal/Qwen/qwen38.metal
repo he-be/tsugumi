@@ -221,6 +221,8 @@ kernel void q38_gdn_gates(
 /// lane l owns key dims l, l+32, l+64, l+96, and the k.S and q.S sums of each step are
 /// `simd_sum`s across the lanes, so no thread loops over T x 128.
 /// Threadgroups (Dl, Hv), 32 threads.
+/// `snap_t` < T also copies the state after token snap_t into `snap` (same layout): the speculative
+/// rollback's state after the first verified token (docs/qwen38/10 §5-4). UINT_MAX: no copy.
 kernel void q38_gdn_step(
     device const float* conv [[buffer(0)]],
     device const float* a [[buffer(1)]],
@@ -229,12 +231,15 @@ kernel void q38_gdn_step(
     device float* o [[buffer(6)]],
     constant Q38GDNParams& p [[buffer(7)]],
     constant uint& C [[buffer(8)]],
+    device float* snap [[buffer(9)]],
+    constant uint& snap_t [[buffer(10)]],
     uint2 tg [[threadgroup_position_in_grid]],
     uint lane [[thread_index_in_simdgroup]]
 ) {
     const uint dv = tg.x, hv = tg.y, D = p.d;
     const uint kh = hv % p.hk;
     device float* s = S + (hv * D + dv) * D;
+    device float* sn = snap + (hv * D + dv) * D;
     for (uint t = 0; t < p.T; ++t) {
         const float g = a[t * p.hv + hv];
         const float beta = b[t * p.hv + hv];
@@ -256,6 +261,9 @@ kernel void q38_gdn_step(
         }
         acc = simd_sum(acc);
         if (lane == 0) o[(t * p.hv + hv) * D + dv] = acc;
+        if (t == snap_t) {
+            for (uint i = lane; i < D; i += 32) sn[i] = s[i];
+        }
     }
 }
 

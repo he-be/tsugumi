@@ -54,6 +54,7 @@ package final class Qwen38Runner {
     private let psoPleGate, psoPleGated, psoPleConvAdd, psoPleHist: MTLComputePipelineState
     private let psoPhase1, psoPhase2: MTLComputePipelineState
     private let psoDeqGateUp, psoDeqDown, psoGatherPairs, psoSiluHalves, psoScatterWeighted: MTLComputePipelineState
+    private let psoDeqQ4KGateUp, psoDeqMXFP4Down: MTLComputePipelineState
 
     private var views: [String: (tensor: GGUFFile.Tensor, buffer: MTLBuffer, offset: Int)] = [:]
 
@@ -175,6 +176,29 @@ package final class Qwen38Runner {
     private var denseSet: MTLResidencySet?
     private var denseSetCount = 0
 
+    // MTP (blk.<nTrunk>, `docs/qwen38/10`).
+    /// `forward` copies the trunk's final residual rows (T x hc x e, before the `output_hc` mix) to `hidden`:
+    /// the MTP head's input, llama.cpp `t_h_nextn`.
+    package var exportHidden = false
+    private var hiddenOut: MTLBuffer?
+    /// The MTP head's own residual rows after its last forward (the next chained draft's input).
+    private var mtpHiddenOut: MTLBuffer?
+    private var mtpCat: MTLBuffer?
+    package private(set) var lastMTPProfile = StepProfile()
+
+    // Speculative rollback (`docs/qwen38/10` §5-4).
+    /// Set before a verify forward of 2 ..< `gdnMinTokens` tokens: it then keeps what `rollbackToFirst` needs
+    /// (the GDN state after its first token, written by `q38_gdn_step`; the conv and PLE histories from before the
+    /// batch; the first token's rows that enter them). KV, indexer keys and the MTP KV are by position and need nothing.
+    package var snapshotFirst = false
+    private var snapshotTaken = false
+    private var linStateSnap: [Int: MTLBuffer] = [:]
+    private var linHistBefore: [Int: MTLBuffer] = [:]
+    private var linQkv0: [Int: MTLBuffer] = [:]
+    private var pleHistBefore: [Float] = []
+    private var plePrevBefore: [Int] = []
+    private var firstToken = 0
+
     package init(gguf: URL, ple: URL, capacity: Int, maxBatch: Int = 1) throws {
         let file = try GGUFFile(url: gguf)
         let pleFile = try GGUFFile(url: ple)
@@ -260,6 +284,8 @@ package final class Qwen38Runner {
         psoGatherPairs = try pso(moeLib, "moe_gather_pair_rows")
         psoSiluHalves = try pso(moeLib, "moe_silu_mul_halves")
         psoScatterWeighted = try pso(moeLib, "moe_scatter_weighted")
+        psoDeqQ4KGateUp = try pso(moeLib, "moe_q4k_dequant_gate_up_f32")
+        psoDeqMXFP4Down = try pso(moeLib, "moe_mxfp4_dequant_down_f32")
 
         func buf(_ count: Int) -> MTLBuffer {
             device.makeBuffer(length: max(count, 1) * 4, options: .storageModeShared)!
@@ -436,6 +462,13 @@ package final class Qwen38Runner {
         let pre = "blk.\(il)."
         let C = 2 * Hk * Dl + Hv * Dl
         try gemv(cb, pre + "attn_qkv.weight", x: mixed, y: qkv, tokens: T)
+        if snapshotTaken {
+            let q0 = linQkv0[il] ?? device.makeBuffer(length: C * 4, options: .storageModeShared)!
+            linQkv0[il] = q0
+            let blit = cb.makeBlitCommandEncoder()!
+            blit.copy(from: qkv, sourceOffset: 0, to: q0, destinationOffset: 0, size: C * 4)
+            blit.endEncoding()
+        }
         try gemv(cb, pre + "attn_gate.weight", x: mixed, y: z, tokens: T)
         try gemv(cb, pre + "ssm_beta.weight", x: mixed, y: gb, tokens: T)
         try gemv(cb, pre + "ssm_alpha.weight", x: mixed, y: ga, tokens: T)
@@ -481,6 +514,13 @@ package final class Qwen38Runner {
             }
             gdnChunked!.encode(cb, conv: conv, a: ga, b: gb, state: state, out: lo6144, T: T)
         } else {
+            var snapT = UInt32.max
+            var snap = state
+            if snapshotTaken {
+                snap = linStateSnap[il] ?? device.makeBuffer(length: state.length, options: .storageModeShared)!
+                linStateSnap[il] = snap
+                snapT = 0
+            }
             lanes(cb, psoStep, size(Dl, Hv)) { enc in
                 enc.setBuffer(conv, offset: 0, index: 0)
                 enc.setBuffer(ga, offset: 0, index: 1)
@@ -489,6 +529,8 @@ package final class Qwen38Runner {
                 enc.setBuffer(lo6144, offset: 0, index: 6)
                 enc.setBytes(&gp, length: gpLen, index: 7)
                 enc.setBytes(&cV, length: 4, index: 8)
+                enc.setBuffer(snap, offset: 0, index: 9)
+                enc.setBytes(&snapT, length: 4, index: 10)
             }
         }
         cb = try section("gdn_step")
@@ -505,7 +547,8 @@ package final class Qwen38Runner {
     }
 
     /// Row stride `nCap` of the host-path scores and selection for queries that see up to `n` tokens.
-    private func ensureAttnScratch(_ n: Int) { nCap = max(nCap, n) }
+    /// Set per call (the stride is read only within the call): the dense MTP layer sees the whole cache.
+    private func ensureAttnScratch(_ n: Int) { nCap = n }
 
     /// `attnScores` of at least `floats` floats and `selection` of `selectionRows` rows of `nCap`, grown on
     /// demand: sized from maxBatch they held 400 MB at chunk 2048 (1.6 GB for a decode step after chunk
@@ -519,19 +562,25 @@ package final class Qwen38Runner {
         }
     }
 
-    private func attention(_ cb: inout MTLCommandBuffer, il: Int, pos0: Int, T: Int) throws {
+    /// `dense` (the MTP layer, as llama.cpp `graph_mtp`): no indexer, every query attends its whole prefix.
+    private func attention(_ cb: inout MTLCommandBuffer, il: Int, pos0: Int, T: Int, dense: Bool = false) throws {
         let pre = "blk.\(il)."
         let kc = kCache[il] ?? device.makeBuffer(length: capacity * Hkv * D * 4, options: .storageModeShared)!
         let vc = vCache[il] ?? device.makeBuffer(length: capacity * Hkv * D * 4, options: .storageModeShared)!
-        let ik = idxRawKeys[il] ?? device.makeBuffer(length: capacity * idxD * 4, options: .storageModeShared)!
-        let bk = idxBlockKeys[il] ?? device.makeBuffer(length: (capacity / 4 + 1) * idxD * 4, options: .storageModeShared)!
         kCache[il] = kc
         vCache[il] = vc
-        idxRawKeys[il] = ik
-        idxBlockKeys[il] = bk
         try gemv(cb, pre + "attn_q.weight", x: mixed, y: qg, tokens: T)
         try gemv(cb, pre + "attn_k.weight", x: mixed, y: kc, yOffset: pos0 * Hkv * D * 4, tokens: T)
         try gemv(cb, pre + "attn_v.weight", x: mixed, y: vc, yOffset: pos0 * Hkv * D * 4, tokens: T)
+        if dense {
+            try attentionHost(&cb, il: il, pos0: pos0, T: T, kc: kc, vc: vc, bk: kc, kBlocks: capacity)
+            try gemv(cb, pre + "attn_output.weight", x: ao, y: blk, tokens: T)
+            return
+        }
+        let ik = idxRawKeys[il] ?? device.makeBuffer(length: capacity * idxD * 4, options: .storageModeShared)!
+        let bk = idxBlockKeys[il] ?? device.makeBuffer(length: (capacity / 4 + 1) * idxD * 4, options: .storageModeShared)!
+        idxRawKeys[il] = ik
+        idxBlockKeys[il] = bk
 
         // QSA indexer: raw keys for the batch; a block's key once its 4th token is in.
         try gemv(cb, pre + "indexer.q_proj.weight", x: mixed, y: iq, tokens: T)
@@ -1006,9 +1055,11 @@ package final class Qwen38Runner {
                 w[t * topK + k] = Float(chosenP[k] / wsum)
             }
         }
-        let gemm = gemmMinTokens > 0 && T >= gemmMinTokens
+        // The MTP layer's Q4_K / MXFP4 experts have only the dequant + sgemm route.
+        let mtpLayer = il >= nTrunk
+        let gemm = mtpLayer || (gemmMinTokens > 0 && T >= gemmMinTokens)
         var gemmBigSlots = slots.count
-        if gemm && gemmMinPairs > 0 {
+        if gemm && !mtpLayer && gemmMinPairs > 0 {
             // Experts with at least `gemmMinPairs` pairs take the first slots (so `routedGemm` dequantizes
             // contiguous slot groups), the rest the tail; relative order kept.
             var count = [Int](repeating: 0, count: slots.count)
@@ -1106,7 +1157,9 @@ package final class Qwen38Runner {
         }
         if gemm {
             routedGemm(cb2, T: T, slots: slots.count, bigSlots: gemmBigSlots,
-                       rowBytes: (UInt32(gateT.bytesPerRow), UInt32(downT.bytesPerRow)), pairSlot: ps, used: used)
+                       rowBytes: (UInt32(gateT.bytesPerRow), UInt32(downT.bytesPerRow)), pairSlot: ps, used: used,
+                       dequant: mtpLayer ? (psoDeqQ4KGateUp, psoDeqMXFP4Down) : (psoDeqGateUp, psoDeqDown),
+                       downStride: downT.rowWidth)
             return cb2
         }
         var offsets = (UInt32(gateT.bytesPerRow), UInt32(downT.bytesPerRow))
@@ -1162,13 +1215,14 @@ package final class Qwen38Runner {
     /// Slots `bigSlots..<S` (experts with few pairs, laid out last) skip the dequant: the per-pair kernels
     /// run over their rows with top_k 1 and write the unweighted output back in place.
     private func routedGemm(_ cb: MTLCommandBuffer, T: Int, slots S: Int, bigSlots SB: Int, rowBytes: (UInt32, UInt32),
-                            pairSlot ps: UnsafeMutablePointer<UInt32>, used: [[MTLBuffer]]) {
+                            pairSlot ps: UnsafeMutablePointer<UInt32>, used: [[MTLBuffer]],
+                            dequant: (gateUp: MTLComputePipelineState, down: MTLComputePipelineState), downStride: Int) {
         let P = T * topK, G = max(gemmGroup, 1)
         var count = [Int](repeating: 0, count: S)
         for p in 0..<P { count[Int(ps[p])] += 1 }
         var start = [Int](repeating: 0, count: S + 1)
         for s in 0..<S { start[s + 1] = start[s] + count[s] }
-        let pairs = maxBatch * topK
+        let pairs = batchRows * topK
         ensureBuffer(&gemmOrder, bytes: pairs * 4, shared: true)
         ensureBuffer(&gemmAt, bytes: pairs * 4, shared: true)
         ensureBuffer(&gemmRows, bytes: pairs * e * 4)
@@ -1187,7 +1241,7 @@ package final class Qwen38Runner {
             fill[s] += 1
         }
         let rows = gemmRows!, gu = gemmGateUp!, wGU = gemmWGateUp!, wDown = gemmWDown!
-        var dV = UInt32(e), fV = UInt32(F), kV = UInt32(topK), strideV = UInt32(downIn)
+        var dV = UInt32(e), fV = UInt32(F), kV = UInt32(topK), strideV = UInt32(downStride)
         func matrix(_ b: MTLBuffer, _ offset: Int, _ r: Int, _ c: Int, rowBytes: Int? = nil) -> MPSMatrix {
             MPSMatrix(buffer: b, offset: offset,
                       descriptor: MPSMatrixDescriptor(rows: r, columns: c, rowBytes: rowBytes ?? c * 4, dataType: .float32))
@@ -1207,7 +1261,7 @@ package final class Qwen38Runner {
                 let n = min(G, SB - g0)
                 var firstSlot = UInt32(g0)
                 var enc = cb.makeComputeCommandEncoder()!
-                enc.setComputePipelineState(psoDeqGateUp)
+                enc.setComputePipelineState(dequant.gateUp)
                 enc.setBuffer(routedArg, offset: 0, index: 0)
                 enc.useResources(Array(used[0][g0..<(g0 + n)] + used[1][g0..<(g0 + n)]), usage: .read)
                 enc.setBuffer(partOffsets, offset: 0, index: 1)
@@ -1218,7 +1272,7 @@ package final class Qwen38Runner {
                 enc.dispatchThreads(size(e / 32, 2 * F, n), threadsPerThreadgroup: size(8, 32))
                 enc.endEncoding()
                 enc = cb.makeComputeCommandEncoder()!
-                enc.setComputePipelineState(psoDeqDown)
+                enc.setComputePipelineState(dequant.down)
                 enc.setBuffer(routedArg, offset: 0, index: 0)
                 enc.useResources(Array(used[2][g0..<(g0 + n)]), usage: .read)
                 enc.setBuffer(partOffsets, offset: 0, index: 1)
@@ -1337,6 +1391,7 @@ package final class Qwen38Runner {
             ("attnSelScores", len(attnSelScores)),
             ("idxDots+selAny+selList", lens([idxDots, selAny, selList])),
             ("gemm", lens([gemmRows, gemmGateUp, gemmWGateUp, gemmWDown, gemmOrder, gemmAt, gemmPosSlot, gemmOnes])),
+            ("hidden + mtp", lens([hiddenOut, mtpHiddenOut, mtpCat])),
             ("dense scratch", dense.scratchBytes),
             ("logits", len(logits)),
             ("KV + indexer keys", lens(Array(kCache.values) + Array(vCache.values) + Array(idxRawKeys.values) + Array(idxBlockKeys.values))),
@@ -1433,6 +1488,163 @@ package final class Qwen38Runner {
 
     // MARK: - Forward
 
+    /// After a `snapshotFirst` forward, sets the recurrent state to what it was after that batch's first token only
+    /// (the rest of the batch was rejected): the GDN state from the step kernel's copy (buffers swapped), the conv
+    /// and PLE histories shifted by one from their copies with the first token's rows, and `plePrev`. Call it before
+    /// the next trunk forward (it reads that forward's first PLE row).
+    package func rollbackToFirst() {
+        precondition(snapshotTaken, "rollbackToFirst without a snapshotFirst forward")
+        let C = 2 * Hk * Dl + Hv * Dl
+        for il in 0..<nTrunk where isLinear(il) {
+            let snap = linStateSnap[il]!
+            linStateSnap[il] = linState[il]
+            linState[il] = snap
+            let hist = linHist[il]!.contents(), before = linHistBefore[il]!.contents()
+            hist.copyMemory(from: before + C * 4, byteCount: (convK - 2) * C * 4)
+            (hist + (convK - 2) * C * 4).copyMemory(from: linQkv0[il]!.contents(), byteCount: C * 4)
+        }
+        let W = hc * e
+        let rowsH = pleHist.length / 4 / W
+        let ph = pleHist.contents().bindMemory(to: Float.self, capacity: rowsH * W)
+        pleHistBefore.withUnsafeBufferPointer { ph.update(from: $0.baseAddress! + W, count: (rowsH - 1) * W) }
+        (ph + (rowsH - 1) * W).update(from: pleNormed.contents().bindMemory(to: Float.self, capacity: W), count: W)
+        plePrev = [firstToken] + plePrevBefore.dropLast()
+        snapshotTaken = false
+    }
+
+    /// Shared expert into `shY` / `shGate` and the router logits, from `mixed`.
+    private func sharedAndRouter(_ cb: MTLCommandBuffer, pre: String, T: Int) throws {
+        try gemv(cb, pre + "ffn_gate_shexp.weight", x: mixed, y: shG, tokens: T)
+        try gemv(cb, pre + "ffn_up_shexp.weight", x: mixed, y: shU, tokens: T)
+        run(cb, psoSiluMul, size(T * F)) { enc in
+            enc.setBuffer(shG, offset: 0, index: 0)
+            enc.setBuffer(shU, offset: 0, index: 1)
+        }
+        try gemv(cb, pre + "ffn_down_shexp.weight", x: shG, y: shY, tokens: T)
+        try gemv(cb, pre + "ffn_gate_inp_shexp.weight", x: mixed, y: shGate, tokens: T)
+        try gemv(cb, pre + "ffn_gate_inp.weight", x: mixed, y: routerLogits, tokens: T)
+    }
+
+    private func resizeBatch(T: Int) {
+        if T > batchRows {
+            allocateBatch(rows: maxBatch)
+        } else if shrinkBatch && T <= smallBatchRows && batchRows > smallBatchRows {
+            allocateBatch(rows: smallBatchRows)
+        }
+    }
+
+    /// Token embeddings (BF16, host) of `tokens`, `copies` times each, into `out` (rows of e).
+    private func embed(_ tokens: [Int], copies: Int, into out: MTLBuffer) throws {
+        let emb = try file.tensor("token_embd.weight")
+        precondition(emb.type == .bf16)
+        let rp = out.contents().bindMemory(to: Float.self, capacity: tokens.count * copies * e)
+        for (t, token) in tokens.enumerated() {
+            let src = file.base + emb.offset + token * e * 2
+            for d in 0..<e {
+                let v = Float(bitPattern: UInt32(src.loadUnaligned(fromByteOffset: d * 2, as: UInt16.self)) << 16)
+                for s in 0..<copies { rp[(t * copies + s) * e + d] = v }
+            }
+        }
+    }
+
+    /// The trunk's final residual row `row` of the last `forward` with `exportHidden` (hc x e floats).
+    package func hidden(row: Int) -> UnsafePointer<Float> {
+        UnsafePointer(hiddenOut!.contents().bindMemory(to: Float.self, capacity: (row + 1) * hc * e) + row * hc * e)
+    }
+
+    /// The MTP head's residual row `row` of its last forward (hc x e floats): a chained draft's `hidden`.
+    package func mtpHidden(row: Int) -> UnsafePointer<Float> {
+        UnsafePointer(mtpHiddenOut!.contents().bindMemory(to: Float.self, capacity: (row + 1) * hc * e) + row * hc * e)
+    }
+
+    /// The MTP draft head (blk.<nTrunk>) on `tokens` at `startPos ..< startPos + T`, token t paired with the residual
+    /// row `hidden[t]` (T x hc x e floats) of the position before it, as llama.cpp `graph_mtp` (qwen4exp.cpp
+    /// `a9e9c3c`, 489-660): embedding -> enorm, repeated per stream; h -> per-stream RMS -> hnorm; per stream
+    /// [e, h] -> eh_proj; then one layer (hc_attn mix, dense gated attention with its own KV, hc_ffn mix, shared +
+    /// routed experts at Q4_K / MXFP4), its residual kept (`mtpHidden`), the `nextn.hc_head` mix and `output.weight`.
+    /// Returns the last row's logits, or every row's with `allLogits`. Valid until the next forward of either kind.
+    package func mtpForward(tokens: [Int], startPos: Int, hidden: UnsafePointer<Float>,
+                            allLogits: Bool = false) throws -> UnsafeBufferPointer<Float> {
+        try autoreleasepool { try mtpForwardBody(tokens: tokens, startPos: startPos, hidden: hidden, allLogits: allLogits) }
+    }
+
+    private func mtpForwardBody(tokens: [Int], startPos: Int, hidden: UnsafePointer<Float>,
+                                allLogits: Bool) throws -> UnsafeBufferPointer<Float> {
+        let T = tokens.count
+        precondition(T >= 1 && T <= maxBatch && startPos + T <= capacity)
+        var prof = StepProfile()
+        let tStep = CFAbsoluteTimeGetCurrent()
+        resizeBatch(T: T)
+        let il = nTrunk, pre = "blk.\(nTrunk)."
+        try embed(tokens, copies: 1, into: blk)
+        R.contents().copyMemory(from: hidden, byteCount: T * hc * e * 4)
+        var cb = queue.makeCommandBuffer()!
+        try rms(cb, x: blk, gamma: pre + "nextn.enorm.weight", out: mixed, groups: T, n: e, gammaLen: e)
+        try rms(cb, x: R, gamma: pre + "nextn.hnorm.weight", out: xn, groups: T * hc, n: e, gammaLen: hc * e)
+        cb.commit()
+        cb.waitUntilCompleted()
+        if let error = cb.error { throw error }
+        prof.preGPU += cb.gpuEndTime - cb.gpuStartTime
+        // Per stream, not pooled (qwen4exp.cpp): row (t, s) = [enorm(x_t), hnorm(h_t)[s]].
+        ensureBuffer(&mtpCat, bytes: T * hc * 2 * e * 4, shared: true)
+        let cat = mtpCat!.contents().bindMemory(to: Float.self, capacity: T * hc * 2 * e)
+        let en = mixed.contents().bindMemory(to: Float.self, capacity: T * e)
+        let hn = xn.contents().bindMemory(to: Float.self, capacity: T * hc * e)
+        for t in 0..<T {
+            for s in 0..<hc {
+                let o = cat + (t * hc + s) * 2 * e
+                o.update(from: en + t * e, count: e)
+                (o + e).update(from: hn + (t * hc + s) * e, count: e)
+            }
+        }
+        cb = queue.makeCommandBuffer()!
+        try gemv(cb, pre + "nextn.eh_proj.weight", x: mtpCat!, y: R, tokens: T * hc)
+        try hcMix(cb, prefix: pre + "hc_attn", inject: true, T: T)
+        try attention(&cb, il: il, pos0: startPos, T: T, dense: true)
+        combine(cb, block: blk, T: T)
+        try hcMix(cb, prefix: pre + "hc_ffn", inject: true, T: T)
+        try sharedAndRouter(cb, pre: pre, T: T)
+        cb.commit()
+        cb.waitUntilCompleted()
+        if let error = cb.error { throw error }
+        let t1 = CFAbsoluteTimeGetCurrent()
+        prof.ple = 0
+        prof.preRouter = t1 - tStep
+        prof.preGPU += cb.gpuEndTime - cb.gpuStartTime
+
+        let cb2 = try moeRouted(il: il, T: T, prof: &prof)
+        combine(cb2, block: blk, T: T)
+        let t2 = CFAbsoluteTimeGetCurrent()
+        prof.route = t2 - t1
+        cb2.commit()
+        cb2.waitUntilCompleted()
+        if let error = cb2.error { throw error }
+        prof.routed = CFAbsoluteTimeGetCurrent() - t2
+        prof.routedGPU = cb2.gpuEndTime - cb2.gpuStartTime
+
+        let tHead = CFAbsoluteTimeGetCurrent()
+        ensureBuffer(&mtpHiddenOut, bytes: T * hc * e * 4, shared: true)
+        mtpHiddenOut!.contents().copyMemory(from: R.contents(), byteCount: T * hc * e * 4)
+        let rows = allLogits ? T : 1
+        if !allLogits && T > 1 {
+            memmove(R.contents(), R.contents() + (T - 1) * hc * e * 4, hc * e * 4)
+        }
+        if logits.length < rows * vocab * 4 {
+            logits = device.makeBuffer(length: rows * vocab * 4, options: .storageModeShared)!
+        }
+        let cb3 = queue.makeCommandBuffer()!
+        try hcMix(cb3, prefix: pre + "nextn.hc_head", inject: false, T: rows)
+        try gemv(cb3, "output.weight", x: mixed, y: logits, tokens: rows)
+        cb3.commit()
+        cb3.waitUntilCompleted()
+        if let error = cb3.error { throw error }
+        prof.head = CFAbsoluteTimeGetCurrent() - tHead
+        prof.total = CFAbsoluteTimeGetCurrent() - tStep
+        lastMTPProfile = prof
+        return UnsafeBufferPointer(start: logits.contents().bindMemory(to: Float.self, capacity: rows * vocab),
+                                   count: rows * vocab)
+    }
+
     /// Forward `token` at `pos`; returns its logits.
     package func step(token: Int, pos: Int) throws -> UnsafeBufferPointer<Float> {
         try forward(tokens: [token], startPos: pos)
@@ -1452,21 +1664,27 @@ package final class Qwen38Runner {
         precondition(T >= 1 && T <= maxBatch && startPos + T <= capacity)
         var prof = StepProfile()
         let tStep = CFAbsoluteTimeGetCurrent()
-        if T > batchRows {
-            allocateBatch(rows: maxBatch)
-        } else if shrinkBatch && T <= smallBatchRows && batchRows > smallBatchRows {
-            allocateBatch(rows: smallBatchRows)
-        }
-        let emb = try file.tensor("token_embd.weight")
-        precondition(emb.type == .bf16)
-        let rp = R.contents().bindMemory(to: Float.self, capacity: T * hc * e)
-        for (t, token) in tokens.enumerated() {
-            let src = file.base + emb.offset + token * e * 2
-            for d in 0..<e {
-                let v = Float(bitPattern: UInt32(src.loadUnaligned(fromByteOffset: d * 2, as: UInt16.self)) << 16)
-                for s in 0..<hc { rp[(t * hc + s) * e + d] = v }
+        resizeBatch(T: T)
+        snapshotTaken = false
+        if snapshotFirst {
+            precondition(T >= 2 && (gdnChunk == 0 || T < gdnMinTokens), "snapshotFirst needs the serial GDN step")
+            let C = 2 * Hk * Dl + Hv * Dl
+            for il in 0..<nTrunk where isLinear(il) {
+                let before = linHistBefore[il] ?? device.makeBuffer(length: (convK - 1) * C * 4, options: .storageModeShared)!
+                linHistBefore[il] = before
+                if let hist = linHist[il] {
+                    before.contents().copyMemory(from: hist.contents(), byteCount: hist.length)
+                } else {
+                    memset(before.contents(), 0, before.length)
+                }
             }
+            pleHistBefore = Array(UnsafeBufferPointer(start: pleHist.contents().bindMemory(to: Float.self, capacity: pleHist.length / 4),
+                                                      count: pleHist.length / 4))
+            plePrevBefore = plePrev
+            firstToken = tokens[0]
+            snapshotTaken = true
         }
+        try embed(tokens, copies: hc, into: R)
         try pleRows(tokens: tokens)
         prof.ple = CFAbsoluteTimeGetCurrent() - tStep
 
@@ -1496,15 +1714,7 @@ package final class Qwen38Runner {
             combine(cb, block: blk, T: T)
             try hcMix(cb, prefix: pre + "hc_ffn", inject: true, T: T)
             try section("hc_ffn")
-            try gemv(cb, pre + "ffn_gate_shexp.weight", x: mixed, y: shG, tokens: T)
-            try gemv(cb, pre + "ffn_up_shexp.weight", x: mixed, y: shU, tokens: T)
-            run(cb, psoSiluMul, size(T * F)) { enc in
-                enc.setBuffer(shG, offset: 0, index: 0)
-                enc.setBuffer(shU, offset: 0, index: 1)
-            }
-            try gemv(cb, pre + "ffn_down_shexp.weight", x: shG, y: shY, tokens: T)
-            try gemv(cb, pre + "ffn_gate_inp_shexp.weight", x: mixed, y: shGate, tokens: T)
-            try gemv(cb, pre + "ffn_gate_inp.weight", x: mixed, y: routerLogits, tokens: T)
+            try sharedAndRouter(cb, pre: pre, T: T)
             cb.commit()
             cb.waitUntilCompleted()
             if let error = cb.error { throw error }
@@ -1525,6 +1735,10 @@ package final class Qwen38Runner {
         }
 
         let tHead = CFAbsoluteTimeGetCurrent()
+        if exportHidden {
+            ensureBuffer(&hiddenOut, bytes: T * hc * e * 4, shared: true)
+            hiddenOut!.contents().copyMemory(from: R.contents(), byteCount: T * hc * e * 4)
+        }
         var rows = T
         if !allLogits && T > 1 {
             // Only the last token's logits: move its residual rows to the front.

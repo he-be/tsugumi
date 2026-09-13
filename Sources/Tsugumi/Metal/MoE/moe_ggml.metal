@@ -402,6 +402,78 @@ kernel void moe_q2k_dequant_down_f32(
     for (uint l = 0; l < n; ++l) o[l] = dl * float((q[l] >> shift) & 3) - ml;
 }
 
+// The MTP block (blk.48) of the same GGUF keeps its experts at Q4_K gate/up and MXFP4 down
+// (docs/qwen38/10). Same calling convention as the two kernels above, so `routedGemm` runs them.
+
+static constant char kvalues_mxfp4[16] = {0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12};
+
+struct block_q4_K {
+    half d;
+    half dmin;
+    uchar scales[12];
+    uchar qs[QK_K/2];
+};
+
+/// Gate and up rows (Q4_K) of the G experts in slots first_slot.. -> float32 out[g][row][col], rows 0..<F gate
+/// then F..<2F up. Thread (32-weight sub-block, row, g). As `dequantize_row_q4_K`: d * scale_j * q - dmin * min_j,
+/// sub-block j reading the low nibbles of qs[32 * (j / 2) ..] for even j, the high nibbles for odd j.
+kernel void moe_q4k_dequant_gate_up_f32(
+    device const GgmlRoutedBlobs& routed [[buffer(0)]],
+    device const uint* part_off [[buffer(1)]],
+    device float* out [[buffer(2)]],
+    constant uint& D [[buffer(3)]],
+    constant uint& F [[buffer(4)]],
+    constant uint& first_slot [[buffer(5)]],
+    uint3 pos [[thread_position_in_grid]]
+) {
+    const uint row_bytes = (D / QK_K) * sizeof(block_q4_K);
+    const uint slot = first_slot + pos.z;
+    const bool is_up = pos.y >= F;
+    const uint r = is_up ? pos.y - F : pos.y;
+    device const uint8_t* src = (is_up ? routed.up[slot] : routed.gate[slot]) + part_off[3 * slot + (is_up ? 1 : 0)] + r * row_bytes;
+    device const block_q4_K* b = (device const block_q4_K*)(src + (pos.x / 8) * sizeof(block_q4_K));
+    const uint j = pos.x % 8;
+    uchar sc, mn;
+    if (j < 4) {
+        sc = b->scales[j] & 63;
+        mn = b->scales[j + 4] & 63;
+    } else {
+        sc = (b->scales[j + 4] & 0xF) | ((b->scales[j - 4] >> 6) << 4);
+        mn = (b->scales[j + 4] >> 4) | ((b->scales[j] >> 6) << 4);
+    }
+    const float dl = float(b->d) * float(sc);
+    const float ml = float(b->dmin) * float(mn);
+    device const uint8_t* q = b->qs + 32 * (j / 2);
+    const uint shift = 4 * (j % 2);
+    device float* o = out + (ulong(pos.z) * 2 * F + pos.y) * D + pos.x * 32;
+    for (uint l = 0; l < 32; ++l) o[l] = dl * float((q[l] >> shift) & 0xF) - ml;
+}
+
+/// Down rows (MXFP4, `cols` = stride wide) of the G experts in slots first_slot.. -> float32 out[g][row][col].
+/// Thread (16-weight half block, row, g). As `dequantize_row_mxfp4`: e8m0 half scale 2^(e - 128) times
+/// kvalues[low nibble] for the first 16 weights of a block, [high nibble] for the last 16.
+kernel void moe_mxfp4_dequant_down_f32(
+    device const GgmlRoutedBlobs& routed [[buffer(0)]],
+    device const uint* part_off [[buffer(1)]],
+    device float* out [[buffer(2)]],
+    constant uint& D [[buffer(3)]],
+    constant uint& stride [[buffer(4)]],
+    constant uint& cols [[buffer(5)]],
+    constant uint& first_slot [[buffer(6)]],
+    uint3 pos [[thread_position_in_grid]]
+) {
+    const uint row_bytes = (stride / 32) * 17;
+    const uint slot = first_slot + pos.z;
+    const uint p = pos.x * 16;
+    device const uint8_t* b = routed.down[slot] + part_off[3 * slot + 2] + pos.y * row_bytes + (p / 32) * 17;
+    const float d = ldexp(1.0f, int(b[0]) - 128);
+    const uint shift = 4 * ((p % 32) / 16);
+    device const uint8_t* q = b + 1;
+    device float* o = out + (ulong(pos.z) * D + pos.y) * cols + p;
+    const uint n = min(16u, cols - p);
+    for (uint l = 0; l < n; ++l) o[l] = d * float(kvalues_mxfp4[(q[l] >> shift) & 0xF]);
+}
+
 /// out[i][c] = x[src[i] / top_k][c]: the token rows of the pairs, in the order `src` lists them.
 /// Thread (32-column chunk, i).
 kernel void moe_gather_pair_rows(

@@ -1649,6 +1649,38 @@ if let index = arguments.firstIndex(of: "--qwen38-decode"), index + 1 < argument
     exit(passed ? 0 : 1)
 }
 
+// `--qwen38-mtp-dump <token file> <out>`: the MTP head's logits for the CPU reference (Qwen38MTPCheck.swift).
+if let index = arguments.firstIndex(of: "--qwen38-mtp-dump"), index + 2 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    try runQwen38MTPDump(
+        tokenFile: arguments[index + 1], out: arguments[index + 2],
+        tokens: opt("--q38-tokens").flatMap { Int($0) } ?? 4096,
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf")
+    exit(0)
+}
+
+// `--qwen38-generate <prompt token file>`: base decode, and the MTP shadow mode (Qwen38MTPCheck.swift).
+if let index = arguments.firstIndex(of: "--qwen38-generate"), index + 1 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    try runQwen38Generate(
+        tokenFile: arguments[index + 1], newTokens: opt("--q38-new").flatMap { Int($0) } ?? 200,
+        chunk: opt("--q38-chunk").flatMap { Int($0) } ?? 2048,
+        greedy: (opt("--q38-sampler") ?? "instruct") == "greedy",
+        seed: opt("--q38-seed").flatMap { UInt64($0) } ?? 1,
+        mtp: opt("--q38-mtp") ?? "off",
+        out: opt("--q38-out") ?? "generate.out",
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf")
+    exit(0)
+}
+
 // `--qwen38-prefill-bench <token file>`: prefill speed (`--q38-tokens N`, `--q38-chunk C`).
 if let index = arguments.firstIndex(of: "--qwen38-prefill-bench"), index + 1 < arguments.count {
     func opt(_ flag: String) -> String? {
