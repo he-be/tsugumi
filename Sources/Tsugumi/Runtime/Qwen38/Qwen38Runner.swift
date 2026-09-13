@@ -1,6 +1,7 @@
 import Foundation
 import Metal
 import MetalPerformanceShaders
+import QuartzCore
 
 /// Qwen3.8-Flash-Next (qwen4exp) off the DS4-IQ2 GGUF: the Q2 verification runner
 /// (`docs/qwen38/01-Q2-FIRST-LIGHT.md` .. `04-QSA-GPU.md`).
@@ -126,6 +127,11 @@ package final class Qwen38Runner {
         package var missBytes = 0      // selected expert bytes not in the page cache at route time (`countMisses`)
         package var distinctExperts = 0  // distinct (layer, expert) pairs of the batch, summed over layers
         package var routeTopK = 0.0, routeViews = 0.0, routeAdvise = 0.0   // parts of `route`
+        package var missTime = 0.0      // the `countMisses` mincore calls (inside `routeAdvise`)
+        /// Parts of `routed` - `routedGPU` (trunk only), from the buffers' host times: `commit` to `kernelStartTime`,
+        /// `kernelStartTime` to `gpuStartTime` (scheduling, making the no-copy expert views resident),
+        /// `gpuEndTime` to `waitUntilCompleted` returning.
+        package var routedToKernel = 0.0, routedKernelToGPU = 0.0, routedAfterGPU = 0.0
         package var adviseCalls = 0
     }
     package private(set) var lastProfile = StepProfile()
@@ -1129,9 +1135,11 @@ package final class Qwen38Runner {
                 let fileOffset = t.offset + sorted[i] * bytes
                 let length = (sorted[j] - sorted[i] + 1) * bytes
                 if countMisses {
+                    let tm = CFAbsoluteTimeGetCurrent()
                     for ex in sorted[i]...sorted[j] where slotOf[ex] >= 0 {
                         prof.missBytes += file.nonResidentBytes(offset: t.offset + ex * bytes, byteCount: bytes)
                     }
+                    prof.missTime += CFAbsoluteTimeGetCurrent() - tm
                 }
                 if adviseExperts && !preadThisBatch { file.adviseRead(offset: fileOffset, byteCount: length) }
                 runs.append((fileOffset, length))
@@ -1727,11 +1735,16 @@ package final class Qwen38Runner {
             combine(cb2, block: blk, T: T)
             let t2 = CFAbsoluteTimeGetCurrent()
             prof.route += t2 - t1
+            let hostCommit = CACurrentMediaTime()
             cb2.commit()
             cb2.waitUntilCompleted()
+            let hostDone = CACurrentMediaTime()
             if let error = cb2.error { throw error }
             prof.routed += CFAbsoluteTimeGetCurrent() - t2
             prof.routedGPU += cb2.gpuEndTime - cb2.gpuStartTime
+            prof.routedToKernel += cb2.kernelStartTime - hostCommit
+            prof.routedKernelToGPU += cb2.gpuStartTime - cb2.kernelStartTime
+            prof.routedAfterGPU += hostDone - cb2.gpuEndTime
         }
 
         let tHead = CFAbsoluteTimeGetCurrent()

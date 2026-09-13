@@ -61,6 +61,15 @@ func runQwen38MTPDump(tokenFile: String, out: String, tokens maxTokens: Int, ggu
 
 // MARK: - Generation (docs/qwen38/10 §5-1, §5-3)
 
+/// The trunk forward's route and routed host time split (docs/qwen38/11): route = top-k + views + advise (+ the
+/// `Q38_COUNT_MISS` mincore time, printed apart), routed = commit->kernel start + kernel->GPU start + GPU + after.
+func routeDetail(_ p: Qwen38Runner.StepProfile) -> String {
+    String(format: "  | route topk %.1f views %.1f advise %.1f (miss %.1f) calls %d | routed commit>kernel %.1f kernel>gpu %.1f gpu %.1f after %.1f | experts %d miss %.1f MB",
+           p.routeTopK * 1000, p.routeViews * 1000, (p.routeAdvise - p.missTime) * 1000, p.missTime * 1000, p.adviseCalls,
+           p.routedToKernel * 1000, p.routedKernelToGPU * 1000, p.routedGPU * 1000, p.routedAfterGPU * 1000,
+           p.distinctExperts, Double(p.missBytes) / 1e6)
+}
+
 /// Host sampler for the generation checks. `greedy`: argmax (lowest id on ties). `instruct`: the official non-thinking
 /// settings (temp 0.7, top_p 0.8, top_k 20, presence_penalty 1.5 over the generated tokens, `HANDOVER-llm-server.md`),
 /// in Hugging Face's order: penalty, temperature, top_k, top_p over the tempered top-k mass, draw (xorshift64*).
@@ -216,7 +225,7 @@ func runQwen38Generate(tokenFile: String, newTokens: Int, chunk: Int, greedy: Bo
         lines.append(String(format: "  [%5d] in %6d out %6d logit %.6f%@  trunk %.0f (pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] head %.0f)%@",
                             pos, y, next, l[next], shadow ? String(format: " draft %6d %@", draft, draft == next ? "hit " : "miss") : "",
                             ms, pr.preRouter * 1000, pr.preGPU * 1000, pr.route * 1000, pr.routed * 1000, pr.routedGPU * 1000,
-                            pr.head * 1000, mtpLine))
+                            pr.head * 1000, mtpLine) + routeDetail(pr))
         print(lines.last!)
         generated.append(next)
         y = next
@@ -306,7 +315,7 @@ private func speculativeLoop(runner: Qwen38Runner, n: Int, lastLogits: [Float], 
                             pos0, y, d, hit ? "hit " : "miss", emitted.map(String.init).joined(separator: ",") as NSString, logit0,
                             stepMs.last!, dMs, draftT, mp.preRouter * 1000, mp.route * 1000,
                             mp.routed * 1000, mp.head * 1000, vMs, vp.preRouter * 1000, vp.preGPU * 1000, vp.route * 1000,
-                            vp.routed * 1000, vp.routedGPU * 1000, vp.head * 1000, rMs))
+                            vp.routed * 1000, vp.routedGPU * 1000, vp.head * 1000, rMs) + routeDetail(vp))
         print(lines.last!)
         for t in emitted {
             generated.append(t)
