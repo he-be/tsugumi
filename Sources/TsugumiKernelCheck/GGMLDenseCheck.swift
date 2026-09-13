@@ -243,3 +243,60 @@ func ggmlDenseEncodeMedian(file: GGUFFile, context: MetalContext, gemv: GGMLDens
     }
     return times.sorted()[times.count / 2]
 }
+
+// MARK: - `--q8-gemm-bench <gguf> [T]`: batched Q8_0 GEMM vs dequant + MPS sgemm
+import MetalPerformanceShaders
+
+func runQ8GemmBench(ggufPath: String, tokens T: Int) throws {
+    let file = try GGUFFile(url: URL(fileURLWithPath: (ggufPath as NSString).expandingTildeInPath))
+    let context = try MetalContext()
+    let device = context.device
+    let gemv = try GGMLDenseGEMV(device: device)
+    let library = try MetalContext.moduleLibrary(device: device, module: "ggml_dense")
+    let deq = try device.makeComputePipelineState(function: library.makeFunction(name: "ggml_q8_0_dequant_f32")!)
+    for name in ["blk.0.attn_qkv.weight", "blk.0.ssm_out.weight"] {
+        let t = try file.tensor(name)
+        let m = t.rowCount, n = t.rowWidth
+        var rng = SystemRandomNumberGenerator()
+        let x = (0..<(T * n)).map { _ in Float.random(in: -1...1, using: &rng) }
+        let (wbuf, woff) = file.noCopyBuffer(device: device, tensor: t)!
+        let xbuf = device.makeBuffer(bytes: x, length: T * n * 4, options: .storageModeShared)!
+        let y0 = device.makeBuffer(length: T * m * 4, options: .storageModeShared)!
+        let y1 = device.makeBuffer(length: T * m * 4, options: .storageModeShared)!
+        let wf = device.makeBuffer(length: m * n * 4, options: .storageModeShared)!
+        let mul = MPSMatrixMultiplication(device: device, transposeLeft: false, transposeRight: true,
+                                          resultRows: T, resultColumns: m, interiorColumns: n, alpha: 1, beta: 0)
+        let xm = MPSMatrix(buffer: xbuf, descriptor: MPSMatrixDescriptor(rows: T, columns: n, rowBytes: n * 4, dataType: .float32))
+        let wm = MPSMatrix(buffer: wf, descriptor: MPSMatrixDescriptor(rows: m, columns: n, rowBytes: n * 4, dataType: .float32))
+        let ym = MPSMatrix(buffer: y1, descriptor: MPSMatrixDescriptor(rows: T, columns: m, rowBytes: m * 4, dataType: .float32))
+        var a: [Double] = [], bDeq: [Double] = [], bMul: [Double] = []
+        for it in 0..<6 {
+            var cb = context.queue.makeCommandBuffer()!
+            gemv.encode(commandBuffer: cb, type: t.type, weights: wbuf, weightsOffset: woff, x: xbuf, y: y0, m: m, n: n, tokens: T)
+            cb.commit(); cb.waitUntilCompleted()
+            if it > 0 { a.append((cb.gpuEndTime - cb.gpuStartTime) * 1000) }
+            cb = context.queue.makeCommandBuffer()!
+            let enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(deq)
+            enc.setBuffer(wbuf, offset: woff, index: 0)
+            enc.setBuffer(wf, offset: 0, index: 1)
+            var nv = UInt32(n)
+            enc.setBytes(&nv, length: 4, index: 2)
+            enc.dispatchThreads(MTLSize(width: n / 32, height: m, depth: 1), threadsPerThreadgroup: MTLSize(width: 32, height: 16, depth: 1))
+            enc.endEncoding()
+            cb.commit(); cb.waitUntilCompleted()
+            if it > 0 { bDeq.append((cb.gpuEndTime - cb.gpuStartTime) * 1000) }
+            cb = context.queue.makeCommandBuffer()!
+            mul.encode(commandBuffer: cb, leftMatrix: xm, rightMatrix: wm, resultMatrix: ym)
+            cb.commit(); cb.waitUntilCompleted()
+            if it > 0 { bMul.append((cb.gpuEndTime - cb.gpuStartTime) * 1000) }
+        }
+        let p0 = y0.contents().bindMemory(to: Float.self, capacity: T * m)
+        let p1 = y1.contents().bindMemory(to: Float.self, capacity: T * m)
+        var d = 0.0, r = 0.0
+        for i in 0..<(T * m) { d = max(d, Double(abs(p0[i] - p1[i]))); r = max(r, Double(abs(p0[i]))) }
+        let med = { (v: [Double]) in v.sorted()[v.count / 2] }
+        print(String(format: "  %@ [%d x %d] T=%d: q8 gemm %.1f ms | dequant %.1f + mps %.1f ms  (diff %.1e)",
+                     name, m, n, T, med(a), med(bDeq), med(bMul), d / r))
+    }
+}

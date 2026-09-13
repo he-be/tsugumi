@@ -1,10 +1,13 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// Dense GEMV straight off GGML tensors: y[r] = W[r] . x for r < M, W [M, N]
-// row-major as stored in the GGUF. Float32 in, float32 out -- the
-// Qwen3.8-Flash-Next verification runner keeps activations in FP32 so it can
-// be compared against the CPU reference without a half-precision floor.
+// Dense GEMV straight off GGML tensors: y[t][r] = W[r] . x[t] for r < M, W [M, N]
+// row-major as stored in the GGUF, t < T tokens laid out one after another in
+// x ([T][N]) and y ([T][M]). The threadgroup grid's second axis is t, so a
+// dispatch of ((M + 7) / 8, T) threadgroups does the whole batch. Float32 in,
+// float32 out -- the Qwen3.8-Flash-Next verification runner keeps activations
+// in FP32 so it can be compared against the CPU reference without a
+// half-precision floor.
 //
 // Lane geometry, shared by the three kernels (2 SIMD groups x 32 lanes per
 // threadgroup, 4 rows per group):
@@ -22,14 +25,17 @@ struct block_q8_0 {
 
 kernel void ggml_q8_0_gemv(
     device const block_q8_0* W [[buffer(0)]],
-    device const float* x [[buffer(1)]],
-    device float* y [[buffer(2)]],
+    device const float* xs [[buffer(1)]],
+    device float* ys [[buffer(2)]],
     constant uint& M [[buffer(3)]],
     constant uint& N [[buffer(4)]],
-    uint tg [[threadgroup_position_in_grid]],
+    uint2 tgt [[threadgroup_position_in_grid]],
     ushort tiisg [[thread_index_in_simdgroup]],
     ushort sgitg [[simdgroup_index_in_threadgroup]]
 ) {
+    const uint tg = tgt.x;
+    device const float* x = xs + tgt.y * N;
+    device float* y = ys + tgt.y * M;
     const uint row0 = (tg * kGgmlDenseGroupsPerTG + sgitg) * kGgmlDenseRowsPerGroup;
     const uint nb = N / 32;
     float sum[kGgmlDenseRowsPerGroup] = {0.f};
@@ -57,14 +63,17 @@ kernel void ggml_q8_0_gemv(
 #define GGML_FLOAT_GEMV(NAME, WTYPE)                                                     \
 kernel void NAME(                                                                        \
     device const WTYPE* W [[buffer(0)]],                                                 \
-    device const float* x [[buffer(1)]],                                                 \
-    device float* y [[buffer(2)]],                                                       \
+    device const float* xs [[buffer(1)]],                                                \
+    device float* ys [[buffer(2)]],                                                      \
     constant uint& M [[buffer(3)]],                                                      \
     constant uint& N [[buffer(4)]],                                                      \
-    uint tg [[threadgroup_position_in_grid]],                                            \
+    uint2 tgt [[threadgroup_position_in_grid]],                                          \
     ushort tiisg [[thread_index_in_simdgroup]],                                          \
     ushort sgitg [[simdgroup_index_in_threadgroup]]                                      \
 ) {                                                                                      \
+    const uint tg = tgt.x;                                                               \
+    device const float* x = xs + tgt.y * N;                                              \
+    device float* y = ys + tgt.y * M;                                                    \
     const uint row0 = (tg * kGgmlDenseGroupsPerTG + sgitg) * kGgmlDenseRowsPerGroup;     \
     float sum[kGgmlDenseRowsPerGroup] = {0.f};                                           \
     if (row0 < M) {                                                                      \
@@ -148,14 +157,17 @@ kernel void ggml_q8_0_gemv_rows(
 #define GGML_FLOAT_GEMV_CHUNK(NAME, WTYPE)                                               \
 kernel void NAME(                                                                        \
     device const WTYPE* W [[buffer(0)]],                                                 \
-    device const float* x [[buffer(1)]],                                                 \
-    device float* y [[buffer(2)]],                                                       \
+    device const float* xs [[buffer(1)]],                                                \
+    device float* ys [[buffer(2)]],                                                      \
     constant uint& M [[buffer(3)]],                                                      \
     constant uint& N [[buffer(4)]],                                                      \
-    uint tg [[threadgroup_position_in_grid]],                                            \
+    uint2 tgt [[threadgroup_position_in_grid]],                                          \
     ushort tiisg [[thread_index_in_simdgroup]],                                          \
     ushort sgitg [[simdgroup_index_in_threadgroup]]                                      \
 ) {                                                                                      \
+    const uint tg = tgt.x;                                                               \
+    device const float* x = xs + tgt.y * N;                                              \
+    device float* y = ys + tgt.y * M;                                                    \
     const uint row0 = (tg * kGgmlDenseGroupsPerTG + sgitg) * kGgmlDenseRowsPerGroup;     \
     const uint nc = N / 32;                                                              \
     float sum[kGgmlDenseRowsPerGroup] = {0.f};                                           \
@@ -182,3 +194,32 @@ kernel void NAME(                                                               
 
 GGML_FLOAT_GEMV_CHUNK(ggml_f16_gemv_chunk, half)
 GGML_FLOAT_GEMV_CHUNK(ggml_f32_gemv_chunk, float)
+
+// Q8_0 rows [M, N] -> float32 [M][N], thread (block b, row r) writes 32 weights.
+// The batched path of `GGMLDenseGEMV` dequantizes a tensor this way and hands
+// it to MPS sgemm: at T = 512 on attn_qkv that is 1.3 + 5.4 ms against 45 ms
+// for `ggml_q8_0_gemv` (`--q8-gemm-bench`, docs/qwen38/03).
+kernel void ggml_q8_0_dequant_f32(
+    device const block_q8_0* W [[buffer(0)]],
+    device float* out [[buffer(1)]],
+    constant uint& N [[buffer(2)]],
+    uint2 pos [[thread_position_in_grid]]
+) {
+    const uint nb = N / 32;
+    device const block_q8_0* blk = W + pos.y * nb + pos.x;
+    const float d = float(blk->d);
+    device float* o = out + pos.y * N + pos.x * 32;
+    for (uint j = 0; j < 32; ++j) o[j] = d * float(blk->qs[j]);
+}
+
+// F16 rows [M, N] -> float32 [M][N]. Thread (column chunk c, row r) writes 32 weights.
+kernel void ggml_f16_dequant_f32(
+    device const half* W [[buffer(0)]],
+    device float* out [[buffer(1)]],
+    constant uint& N [[buffer(2)]],
+    uint2 pos [[thread_position_in_grid]]
+) {
+    const uint base = pos.y * N + pos.x * 32;
+    const uint end = min(base + 32, pos.y * N + N);
+    for (uint i = base; i < end; ++i) out[i] = float(W[i]);
+}

@@ -12,9 +12,11 @@ using namespace metal;
 // below are copied verbatim.
 //
 // What differs from ds4 is the calling convention, which is Tsugumi's decode
-// one (`moe.metal`): one argument buffer of per-slot expert blobs, and phase 2
-// folding the routing weights and the residual in. Activations are float32, as
-// in the Qwen3.8-Flash-Next verification runner (`qwen38.metal`).
+// one (`moe.metal`) widened to a batch: one argument buffer of per-slot expert
+// blobs (a slot per distinct expert of the batch, up to 512), T tokens x top_k
+// (token, expert) pairs mapped to slots by `pair_slot`, and phase 2 folding the
+// routing weights and the residual in. Activations are float32, as in the
+// Qwen3.8-Flash-Next verification runner (`qwen38.metal`).
 //
 // Lane geometry (both kernels, 2 SIMD groups x 32 lanes per threadgroup):
 //   IQ2_XXS  lane l walks sub-blocks l, l+32, l+64, ... (32 weights each), so
@@ -29,7 +31,7 @@ using namespace metal;
 #define QK_K 256
 #define GGML_ROWS_PER_GROUP 4
 constant constexpr uint kGgmlGroupsPerTG = 2;
-constant constexpr uint kGgmlMaxExperts = 16;
+constant constexpr uint kGgmlMaxExperts = 512;
 
 struct block_iq2_xxs {
     half d;
@@ -140,7 +142,8 @@ static constant ulong ds4_metal_iq2xxs_grid[256] = {
     0x2b2b082b08080808, 0x2b2b190808192b08, 0x2b2b2b0819190808, 0x2b2b2b1908081908,
 };
 
-/// acts[slot * act_stride + f] = silu(gate_f . x) * (up_f . x), for f < F.
+/// acts[pair * act_stride + f] = silu(gate_f . x[pair / top_k]) * (up_f . x[pair / top_k]),
+/// for f < F and pair < tokens * top_k, with the expert of pair in slot pair_slot[pair].
 /// `act_stride` is the Q2_K down input width (768 for a 640-wide expert); the
 /// host zeroes the pad once and this kernel never writes it.
 kernel void moe_iq2xxs_phase1_gate_up_act(
@@ -153,6 +156,8 @@ kernel void moe_iq2xxs_phase1_gate_up_act(
     constant uint& top_k [[buffer(6)]],
     constant uint& act_stride [[buffer(7)]],
     device const uint* part_off [[buffer(8)]],
+    constant uint& tokens [[buffer(9)]],
+    device const uint* pair_slot [[buffer(10)]],
     threadgroup char* shmem [[threadgroup(0)]],
     uint tg [[threadgroup_position_in_grid]],
     ushort tiisg [[thread_index_in_simdgroup]],
@@ -171,8 +176,9 @@ kernel void moe_iq2xxs_phase1_gate_up_act(
     const uint first_row = (tg * kGgmlGroupsPerTG + sgitg) * GGML_ROWS_PER_GROUP;
     float sumg[GGML_ROWS_PER_GROUP] = {0.f};
     float sumu[GGML_ROWS_PER_GROUP] = {0.f};
-    const bool live = first_row < top_k * F;
-    const uint slot = live ? first_row / F : 0;
+    const bool live = first_row < tokens * top_k * F;
+    const uint pair = live ? first_row / F : 0;
+    const uint slot = pair_slot[pair];
     const uint row0 = live ? first_row % F : 0;
 
     if (live) {
@@ -185,7 +191,7 @@ kernel void moe_iq2xxs_phase1_gate_up_act(
 
         float yl[32];
         const int ix = tiisg;
-        device const float* y4 = x + 32 * ix;
+        device const float* y4 = x + (pair / top_k) * D + 32 * ix;
         for (int ib32 = ix; ib32 < nb32; ib32 += 32) {
             for (short i = 0; i < 32; ++i) yl[i] = y4[i];
             const int ibl = ib32 / (QK_K / 32);
@@ -233,12 +239,13 @@ kernel void moe_iq2xxs_phase1_gate_up_act(
         for (uint row = 0; row < GGML_ROWS_PER_GROUP && row0 + row < F; ++row) {
             const float g = rg[row] * 0.25f;
             const float u = ru[row] * 0.25f;
-            acts[slot * act_stride + row0 + row] = g / (1.0f + exp(-g)) * u;
+            acts[pair * act_stride + row0 + row] = g / (1.0f + exp(-g)) * u;
         }
     }
 }
 
-/// y[r] = residual[r] + sum_slot routing_w[slot] * (down_slot row r . acts[slot]).
+/// y[t][r] = residual[t][r] + sum_k routing_w[t * top_k + k] * (down row r . acts[t * top_k + k]),
+/// the down rows of the pair's slot.
 kernel void moe_q2k_phase2_down_reduce(
     device const GgmlRoutedBlobs& routed [[buffer(0)]],
     constant GgmlExpertOffsets& off [[buffer(1)]],
@@ -250,13 +257,17 @@ kernel void moe_q2k_phase2_down_reduce(
     constant uint& act_stride [[buffer(7)]],
     constant uint& top_k [[buffer(8)]],
     device const uint* part_off [[buffer(9)]],
+    constant uint& tokens [[buffer(10)]],
+    device const uint* pair_slot [[buffer(11)]],
     uint tg [[threadgroup_position_in_grid]],
     ushort tiisg [[thread_index_in_simdgroup]],
     ushort sgitg [[simdgroup_index_in_threadgroup]]
 ) {
-    const uint row0 = (tg * kGgmlGroupsPerTG + sgitg) * GGML_ROWS_PER_GROUP;
+    const uint first_row = (tg * kGgmlGroupsPerTG + sgitg) * GGML_ROWS_PER_GROUP;
     float sumf[GGML_ROWS_PER_GROUP] = {0.f};
-    const bool live = row0 < D;
+    const bool live = first_row < tokens * D;
+    const uint tok = live ? first_row / D : 0;
+    const uint row0 = live ? first_row % D : 0;
 
     if (live) {
         const short ix = tiisg / 8;
@@ -266,11 +277,13 @@ kernel void moe_q2k_phase2_down_reduce(
         const short is = (8 * ir) / 16;
         const int nb = int(act_stride / QK_K);
         const uint rb = off.down_row_bytes;
-        for (uint slot = 0; slot < top_k; slot++) {
-            const float w = routing_w[slot];
+        for (uint k = 0; k < top_k; k++) {
+            const uint pair = tok * top_k + k;
+            const uint slot = pair_slot[pair];
+            const float w = routing_w[pair];
             device const block_q2_K* xb =
                 (device const block_q2_K*)(routed.down[slot] + part_off[3 * slot + 2] + row0 * rb);
-            device const float* y4 = acts + slot * act_stride + ix * QK_K + 128 * iq + 8 * ir;
+            device const float* y4 = acts + pair * act_stride + ix * QK_K + 128 * iq + 8 * ir;
             for (int ib = ix; ib < nb; ib += 4) {
                 float yl[32];
                 float4 sumy = {0.f, 0.f, 0.f, 0.f};
@@ -317,7 +330,7 @@ kernel void moe_q2k_phase2_down_reduce(
     for (int row = 0; row < GGML_ROWS_PER_GROUP; ++row) reduced[row] = simd_sum(sumf[row]);
     if (live && tiisg == 0) {
         for (uint row = 0; row < GGML_ROWS_PER_GROUP && row0 + row < D; ++row) {
-            y[row0 + row] = residual[row0 + row] + reduced[row];
+            y[tok * D + row0 + row] = residual[tok * D + row0 + row] + reduced[row];
         }
     }
 }

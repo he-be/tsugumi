@@ -132,7 +132,7 @@ route の 10〜20 ms は advise の syscall (1 トークン 1,440 回)。並列�
 
 1. **PLE を GPU に** (host 17〜28 ms、Q4_1 16 行と 2 本の Q8_0 行列積と conv)。
 2. **routed の SSD 待ち**: 1 層先の router を今の層の入力で回して先に advise する (本線の `ExpertPrefetch` の考え方)。当たり率を先に測る。
-3. **prefill** (32K の運用点でツール結果を読む速度)。今は 1 トークンずつしか流せない。
+3. **prefill** (32K の運用点でツール結果を読む速度)。今は 1 トークンずつしか流せない。→ [03-PREFILL.md](03-PREFILL.md) で T トークン一括にした (PLE の GPU 化も込み)。
 4. MTP (blk.48)、品質 (server に繋いで英語のツール呼び出し) は 01 §7-4 のまま。
 
 ## 6. 足したもの

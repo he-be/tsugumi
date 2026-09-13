@@ -1649,11 +1649,41 @@ if let index = arguments.firstIndex(of: "--qwen38-decode"), index + 1 < argument
     exit(passed ? 0 : 1)
 }
 
+// `--qwen38-prefill-bench <token file>`: prefill speed (`--q38-tokens N`, `--q38-chunk C`).
+if let index = arguments.firstIndex(of: "--qwen38-prefill-bench"), index + 1 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    try runQwen38PrefillBench(
+        tokenFile: arguments[index + 1], tokens: opt("--q38-tokens").flatMap { Int($0) } ?? 1024,
+        chunk: opt("--q38-chunk").flatMap { Int($0) } ?? 256,
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf")
+    exit(0)
+}
+
+// `--qwen38-prefill <reference log>`: the same sequence through `Qwen38Runner.forward`
+// in chunks of `--q38-chunk N` (default 4), every position compared (Qwen38DecodeCheck.swift).
+if let index = arguments.firstIndex(of: "--qwen38-prefill"), index + 1 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    let passed = try runQwen38PrefillCheck(
+        refLog: arguments[index + 1], refLogits: opt("--q38-ref-logits"),
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf",
+        indexerTopK: opt("--q38-indexer-top-k").flatMap { Int($0) },
+        chunk: opt("--q38-chunk").flatMap { Int($0) } ?? 4)
+    exit(passed ? 0 : 1)
+}
+
 // `--ggml-dense <gguf>`: Q8_0 / F16 / F32 GEMV straight off GGUF tensors
 // (GGMLDenseCheck.swift), the dense half of the Qwen3.8-Flash-Next Q2 runner.
-if let index = arguments.firstIndex(of: "--q38-small-bench") {
-    let iterations = index + 1 < arguments.count ? Int(arguments[index + 1]) ?? 20 : 20
-    try runQwen38SmallKernelBench(iterations: iterations)
+if let index = arguments.firstIndex(of: "--q8-gemm-bench"), index + 1 < arguments.count {
+    let tokens = index + 2 < arguments.count ? Int(arguments[index + 2]) ?? 512 : 512
+    try runQ8GemmBench(ggufPath: arguments[index + 1], tokens: tokens)
     exit(0)
 }
 if let index = arguments.firstIndex(of: "--ggml-dense-bench"), index + 1 < arguments.count {

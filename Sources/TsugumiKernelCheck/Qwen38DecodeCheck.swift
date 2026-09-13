@@ -95,3 +95,115 @@ func runQwen38DecodeCheck(refLog: String, refLogits: String?, gguf: String, ple:
     print("  \(pass ? "PASS" : "FAIL")")
     return pass
 }
+
+// MARK: - Prefill: the same sequence in chunks (`--qwen38-prefill <ref log> [--q38-chunk N]`)
+//
+// The reference's prompt plus its greedy continuation, fed through
+// `Qwen38Runner.forward` `chunk` tokens at a time with every position's logits
+// kept, and compared position by position like the decode check. A chunk
+// boundary inside the sequence exercises the carried state (GDN conv and
+// recurrent state, PLE history, KV and indexer caches).
+func runQwen38PrefillCheck(refLog: String, refLogits: String?, gguf: String, ple: String,
+                           indexerTopK: Int?, chunk: Int) throws -> Bool {
+    let ref = try parseQwen38RefLog(refLog)
+    let n = ref.top1.count
+    precondition(!ref.prompt.isEmpty && n > 0, "reference log has no prompt or positions")
+    var seq = ref.prompt
+    while seq.count < n { seq.append(ref.top1[seq.count - 1]) }
+    let runner = try Qwen38Runner(gguf: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath),
+                                  ple: URL(fileURLWithPath: (ple as NSString).expandingTildeInPath),
+                                  capacity: n + 1, maxBatch: chunk)
+    if let indexerTopK {
+        runner.indexerTopK = indexerTopK
+        print("  indexer top_k override: \(indexerTopK) tokens")
+    }
+    var refLogitsData: Data?
+    if let refLogits { refLogitsData = try Data(contentsOf: URL(fileURLWithPath: refLogits)) }
+    print("Qwen3.8 Q2 prefill check: \(n) positions in chunks of \(chunk) (\(refLog))")
+    var mismatches = 0
+    var worstLogit = 0.0
+    var start = 0
+    while start < n {
+        let T = min(chunk, n - start)
+        let t0 = Date()
+        let all = try runner.forward(tokens: Array(seq[start..<(start + T)]), startPos: start, allLogits: true)
+        let pr = runner.lastProfile
+        var worstChunk = 0.0
+        var line = ""
+        for t in 0..<T {
+            let pos = start + t
+            let logits = UnsafeBufferPointer(rebasing: all[(t * runner.vocab)..<((t + 1) * runner.vocab)])
+            var best = 0
+            for i in 1..<logits.count where logits[i] > logits[best] { best = i }
+            if best != ref.top1[pos] { mismatches += 1; line += " DIFF@\(pos)" }
+            if let data = refLogitsData {
+                data.withUnsafeBytes { raw in
+                    let r = raw.bindMemory(to: Float.self)
+                    let v = runner.vocab
+                    var maxDiff = 0.0, refMax = 0.0
+                    for i in 0..<v {
+                        refMax = max(refMax, abs(Double(r[pos * v + i])))
+                        maxDiff = max(maxDiff, abs(Double(logits[i]) - Double(r[pos * v + i])))
+                    }
+                    worstChunk = max(worstChunk, maxDiff / refMax)
+                }
+            }
+        }
+        worstLogit = max(worstLogit, worstChunk)
+        print(String(format: "  [%3d..<%3d] %.2fs (ple %.0f pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] head %.0f ms, experts %d)%@%@",
+                     start, start + T, Date().timeIntervalSince(t0), pr.ple * 1000, pr.preRouter * 1000,
+                     pr.preGPU * 1000, pr.route * 1000, pr.routed * 1000, pr.routedGPU * 1000, pr.head * 1000,
+                     pr.distinctExperts,
+                     refLogitsData != nil ? String(format: "  logit rel err %.2e", worstChunk) : "", line))
+        start += T
+    }
+    let pass = mismatches == 0 && (refLogitsData == nil || worstLogit < 1e-3)
+    print("  top-1 mismatches: \(mismatches)" + (refLogitsData != nil ? String(format: ", worst logit rel err %.2e", worstLogit) : ""))
+    print("  \(pass ? "PASS" : "FAIL")")
+    return pass
+}
+
+// MARK: - Prefill speed (`--qwen38-prefill-bench <token file> [--q38-tokens N] [--q38-chunk C]`)
+//
+// N token ids (comma-separated file) through `forward` C at a time, last logits only,
+// then one decode step at the end of the context. Prints each chunk's stages.
+func runQwen38PrefillBench(tokenFile: String, tokens: Int, chunk: Int, gguf: String, ple: String) throws {
+    let text = try String(contentsOfFile: tokenFile, encoding: .utf8)
+    let ids = text.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    let n = min(tokens, ids.count)
+    let runner = try Qwen38Runner(gguf: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath),
+                                  ple: URL(fileURLWithPath: (ple as NSString).expandingTildeInPath),
+                                  capacity: n + 2, maxBatch: chunk)
+    runner.splitPreRouter = ProcessInfo.processInfo.environment["Q38_SPLIT_PRE"] != nil
+    print("Qwen3.8 Q2 prefill bench: \(n) tokens in chunks of \(chunk) (\(tokenFile))")
+    let tAll = Date()
+    var start = 0
+    var last = 0
+    while start < n {
+        let T = min(chunk, n - start)
+        let t0 = Date()
+        let logits = try runner.forward(tokens: Array(ids[start..<(start + T)]), startPos: start)
+        for i in 1..<logits.count where logits[i] > logits[last] { last = i }
+        let pr = runner.lastProfile
+        let s = Date().timeIntervalSince(t0)
+        print(String(format: "  [%5d..<%5d] %6.2fs %6.1f tok/s (ple %.0f pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] head %.0f ms, experts %d; route = topk %.0f views %.0f advise %.0f (%d calls))",
+                     start, start + T, s, Double(T) / s, pr.ple * 1000, pr.preRouter * 1000, pr.preGPU * 1000,
+                     pr.route * 1000, pr.routed * 1000, pr.routedGPU * 1000, pr.head * 1000, pr.distinctExperts,
+                     pr.routeTopK * 1000, pr.routeViews * 1000, pr.routeAdvise * 1000, pr.adviseCalls))
+        if !pr.sections.isEmpty {
+            print("        pre-router GPU ms: " + pr.sections.sorted { $0.key < $1.key }
+                .map { String(format: "%@ %.0f", $0.key as NSString, $0.value) }.joined(separator: "  "))
+        }
+        start += T
+    }
+    let total = Date().timeIntervalSince(tAll)
+    print(String(format: "  prefill %d tokens: %.1f s, %.1f tok/s", n, total, Double(n) / total))
+    var best = 0
+    let t0 = Date()
+    let logits = try runner.step(token: ids.count > n ? ids[n] : last, pos: n)
+    for i in 1..<logits.count where logits[i] > logits[best] { best = i }
+    let pr = runner.lastProfile
+    print(String(format: "  decode at %d: %.2fs (pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] ms)",
+                 n, Date().timeIntervalSince(t0), pr.preRouter * 1000, pr.preGPU * 1000,
+                 pr.route * 1000, pr.routed * 1000, pr.routedGPU * 1000))
+}

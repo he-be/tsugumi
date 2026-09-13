@@ -121,6 +121,7 @@ private struct Q2Layer {
     let argBuffer: MTLBuffer
     var offsets: Q2ExpertOffsetsMSL
     let partOffsets: MTLBuffer
+    let pairSlot: MTLBuffer   // one token: pair k is slot k
     let x: MTLBuffer
     let acts: MTLBuffer
     let weights: MTLBuffer
@@ -146,8 +147,8 @@ private func makeQ2Layer(_ fx: Q2Fixture, kernels: Q2Kernels, device: MTLDevice,
     // One contiguous blob per slot: gate, up and down all point at it.
     for (i, blob) in blobs.enumerated() {
         kernels.argEncoder.setBuffer(blob, offset: 0, index: i)
-        kernels.argEncoder.setBuffer(blob, offset: 0, index: 16 + i)
-        kernels.argEncoder.setBuffer(blob, offset: 0, index: 32 + i)
+        kernels.argEncoder.setBuffer(blob, offset: 0, index: 512 + i)
+        kernels.argEncoder.setBuffer(blob, offset: 0, index: 1024 + i)
     }
     let parts = (0..<topK).flatMap { _ in [UInt32(fx.gateOff), UInt32(fx.upOff), UInt32(fx.downOff)] }
     return Q2Layer(
@@ -155,6 +156,7 @@ private func makeQ2Layer(_ fx: Q2Fixture, kernels: Q2Kernels, device: MTLDevice,
         offsets: Q2ExpertOffsetsMSL(gateRowBytes: UInt32(fx.gateRowBytes),
                                     downRowBytes: UInt32(fx.downRowBytes)),
         partOffsets: q2Buffer(device, parts),
+        pairSlot: q2Buffer(device, (0..<topK).map { UInt32($0) }),
         x: q2Buffer(device, fx.x.map { Float($0) }),
         acts: q2Buffer(device, [Float](repeating: 0, count: topK * fx.downIn)),
         weights: q2Buffer(device, fx.weights.prefix(topK).map { Float($0) }),
@@ -179,6 +181,9 @@ private func encodeQ2Phase1(_ layer: Q2Layer, kernels: Q2Kernels, cb: MTLCommand
     enc.setBytes(&k, length: 4, index: 6)
     enc.setBytes(&stride, length: 4, index: 7)
     enc.setBuffer(layer.partOffsets, offset: 0, index: 8)
+    var tokens = UInt32(1)
+    enc.setBytes(&tokens, length: 4, index: 9)
+    enc.setBuffer(layer.pairSlot, offset: 0, index: 10)
     enc.setThreadgroupMemoryLength(q2CodebookBytes, index: 0)
     let rows = layer.topK * layer.f
     enc.dispatchThreadgroups(
@@ -204,6 +209,9 @@ private func encodeQ2Phase2(_ layer: Q2Layer, kernels: Q2Kernels, cb: MTLCommand
     enc.setBytes(&stride, length: 4, index: 7)
     enc.setBytes(&k, length: 4, index: 8)
     enc.setBuffer(layer.partOffsets, offset: 0, index: 9)
+    var tokens = UInt32(1)
+    enc.setBytes(&tokens, length: 4, index: 10)
+    enc.setBuffer(layer.pairSlot, offset: 0, index: 11)
     enc.dispatchThreadgroups(
         MTLSize(width: (layer.d + q2RowsPerThreadgroup - 1) / q2RowsPerThreadgroup, height: 1, depth: 1),
         threadsPerThreadgroup: MTLSize(width: q2ThreadsPerGroup, height: 1, depth: 1))
