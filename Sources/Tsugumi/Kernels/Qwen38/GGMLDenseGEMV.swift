@@ -24,6 +24,8 @@ package final class GGMLDenseGEMV {
     /// Tensors above this many weights stay on the direct kernels (the LM head).
     package var mpsMaxWeights = 64 << 20
     private var scratch: MTLBuffer?
+    package var scratchBytes: Int { scratch?.length ?? 0 }
+    package func dropScratch() { scratch = nil }
     private var multiplications: [[Int]: MPSMatrixMultiplication] = [:]
 
     package init(device: MTLDevice) throws {

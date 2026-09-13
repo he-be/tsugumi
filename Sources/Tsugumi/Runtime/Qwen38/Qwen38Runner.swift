@@ -57,20 +57,27 @@ package final class Qwen38Runner {
 
     private var views: [String: (tensor: GGUFFile.Tensor, buffer: MTLBuffer, offset: Int)] = [:]
 
-    // Scratch (float32), maxBatch rows each.
-    private let R, xn, lo, gate, mixed, inj, blk, blkShared, rmsScale: MTLBuffer
-    private let qkv, conv, z, ga, gb, lo6144: MTLBuffer
-    private let qg, q, qgate, ao, iq: MTLBuffer
-    private let routerLogits, shG, shU, shY, shGate: MTLBuffer
-    private let acts, routeW, pairSlot: MTLBuffer
-    private let pleEmb, pleKey, pleValue, pleKeyN, pleQuery, pleGateBuf, pleGated, pleNormed, pleHist: MTLBuffer
-    private let attnMax, attnSum, nq, useSel: MTLBuffer
+    // Scratch (float32), `batchRows` rows each (`allocateBatch`).
+    private var R, xn, lo, gate, mixed, inj, blk, blkShared, rmsScale: MTLBuffer!
+    private var qkv, conv, z, ga, gb, lo6144: MTLBuffer!
+    private var qg, q, qgate, ao, iq: MTLBuffer!
+    private var routerLogits, shG, shU, shY, shGate: MTLBuffer!
+    private var acts, routeW, pairSlot: MTLBuffer!
+    private var pleEmb, pleKey, pleValue, pleKeyN, pleQuery, pleGateBuf, pleGated, pleNormed: MTLBuffer!
+    private let pleHist: MTLBuffer
+    private var attnMax, attnSum, nq, useSel: MTLBuffer!
+    /// Rows the batch scratch is allocated for: `maxBatch` while prefilling, `smallBatchRows` in decode.
+    /// Sized from maxBatch they stayed resident through decode (~3 GB at chunk 2048) and a 12K decode
+    /// swapped (`docs/qwen38/09`). `Q38_SHRINK_BATCH=0` keeps them at maxBatch.
+    private var batchRows = 0
+    private let smallBatchRows = 32
+    package var shrinkBatch = ProcessInfo.processInfo.environment["Q38_SHRINK_BATCH"] != "0"
     private var attnScores: MTLBuffer
     private var selection: MTLBuffer
     private var nCap = 0
     private var attnQG, attnOG, attnKG, attnVG: MTLBuffer?
     private var idxDots, attnSelScores, selAny, selList: MTLBuffer?
-    private let selThr, selCut: MTLBuffer
+    private var selThr, selCut: MTLBuffer!
     /// Queries per union in `attentionSelected` (`Q38_ATTN_SEL_B`).
     package var attnSelBatch = Int(ProcessInfo.processInfo.environment["Q38_ATTN_SEL_B"] ?? "") ?? 64
     /// Checks only: run the host path too on every selected batch and print the largest `ao` difference
@@ -81,7 +88,7 @@ package final class Qwen38Runner {
     /// budget and `attentionSelected` above it (`Q38_ATTN_MPS_MIN_T`, 0 = never: the host selection
     /// and the five passes, kept as the oracle).
     package var attnMpsMinTokens = Int(ProcessInfo.processInfo.environment["Q38_ATTN_MPS_MIN_T"] ?? "") ?? 32
-    private let idxScores: MTLBuffer
+    private var idxScores: MTLBuffer!
     private var logits: MTLBuffer
     private let routedArg: MTLBuffer
     private let routedArgEncoder: MTLArgumentEncoder
@@ -161,8 +168,10 @@ package final class Qwen38Runner {
     /// From this fraction of a layer's experts selected, advise whole expert tensors (`Q38_ADVISE_WHOLE`, >1 = never).
     package var adviseWholeFraction = Double(ProcessInfo.processInfo.environment["Q38_ADVISE_WHOLE"] ?? "") ?? 2.0
     /// Keep the dense weights (every no-copy tensor view) in a residency set so expert reads
-    /// cannot evict them (`Q38_DENSE_RESIDENT=0` turns it off).
-    package var denseResident = ProcessInfo.processInfo.environment["Q38_DENSE_RESIDENT"] != "0"
+    /// cannot evict them (`Q38_DENSE_RESIDENT=1`). Off by default since `docs/qwen38/09`: with pread expert
+    /// reads the prefill and the steady decode run at the same speed without it (only the first decode
+    /// token after a prefill pages the dense back in, +1.5 s), and it kept 5.4 GB wired through the prefill.
+    package var denseResident = ProcessInfo.processInfo.environment["Q38_DENSE_RESIDENT"] == "1"
     private var denseSet: MTLResidencySet?
     private var denseSetCount = 0
 
@@ -252,25 +261,11 @@ package final class Qwen38Runner {
         psoSiluHalves = try pso(moeLib, "moe_silu_mul_halves")
         psoScatterWeighted = try pso(moeLib, "moe_scatter_weighted")
 
-        let B = self.maxBatch
         func buf(_ count: Int) -> MTLBuffer {
             device.makeBuffer(length: max(count, 1) * 4, options: .storageModeShared)!
         }
-        let C = 2 * Hk * Dl + Hv * Dl
-        R = buf(B * hc * e); xn = buf(B * hc * e); lo = buf(B * hcRank); gate = buf(B * hc * e)
-        mixed = buf(B * e); inj = buf(B * hc); blk = buf(B * e); blkShared = buf(B * e); rmsScale = buf(B * hc)
-        qkv = buf(B * C); conv = buf(B * C)
-        z = buf(B * Hv * Dl); ga = buf(B * Hv); gb = buf(B * Hv); lo6144 = buf(B * Hv * Dl)
-        qg = buf(B * 2 * H * D); q = buf(B * H * D); qgate = buf(B * H * D); ao = buf(B * H * D)
-        iq = buf(B * idxHeads * idxD)
-        routerLogits = buf(B * nExperts); shG = buf(B * F); shU = buf(B * F); shY = buf(B * e); shGate = buf(B)
-        acts = buf(B * topK * downIn); routeW = buf(B * topK); pairSlot = buf(B * topK)
-        pleEmb = buf(B * e); pleKey = buf(B * hc * e); pleValue = buf(B * e); pleKeyN = buf(B * hc * e)
-        pleQuery = buf(B * hc * e); pleGateBuf = buf(B * hc); pleGated = buf(B * hc * e); pleNormed = buf(B * hc * e)
         pleHist = buf((4 - 1) * pleNgram * hc * e)
-        attnMax = buf(B * H); attnSum = buf(B * H); nq = buf(B); useSel = buf(B); selThr = buf(B); selCut = buf(B)
         attnScores = buf(1); selection = buf(1)
-        idxScores = buf(B * (capacity / 4 + 1))
         logits = buf(vocab)
         let rotDims = 64
         let freq = (0..<(rotDims / 2)).map { i in
@@ -287,6 +282,37 @@ package final class Qwen38Runner {
         partOffsets = buf(3 * nExperts)
 
         plePrev = [Int](repeating: 248_044, count: 2)
+        allocateBatch(rows: shrinkBatch ? min(smallBatchRows, self.maxBatch) : self.maxBatch)
+    }
+
+    /// (Re)allocates the batch scratch for `rows` rows and drops the grown scratch (attention, gemm, dense).
+    /// The contents are per forward; the state (KV, indexer keys, GDN, `pleHist`) is elsewhere.
+    private func allocateBatch(rows B: Int) {
+        guard B != batchRows else { return }
+        batchRows = B
+        func buf(_ count: Int) -> MTLBuffer {
+            device.makeBuffer(length: max(count, 1) * 4, options: .storageModeShared)!
+        }
+        let C = 2 * Hk * Dl + Hv * Dl
+        R = buf(B * hc * e); xn = buf(B * hc * e); lo = buf(B * hcRank); gate = buf(B * hc * e)
+        mixed = buf(B * e); inj = buf(B * hc); blk = buf(B * e); blkShared = buf(B * e); rmsScale = buf(B * hc)
+        qkv = buf(B * C); conv = buf(B * C)
+        z = buf(B * Hv * Dl); ga = buf(B * Hv); gb = buf(B * Hv); lo6144 = buf(B * Hv * Dl)
+        qg = buf(B * 2 * H * D); q = buf(B * H * D); qgate = buf(B * H * D); ao = buf(B * H * D)
+        iq = buf(B * idxHeads * idxD)
+        routerLogits = buf(B * nExperts); shG = buf(B * F); shU = buf(B * F); shY = buf(B * e); shGate = buf(B)
+        acts = buf(B * topK * downIn); routeW = buf(B * topK); pairSlot = buf(B * topK)
+        pleEmb = buf(B * e); pleKey = buf(B * hc * e); pleValue = buf(B * e); pleKeyN = buf(B * hc * e)
+        pleQuery = buf(B * hc * e); pleGateBuf = buf(B * hc); pleGated = buf(B * hc * e); pleNormed = buf(B * hc * e)
+        attnMax = buf(B * H); attnSum = buf(B * H); nq = buf(B); useSel = buf(B); selThr = buf(B); selCut = buf(B)
+        idxScores = buf(B * (capacity / 4 + 1))
+        attnScores = buf(1); selection = buf(1)
+        attnQG = nil; attnOG = nil; attnKG = nil; attnVG = nil
+        idxDots = nil; attnSelScores = nil; selAny = nil; selList = nil
+        gemmRows = nil; gemmGateUp = nil; gemmWGateUp = nil; gemmWDown = nil; gemmOrder = nil; gemmAt = nil
+        gemmPosSlot = nil; gemmOnes = nil
+        if logits.length > vocab * 4 { logits = buf(vocab) }
+        dense.dropScratch()
     }
 
     // MARK: - Weights
@@ -478,12 +504,19 @@ package final class Qwen38Runner {
         try gemv(cb, pre + "ssm_out.weight", x: lo6144, y: blk, tokens: T)
     }
 
-    /// Attention scratch sized for queries that see up to `n` tokens.
-    private func ensureAttnScratch(_ n: Int) {
-        guard n > nCap else { return }
-        nCap = n
-        attnScores = device.makeBuffer(length: maxBatch * H * n * 4, options: .storageModeShared)!
-        selection = device.makeBuffer(length: maxBatch * n * 4, options: .storageModeShared)!
+    /// Row stride `nCap` of the host-path scores and selection for queries that see up to `n` tokens.
+    private func ensureAttnScratch(_ n: Int) { nCap = max(nCap, n) }
+
+    /// `attnScores` of at least `floats` floats and `selection` of `selectionRows` rows of `nCap`, grown on
+    /// demand: sized from maxBatch they held 400 MB at chunk 2048 (1.6 GB for a decode step after chunk
+    /// 4096) though only the host lanes (T < 32) and `attentionSgemm` (T x 12 x n) read them (`docs/qwen38/09`).
+    private func ensureAttnScores(floats: Int, selectionRows: Int = 0) {
+        if attnScores.length < floats * 4 {
+            attnScores = device.makeBuffer(length: floats * 4, options: .storageModeShared)!
+        }
+        if selection.length < selectionRows * nCap * 4 {
+            selection = device.makeBuffer(length: selectionRows * nCap * 4, options: .storageModeShared)!
+        }
     }
 
     private func attention(_ cb: inout MTLCommandBuffer, il: Int, pos0: Int, T: Int) throws {
@@ -589,7 +622,8 @@ package final class Qwen38Runner {
         // Per query: top kBlocks by score (lower block index first on ties), tokens in
         // block order, then the tail of the incomplete block; below the budget, all of them.
         let sc = idxScores.contents().bindMemory(to: Float.self, capacity: T * max(lastBlocks, 1))
-        let sp = selection.contents().bindMemory(to: UInt32.self, capacity: maxBatch * nCap)
+        if lastBlocks > kBlocks { ensureAttnScores(floats: 0, selectionRows: T) }
+        let sp = selection.contents().bindMemory(to: UInt32.self, capacity: T * nCap)
         var nMax = 0
         for t in 0..<T {
             let pos = pos0 + t
@@ -618,6 +652,7 @@ package final class Qwen38Runner {
             try attentionSgemm(cb, kc: kc, vc: vc, n: nMax, T: T)
             return
         }
+        ensureAttnScores(floats: T * H * nCap, selectionRows: T)
         lanes(cb, psoAttnScore, size(nMax, H, T)) { enc in
             enc.setBuffer(q, offset: 0, index: 0)
             enc.setBuffer(kc, offset: 0, index: 1)
@@ -869,7 +904,7 @@ package final class Qwen38Runner {
         ensure(&attnOG, maxBatch * G * D)
         ensure(&attnKG, n * D)
         ensure(&attnVG, n * D)
-        // Row width of the score matrix is n here (nCap >= n, so attnScores is large enough).
+        ensureAttnScores(floats: T * G * n)   // row width n here
         var ap = (UInt32(G), UInt32(1), UInt32(D), UInt32(n), UInt32(T))   // stat / weight: G rows per token
         var gp = (UInt32(H), UInt32(Hkv), UInt32(D), UInt32(n), UInt32(T)) // gather / scatter
         let len = MemoryLayout.size(ofValue: ap)
@@ -1278,6 +1313,42 @@ package final class Qwen38Runner {
         }
     }
 
+    // MARK: - Memory
+
+
+    /// Bytes held by the runner, by kind (checks only, `Q38_MEM_LOG`): Metal's allocated total, the fixed
+    /// per-batch buffers, the grown scratch, caches and the no-copy views (dense in the residency set, experts).
+    package func memoryReport() -> [(String, Int)] {
+        func len(_ b: MTLBuffer?) -> Int { b?.length ?? 0 }
+        func lens(_ bs: [MTLBuffer?]) -> Int { bs.reduce(0) { $0 + len($1) } }
+        var seen = Set<ObjectIdentifier>()
+        var denseViews = 0
+        for v in views.values where seen.insert(ObjectIdentifier(v.buffer)).inserted { denseViews += v.buffer.length }
+        seen.removeAll()
+        var experts = 0
+        for v in expertParts.values where seen.insert(ObjectIdentifier(v.buffer)).inserted { experts += v.buffer.length }
+        let rows: [(String, Int)] = [
+            ("fixed per-batch", lens([R, xn, lo, gate, mixed, inj, blk, blkShared, rmsScale, qkv, conv, z, ga, gb, lo6144,
+                                      qg, q, qgate, ao, iq, routerLogits, shG, shU, shY, shGate, acts, routeW, pairSlot,
+                                      pleEmb, pleKey, pleValue, pleKeyN, pleQuery, pleGateBuf, pleGated, pleNormed, pleHist,
+                                      attnMax, attnSum, nq, useSel, selThr, selCut, idxScores, partOffsets])),
+            ("attnScores+selection", lens([attnScores, selection])),
+            ("attn QG/OG/KG/VG", lens([attnQG, attnOG, attnKG, attnVG])),
+            ("attnSelScores", len(attnSelScores)),
+            ("idxDots+selAny+selList", lens([idxDots, selAny, selList])),
+            ("gemm", lens([gemmRows, gemmGateUp, gemmWGateUp, gemmWDown, gemmOrder, gemmAt, gemmPosSlot, gemmOnes])),
+            ("dense scratch", dense.scratchBytes),
+            ("logits", len(logits)),
+            ("KV + indexer keys", lens(Array(kCache.values) + Array(vCache.values) + Array(idxRawKeys.values) + Array(idxBlockKeys.values))),
+            ("GDN hist + state", lens(Array(linHist.values) + Array(linState.values))),
+            ("dense views (resident)", denseViews),
+            ("expert views (\(expertParts.count))", experts),
+        ]
+        let allocated = device.currentAllocatedSize
+        let other = allocated - rows.reduce(0) { $0 + $1.1 }
+        return [("metal allocated", allocated), ("other (MPS etc.)", other)] + rows
+    }
+
     // MARK: - PLE
 
     /// Host half: hashed n-gram rows (ds4 `qwen4_ple_step`), 16 Q4_1 rows of 160 into `pleEmb[t]`.
@@ -1371,10 +1442,21 @@ package final class Qwen38Runner {
     /// every earlier position). Returns the last token's logits, or with `allLogits` every
     /// token's (`[T][vocab]`).
     package func forward(tokens: [Int], startPos: Int, allLogits: Bool = false) throws -> UnsafeBufferPointer<Float> {
+        // Command buffers and encoders are autoreleased; without a pool (the CLI) they, and the batch scratch
+        // they reference, outlive the forward (+1.2 GB after `allocateBatch` shrank it, docs/qwen38/09).
+        try autoreleasepool { try forwardBody(tokens: tokens, startPos: startPos, allLogits: allLogits) }
+    }
+
+    private func forwardBody(tokens: [Int], startPos: Int, allLogits: Bool) throws -> UnsafeBufferPointer<Float> {
         let T = tokens.count
         precondition(T >= 1 && T <= maxBatch && startPos + T <= capacity)
         var prof = StepProfile()
         let tStep = CFAbsoluteTimeGetCurrent()
+        if T > batchRows {
+            allocateBatch(rows: maxBatch)
+        } else if shrinkBatch && T <= smallBatchRows && batchRows > smallBatchRows {
+            allocateBatch(rows: smallBatchRows)
+        }
         let emb = try file.tensor("token_embd.weight")
         precondition(emb.type == .bf16)
         let rp = R.contents().bindMemory(to: Float.self, capacity: T * hc * e)

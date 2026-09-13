@@ -175,9 +175,13 @@ func runQwen38PrefillBench(tokenFile: String, tokens: Int, chunk: Int, gguf: Str
     let text = try String(contentsOfFile: tokenFile, encoding: .utf8)
     let ids = text.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
     let n = min(tokens, ids.count)
+    setvbuf(stdout, nil, _IOLBF, 0)   // lines survive a guard kill
+    let benchWidths = (ProcessInfo.processInfo.environment["Q38_BENCH_WIDTHS"] ?? "").split(separator: ",").compactMap { Int($0) }
+    let benchReps = Int(ProcessInfo.processInfo.environment["Q38_BENCH_REPS"] ?? "") ?? 5
     let runner = try Qwen38Runner(gguf: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath),
                                   ple: URL(fileURLWithPath: (ple as NSString).expandingTildeInPath),
-                                  capacity: n + 2, maxBatch: chunk)
+                                  capacity: n + 2 + benchWidths.reduce(0, +) * benchReps,
+                                  maxBatch: chunk)
     runner.splitPreRouter = ProcessInfo.processInfo.environment["Q38_SPLIT_PRE"] != nil
     print("Qwen3.8 Q2 prefill bench: \(n) tokens in chunks of \(chunk) (\(tokenFile))")
     let tAll = Date()
@@ -196,6 +200,9 @@ func runQwen38PrefillBench(tokenFile: String, tokens: Int, chunk: Int, gguf: Str
                      start, start + T, s, Double(T) / s, pr.ple * 1000, pr.preRouter * 1000, pr.preGPU * 1000,
                      pr.route * 1000, pr.routed * 1000, pr.routedGPU * 1000, pr.head * 1000, pr.distinctExperts,
                      pr.routeTopK * 1000, pr.routeViews * 1000, pr.routeAdvise * 1000, pr.adviseCalls))
+        if ProcessInfo.processInfo.environment["Q38_MEM_LOG"] != nil {
+            print("        mem MB: " + runner.memoryReport().map { String(format: "%@ %.0f", $0.0 as NSString, Double($0.1) / 1e6) }.joined(separator: "  "))
+        }
         if !pr.sections.isEmpty {
             print("        pre-router GPU ms: " + pr.sections.sorted { $0.key < $1.key }
                 .map { String(format: "%@ %.0f", $0.key as NSString, $0.value) }.joined(separator: "  "))
@@ -206,13 +213,51 @@ func runQwen38PrefillBench(tokenFile: String, tokens: Int, chunk: Int, gguf: Str
     print(String(format: "  prefill %d tokens: %.1f s, %.1f tok/s", n, total, Double(n) / total))
     var best = 0
     let t0 = Date()
-    let logits = try runner.step(token: ids.count > n ? ids[n] : last, pos: n)
+    let logits = Array(try runner.step(token: ids.count > n ? ids[n] : last, pos: n))   // valid only until the next forward
     for i in 1..<logits.count where logits[i] > logits[best] { best = i }
     let pr = runner.lastProfile
     print(String(format: "  decode at %d: %.2fs (pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] ms)",
                  n, Date().timeIntervalSince(t0), pr.preRouter * 1000, pr.preGPU * 1000,
                  pr.route * 1000, pr.routed * 1000, pr.routedGPU * 1000))
-    let both = prefillLogits + Array(logits)
+    // `Q38_BENCH_WIDTHS=1,2,3,5 Q38_BENCH_REPS=R`: after the decode step, batches of k following prompt tokens
+    // (the verify pass of a k-1 draft), the widths interleaved R times, positions advancing through the text.
+    if !benchWidths.isEmpty {
+        let widths = benchWidths, reps = benchReps
+        var pos = n + 1
+        var rows: [Int: [(wall: Double, pr: Qwen38Runner.StepProfile)]] = [:]
+        rep: for _ in 0..<reps {
+            for k in widths {
+                guard pos + k <= ids.count else { break rep }
+                let t = Date()
+                _ = try runner.forward(tokens: Array(ids[pos..<(pos + k)]), startPos: pos, allLogits: true)
+                rows[k, default: []].append((Date().timeIntervalSince(t), runner.lastProfile))
+                pos += k
+            }
+        }
+        func med(_ v: [Double]) -> Double { let s = v.sorted(); return s.isEmpty ? .nan : s[s.count / 2] }
+        if ProcessInfo.processInfo.environment["Q38_MEM_LOG"] != nil {
+            print("  mem MB after widths: " + runner.memoryReport().map { String(format: "%@ %.0f", $0.0 as NSString, Double($0.1) / 1e6) }.joined(separator: "  "))
+        }
+        print("  verify widths from pos \(n + 1) (median of each width, ms):")
+        for k in widths {
+            guard let r = rows[k], !r.isEmpty else { continue }
+            print(String(format: "    T=%d n=%d  wall %.0f (min %.0f max %.0f)  ple %.0f pre %.0f [gpu %.0f] route %.0f (topk %.0f views %.0f advise %.0f) routed %.0f [gpu %.0f] head %.0f  experts %.0f",
+                         k, r.count, med(r.map { $0.wall }) * 1000, r.map { $0.wall }.min()! * 1000, r.map { $0.wall }.max()! * 1000,
+                         med(r.map { $0.pr.ple }) * 1000, med(r.map { $0.pr.preRouter }) * 1000, med(r.map { $0.pr.preGPU }) * 1000,
+                         med(r.map { $0.pr.route }) * 1000, med(r.map { $0.pr.routeTopK }) * 1000, med(r.map { $0.pr.routeViews }) * 1000,
+                         med(r.map { $0.pr.routeAdvise }) * 1000, med(r.map { $0.pr.routed }) * 1000, med(r.map { $0.pr.routedGPU }) * 1000,
+                         med(r.map { $0.pr.head }) * 1000, med(r.map { Double($0.pr.distinctExperts) })))
+            if let keys = r.first?.pr.sections.keys, !keys.isEmpty {
+                print("        sections GPU ms (median): " + keys.sorted().map { key in
+                    String(format: "%@ %.1f", key as NSString, med(r.map { $0.pr.sections[key] ?? 0 }))
+                }.joined(separator: "  "))
+            }
+        }
+    }
+    if ProcessInfo.processInfo.environment["Q38_MEM_LOG"] != nil {
+        print("  mem MB at end: " + runner.memoryReport().map { String(format: "%@ %.0f", $0.0 as NSString, Double($0.1) / 1e6) }.joined(separator: "  "))
+    }
+    let both = prefillLogits + logits
     if let path = dumpLogits {
         try both.withUnsafeBytes { Data($0) }.write(to: URL(fileURLWithPath: path))
         print("  logits written to \(path)")
