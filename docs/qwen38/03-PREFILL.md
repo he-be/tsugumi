@@ -127,3 +127,62 @@ Q38_SPLIT_PRE=1 $B --qwen38-prefill-bench scratch/qwen38/prompt-code.tokens --q3
 ```
 
 `scratch/qwen38/prompt-code.tokens` は §3 の 4 ファイルを上流の `tokenizer.json` で符号化した先頭 8,192 個 (カンマ区切り)。
+
+## 6. 再開手順 (新しいセッションで続けるとき)
+
+### 6-1. 状態
+
+- コードはこの文書と同じコミットまで入っている (prefill 本体は `e0f7ebe`)。ランナーは `Sources/Tsugumi/Runtime/Qwen38/Qwen38Runner.swift` 1 本 (`forward` が T ≥ 1、`step` は T=1)。
+- ウェイト・トークナイザ・ds4 の資料の在処は [01 §7-1](01-Q2-FIRST-LIGHT.md) のまま。
+- `scratch/qwen38/` (git 管理外) にあるもの: `ref-france-dump.log` + `.logits` (10 位置)、`ref-fuji-idx16.log` + `.logits` (予算 16、53 位置)、
+  `ref-fuji-ple.log` (選択なし 53 位置、logits 無し)、`expert-fixture-l24/`、`prompt-code.tokens` (8,192 トークン)。
+  消えていたら参照は 01 §7-3、`prompt-code.tokens` は §3 の 4 ファイルを `~/LLM/venv/bin/python` + `tokenizers` で符号化し直す。
+- 運用点は thinking 無効・32K・エージェント主体・英語主体 (メモリ `qwen38-operating-point`)。32K の prefill はいま約 15 分。
+
+### 6-2. 検査を一通り (どれも数分以内、GPU は 1 本ずつ、間に 20 秒)
+
+```bash
+swift build -c release --product TsugumiKernelCheck
+B=.build/release/TsugumiKernelCheck
+G=~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf
+$B --q2-expert scratch/qwen38/expert-fixture-l24
+$B --ggml-dense $G
+$B --qwen38-decode scratch/qwen38/ref-france-dump.log --q38-ref-logits scratch/qwen38/ref-france.logits
+$B --qwen38-decode scratch/qwen38/ref-fuji-idx16.log --q38-ref-logits scratch/qwen38/ref-fuji-idx16.logits --q38-indexer-top-k 16
+$B --qwen38-prefill scratch/qwen38/ref-france-dump.log --q38-ref-logits scratch/qwen38/ref-france.logits --q38-chunk 4
+$B --qwen38-prefill scratch/qwen38/ref-fuji-idx16.log --q38-ref-logits scratch/qwen38/ref-fuji-idx16.logits --q38-indexer-top-k 16 --q38-chunk 16
+Q38_MPS_MIN_T=16 Q38_ATTN_MPS_MIN_T=16 $B --qwen38-prefill scratch/qwen38/ref-fuji-idx16.log --q38-ref-logits scratch/qwen38/ref-fuji-idx16.logits --q38-indexer-top-k 16 --q38-chunk 16
+$B --qwen38-prefill scratch/qwen38/ref-fuji-idx16.log --q38-ref-logits scratch/qwen38/ref-fuji-idx16.logits --q38-indexer-top-k 16 --q38-chunk 53
+$B --qwen38-prefill scratch/qwen38/ref-fuji-ple.log --q38-chunk 53
+```
+
+期待値は §1 の表 (全部 PASS、logits ≤ 2.5e-6)。速度は `Q38_SPLIT_PRE=1 $B --qwen38-prefill-bench scratch/qwen38/prompt-code.tokens --q38-tokens 8192 --q38-chunk 2048` (約 200 s) で §3 と比べる。
+走らせる前に `vm_stat` の Swapouts を控え、終わったら増分を見る。
+
+### 6-3. 次にやること (§4 の順を、32K に効く順に並べ直したもの)
+
+1. **QSA 選択ありの注意を GPU に** (1 チャンク 10.6 s + host のソート)。場所は `attention(_:il:pos0:T:)` の
+   「Per query: top kBlocks」のループ (host で `sorted()`) と、その後の 5 パス。案:
+   - ブロックのスコア `idxScores [T][nBlocks]` から、クエリごとの上位 `kBlocks` を GPU で選ぶ (しきい値を二分探索で求めて数える形なら並べ替え不要。同点は小さいブロック番号が勝つ規則を守る)。
+   - 注意は `attentionSgemm` と同じく KV グループごとに `Q Kᵀ` を全 n 列で sgemm し、重みのパスで「選ばれていない列を 0」にする (選択をビットマスクか列ごとのフラグで渡す)。
+     メモリは `T × H/Hkv × n` 浮動小数 (T=2048・n=32K で 1.6 億 = 630 MB/グループ) なので、長文脈ではチャンクを小さくするか行を分割する。
+   - **正解の作り方**: 32K の CPU 参照は回せない (19 s/トークン)。予算 16 の Fuji (§1) で参照と照合し、長文脈は**今の host 選択 + 5 パスの経路をオラクル**にして
+     8K プロンプトの最後のチャンクの logits を新旧で比べる (`allLogits` を使う小さな比較モードを検査に足す)。
+2. **routed expert の読み待ち** (1 チャンク 14 s)。まず `--q38-chunk 4096` で 8K を回し、1 トークンあたりの読みと footprint を見る
+   (`attnScores` が 5 パス時 `maxBatch × 24 × 2051 × 4` B = 4096 で 790 MB になる点に注意)。advise の既定は「選んだ expert、隣接だけまとめる」。
+3. **routed expert の GPU** (13.9 s / 2048)。`moeRouted` と `moe_ggml.metal` の 2 本。組ごとに IQ2_XXS / Q2_K の行を展開し直している。
+   expert ごとにトークンを集め、その expert の gate/up/down を 1 回だけ float32 に展開して sgemm にする形を、まず 1 層の A/B (`--q8-gemm-bench` と同じ作り) で見積もってから入れる。
+4. GDN step (3 s)、PLE の行の冷えた読み (最大 2.5 s)。
+
+### 6-4. 落とし穴 (このセッションで踏んだもの)
+
+- **GPU の 1 スレッドに長いループを書かない。**4 スレッド × 2560 要素の RMS が 340 µs、注意 n=2048 が 1 層 120 ms、GDN step も同じ理由で遅かった。32 レーン + `simd_sum` か要素ごとのスレッドにする。
+- **F16/F32 の行を 1 要素飛びで読むと 3〜9 倍遅い**。32 要素のチャンクで読む (Q8_0 のブロックと同じ形)。
+- **T ≥ 32 の行列積は float32 に展開して MPS sgemm**。Q8_0 のまま T 行回すのは重みの読み直しで計算律速になる。T=1 は逆 (直接読みが速い)。
+- **dense は residency set に入れておかないと expert の読みに追い出される** (pre-router の wall が GPU の数倍になったらこれ)。
+- **wired_limit を上げても速くならない**。効いているのは RAM 18 GB のページキャッシュで、GPU の wired 上限には当たっていない。
+- `swift build` は Metal をコンパイルしない (実行時にコンパイル)。**カーネルの引数を変えたら、そのカーネルを呼ぶ検査を必ず 1 本走らせる。**
+  引数のずれは落ちずに静かに間違う (`--q38-small-bench` を消したのはこのため)。
+- **zsh では `env $VARS cmd` が単語分割されない** (`${=VARS}`)。腕の片方が素通しになり、A と同じ数字が出る。
+- 走行の 1 本目だけ GPU 時間が全体に倍になることが何度かあった (原因は未特定)。**速度は 1 本で判断しない。**別プロセスのテストが GPU を使っていたこともある (ユーザーが止めた)。
+- `git rm --cached` で先に 1 ファイルだけステージしたまま `git add` が失敗すると、コミットがそれだけになる。コミット後に `git show --stat HEAD` を見る。
