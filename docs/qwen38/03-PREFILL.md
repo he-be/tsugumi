@@ -161,6 +161,8 @@ $B --qwen38-prefill scratch/qwen38/ref-fuji-ple.log --q38-chunk 53
 
 ### 6-3. 次にやること (§4 の順を、32K に効く順に並べ直したもの)
 
+**1 番は済んだ ([04](04-QSA-GPU.md)、8K で 46.5 tok/s)。続きは 04 §4。**
+
 1. **QSA 選択ありの注意を GPU に** (1 チャンク 10.6 s + host のソート)。場所は `attention(_:il:pos0:T:)` の
    「Per query: top kBlocks」のループ (host で `sorted()`) と、その後の 5 パス。案:
    - ブロックのスコア `idxScores [T][nBlocks]` から、クエリごとの上位 `kBlocks` を GPU で選ぶ (しきい値を二分探索で求めて数える形なら並べ替え不要。同点は小さいブロック番号が勝つ規則を守る)。

@@ -496,7 +496,7 @@ kernel void q38_attn_mix(
 
 // ---------------------------------------------------------------------------
 // QSA indexer (ds4 `qwen4_ref_select`): blocks of 4 tokens, pooled raw keys, normed and roped at the
-// block's first position; score = sum_h relu(q_h . key_b). Selection itself is on the host.
+// block's first position; score = sum_h relu(q_h . key_b). Small batches select on the host, large ones below.
 
 /// blockKeys[b] = rope(rms(mean(rawKeys[4b .. 4b+3])), 4b) for b = pos + u. Thread u.
 kernel void q38_idx_block_key(
@@ -550,6 +550,145 @@ kernel void q38_idx_score(
         acc += max(dot, 0.0f);
     }
     score[t * nBlocks + b] = acc;
+}
+
+// The GPU form of the selection for a batch (no host sort): the per-head dots come from one
+// sgemm (iq [rows x heads][d] x blockKeys [nb][d]^T), top-k is a bitwise search per query, and
+// the attention runs over the union of a sub-batch's selected tokens with the rest masked.
+
+/// score[t][b] = sum_h relu(dots[(t * heads + h) * nb + b]). Thread (b, t), t local to `dots`.
+kernel void q38_idx_relu_sum(
+    device const float* dots [[buffer(0)]],
+    device float* score [[buffer(1)]],
+    constant uint& heads [[buffer(2)]],
+    constant uint& nb [[buffer(3)]],        // row width of both
+    uint2 pos [[thread_position_in_grid]]
+) {
+    const uint b = pos.x, t = pos.y;
+    float acc = 0.0f;
+    for (uint h = 0; h < heads; ++h) acc += max(dots[(t * heads + h) * nb + b], 0.0f);
+    score[t * nb + b] = acc;
+}
+
+struct Q38TopKParams {
+    uint nb;    // row width of the scores
+    uint k;     // blocks to keep
+    uint pos;   // position of query 0
+    uint T;
+};
+
+/// Query t (position pos + t) has n = (pos + t + 1) / 4 complete blocks. Block b < n is selected when
+/// bits(score) > thr[t], or == thr[t] and b <= cut[t]: the k largest, lower block first on ties
+/// (scores are sums of relus, so >= 0 and ordered as their bits). n <= k keeps every block.
+/// Threadgroups (T, 1), 32 threads; lane l reads blocks l, l+32, ...
+kernel void q38_idx_topk(
+    device const float* score [[buffer(0)]],
+    device uint* thr [[buffer(1)]],
+    device uint* cut [[buffer(2)]],
+    constant Q38TopKParams& p [[buffer(3)]],
+    uint2 tg [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    const uint t = tg.x;
+    if (t >= p.T) return;
+    const uint n = (p.pos + t + 1) / 4;
+    if (n <= p.k) {
+        if (lane == 0) { thr[t] = 0; cut[t] = n; }
+        return;
+    }
+    device const uint* s = reinterpret_cast<device const uint*>(score + t * p.nb);
+    // Largest v with #(bits >= v) >= k: the k-th largest score.
+    uint v = 0;
+    for (int bit = 30; bit >= 0; --bit) {
+        const uint cand = v | (1u << uint(bit));
+        int c = 0;
+        for (uint b = lane; b < n; b += 32) c += s[b] >= cand ? 1 : 0;
+        c = simd_sum(c);
+        if (uint(c) >= p.k) v = cand;
+    }
+    int gt = 0, eq = 0;
+    for (uint b = lane; b < n; b += 32) {
+        const uint u = s[b];
+        gt += u > v ? 1 : 0;
+        eq += u == v ? 1 : 0;
+    }
+    gt = simd_sum(gt);
+    eq = simd_sum(eq);
+    const uint need = p.k - uint(gt);
+    uint last = n - 1;
+    if (uint(eq) > need) {
+        // Largest c with #(== v, b < c) < need: block c is the need-th tie.
+        uint c = 0;
+        for (int bit = 20; bit >= 0; --bit) {
+            const uint cand = c | (1u << uint(bit));
+            if (cand > n) continue;
+            int m = 0;
+            for (uint b = lane; b < cand; b += 32) m += s[b] == v ? 1 : 0;
+            m = simd_sum(m);
+            if (uint(m) < need) c = cand;
+        }
+        last = c;
+    }
+    if (lane == 0) { thr[t] = v; cut[t] = last; }
+}
+
+static inline bool q38_block_selected(device const float* score, uint thr, uint cut, uint b) {
+    const uint u = reinterpret_cast<device const uint*>(score)[b];
+    return u > thr || (u == thr && b <= cut);
+}
+
+/// any[b] = 1 when some query of the sub-batch (local t < rows, positions pos + t) selects block b.
+/// Thread b; score / thr / cut bound at the sub-batch's first query.
+kernel void q38_idx_union(
+    device const float* score [[buffer(0)]],
+    device const uint* thr [[buffer(1)]],
+    device const uint* cut [[buffer(2)]],
+    device uchar* any [[buffer(3)]],
+    constant Q38TopKParams& p [[buffer(4)]],   // T = rows of the sub-batch
+    uint b [[thread_position_in_grid]]
+) {
+    uchar acc = 0;
+    for (uint t = 0; t < p.T; ++t) {
+        if (b < (p.pos + t + 1) / 4 && q38_block_selected(score + t * p.nb, thr[t], cut[t], b)) { acc = 1; break; }
+    }
+    any[b] = acc;
+}
+
+struct Q38MaskParams {
+    uint g;     // score rows per query
+    uint u;     // columns (union tokens, padded)
+    uint nb;    // row width of the block scores
+    uint pos;   // position of local query 0
+};
+
+/// scores[(t * G + h) * U + i] = -FLT_MAX unless query t attends token list[i]: at or before it and in
+/// its incomplete block or a selected block. Thread (i, t * G + h), everything bound at the sub-batch.
+kernel void q38_attn_mask_sel(
+    device float* scores [[buffer(0)]],
+    device const uint* list [[buffer(1)]],
+    device const float* score [[buffer(2)]],
+    device const uint* thr [[buffer(3)]],
+    device const uint* cut [[buffer(4)]],
+    constant Q38MaskParams& p [[buffer(5)]],
+    uint2 pos [[thread_position_in_grid]]
+) {
+    const uint i = pos.x, t = pos.y / p.g;
+    const uint at = p.pos + t, j = list[i], b = j / 4;
+    const bool keep = j <= at && (b >= (at + 1) / 4 || q38_block_selected(score + t * p.nb, thr[t], cut[t], b));
+    if (!keep) scores[pos.y * p.u + i] = -FLT_MAX;
+}
+
+/// kg[i * D + j] = cache[(list[i] * Hkv + g) * D + j], 0 for padding (list[i] = ~0). Thread per element.
+kernel void q38_attn_gather_kv_list(
+    device const float* cache [[buffer(0)]],
+    device float* kg [[buffer(1)]],
+    device const uint* list [[buffer(2)]],
+    constant Q38AttnPassParams& p [[buffer(3)]],
+    constant uint& g [[buffer(4)]],
+    uint i [[thread_position_in_grid]]
+) {
+    const uint tok = list[i / p.d];
+    kg[i] = tok == 0xFFFFFFFFu ? 0.0f : cache[(tok * p.hkv + g) * p.d + i % p.d];
 }
 
 // ---------------------------------------------------------------------------

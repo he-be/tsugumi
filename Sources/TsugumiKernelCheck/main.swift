@@ -1655,12 +1655,13 @@ if let index = arguments.firstIndex(of: "--qwen38-prefill-bench"), index + 1 < a
         guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
         return arguments[i + 1]
     }
-    try runQwen38PrefillBench(
+    let passed = try runQwen38PrefillBench(
         tokenFile: arguments[index + 1], tokens: opt("--q38-tokens").flatMap { Int($0) } ?? 1024,
         chunk: opt("--q38-chunk").flatMap { Int($0) } ?? 256,
         gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
-        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf")
-    exit(0)
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf",
+        dumpLogits: opt("--q38-dump-logits"), compareLogits: opt("--q38-compare-logits"))
+    exit(passed ? 0 : 1)
 }
 
 // `--qwen38-prefill <reference log>`: the same sequence through `Qwen38Runner.forward`
@@ -1690,6 +1691,10 @@ if let index = arguments.firstIndex(of: "--ggml-dense-bench"), index + 1 < argum
     let iterations = index + 2 < arguments.count ? Int(arguments[index + 2]) ?? 20 : 20
     try runGGMLDenseBench(ggufPath: arguments[index + 1], iterations: iterations)
     exit(0)
+}
+// `--q38-select-check`: QSA top-k / union / mask kernels against the host rule (Qwen38SelectCheck.swift).
+if arguments.contains("--q38-select-check") {
+    exit(try runQwen38SelectCheck() ? 0 : 1)
 }
 if let index = arguments.firstIndex(of: "--ggml-dense"), index + 1 < arguments.count {
     exit(try runGGMLDenseCheck(ggufPath: arguments[index + 1]) ? 0 : 1)

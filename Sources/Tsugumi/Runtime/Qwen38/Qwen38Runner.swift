@@ -3,7 +3,7 @@ import Metal
 import MetalPerformanceShaders
 
 /// Qwen3.8-Flash-Next (qwen4exp) off the DS4-IQ2 GGUF: the Q2 verification runner
-/// (`docs/qwen38/01-Q2-FIRST-LIGHT.md`, `02-DECODE-SPEED.md`).
+/// (`docs/qwen38/01-Q2-FIRST-LIGHT.md` .. `04-QSA-GPU.md`).
 ///
 /// Correctness first. `forward` runs T >= 1 tokens at once (decode is T = 1),
 /// float32 activations, every weight read in its GGUF bytes (Q8_0 / F16 / F32
@@ -11,7 +11,8 @@ import MetalPerformanceShaders
 /// through per-expert no-copy views of the same mapping, so the page cache is the
 /// expert cache). The layer is GPU work except for what the reference makes easy
 /// to check on the host: the router's top-10 (logits read back), QSA's block
-/// choice above its budget, and PLE's hashed n-gram rows.
+/// choice above its budget for batches under 32 tokens (larger batches select on
+/// the GPU, `attentionSelected`), and PLE's hashed n-gram rows.
 /// It is compared token for token against `Scripts/qwen38/reference_forward.py`.
 package final class Qwen38Runner {
     // Shape, from the GGUF (checked in init).
@@ -48,6 +49,7 @@ package final class Qwen38Runner {
     private let psoAttnScore, psoAttnStat, psoAttnWeight, psoAttnMix: MTLComputePipelineState
     private let psoAttnGatherQ, psoAttnGatherKV, psoAttnScatter: MTLComputePipelineState
     private let psoIdxBlockKey, psoIdxQPrep, psoIdxScore: MTLComputePipelineState
+    private let psoIdxReluSum, psoIdxTopK, psoIdxUnion, psoAttnMaskSel, psoAttnGatherKVList: MTLComputePipelineState
     private let psoPleGate, psoPleGated, psoPleConvAdd, psoPleHist: MTLComputePipelineState
     private let psoPhase1, psoPhase2: MTLComputePipelineState
 
@@ -65,9 +67,17 @@ package final class Qwen38Runner {
     private var selection: MTLBuffer
     private var nCap = 0
     private var attnQG, attnOG, attnKG, attnVG: MTLBuffer?
+    private var idxDots, attnSelScores, selAny, selList: MTLBuffer?
+    private let selThr, selCut: MTLBuffer
+    /// Queries per union in `attentionSelected` (`Q38_ATTN_SEL_B`).
+    package var attnSelBatch = Int(ProcessInfo.processInfo.environment["Q38_ATTN_SEL_B"] ?? "") ?? 64
+    /// Checks only: run the host path too on every selected batch and print the largest `ao` difference
+    /// (`Q38_ATTN_SEL_COMPARE=1`).
+    package var compareSelected = ProcessInfo.processInfo.environment["Q38_ATTN_SEL_COMPARE"] == "1"
     private var attnMuls: [[Int]: MPSMatrixMultiplication] = [:]
-    /// Batches of at least this many tokens with no QSA selection take the sgemm attention
-    /// (`Q38_ATTN_MPS_MIN_T`, 0 = never).
+    /// Batches of at least this many tokens take the sgemm attention, `attentionSgemm` below the QSA
+    /// budget and `attentionSelected` above it (`Q38_ATTN_MPS_MIN_T`, 0 = never: the host selection
+    /// and the five passes, kept as the oracle).
     package var attnMpsMinTokens = Int(ProcessInfo.processInfo.environment["Q38_ATTN_MPS_MIN_T"] ?? "") ?? 32
     private let idxScores: MTLBuffer
     private var logits: MTLBuffer
@@ -195,6 +205,11 @@ package final class Qwen38Runner {
         psoIdxBlockKey = try pso(lib, "q38_idx_block_key")
         psoIdxQPrep = try pso(lib, "q38_idx_q_prep")
         psoIdxScore = try pso(lib, "q38_idx_score")
+        psoIdxReluSum = try pso(lib, "q38_idx_relu_sum")
+        psoIdxTopK = try pso(lib, "q38_idx_topk")
+        psoIdxUnion = try pso(lib, "q38_idx_union")
+        psoAttnMaskSel = try pso(lib, "q38_attn_mask_sel")
+        psoAttnGatherKVList = try pso(lib, "q38_attn_gather_kv_list")
         psoPleGate = try pso(lib, "q38_ple_gate")
         psoPleGated = try pso(lib, "q38_ple_gated")
         psoPleConvAdd = try pso(lib, "q38_ple_conv_add")
@@ -220,7 +235,7 @@ package final class Qwen38Runner {
         pleEmb = buf(B * e); pleKey = buf(B * hc * e); pleValue = buf(B * e); pleKeyN = buf(B * hc * e)
         pleQuery = buf(B * hc * e); pleGateBuf = buf(B * hc); pleGated = buf(B * hc * e); pleNormed = buf(B * hc * e)
         pleHist = buf((4 - 1) * pleNgram * hc * e)
-        attnMax = buf(B * H); attnSum = buf(B * H); nq = buf(B); useSel = buf(B)
+        attnMax = buf(B * H); attnSum = buf(B * H); nq = buf(B); useSel = buf(B); selThr = buf(B); selCut = buf(B)
         attnScores = buf(1); selection = buf(1)
         idxScores = buf(B * (capacity / 4 + 1))
         logits = buf(vocab)
@@ -448,7 +463,6 @@ package final class Qwen38Runner {
         try gemv(cb, pre + "indexer.q_proj.weight", x: mixed, y: iq, tokens: T)
         try gemv(cb, pre + "indexer.k_proj.weight", x: mixed, y: ik, yOffset: pos0 * idxD * 4, tokens: T)
         let gk = try view(pre + "indexer.k_norm.weight")
-        let gq = try view(pre + "indexer.q_norm.weight")
         let firstBlock = (max(pos0 - 3, 0) + 3) / 4       // first block whose 4th token is in the batch
         let endBlock = (pos0 + T) / 4
         if endBlock > firstBlock {
@@ -462,10 +476,53 @@ package final class Qwen38Runner {
             }
         }
         let kBlocks = indexerTopK / 4
+        let lastBlocks = (pos0 + T) / 4
+        if attnMpsMinTokens > 0 && T >= attnMpsMinTokens && lastBlocks > kBlocks {
+            if compareSelected {
+                // Both paths on the same input: the host one first, the batch's k rows and indexer queries
+                // restored in between (both are roped in place).
+                cb.commit()
+                cb.waitUntilCompleted()
+                cb = queue.makeCommandBuffer()!
+                let rowBytes = Hkv * D * 4
+                let kRows = Data(bytes: kc.contents() + pos0 * rowBytes, count: T * rowBytes)
+                let iqRows = Data(bytes: iq.contents(), count: T * idxHeads * idxD * 4)
+                try attentionHost(&cb, il: il, pos0: pos0, T: T, kc: kc, vc: vc, bk: bk, kBlocks: kBlocks)
+                cb.commit()
+                cb.waitUntilCompleted()
+                cb = queue.makeCommandBuffer()!
+                let hostOut = Data(bytes: ao.contents(), count: T * H * D * 4)
+                kRows.withUnsafeBytes { (kc.contents() + pos0 * rowBytes).copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
+                iqRows.withUnsafeBytes { iq.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
+                try attentionSelected(&cb, il: il, pos0: pos0, T: T, kc: kc, vc: vc, bk: bk, kBlocks: kBlocks)
+                cb.commit()
+                cb.waitUntilCompleted()
+                cb = queue.makeCommandBuffer()!
+                let o = ao.contents().bindMemory(to: Float.self, capacity: T * H * D)
+                var maxDiff: Float = 0, maxAbs: Float = 0
+                hostOut.withUnsafeBytes { raw in
+                    let h = raw.bindMemory(to: Float.self)
+                    for i in 0..<(T * H * D) { maxDiff = max(maxDiff, abs(o[i] - h[i])); maxAbs = max(maxAbs, abs(h[i])) }
+                }
+                FileHandle.standardError.write(String(format: "attn compare il %d pos %d T %d: max |diff| %.3e, max |host| %.3e, rel %.2e\n",
+                                                      il, pos0, T, maxDiff, maxAbs, maxDiff / maxAbs).data(using: .utf8)!)
+            } else {
+                try attentionSelected(&cb, il: il, pos0: pos0, T: T, kc: kc, vc: vc, bk: bk, kBlocks: kBlocks)
+            }
+        } else {
+            try attentionHost(&cb, il: il, pos0: pos0, T: T, kc: kc, vc: vc, bk: bk, kBlocks: kBlocks)
+        }
+        try gemv(cb, pre + "attn_output.weight", x: ao, y: blk, tokens: T)
+    }
+
+    /// The host-selection attention (and `attentionSgemm` for large batches below the budget). Writes `ao`.
+    private func attentionHost(_ cb: inout MTLCommandBuffer, il: Int, pos0: Int, T: Int,
+                               kc: MTLBuffer, vc: MTLBuffer, bk: MTLBuffer, kBlocks: Int) throws {
+        let lastBlocks = (pos0 + T) / 4
+        let gq = try view("blk.\(il).indexer.q_norm.weight")
         ensureAttnScratch(min(capacity, kBlocks * 4 + 3))
         let nqp = nq.contents().bindMemory(to: UInt32.self, capacity: T)
         let usp = useSel.contents().bindMemory(to: UInt32.self, capacity: T)
-        let lastBlocks = (pos0 + T) / 4
         if lastBlocks > kBlocks {
             var qp = (UInt32(idxHeads), UInt32(Hkv), UInt32(idxD), UInt32(nRot), UInt32(pos0), eps)
             run(cb, psoIdxQPrep, size(idxHeads, T)) { enc in
@@ -513,24 +570,11 @@ package final class Qwen38Runner {
             nMax = max(nMax, Int(nqp[t]))
         }
 
-        var p = (UInt32(H), UInt32(Hkv), UInt32(D), UInt32(nRot), UInt32(pos0), eps)
-        let qn = try view(pre + "attn_q_norm.weight")
-        let kn = try view(pre + "attn_k_norm.weight")
-        run(cb, psoAttnPrep, size(H + Hkv, T)) { enc in
-            enc.setBuffer(qg, offset: 0, index: 0)
-            enc.setBuffer(kc, offset: 0, index: 1)
-            enc.setBuffer(qn.buffer, offset: qn.offset, index: 2)
-            enc.setBuffer(kn.buffer, offset: kn.offset, index: 3)
-            enc.setBuffer(ropeFreq, offset: 0, index: 4)
-            enc.setBuffer(q, offset: 0, index: 5)
-            enc.setBuffer(qgate, offset: 0, index: 6)
-            enc.setBytes(&p, length: MemoryLayout.size(ofValue: p), index: 7)
-        }
+        try attnPrep(cb, il: il, pos0: pos0, T: T, kc: kc)
         var ap = (UInt32(H), UInt32(Hkv), UInt32(D), UInt32(nCap), UInt32(T))
         let apLen = MemoryLayout.size(ofValue: ap)
         if attnMpsMinTokens > 0 && T >= attnMpsMinTokens && lastBlocks <= kBlocks {
             try attentionSgemm(cb, kc: kc, vc: vc, n: nMax, T: T)
-            try gemv(cb, pre + "attn_output.weight", x: ao, y: blk, tokens: T)
             return
         }
         lanes(cb, psoAttnScore, size(nMax, H, T)) { enc in
@@ -570,7 +614,207 @@ package final class Qwen38Runner {
             enc.setBuffer(nq, offset: 0, index: 6)
             enc.setBuffer(useSel, offset: 0, index: 7)
         }
-        try gemv(cb, pre + "attn_output.weight", x: ao, y: blk, tokens: T)
+    }
+
+    /// q[t][h] and the batch's k-cache rows normed and roped, gates split off.
+    private func attnPrep(_ cb: MTLCommandBuffer, il: Int, pos0: Int, T: Int, kc: MTLBuffer) throws {
+        let pre = "blk.\(il)."
+        var p = (UInt32(H), UInt32(Hkv), UInt32(D), UInt32(nRot), UInt32(pos0), eps)
+        let qn = try view(pre + "attn_q_norm.weight")
+        let kn = try view(pre + "attn_k_norm.weight")
+        run(cb, psoAttnPrep, size(H + Hkv, T)) { enc in
+            enc.setBuffer(qg, offset: 0, index: 0)
+            enc.setBuffer(kc, offset: 0, index: 1)
+            enc.setBuffer(qn.buffer, offset: qn.offset, index: 2)
+            enc.setBuffer(kn.buffer, offset: kn.offset, index: 3)
+            enc.setBuffer(ropeFreq, offset: 0, index: 4)
+            enc.setBuffer(q, offset: 0, index: 5)
+            enc.setBuffer(qgate, offset: 0, index: 6)
+            enc.setBytes(&p, length: MemoryLayout.size(ofValue: p), index: 7)
+        }
+    }
+
+    private func sgemm(_ key: [Int], rows: Int, cols: Int, interior: Int, transposeRight: Bool,
+                       alpha: Double) -> MPSMatrixMultiplication {
+        if let m = attnMuls[key] { return m }
+        let m = MPSMatrixMultiplication(device: device, transposeLeft: false, transposeRight: transposeRight,
+                                        resultRows: rows, resultColumns: cols, interiorColumns: interior,
+                                        alpha: alpha, beta: 0)
+        attnMuls[key] = m
+        return m
+    }
+
+    private func ensureBuffer(_ b: inout MTLBuffer?, bytes: Int, shared: Bool = false) {
+        if (b?.length ?? 0) < bytes {
+            b = device.makeBuffer(length: max(bytes, 4), options: shared ? .storageModeShared : .storageModePrivate)
+        }
+    }
+
+    /// Attention for a batch above the QSA budget with no host sort (block keys through the batch in `bk`):
+    /// indexer scores as sgemm, the top `kBlocks` per query by `q38_idx_topk`, then for each sub-batch of
+    /// `attnSelBatch` queries the sgemm attention over the union of their tokens, the tokens a query does
+    /// not attend masked out before the softmax. Same selection rule as the host path. Writes `ao`.
+    private func attentionSelected(_ cb: inout MTLCommandBuffer, il: Int, pos0: Int, T: Int,
+                                   kc: MTLBuffer, vc: MTLBuffer, bk: MTLBuffer, kBlocks: Int) throws {
+        let pre = "blk.\(il)."
+        let nb = (pos0 + T) / 4
+        let gq = try view(pre + "indexer.q_norm.weight")
+        var qp = (UInt32(idxHeads), UInt32(Hkv), UInt32(idxD), UInt32(nRot), UInt32(pos0), eps)
+        run(cb, psoIdxQPrep, size(idxHeads, T)) { enc in
+            enc.setBuffer(iq, offset: 0, index: 0)
+            enc.setBuffer(gq.buffer, offset: gq.offset, index: 1)
+            enc.setBuffer(ropeFreq, offset: 0, index: 2)
+            enc.setBytes(&qp, length: MemoryLayout.size(ofValue: qp), index: 3)
+        }
+        // Indexer scores, in query chunks that keep the per-head dots within 64 MB.
+        let rowsPer = max(1, min(T, (16 << 20) / (idxHeads * nb)))
+        ensureBuffer(&idxDots, bytes: rowsPer * idxHeads * nb * 4)
+        let keys = MPSMatrix(buffer: bk, descriptor: MPSMatrixDescriptor(rows: nb, columns: idxD, rowBytes: idxD * 4, dataType: .float32))
+        var r0 = 0
+        while r0 < T {
+            let R = min(rowsPer, T - r0)
+            let mul = sgemm([2, R * idxHeads, nb], rows: R * idxHeads, cols: nb, interior: idxD, transposeRight: true, alpha: 1)
+            mul.encode(commandBuffer: cb,
+                       leftMatrix: MPSMatrix(buffer: iq, offset: r0 * idxHeads * idxD * 4,
+                                             descriptor: MPSMatrixDescriptor(rows: R * idxHeads, columns: idxD, rowBytes: idxD * 4, dataType: .float32)),
+                       rightMatrix: keys,
+                       resultMatrix: MPSMatrix(buffer: idxDots!, descriptor: MPSMatrixDescriptor(rows: R * idxHeads, columns: nb, rowBytes: nb * 4, dataType: .float32)))
+            run(cb, psoIdxReluSum, size(nb, R)) { enc in
+                enc.setBuffer(idxDots, offset: 0, index: 0)
+                enc.setBuffer(idxScores, offset: r0 * nb * 4, index: 1)
+                var heads = UInt32(idxHeads), w = UInt32(nb)
+                enc.setBytes(&heads, length: 4, index: 2)
+                enc.setBytes(&w, length: 4, index: 3)
+            }
+            r0 += R
+        }
+        var tp = (UInt32(nb), UInt32(kBlocks), UInt32(pos0), UInt32(T))
+        lanes(cb, psoIdxTopK, size(T)) { enc in
+            enc.setBuffer(idxScores, offset: 0, index: 0)
+            enc.setBuffer(selThr, offset: 0, index: 1)
+            enc.setBuffer(selCut, offset: 0, index: 2)
+            enc.setBytes(&tp, length: MemoryLayout.size(ofValue: tp), index: 3)
+        }
+        let SB = attnSelBatch
+        let S = (T + SB - 1) / SB
+        ensureBuffer(&selAny, bytes: S * nb, shared: true)
+        for s in 0..<S {
+            let r0 = s * SB, rows = min(SB, T - r0)
+            var up = (UInt32(nb), UInt32(kBlocks), UInt32(pos0 + r0), UInt32(rows))
+            run(cb, psoIdxUnion, size((pos0 + r0 + rows) / 4)) { enc in
+                enc.setBuffer(idxScores, offset: r0 * nb * 4, index: 0)
+                enc.setBuffer(selThr, offset: r0 * 4, index: 1)
+                enc.setBuffer(selCut, offset: r0 * 4, index: 2)
+                enc.setBuffer(selAny, offset: s * nb, index: 3)
+                enc.setBytes(&up, length: MemoryLayout.size(ofValue: up), index: 4)
+            }
+        }
+        cb.commit()
+        cb.waitUntilCompleted()
+        if let error = cb.error { throw error }
+        cb = queue.makeCommandBuffer()!
+
+        // Each sub-batch's token list: the union's blocks before the first query's incomplete block, then
+        // every token from there to the last query (the mask sorts them out), padded to 256 with ~0.
+        let any = selAny!.contents().assumingMemoryBound(to: UInt8.self)
+        var lists: [UInt32] = []
+        var spans: [(offset: Int, count: Int)] = []
+        for s in 0..<S {
+            let r0 = s * SB, rows = min(SB, T - r0)
+            let offset = lists.count
+            let tail = (pos0 + r0 + 1) / 4
+            for b in 0..<tail where any[s * nb + b] != 0 {
+                for j in 0..<4 { lists.append(UInt32(b * 4 + j)) }
+            }
+            for j in (tail * 4)..<(pos0 + r0 + rows) { lists.append(UInt32(j)) }
+            let count = (lists.count - offset + 255) / 256 * 256
+            lists.append(contentsOf: repeatElement(UInt32.max, count: offset + count - lists.count))
+            spans.append((offset, count))
+        }
+        ensureBuffer(&selList, bytes: lists.count * 4, shared: true)
+        lists.withUnsafeBytes { selList!.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
+
+        try attnPrep(cb, il: il, pos0: pos0, T: T, kc: kc)
+        let G = H / Hkv
+        let uMax = spans.map(\.count).max()!
+        ensureBuffer(&attnQG, bytes: SB * G * D * 4)
+        ensureBuffer(&attnOG, bytes: SB * G * D * 4)
+        ensureBuffer(&attnKG, bytes: uMax * D * 4)
+        ensureBuffer(&attnVG, bytes: uMax * D * 4)
+        ensureBuffer(&attnSelScores, bytes: SB * G * uMax * 4)
+        let nqp = nq.contents().bindMemory(to: UInt32.self, capacity: T)
+        for s in 0..<S {
+            let r0 = s * SB, rows = min(SB, T - r0)
+            let (lo, U) = spans[s]
+            for t in r0..<(r0 + rows) { nqp[t] = UInt32(U) }
+            var gp = (UInt32(H), UInt32(Hkv), UInt32(D), UInt32(U), UInt32(rows))  // gather / scatter
+            var ap = (UInt32(G), UInt32(1), UInt32(D), UInt32(U), UInt32(rows))    // stat / weight: G rows per query
+            var mp = (UInt32(G), UInt32(U), UInt32(nb), UInt32(pos0 + r0))
+            let len = MemoryLayout.size(ofValue: ap)
+            let qDesc = MPSMatrixDescriptor(rows: rows * G, columns: D, rowBytes: D * 4, dataType: .float32)
+            let kvDesc = MPSMatrixDescriptor(rows: U, columns: D, rowBytes: D * 4, dataType: .float32)
+            let scoresDesc = MPSMatrixDescriptor(rows: rows * G, columns: U, rowBytes: U * 4, dataType: .float32)
+            let mulQK = sgemm([3, rows * G, U], rows: rows * G, cols: U, interior: D, transposeRight: true,
+                              alpha: 1 / Double(D).squareRoot())
+            let mulWV = sgemm([4, rows * G, U], rows: rows * G, cols: D, interior: U, transposeRight: false, alpha: 1)
+            for g in 0..<Hkv {
+                var gV = UInt32(g)
+                run(cb, psoAttnGatherQ, size(rows * G * D)) { enc in
+                    enc.setBuffer(q, offset: r0 * H * D * 4, index: 0)
+                    enc.setBuffer(attnQG, offset: 0, index: 1)
+                    enc.setBytes(&gp, length: len, index: 2)
+                    enc.setBytes(&gV, length: 4, index: 3)
+                }
+                for (cache, out) in [(kc, attnKG), (vc, attnVG)] {
+                    run(cb, psoAttnGatherKVList, size(U * D)) { enc in
+                        enc.setBuffer(cache, offset: 0, index: 0)
+                        enc.setBuffer(out, offset: 0, index: 1)
+                        enc.setBuffer(selList, offset: lo * 4, index: 2)
+                        enc.setBytes(&gp, length: len, index: 3)
+                        enc.setBytes(&gV, length: 4, index: 4)
+                    }
+                }
+                mulQK.encode(commandBuffer: cb, leftMatrix: MPSMatrix(buffer: attnQG!, descriptor: qDesc),
+                             rightMatrix: MPSMatrix(buffer: attnKG!, descriptor: kvDesc),
+                             resultMatrix: MPSMatrix(buffer: attnSelScores!, descriptor: scoresDesc))
+                run(cb, psoAttnMaskSel, size(U, rows * G)) { enc in
+                    enc.setBuffer(attnSelScores, offset: 0, index: 0)
+                    enc.setBuffer(selList, offset: lo * 4, index: 1)
+                    enc.setBuffer(idxScores, offset: r0 * nb * 4, index: 2)
+                    enc.setBuffer(selThr, offset: r0 * 4, index: 3)
+                    enc.setBuffer(selCut, offset: r0 * 4, index: 4)
+                    enc.setBytes(&mp, length: MemoryLayout.size(ofValue: mp), index: 5)
+                }
+                for op in [UInt32(0), 1] {
+                    lanes(cb, psoAttnStat, size(G, rows)) { enc in
+                        enc.setBuffer(attnSelScores, offset: 0, index: 0)
+                        enc.setBuffer(attnMax, offset: 0, index: 1)
+                        enc.setBuffer(attnSum, offset: 0, index: 2)
+                        enc.setBytes(&ap, length: len, index: 3)
+                        var o = op
+                        enc.setBytes(&o, length: 4, index: 4)
+                        enc.setBuffer(nq, offset: r0 * 4, index: 5)
+                    }
+                }
+                run(cb, psoAttnWeight, size(U, rows * G)) { enc in
+                    enc.setBuffer(attnSelScores, offset: 0, index: 0)
+                    enc.setBuffer(attnMax, offset: 0, index: 1)
+                    enc.setBuffer(attnSum, offset: 0, index: 2)
+                    enc.setBytes(&ap, length: len, index: 3)
+                    enc.setBuffer(nq, offset: r0 * 4, index: 4)
+                }
+                mulWV.encode(commandBuffer: cb, leftMatrix: MPSMatrix(buffer: attnSelScores!, descriptor: scoresDesc),
+                             rightMatrix: MPSMatrix(buffer: attnVG!, descriptor: kvDesc),
+                             resultMatrix: MPSMatrix(buffer: attnOG!, descriptor: qDesc))
+                run(cb, psoAttnScatter, size(rows * G * D)) { enc in
+                    enc.setBuffer(attnOG, offset: 0, index: 0)
+                    enc.setBuffer(qgate, offset: r0 * H * D * 4, index: 1)
+                    enc.setBuffer(ao, offset: r0 * H * D * 4, index: 2)
+                    enc.setBytes(&gp, length: len, index: 3)
+                    enc.setBytes(&gV, length: 4, index: 4)
+                }
+            }
+        }
     }
 
     /// Attention for queries that all see the causal prefix (`nq[t]` of the first `n` tokens),

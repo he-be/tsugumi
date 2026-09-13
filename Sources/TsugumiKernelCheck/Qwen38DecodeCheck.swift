@@ -167,7 +167,11 @@ func runQwen38PrefillCheck(refLog: String, refLogits: String?, gguf: String, ple
 //
 // N token ids (comma-separated file) through `forward` C at a time, last logits only,
 // then one decode step at the end of the context. Prints each chunk's stages.
-func runQwen38PrefillBench(tokenFile: String, tokens: Int, chunk: Int, gguf: String, ple: String) throws {
+// `--q38-dump-logits F` saves the prefill's last logits and the decode step's; `--q38-compare-logits F`
+// compares against such a file (the long-context check: no CPU reference reaches 8K, so a run of
+// another path, e.g. `Q38_ATTN_MPS_MIN_T=0`, is the oracle).
+func runQwen38PrefillBench(tokenFile: String, tokens: Int, chunk: Int, gguf: String, ple: String,
+                           dumpLogits: String? = nil, compareLogits: String? = nil) throws -> Bool {
     let text = try String(contentsOfFile: tokenFile, encoding: .utf8)
     let ids = text.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
     let n = min(tokens, ids.count)
@@ -179,11 +183,13 @@ func runQwen38PrefillBench(tokenFile: String, tokens: Int, chunk: Int, gguf: Str
     let tAll = Date()
     var start = 0
     var last = 0
+    var prefillLogits: [Float] = []
     while start < n {
         let T = min(chunk, n - start)
         let t0 = Date()
         let logits = try runner.forward(tokens: Array(ids[start..<(start + T)]), startPos: start)
         for i in 1..<logits.count where logits[i] > logits[last] { last = i }
+        if start + T == n { prefillLogits = Array(logits) }
         let pr = runner.lastProfile
         let s = Date().timeIntervalSince(t0)
         print(String(format: "  [%5d..<%5d] %6.2fs %6.1f tok/s (ple %.0f pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] head %.0f ms, experts %d; route = topk %.0f views %.0f advise %.0f (%d calls))",
@@ -206,4 +212,28 @@ func runQwen38PrefillBench(tokenFile: String, tokens: Int, chunk: Int, gguf: Str
     print(String(format: "  decode at %d: %.2fs (pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] ms)",
                  n, Date().timeIntervalSince(t0), pr.preRouter * 1000, pr.preGPU * 1000,
                  pr.route * 1000, pr.routed * 1000, pr.routedGPU * 1000))
+    let both = prefillLogits + Array(logits)
+    if let path = dumpLogits {
+        try both.withUnsafeBytes { Data($0) }.write(to: URL(fileURLWithPath: path))
+        print("  logits written to \(path)")
+    }
+    guard let path = compareLogits else { return true }
+    let data = try Data(contentsOf: URL(fileURLWithPath: path))
+    let ref = data.withUnsafeBytes { Array($0.bindMemory(to: Float.self)) }
+    precondition(ref.count == both.count, "logit file size")
+    let v = logits.count
+    var pass = true
+    for (label, o) in [("prefill last", 0), ("decode", v)] {
+        func argmax(_ a: ArraySlice<Float>) -> Int { a.indices.max { a[$0] < a[$1] }! - a.startIndex }
+        var maxDiff = 0.0, refMax = 0.0
+        for i in 0..<v {
+            refMax = max(refMax, abs(Double(ref[o + i])))
+            maxDiff = max(maxDiff, abs(Double(both[o + i]) - Double(ref[o + i])))
+        }
+        let same = argmax(both[o..<(o + v)]) == argmax(ref[o..<(o + v)])
+        pass = pass && same && maxDiff / refMax < 1e-3
+        print(String(format: "  %@ vs %@: top-1 %@, logit rel err %.2e", label as NSString, path as NSString, same ? "same" : "DIFFERS", maxDiff / refMax))
+    }
+    print("  \(pass ? "PASS" : "FAIL")")
+    return pass
 }
