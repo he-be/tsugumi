@@ -95,6 +95,9 @@ Scripts/qwen38/guarded.sh out.txt env Q38_SPLIT_PRE=1 .build/release/TsugumiKern
 
 ## 6. 再開手順 (新しいセッションで続けるとき)
 
+**最新は [06 §8](06-ROUTED-GEMM.md)。**以下は 05 時点のもの。routed expert の GPU (6-3 の 1 番) は 06 で済んだ。
+**6-2 の `guarded.sh … /usr/bin/time -l env …` は、直す前の guarded.sh ではベンチ本体を殺せなかった** (06 §4)。
+
 03 §6 (状態・検査・落とし穴) の後継。03 §6 の落とし穴はそのまま有効なので、先に一度読む。
 
 ### 6-1. 状態

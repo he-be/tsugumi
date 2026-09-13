@@ -334,3 +334,124 @@ kernel void moe_q2k_phase2_down_reduce(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Dequantize + sgemm form of the two kernels above (`--q2-gemm-bench`, docs/qwen38/06):
+// the pairs are gathered by expert, each expert's rows are expanded to float32 once
+// and multiplied with MPS, and the results are scattered back with the routing weights.
+
+/// Gate and up rows of the G experts in slots first_slot.. -> float32 out[g][row][col], rows 0..<F gate
+/// then F..<2F up, reading the same per-slot views as `moe_iq2xxs_phase1_gate_up_act`.
+/// Thread (32-weight sub-block, row, g). Same weights as that kernel (d * (0.5 + scale) * grid byte * sign * 0.25).
+kernel void moe_iq2xxs_dequant_gate_up_f32(
+    device const GgmlRoutedBlobs& routed [[buffer(0)]],
+    device const uint* part_off [[buffer(1)]],
+    device float* out [[buffer(2)]],
+    constant uint& D [[buffer(3)]],
+    constant uint& F [[buffer(4)]],
+    constant uint& first_slot [[buffer(5)]],
+    uint3 pos [[thread_position_in_grid]]
+) {
+    const uint row_bytes = (D / QK_K) * sizeof(block_iq2_xxs);
+    const uint slot = first_slot + pos.z;
+    const bool is_up = pos.y >= F;
+    const uint r = is_up ? pos.y - F : pos.y;
+    device const uint8_t* src = (is_up ? routed.up[slot] : routed.gate[slot]) + part_off[3 * slot + (is_up ? 1 : 0)] + r * row_bytes;
+    device const block_iq2_xxs* b = (device const block_iq2_xxs*)(src + (pos.x / 8) * sizeof(block_iq2_xxs));
+    device const uint16_t* q = b->qs + 4 * (pos.x % 8);
+    const uint32_t aux32 = q[2] | (uint32_t(q[3]) << 16);
+    const float db = float(b->d) * (0.5f + (aux32 >> 28)) * 0.25f;
+    device const uint8_t* aux8 = (device const uint8_t*)q;
+    device float* o = out + (ulong(pos.z) * 2 * F + pos.y) * D + pos.x * 32;
+    for (uint l = 0; l < 4; ++l) {
+        const ulong grid = ds4_metal_iq2xxs_grid[aux8[l]];
+        const uchar sign = ds4_metal_ksigns_iq2xs[(aux32 >> (7 * l)) & 127];
+        for (uint j = 0; j < 8; ++j) {
+            const float v = float((grid >> (8 * j)) & 0xff);
+            o[8 * l + j] = db * ((sign & ds4_metal_kmask_iq2xs[j]) ? -v : v);
+        }
+    }
+}
+
+/// Down rows of the G experts in slots first_slot.., first `cols` (<= stride) columns -> float32
+/// out[g][row][col]. Thread (16-weight sub-block, row, g). Q2_K as in `dequantize_row_q2_K`:
+/// sub-block s reads byte 32 * (s / 8) + 16 * (s % 2) + l at shift 2 * ((s % 8) / 2).
+kernel void moe_q2k_dequant_down_f32(
+    device const GgmlRoutedBlobs& routed [[buffer(0)]],
+    device const uint* part_off [[buffer(1)]],
+    device float* out [[buffer(2)]],
+    constant uint& D [[buffer(3)]],
+    constant uint& stride [[buffer(4)]],
+    constant uint& cols [[buffer(5)]],
+    constant uint& first_slot [[buffer(6)]],
+    uint3 pos [[thread_position_in_grid]]
+) {
+    const uint row_bytes = (stride / QK_K) * sizeof(block_q2_K);
+    const uint slot = first_slot + pos.z;
+    const uint p = pos.x * 16;
+    device const block_q2_K* b = (device const block_q2_K*)(
+        routed.down[slot] + part_off[3 * slot + 2] + pos.y * row_bytes + (p / QK_K) * sizeof(block_q2_K));
+    const uint s = (p % QK_K) / 16;
+    const uchar sc = b->scales[s];
+    const float dl = float(b->d) * float(sc & 0xF);
+    const float ml = float(b->dmin) * float(sc >> 4);
+    device const uint8_t* q = b->qs + 32 * (s / 8) + 16 * (s % 2);
+    const uint shift = 2 * ((s % 8) / 2);
+    device float* o = out + (ulong(pos.z) * D + pos.y) * cols + p;
+    const uint n = min(16u, cols - p);
+    for (uint l = 0; l < n; ++l) o[l] = dl * float((q[l] >> shift) & 3) - ml;
+}
+
+/// out[i][c] = x[src[i] / top_k][c]: the token rows of the pairs, in the order `src` lists them.
+/// Thread (32-column chunk, i).
+kernel void moe_gather_pair_rows(
+    device const float* x [[buffer(0)]],
+    device const uint* src [[buffer(1)]],
+    device float* out [[buffer(2)]],
+    constant uint& W [[buffer(3)]],
+    constant uint& top_k [[buffer(4)]],
+    uint2 pos [[thread_position_in_grid]]
+) {
+    device const float* xi = x + (src[pos.y] / top_k) * W + pos.x * 32;
+    device float* o = out + ulong(pos.y) * W + pos.x * 32;
+    const uint n = min(32u, W - pos.x * 32);
+    for (uint c = 0; c < n; ++c) o[c] = xi[c];
+}
+
+/// gu[i][f] = silu(gu[i][f]) * gu[i][F + f] for rows first..<first + count. Thread (f, i).
+kernel void moe_silu_mul_halves(
+    device float* gu [[buffer(0)]],
+    constant uint& F [[buffer(1)]],
+    constant uint& first [[buffer(2)]],
+    uint2 pos [[thread_position_in_grid]]
+) {
+    const ulong base = ulong(first + pos.y) * 2 * F;
+    const float g = gu[base + pos.x];
+    gu[base + pos.x] = g / (1.0f + exp(-g)) * gu[base + F + pos.x];
+}
+
+/// y[t][r] = residual[t][r] + sum_k routing_w[t * top_k + k] * rows[at[t * top_k + k]][r].
+/// Thread (32-column chunk, t).
+kernel void moe_scatter_weighted(
+    device const float* rows [[buffer(0)]],
+    device const uint* at [[buffer(1)]],
+    device const float* routing_w [[buffer(2)]],
+    device const float* residual [[buffer(3)]],
+    device float* y [[buffer(4)]],
+    constant uint& D [[buffer(5)]],
+    constant uint& top_k [[buffer(6)]],
+    uint2 pos [[thread_position_in_grid]]
+) {
+    const uint c0 = pos.x * 32;
+    const uint n = min(32u, D - c0);
+    float acc[32] = {0.f};
+    for (uint k = 0; k < top_k; ++k) {
+        const uint pair = pos.y * top_k + k;
+        const float w = routing_w[pair];
+        device const float* r = rows + ulong(at[pair]) * D + c0;
+        for (uint c = 0; c < n; ++c) acc[c] += w * r[c];
+    }
+    device const float* res = residual + ulong(pos.y) * D + c0;
+    device float* o = y + ulong(pos.y) * D + c0;
+    for (uint c = 0; c < n; ++c) o[c] = res[c] + acc[c];
+}

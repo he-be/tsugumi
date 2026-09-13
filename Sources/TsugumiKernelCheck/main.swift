@@ -1682,6 +1682,15 @@ if let index = arguments.firstIndex(of: "--qwen38-prefill"), index + 1 < argumen
 
 // `--ggml-dense <gguf>`: Q8_0 / F16 / F32 GEMV straight off GGUF tensors
 // (GGMLDenseCheck.swift), the dense half of the Qwen3.8-Flash-Next Q2 runner.
+// `--q2-gemm-bench <gguf> <route .bin> [group] [iterations] [tokens]`: one layer of routed experts, per-pair
+// kernels against dequantize + MPS sgemm (Q2GemmBench.swift, docs/qwen38/06).
+if let index = arguments.firstIndex(of: "--q2-gemm-bench"), index + 2 < arguments.count {
+    let group = index + 3 < arguments.count ? Int(arguments[index + 3]) ?? 16 : 16
+    let iterations = index + 4 < arguments.count ? Int(arguments[index + 4]) ?? 3 : 3
+    let tokens = index + 5 < arguments.count ? Int(arguments[index + 5]) ?? Int.max : Int.max
+    try runQ2GemmBench(ggufPath: arguments[index + 1], routePath: arguments[index + 2], group: group, iterations: iterations, tokens: tokens)
+    exit(0)
+}
 if let index = arguments.firstIndex(of: "--q8-gemm-bench"), index + 1 < arguments.count {
     let tokens = index + 2 < arguments.count ? Int(arguments[index + 2]) ?? 512 : 512
     try runQ8GemmBench(ggufPath: arguments[index + 1], tokens: tokens)
