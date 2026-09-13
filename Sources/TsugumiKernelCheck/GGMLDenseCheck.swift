@@ -90,3 +90,156 @@ func runGGMLDenseCheck(ggufPath: String) throws -> Bool {
     print("  \(allPass ? "PASS" : "FAIL")")
     return allPass
 }
+
+// MARK: - Q8_0 GEMV geometry bench (`--ggml-dense-bench <gguf> [iterations]`)
+//
+// GPU time of the three Q8_0 kernels on the real decode-step tensors. Each
+// sample is one command buffer carrying 48 dispatches of one tensor (a token's
+// worth for that projection); the median of `iterations` samples is reported,
+// kernels interleaved A B C C B A. Outputs are compared against the current
+// kernel (`ggml_q8_0_gemv`).
+func runGGMLDenseBench(ggufPath: String, iterations: Int) throws {
+    let file = try GGUFFile(url: URL(fileURLWithPath: (ggufPath as NSString).expandingTildeInPath))
+    let context = try MetalContext()
+    let device = context.device
+    let library = try MetalContext.moduleLibrary(device: device, module: "ggml_dense")
+    func pso(_ name: String) throws -> MTLComputePipelineState {
+        try device.makeComputePipelineState(function: library.makeFunction(name: name)!)
+    }
+    let kernels = [("tg64/4rows", try pso("ggml_q8_0_gemv")), ("lane256", try pso("ggml_q8_0_gemv_lane")),
+                   ("rows", try pso("ggml_q8_0_gemv_rows"))]
+    let cases = ["blk.0.attn_qkv.weight", "blk.0.attn_gate.weight", "blk.0.ssm_out.weight",
+                 "blk.3.attn_q.weight", "blk.3.attn_output.weight", "blk.0.ffn_up_shexp.weight",
+                 "blk.0.ffn_down_shexp.weight"]
+    let gemv = try GGMLDenseGEMV(device: device)
+    print("GGMLDenseGEMV as dispatched by the runner: 48 per sample, median of \(iterations) (GPU ms)")
+    for name in ["blk.0.hc_attn_down.weight", "blk.0.hc_attn_up.weight", "blk.0.hc_attn_inject.weight",
+                 "blk.0.ffn_gate_inp.weight", "blk.0.ssm_alpha.weight", "blk.0.attn_qkv.weight"] {
+        let t = try file.tensor(name)
+        let ms = try ggmlDenseEncodeMedian(file: file, context: context, gemv: gemv, name: name, iterations: iterations)
+        print(String(format: "  %-28@ %@ [%6d x %5d]  %7.2f", name as NSString, "\(t.type)" as NSString,
+                     t.rowCount, t.rowWidth, ms))
+    }
+    // Float kernels: stride (current) vs chunk, same dispatch, outputs compared.
+    print("F16/F32 stride vs chunk: 48 per sample, median of \(iterations) (GPU ms)")
+    for name in ["blk.0.hc_attn_down.weight", "blk.0.hc_attn_up.weight", "blk.0.hc_attn_inject.weight",
+                 "blk.0.ffn_gate_inp.weight", "blk.0.ssm_alpha.weight"] {
+        let t = try file.tensor(name)
+        let m = t.rowCount, n = t.rowWidth
+        let pair = t.type == .f16 ? [try pso("ggml_f16_gemv"), try pso("ggml_f16_gemv_chunk")]
+                                  : [try pso("ggml_f32_gemv"), try pso("ggml_f32_gemv_chunk")]
+        var rng = SystemRandomNumberGenerator()
+        let x = (0..<n).map { _ in Float.random(in: -1...1, using: &rng) }
+        let (wbuf, woff) = file.noCopyBuffer(device: device, tensor: t)!
+        let xbuf = device.makeBuffer(bytes: x, length: n * 4, options: .storageModeShared)!
+        let ys = pair.map { _ in device.makeBuffer(length: m * 4, options: .storageModeShared)! }
+        var times: [[Double]] = [[], []]
+        for i in 0...(2 * iterations) {
+            for k in (i % 2 == 0 ? [0, 1] : [1, 0]) {
+                let cb = context.queue.makeCommandBuffer()!
+                for _ in 0..<48 {
+                    let enc = cb.makeComputeCommandEncoder()!
+                    enc.setComputePipelineState(pair[k])
+                    enc.setBuffer(wbuf, offset: woff, index: 0)
+                    enc.setBuffer(xbuf, offset: 0, index: 1)
+                    enc.setBuffer(ys[k], offset: 0, index: 2)
+                    var mv = UInt32(m), nv = UInt32(n)
+                    enc.setBytes(&mv, length: 4, index: 3)
+                    enc.setBytes(&nv, length: 4, index: 4)
+                    enc.dispatchThreadgroups(MTLSize(width: (m + 7) / 8, height: 1, depth: 1),
+                                             threadsPerThreadgroup: MTLSize(width: 64, height: 1, depth: 1))
+                    enc.endEncoding()
+                }
+                cb.commit()
+                cb.waitUntilCompleted()
+                if i > 0 { times[k].append((cb.gpuEndTime - cb.gpuStartTime) * 1000) }
+            }
+        }
+        let y0 = UnsafeBufferPointer(start: ys[0].contents().bindMemory(to: Float.self, capacity: m), count: m)
+        let y1 = UnsafeBufferPointer(start: ys[1].contents().bindMemory(to: Float.self, capacity: m), count: m)
+        var d = 0.0, r = 0.0
+        for i in 0..<m { d = max(d, Double(abs(y1[i] - y0[i]))); r = max(r, Double(abs(y0[i]))) }
+        let med = times.map { $0.sorted()[$0.count / 2] }
+        print(String(format: "  %-28@ %@ [%6d x %5d]  stride %7.2f  chunk %7.2f  (diff %.0e)",
+                     name as NSString, "\(t.type)" as NSString, m, n, med[0], med[1], d / r))
+    }
+    var rng = SystemRandomNumberGenerator()
+    print("Q8_0 GEMV geometry bench: 48 dispatches per sample, median of \(iterations) (GPU ms)")
+    for name in cases {
+        let t = try file.tensor(name)
+        precondition(t.type == .q8_0)
+        let m = t.rowCount, n = t.rowWidth
+        let x = (0..<n).map { _ in Float.random(in: -1...1, using: &rng) }
+        let (wbuf, woff) = file.noCopyBuffer(device: device, tensor: t)!
+        let xbuf = device.makeBuffer(bytes: x, length: n * 4, options: .storageModeShared)!
+        let ys = kernels.map { _ in device.makeBuffer(length: m * 4, options: .storageModeShared)! }
+        func sample(_ k: Int) -> Double {
+            let (_, p) = kernels[k]
+            let cb = context.queue.makeCommandBuffer()!
+            for _ in 0..<48 {
+                let enc = cb.makeComputeCommandEncoder()!
+                enc.setComputePipelineState(p)
+                enc.setBuffer(wbuf, offset: woff, index: 0)
+                enc.setBuffer(xbuf, offset: 0, index: 1)
+                enc.setBuffer(ys[k], offset: 0, index: 2)
+                var mv = UInt32(m), nv = UInt32(n)
+                enc.setBytes(&mv, length: 4, index: 3)
+                enc.setBytes(&nv, length: 4, index: 4)
+                switch k {
+                case 0: enc.dispatchThreadgroups(MTLSize(width: (m + 7) / 8, height: 1, depth: 1),
+                                                 threadsPerThreadgroup: MTLSize(width: 64, height: 1, depth: 1))
+                case 1: enc.dispatchThreadgroups(MTLSize(width: (m + 7) / 8, height: 1, depth: 1),
+                                                 threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+                default: enc.dispatchThreads(MTLSize(width: m, height: 1, depth: 1),
+                                             threadsPerThreadgroup: MTLSize(width: min(p.maxTotalThreadsPerThreadgroup, 64), height: 1, depth: 1))
+                }
+                enc.endEncoding()
+            }
+            cb.commit()
+            cb.waitUntilCompleted()
+            return (cb.gpuEndTime - cb.gpuStartTime) * 1000
+        }
+        for k in kernels.indices { _ = sample(k) }  // warm pages and pipelines
+        var times = kernels.map { _ in [Double]() }
+        for i in 0..<iterations {
+            let order = i % 2 == 0 ? Array(kernels.indices) : kernels.indices.reversed()
+            for k in order { times[k].append(sample(k)) }
+        }
+        let y0 = UnsafeBufferPointer(start: ys[0].contents().bindMemory(to: Float.self, capacity: m), count: m)
+        var line = String(format: "  %-26@ [%6d x %5d]", name as NSString, m, n)
+        for k in kernels.indices {
+            let yk = UnsafeBufferPointer(start: ys[k].contents().bindMemory(to: Float.self, capacity: m), count: m)
+            var d = 0.0, r = 0.0
+            for i in 0..<m { d = max(d, Double(abs(yk[i] - y0[i]))); r = max(r, Double(abs(y0[i]))) }
+            let med = times[k].sorted()[times[k].count / 2]
+            line += String(format: "  %@ %7.2f (%.0e)", kernels[k].0 as NSString, med, d / r)
+        }
+        print(line)
+    }
+}
+
+/// GPU ms of `GGMLDenseGEMV` (the runner's dispatch) on one tensor, 48 dispatches
+/// per command buffer, median of `iterations`.
+func ggmlDenseEncodeMedian(file: GGUFFile, context: MetalContext, gemv: GGMLDenseGEMV,
+                           name: String, iterations: Int) throws -> Double {
+    let device = context.device
+    let t = try file.tensor(name)
+    let m = t.rowCount, n = t.rowWidth
+    var rng = SystemRandomNumberGenerator()
+    let x = (0..<n).map { _ in Float.random(in: -1...1, using: &rng) }
+    let (wbuf, woff) = file.noCopyBuffer(device: device, tensor: t)!
+    let xbuf = device.makeBuffer(bytes: x, length: n * 4, options: .storageModeShared)!
+    let ybuf = device.makeBuffer(length: m * 4, options: .storageModeShared)!
+    var times: [Double] = []
+    for i in 0...iterations {
+        let cb = context.queue.makeCommandBuffer()!
+        for _ in 0..<48 {
+            gemv.encode(commandBuffer: cb, type: t.type, weights: wbuf, weightsOffset: woff,
+                        x: xbuf, y: ybuf, m: m, n: n)
+        }
+        cb.commit()
+        cb.waitUntilCompleted()
+        if i > 0 { times.append((cb.gpuEndTime - cb.gpuStartTime) * 1000) }
+    }
+    return times.sorted()[times.count / 2]
+}

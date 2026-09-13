@@ -4,9 +4,12 @@ using namespace metal;
 // Qwen3.8-Flash-Next (qwen4exp) decode kernels, float32 activations.
 //
 // Transcribed from ds4-metal's CPU reference `qwen4_ref_*` (the same math as
-// `Scripts/qwen38/reference_forward.py`), one token at a time. These are the
-// correctness-first forms for the Q2 verification runner: plain per-thread
-// loops, no SIMD-lane tricks. The weights they read come straight from the
+// `Scripts/qwen38/reference_forward.py`), one token at a time, for the Q2
+// verification runner. Mostly plain per-thread loops; the exceptions are the
+// RMS scale and attention, where a thread looping over thousands of elements
+// was the cost (a 4-thread RMS over 4x2560 took 340 us, attention at 2048
+// tokens 120 ms per layer) and the loop is split into 32 SIMD lanes
+// (`docs/qwen38/02-DECODE-SPEED.md` §2). The weights they read come straight from the
 // DS4-IQ2 GGUF (norm gammas already folded to 1+w, ssm_a = -exp(A_log), GDN
 // value head j paired with key head j % Hk).
 
@@ -23,28 +26,49 @@ struct Q38RmsParams {
     float eps;
 };
 
-/// out[g*n + i] = x[g*n + i] * rsqrt(mean(x[g]^2) + eps) * gamma[g*n + i] (or gamma[i] if !wide).
-kernel void q38_grouped_rms(
-    device const float* x [[buffer(0)]],
-    device const float* gamma [[buffer(1)]],
-    device float* out [[buffer(2)]],
-    constant Q38RmsParams& p [[buffer(3)]],
-    constant uint& gammaWide [[buffer(4)]],
-    uint g [[thread_position_in_grid]]
-) {
-    const uint base = g * p.n;
-    float ss = 0.0f;
-    for (uint i = 0; i < p.n; ++i) ss += x[base + i] * x[base + i];
-    const float scale = 1.0f / sqrt(ss / float(p.n) + p.eps);
-    const uint gb = gammaWide != 0 ? base : 0;
-    for (uint i = 0; i < p.n; ++i) out[base + i] = x[base + i] * scale * gamma[gb + i];
-}
-
 struct Q38UnaryParams {
     uint op;        // 0: silu, 1: sigmoid
     float inScale;  // applied before the function
     float outScale; // applied after
 };
+
+/// scale[g] = rsqrt(mean(x[g]^2) + eps), one SIMD group (32 lanes) per group g.
+/// Lane l sums the 32-element chunks l, l+32, ... of the group (so a group of n
+/// elements needs no per-thread loop longer than n/32); lane 0 also takes the
+/// tail past the last whole chunk. Dispatch: threadgroups (groups, 1, 1), 32 threads each.
+kernel void q38_group_rms_scale(
+    device const float* x [[buffer(0)]],
+    device float* scale [[buffer(1)]],
+    constant Q38RmsParams& p [[buffer(2)]],
+    uint g [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    const uint base = g * p.n;
+    const uint nc = p.n / 32;
+    float ss = 0.0f;
+    for (uint c = lane; c < nc; c += 32) {
+        device const float* xc = x + base + c * 32;
+        for (uint j = 0; j < 32; ++j) ss += xc[j] * xc[j];
+    }
+    if (lane == 0) {
+        for (uint i = nc * 32; i < p.n; ++i) ss += x[base + i] * x[base + i];
+    }
+    ss = simd_sum(ss);
+    if (lane == 0) scale[g] = 1.0f / sqrt(ss / float(p.n) + p.eps);
+}
+
+/// out[i] = x[i] * scale[i / n] * gamma[i] (or gamma[i % n] if !wide). Thread per element.
+kernel void q38_rms_apply(
+    device const float* x [[buffer(0)]],
+    device const float* gamma [[buffer(1)]],
+    device float* out [[buffer(2)]],
+    constant Q38RmsParams& p [[buffer(3)]],
+    constant uint& gammaWide [[buffer(4)]],
+    device const float* scale [[buffer(5)]],
+    uint i [[thread_position_in_grid]]
+) {
+    out[i] = x[i] * scale[i / p.n] * gamma[gammaWide != 0 ? i : i % p.n];
+}
 
 kernel void q38_unary(
     device const float* x [[buffer(0)]],
@@ -255,47 +279,103 @@ kernel void q38_attn_prep(
     }
 }
 
-/// o[h] = sigmoid(gate[h]) * sum_t softmax_t(q[h] . k[t] / sqrt(D)) v[t] over the selected tokens:
-/// t = sel[i] for i < nSel when `useSel`, else every t <= pos (QSA below its budget).
-kernel void q38_attn_decode(
+// Attention over n tokens in five passes with no per-thread loop over n x D:
+// score -> max -> sum -> weight -> mix. Token i of the pass is t = sel[i] when
+// `useSel`, else i. scores[h * n + i] is scratch (score, then weight).
+
+struct Q38AttnPassParams {
+    uint h;
+    uint hkv;
+    uint d;
+    uint n;
+    uint useSel;
+};
+
+static inline uint q38_tok(device const uint* sel, constant Q38AttnPassParams& p, uint i) {
+    return p.useSel != 0 ? sel[i] : i;
+}
+
+/// scores[h * n + i] = q[h] . k[t_i] / sqrt(D). Threadgroups (n, H), 32 threads; lane l reads dims l, l+32, ...
+kernel void q38_attn_score(
     device const float* q [[buffer(0)]],
     device const float* kcache [[buffer(1)]],
-    device const float* vcache [[buffer(2)]],
-    device const float* gate [[buffer(3)]],
-    device float* o [[buffer(4)]],
-    constant Q38AttnParams& p [[buffer(5)]],
-    device const uint* sel [[buffer(6)]],
-    constant uint& nSel [[buffer(7)]],
-    constant uint& useSel [[buffer(8)]],
-    uint h [[thread_position_in_grid]]
+    device float* scores [[buffer(2)]],
+    device const uint* sel [[buffer(3)]],
+    constant Q38AttnPassParams& p [[buffer(4)]],
+    uint2 tg [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
 ) {
-    const uint n = useSel != 0 ? nSel : p.pos + 1;
+    const uint i = tg.x, h = tg.y;
+    if (i >= p.n || h >= p.h) return;
     const uint kvh = h / (p.h / p.hkv);
-    const float scale = 1.0f / sqrt(float(p.d));
     device const float* qh = q + h * p.d;
-    float mx = -FLT_MAX;
-    for (uint i = 0; i < n; ++i) {
-        const uint t = useSel != 0 ? sel[i] : i;
-        device const float* kt = kcache + (t * p.hkv + kvh) * p.d;
-        float dot = 0.0f;
-        for (uint j = 0; j < p.d; ++j) dot += qh[j] * kt[j];
-        mx = max(mx, dot * scale);
+    device const float* kt = kcache + (q38_tok(sel, p, i) * p.hkv + kvh) * p.d;
+    float dot = 0.0f;
+    for (uint j = lane; j < p.d; j += 32) dot += qh[j] * kt[j];
+    dot = simd_sum(dot);
+    if (lane == 0) scores[h * p.n + i] = dot / sqrt(float(p.d));
+}
+
+/// stat[h] = max_i scores[h * n + i] (op 0), or sum_i exp(scores - stat[h]) into stat2[h] (op 1).
+/// Threadgroups (H, 1), 32 threads; lane l reads tokens l, l+32, ...
+kernel void q38_attn_stat(
+    device const float* scores [[buffer(0)]],
+    device float* mx [[buffer(1)]],
+    device float* sum [[buffer(2)]],
+    constant Q38AttnPassParams& p [[buffer(3)]],
+    constant uint& op [[buffer(4)]],
+    uint h [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    device const float* s = scores + h * p.n;
+    if (op == 0) {
+        float m = -FLT_MAX;
+        for (uint i = lane; i < p.n; i += 32) m = max(m, s[i]);
+        m = simd_max(m);
+        if (lane == 0) mx[h] = m;
+    } else {
+        const float m = mx[h];
+        float acc = 0.0f;
+        for (uint i = lane; i < p.n; i += 32) acc += exp(s[i] - m);
+        acc = simd_sum(acc);
+        if (lane == 0) sum[h] = acc;
     }
-    float sum = 0.0f;
-    for (uint i = 0; i < p.d; ++i) o[h * p.d + i] = 0.0f;
-    for (uint si = 0; si < n; ++si) {
-        const uint t = useSel != 0 ? sel[si] : si;
-        device const float* kt = kcache + (t * p.hkv + kvh) * p.d;
-        float dot = 0.0f;
-        for (uint i = 0; i < p.d; ++i) dot += qh[i] * kt[i];
-        const float w = exp(dot * scale - mx);
-        sum += w;
-        device const float* vt = vcache + (t * p.hkv + kvh) * p.d;
-        for (uint i = 0; i < p.d; ++i) o[h * p.d + i] += w * vt[i];
+}
+
+/// scores[h * n + i] = exp(scores - mx[h]) / sum[h]. Thread (i, h).
+kernel void q38_attn_weight(
+    device float* scores [[buffer(0)]],
+    device const float* mx [[buffer(1)]],
+    device const float* sum [[buffer(2)]],
+    constant Q38AttnPassParams& p [[buffer(3)]],
+    uint2 pos [[thread_position_in_grid]]
+) {
+    const uint k = pos.y * p.n + pos.x;
+    scores[k] = exp(scores[k] - mx[pos.y]) / sum[pos.y];
+}
+
+/// o[h * D + j] = sigmoid(gate[h * D + j]) * sum_i w[h, i] v[t_i][j].
+/// Threadgroups (D, H), 32 threads; lane l reads tokens l, l+32, ...
+kernel void q38_attn_mix(
+    device const float* w [[buffer(0)]],
+    device const float* vcache [[buffer(1)]],
+    device const float* gate [[buffer(2)]],
+    device float* o [[buffer(3)]],
+    device const uint* sel [[buffer(4)]],
+    constant Q38AttnPassParams& p [[buffer(5)]],
+    uint2 tg [[threadgroup_position_in_grid]],
+    uint lane [[thread_index_in_simdgroup]]
+) {
+    const uint j = tg.x, h = tg.y;
+    if (j >= p.d || h >= p.h) return;
+    const uint kvh = h / (p.h / p.hkv);
+    device const float* wh = w + h * p.n;
+    float acc = 0.0f;
+    for (uint i = lane; i < p.n; i += 32) {
+        acc += wh[i] * vcache[(q38_tok(sel, p, i) * p.hkv + kvh) * p.d + j];
     }
-    for (uint i = 0; i < p.d; ++i) {
-        o[h * p.d + i] = o[h * p.d + i] / sum * q38_sigmoid(gate[h * p.d + i]);
-    }
+    acc = simd_sum(acc);
+    if (lane == 0) o[h * p.d + j] = acc * q38_sigmoid(gate[h * p.d + j]);
 }
 
 // ---------------------------------------------------------------------------

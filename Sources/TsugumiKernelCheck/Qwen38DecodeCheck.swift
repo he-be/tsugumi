@@ -43,6 +43,7 @@ func runQwen38DecodeCheck(refLog: String, refLogits: String?, gguf: String, ple:
     let runner = try Qwen38Runner(gguf: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath),
                                   ple: URL(fileURLWithPath: (ple as NSString).expandingTildeInPath),
                                   capacity: n + 1)
+    runner.splitPreRouter = ProcessInfo.processInfo.environment["Q38_SPLIT_PRE"] != nil
     if let indexerTopK {
         runner.indexerTopK = indexerTopK
         print("  indexer top_k override: \(indexerTopK) tokens")
@@ -76,10 +77,15 @@ func runQwen38DecodeCheck(refLog: String, refLogits: String?, gguf: String, ple:
         let ok = best == ref.top1[pos]
         if !ok { mismatches += 1 }
         let pr = runner.lastProfile
-        print(String(format: "  [%3d] input %7d  top1 %7d  ref %7d  %@  %.2fs (ple %.0f pre %.0f route %.0f routed %.0f head %.0f ms)%@",
+        print(String(format: "  [%3d] input %7d  top1 %7d  ref %7d  %@  %.2fs (ple %.0f pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] head %.0f ms, miss %.0f MB)%@",
                      pos, seq[pos], best, ref.top1[pos], ok ? "ok  " : "DIFF",
-                     Date().timeIntervalSince(t0), pr.ple * 1000, pr.preRouter * 1000, pr.route * 1000,
-                     pr.routed * 1000, pr.head * 1000, logitNote))
+                     Date().timeIntervalSince(t0), pr.ple * 1000, pr.preRouter * 1000, pr.preGPU * 1000, pr.route * 1000,
+                     pr.routed * 1000, pr.routedGPU * 1000, pr.head * 1000,
+                     Double(pr.missBytes) / 1e6, logitNote))
+        if !pr.sections.isEmpty {
+            print("        pre-router GPU ms: " + pr.sections.sorted { $0.key < $1.key }
+                .map { String(format: "%@ %.1f", $0.key as NSString, $0.value) }.joined(separator: "  "))
+        }
         // Generated tokens follow the runner's own choice; after a divergence the
         // reference's later positions are a different sequence, so stop there.
         if !ok && pos + 1 >= ref.prompt.count { break }

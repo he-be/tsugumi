@@ -1651,6 +1651,16 @@ if let index = arguments.firstIndex(of: "--qwen38-decode"), index + 1 < argument
 
 // `--ggml-dense <gguf>`: Q8_0 / F16 / F32 GEMV straight off GGUF tensors
 // (GGMLDenseCheck.swift), the dense half of the Qwen3.8-Flash-Next Q2 runner.
+if let index = arguments.firstIndex(of: "--q38-small-bench") {
+    let iterations = index + 1 < arguments.count ? Int(arguments[index + 1]) ?? 20 : 20
+    try runQwen38SmallKernelBench(iterations: iterations)
+    exit(0)
+}
+if let index = arguments.firstIndex(of: "--ggml-dense-bench"), index + 1 < arguments.count {
+    let iterations = index + 2 < arguments.count ? Int(arguments[index + 2]) ?? 20 : 20
+    try runGGMLDenseBench(ggufPath: arguments[index + 1], iterations: iterations)
+    exit(0)
+}
 if let index = arguments.firstIndex(of: "--ggml-dense"), index + 1 < arguments.count {
     exit(try runGGMLDenseCheck(ggufPath: arguments[index + 1]) ? 0 : 1)
 }

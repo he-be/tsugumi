@@ -39,8 +39,9 @@ package final class Qwen38Runner {
     private let queue: MTLCommandQueue
     private let dense: GGMLDenseGEMV
 
-    private let psoRms, psoUnary, psoMix, psoCombine, psoAddScaled, psoSiluMul: MTLComputePipelineState
-    private let psoConv, psoQKNorm, psoStep, psoNormGate, psoAttnPrep, psoAttnDecode: MTLComputePipelineState
+    private let psoRmsScale, psoRmsApply, psoUnary, psoMix, psoCombine, psoAddScaled, psoSiluMul: MTLComputePipelineState
+    private let psoConv, psoQKNorm, psoStep, psoNormGate, psoAttnPrep: MTLComputePipelineState
+    private let psoAttnScore, psoAttnStat, psoAttnWeight, psoAttnMix: MTLComputePipelineState
     private let psoPhase1, psoPhase2: MTLComputePipelineState
     private let psoIdxBlockKey, psoIdxQPrep, psoIdxScore: MTLComputePipelineState
 
@@ -51,6 +52,7 @@ package final class Qwen38Runner {
     private let qkv, conv, z, ga, gb, lo6144: MTLBuffer
     private let qg, q, qgate, ao: MTLBuffer
     private let routerLogits, shG, shU, shY, shGate: MTLBuffer
+    private let rmsScale: MTLBuffer
     private let acts, routeW: MTLBuffer
     private let routedArg: MTLBuffer
     private let routedArgEncoder: MTLArgumentEncoder
@@ -70,6 +72,7 @@ package final class Qwen38Runner {
     private var idxRawKeys: [Int: MTLBuffer] = [:]    // [cap][128]
     private var idxBlockKeys: [Int: MTLBuffer] = [:]  // [cap/4][128], filled as blocks complete
     private let iq: MTLBuffer
+    private let attnScores, attnMax, attnSum: MTLBuffer
     private let idxScores: MTLBuffer
     private let selection: MTLBuffer
     /// QSA budget in tokens (GGUF: 2048). Lowered only by checks, to make the
@@ -90,8 +93,24 @@ package final class Qwen38Runner {
         package var routed = 0.0      // encode + GPU wait of the routed buffer, all layers
         package var head = 0.0
         package var total = 0.0
+        package var preGPU = 0.0      // gpuEndTime - gpuStartTime of the pre-router buffers
+        package var routedGPU = 0.0   // same, routed buffers
+        /// GPU ms by pre-router section, filled only when `splitPreRouter` is set.
+        package var sections: [String: Double] = [:]
+        package var missBytes = 0      // selected expert bytes not in the page cache at route time (`countMisses`)
     }
     package private(set) var lastProfile = StepProfile()
+    /// Checks only: commit the pre-router work in four buffers so `sections` can
+    /// attribute its GPU time (hc_attn, mixer, combine + hc_ffn, shared + router).
+    package var splitPreRouter = false
+    /// Selected experts are `F_RDADVISE`d before the routed buffer (all 30 ranges at once,
+    /// so the misses read in parallel instead of faulting one by one inside the buffer).
+    /// On the 53-token prompt that took the median token from 240-325 ms to 160-170 ms;
+    /// a residency set of recent experts on top did not help (`docs/qwen38/02`).
+    /// `Q38_ADVISE=0` turns it off; `Q38_COUNT_MISS=1` counts non-resident bytes (costs ~15 ms/token).
+    package var adviseExperts = ProcessInfo.processInfo.environment["Q38_ADVISE"] != "0"
+    package var countMisses = ProcessInfo.processInfo.environment["Q38_COUNT_MISS"] == "1"
+    private var profileMiss = 0
 
     package init(gguf: URL, ple: URL, capacity: Int) throws {
         let file = try GGUFFile(url: gguf)
@@ -134,7 +153,8 @@ package final class Qwen38Runner {
             }
             return try device.makeComputePipelineState(function: fn)
         }
-        psoRms = try pso(lib, "q38_grouped_rms")
+        psoRmsScale = try pso(lib, "q38_group_rms_scale")
+        psoRmsApply = try pso(lib, "q38_rms_apply")
         psoUnary = try pso(lib, "q38_unary")
         psoMix = try pso(lib, "q38_hc_mix")
         psoCombine = try pso(lib, "q38_hc_combine")
@@ -145,7 +165,10 @@ package final class Qwen38Runner {
         psoStep = try pso(lib, "q38_gdn_step")
         psoNormGate = try pso(lib, "q38_gdn_norm_gate")
         psoAttnPrep = try pso(lib, "q38_attn_prep")
-        psoAttnDecode = try pso(lib, "q38_attn_decode")
+        psoAttnScore = try pso(lib, "q38_attn_score")
+        psoAttnStat = try pso(lib, "q38_attn_stat")
+        psoAttnWeight = try pso(lib, "q38_attn_weight")
+        psoAttnMix = try pso(lib, "q38_attn_mix")
         psoIdxBlockKey = try pso(lib, "q38_idx_block_key")
         psoIdxQPrep = try pso(lib, "q38_idx_q_prep")
         psoIdxScore = try pso(lib, "q38_idx_score")
@@ -162,10 +185,12 @@ package final class Qwen38Runner {
         qkv = buf(2 * Hk * Dl + Hv * Dl); conv = buf(2 * Hk * Dl + Hv * Dl)
         z = buf(Hv * Dl); ga = buf(Hv); gb = buf(Hv); lo6144 = buf(Hv * Dl)
         qg = buf(2 * H * D); q = buf(H * D); qgate = buf(H * D); ao = buf(H * D)
+        rmsScale = buf(64)
         routerLogits = buf(nExperts); shG = buf(F); shU = buf(F); shY = buf(e); shGate = buf(1)
         acts = buf(topK * downIn); routeW = buf(topK)
         logits = buf(vocab)
         iq = buf(4 * 128)
+        attnScores = buf(H * capacity); attnMax = buf(H); attnSum = buf(H)
         idxScores = buf(capacity / 4 + 1)
         selection = device.makeBuffer(length: max(capacity, 1) * 4, options: .storageModeShared)!
         zeroOne = buf(1)
@@ -233,14 +258,26 @@ package final class Qwen38Runner {
     private func rms(_ cb: MTLCommandBuffer, x: MTLBuffer, gamma: String, out: MTLBuffer,
                      groups: Int, n: Int, wide: Bool) throws {
         let g = try view(gamma)
-        run(cb, psoRms, MTLSize(width: groups, height: 1, depth: 1)) { enc in
+        precondition(groups <= 64)
+        var p = (UInt32(groups), UInt32(n), eps)
+        do {
+            let enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(psoRmsScale)
+            enc.setBuffer(x, offset: 0, index: 0)
+            enc.setBuffer(rmsScale, offset: 0, index: 1)
+            enc.setBytes(&p, length: MemoryLayout.size(ofValue: p), index: 2)
+            enc.dispatchThreadgroups(MTLSize(width: groups, height: 1, depth: 1),
+                                     threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+            enc.endEncoding()
+        }
+        run(cb, psoRmsApply, MTLSize(width: groups * n, height: 1, depth: 1)) { enc in
             enc.setBuffer(x, offset: 0, index: 0)
             enc.setBuffer(g.buffer, offset: g.offset, index: 1)
             enc.setBuffer(out, offset: 0, index: 2)
-            var p = (UInt32(groups), UInt32(n), eps)
             enc.setBytes(&p, length: MemoryLayout.size(ofValue: p), index: 3)
             var wideV = UInt32(wide ? 1 : 0)
             enc.setBytes(&wideV, length: 4, index: 4)
+            enc.setBuffer(rmsScale, offset: 0, index: 5)
         }
     }
 
@@ -412,16 +449,46 @@ package final class Qwen38Runner {
             enc.setBuffer(qgate, offset: 0, index: 6)
             enc.setBytes(&p, length: MemoryLayout.size(ofValue: p), index: 7)
         }
-        run(cb, psoAttnDecode, MTLSize(width: H, height: 1, depth: 1)) { enc in
+        var ap = (UInt32(H), UInt32(Hkv), UInt32(D), nSel, useSel)
+        let apLen = MemoryLayout.size(ofValue: ap)
+        let n = Int(nSel)
+        func lanes(_ pso: MTLComputePipelineState, _ grid: MTLSize, _ setup: (MTLComputeCommandEncoder) -> Void) {
+            let enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(pso)
+            setup(enc)
+            enc.dispatchThreadgroups(grid, threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
+            enc.endEncoding()
+        }
+        lanes(psoAttnScore, MTLSize(width: n, height: H, depth: 1)) { enc in
             enc.setBuffer(q, offset: 0, index: 0)
             enc.setBuffer(kc, offset: 0, index: 1)
-            enc.setBuffer(vc, offset: 0, index: 2)
-            enc.setBuffer(qgate, offset: 0, index: 3)
-            enc.setBuffer(ao, offset: 0, index: 4)
-            enc.setBytes(&p, length: MemoryLayout.size(ofValue: p), index: 5)
-            enc.setBuffer(selection, offset: 0, index: 6)
-            enc.setBytes(&nSel, length: 4, index: 7)
-            enc.setBytes(&useSel, length: 4, index: 8)
+            enc.setBuffer(attnScores, offset: 0, index: 2)
+            enc.setBuffer(selection, offset: 0, index: 3)
+            enc.setBytes(&ap, length: apLen, index: 4)
+        }
+        for op in [UInt32(0), 1] {
+            lanes(psoAttnStat, MTLSize(width: H, height: 1, depth: 1)) { enc in
+                enc.setBuffer(attnScores, offset: 0, index: 0)
+                enc.setBuffer(attnMax, offset: 0, index: 1)
+                enc.setBuffer(attnSum, offset: 0, index: 2)
+                enc.setBytes(&ap, length: apLen, index: 3)
+                var o = op
+                enc.setBytes(&o, length: 4, index: 4)
+            }
+        }
+        run(cb, psoAttnWeight, MTLSize(width: n, height: H, depth: 1)) { enc in
+            enc.setBuffer(attnScores, offset: 0, index: 0)
+            enc.setBuffer(attnMax, offset: 0, index: 1)
+            enc.setBuffer(attnSum, offset: 0, index: 2)
+            enc.setBytes(&ap, length: apLen, index: 3)
+        }
+        lanes(psoAttnMix, MTLSize(width: D, height: H, depth: 1)) { enc in
+            enc.setBuffer(attnScores, offset: 0, index: 0)
+            enc.setBuffer(vc, offset: 0, index: 1)
+            enc.setBuffer(qgate, offset: 0, index: 2)
+            enc.setBuffer(ao, offset: 0, index: 3)
+            enc.setBuffer(selection, offset: 0, index: 4)
+            enc.setBytes(&ap, length: apLen, index: 5)
         }
         try gemv(cb, pre + "attn_output.weight", x: ao, y: blk)
     }
@@ -457,6 +524,7 @@ package final class Qwen38Runner {
         let downBytes = downT.bytesPerRow * e
         let po = partOffsets.contents().bindMemory(to: UInt32.self, capacity: 3 * topK)
         var used: [MTLBuffer] = []
+        var advise: [(offset: Int, bytes: Int)] = []
         for (slot, ex) in sel.enumerated() {
             let parts: [(GGUFFile.Tensor, Int)] = [(gateT, gateBytes), (upT, gateBytes), (downT, downBytes)]
             for (part, (t, bytes)) in parts.enumerated() {
@@ -474,8 +542,12 @@ package final class Qwen38Runner {
                 routedArgEncoder.setBuffer(v.buffer, offset: 0, index: part * 16 + slot)
                 po[3 * slot + part] = UInt32(v.offset)
                 used.append(v.buffer)
+                let fileOffset = t.offset + ex * bytes
+                if countMisses { profileMiss += file.nonResidentBytes(offset: fileOffset, byteCount: bytes) }
+                if adviseExperts { advise.append((fileOffset, bytes)) }
             }
         }
+        for r in advise { file.adviseRead(offset: r.offset, byteCount: r.bytes) }
 
         let cb2 = queue.makeCommandBuffer()!
         // Shared expert (already computed into shY / shGate by the pre-router buffer).
@@ -655,6 +727,7 @@ package final class Qwen38Runner {
         }
 
         var prof = StepProfile()
+        profileMiss = 0
         let tStep = CFAbsoluteTimeGetCurrent()
         for il in 0..<nTrunk {
             var t0 = CFAbsoluteTimeGetCurrent()
@@ -665,10 +738,22 @@ package final class Qwen38Runner {
             }
             let pre = "blk.\(il)."
             var cb = queue.makeCommandBuffer()!
+            func section(_ label: String) throws {
+                guard splitPreRouter else { return }
+                cb.commit()
+                cb.waitUntilCompleted()
+                if let error = cb.error { throw error }
+                prof.sections[label, default: 0] += (cb.gpuEndTime - cb.gpuStartTime) * 1000
+                prof.preGPU += cb.gpuEndTime - cb.gpuStartTime
+                cb = queue.makeCommandBuffer()!
+            }
             try hcMix(cb, prefix: pre + "hc_attn", inject: true)
+            try section("hc_attn")
             if isLinear(il) { try linear(cb, il: il) } else { try attention(&cb, il: il, pos: pos) }
+            try section(isLinear(il) ? "gdn" : "attn")
             combine(cb, block: blk)
             try hcMix(cb, prefix: pre + "hc_ffn", inject: true)
+            try section("hc_ffn")
             try gemv(cb, pre + "ffn_gate_shexp.weight", x: mixed, y: shG)
             try gemv(cb, pre + "ffn_up_shexp.weight", x: mixed, y: shU)
             run(cb, psoSiluMul, MTLSize(width: F, height: 1, depth: 1)) { enc in
@@ -683,6 +768,8 @@ package final class Qwen38Runner {
             if let error = cb.error { throw error }
             let t1 = CFAbsoluteTimeGetCurrent()
             prof.preRouter += t1 - t0
+            prof.preGPU += cb.gpuEndTime - cb.gpuStartTime
+            if splitPreRouter { prof.sections["shexp+router", default: 0] += (cb.gpuEndTime - cb.gpuStartTime) * 1000 }
 
             let cb2 = try moeRouted(il: il, after: cb)
             combine(cb2, block: blk)
@@ -692,6 +779,7 @@ package final class Qwen38Runner {
             cb2.waitUntilCompleted()
             if let error = cb2.error { throw error }
             prof.routed += CFAbsoluteTimeGetCurrent() - t2
+            prof.routedGPU += cb2.gpuEndTime - cb2.gpuStartTime
         }
 
         let tHead = CFAbsoluteTimeGetCurrent()
@@ -703,6 +791,7 @@ package final class Qwen38Runner {
         if let error = cb.error { throw error }
         prof.head = CFAbsoluteTimeGetCurrent() - tHead
         prof.total = CFAbsoluteTimeGetCurrent() - tStep
+        prof.missBytes = profileMiss
         lastProfile = prof
         return UnsafeBufferPointer(start: logits.contents().bindMemory(to: Float.self, capacity: vocab),
                                    count: vocab)

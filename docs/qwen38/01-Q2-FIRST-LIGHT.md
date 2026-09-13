@@ -203,6 +203,8 @@ $B --qwen38-decode scratch/qwen38/ref-fuji-idx16.log --q38-ref-logits scratch/qw
 
 ### 7-4. 次にやること (§5 の順)
 
+> **2026-09-13 追記:** 1 の速度は [02-DECODE-SPEED.md](02-DECODE-SPEED.md) で一段進めた (0.22〜0.38 → 0.12〜0.15 s/トークン)。コピー版との A/B は取らず、no-copy + `F_RDADVISE` を既定にした。residency set は advise と重ねて効かなかった。続きは 02 §5。
+
 1. **速度**: ユーザーに重いアプリを閉じてもらってから。まず今の no-copy 版で 1 トークンの内訳を取り、
    コピー版と A/B する。コピー版は**コミットしていない** (同じセッション内で no-copy に置き換えた) ので、
    `moeRouted` で選ばれた 10 個の gate/up/down を mmap から 10 本の連続 blob に `memcpy` し、`part_off` を (0, gate, 2·gate) にする形で作り直す

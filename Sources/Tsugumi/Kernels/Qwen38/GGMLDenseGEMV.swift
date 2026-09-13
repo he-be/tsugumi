@@ -7,6 +7,8 @@ package final class GGMLDenseGEMV {
     private let q8: MTLComputePipelineState
     private let f16: MTLComputePipelineState
     private let f32: MTLComputePipelineState
+    private let f16Chunk: MTLComputePipelineState
+    private let f32Chunk: MTLComputePipelineState
 
     package init(device: MTLDevice) throws {
         let library = try MetalContext.moduleLibrary(device: device, module: "ggml_dense")
@@ -19,6 +21,8 @@ package final class GGMLDenseGEMV {
         q8 = try pso("ggml_q8_0_gemv")
         f16 = try pso("ggml_f16_gemv")
         f32 = try pso("ggml_f32_gemv")
+        f16Chunk = try pso("ggml_f16_gemv_chunk")
+        f32Chunk = try pso("ggml_f32_gemv_chunk")
     }
 
     package static func supports(_ type: GGUFFile.GGMLType) -> Bool {
@@ -36,8 +40,11 @@ package final class GGMLDenseGEMV {
         let pso: MTLComputePipelineState
         switch type {
         case .q8_0: pso = q8
-        case .f16: pso = f16
-        case .f32: pso = f32
+        // Float rows of 1024+ read 32-element chunks per lane: 3-9x less GPU time than
+        // one element per lane on the hyper-connection and router shapes. Narrower
+        // rows (320) leave most lanes idle in the chunk form and keep the stride form.
+        case .f16: pso = n >= 1024 ? f16Chunk : f16
+        case .f32: pso = n >= 1024 ? f32Chunk : f32
         default: preconditionFailure("GGMLDenseGEMV: unsupported type \(type)")
         }
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }

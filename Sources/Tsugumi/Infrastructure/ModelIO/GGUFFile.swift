@@ -243,6 +243,23 @@ public final class GGUFFile: @unchecked Sendable {
         return (buffer, offset - start)
     }
 
+    /// Bytes of `offset ..< offset + byteCount` (whole pages) that are not in the page cache.
+    public func nonResidentBytes(offset: Int, byteCount: Int) -> Int {
+        let page = Int(getpagesize())
+        let start = offset / page * page
+        let end = min((offset + byteCount + page - 1) / page * page, (fileSize + page - 1) / page * page)
+        let pages = (end - start) / page
+        var vec = [CChar](repeating: 0, count: pages)
+        guard mincore(base + start, end - start, &vec) == 0 else { return 0 }
+        return vec.reduce(0) { $0 + (($1 & CChar(MINCORE_INCORE)) == 0 ? page : 0) }
+    }
+
+    /// `F_RDADVISE` for a file range (asynchronous read-ahead into the page cache).
+    public func adviseRead(offset: Int, byteCount: Int) {
+        var ra = radvisory(ra_offset: off_t(offset), ra_count: Int32(clamping: byteCount))
+        _ = fcntl(fd, F_RDADVISE, &ra)
+    }
+
     public func noCopyBuffer(device: MTLDevice, tensor: Tensor) -> (buffer: MTLBuffer, offset: Int)? {
         noCopyBuffer(device: device, offset: tensor.offset, byteCount: tensor.byteCount)
     }
