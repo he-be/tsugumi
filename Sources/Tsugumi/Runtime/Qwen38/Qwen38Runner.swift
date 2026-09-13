@@ -143,13 +143,16 @@ package final class Qwen38Runner {
     /// (`docs/qwen38/06`). `Q38_GEMM_MIN_T`, 0 = never; `Q38_GEMM_GROUP` experts dequantized per dispatch.
     package var gemmMinTokens = Int(ProcessInfo.processInfo.environment["Q38_GEMM_MIN_T"] ?? "") ?? 1024
     package var gemmGroup = Int(ProcessInfo.processInfo.environment["Q38_GEMM_GROUP"] ?? "") ?? 4
+    /// In such a batch, experts with fewer pairs than this skip the dequant + sgemm (a fixed ~0.35 ms each)
+    /// and run the per-pair kernels over their gathered rows (`docs/qwen38/08`). `Q38_GEMM_MIN_PAIRS`, 0 = none.
+    package var gemmMinPairs = Int(ProcessInfo.processInfo.environment["Q38_GEMM_MIN_PAIRS"] ?? "") ?? 24
     /// Batches of at least `gdnMinTokens` run the GDN step in chunks of `gdnChunk` tokens (WY form,
     /// `Qwen38GDNChunk`) instead of the token-serial `q38_gdn_step`: one layer at T = 4096 took 170 -> 40 ms
     /// with chunk 32 (`docs/qwen38/07`). `Q38_GDN_CHUNK` (0 = never), `Q38_GDN_MIN_T`.
     package var gdnChunk = Int(ProcessInfo.processInfo.environment["Q38_GDN_CHUNK"] ?? "") ?? 32
     package var gdnMinTokens = Int(ProcessInfo.processInfo.environment["Q38_GDN_MIN_T"] ?? "") ?? 16
     private var gdnChunked: Qwen38GDNChunk?
-    private var gemmRows, gemmGateUp, gemmWGateUp, gemmWDown, gemmOrder, gemmAt: MTLBuffer?
+    private var gemmRows, gemmGateUp, gemmWGateUp, gemmWDown, gemmOrder, gemmAt, gemmPosSlot, gemmOnes: MTLBuffer?
     /// Checks only: batches of at least 1024 tokens write `<prefix>-l<layer>.bin` (Int32 T, then T x topK
     /// Int32 experts and T x topK Float32 routing weights), the input of `--q2-gemm-bench` (`Q38_DUMP_ROUTE`).
     package var routeDumpPrefix = ProcessInfo.processInfo.environment["Q38_DUMP_ROUTE"]
@@ -968,6 +971,21 @@ package final class Qwen38Runner {
                 w[t * topK + k] = Float(chosenP[k] / wsum)
             }
         }
+        let gemm = gemmMinTokens > 0 && T >= gemmMinTokens
+        var gemmBigSlots = slots.count
+        if gemm && gemmMinPairs > 0 {
+            // Experts with at least `gemmMinPairs` pairs take the first slots (so `routedGemm` dequantizes
+            // contiguous slot groups), the rest the tail; relative order kept.
+            var count = [Int](repeating: 0, count: slots.count)
+            for p in 0..<(T * topK) { count[Int(ps[p])] += 1 }
+            let big = slots.indices.filter { count[$0] >= gemmMinPairs }
+            let small = slots.indices.filter { count[$0] < gemmMinPairs }
+            var renum = [UInt32](repeating: 0, count: slots.count)
+            for (i, s) in (big + small).enumerated() { renum[s] = UInt32(i) }
+            slots = (big + small).map { slots[$0] }
+            for p in 0..<(T * topK) { ps[p] = renum[Int(ps[p])] }
+            gemmBigSlots = big.count
+        }
         prof.distinctExperts += slots.count
         if let prefix = routeDumpPrefix, T >= 1024 {
             var data = Data()
@@ -988,7 +1006,6 @@ package final class Qwen38Runner {
         let po = partOffsets.contents().bindMemory(to: UInt32.self, capacity: 3 * nExperts)
         var used: [[MTLBuffer]] = [[], [], []]
         let parts: [(GGUFFile.Tensor, Int)] = [(gateT, gateBytes), (upT, gateBytes), (downT, downBytes)]
-        let gemm = gemmMinTokens > 0 && T >= gemmMinTokens
         for (slot, ex) in slots.enumerated() {
             for (part, (t, bytes)) in parts.enumerated() {
                 let key = (il * nExperts + ex) * 3 + part
@@ -1053,7 +1070,8 @@ package final class Qwen38Runner {
             enc.setBytes(&n, length: 4, index: 4)
         }
         if gemm {
-            routedGemm(cb2, T: T, slots: slots.count, pairSlot: ps, used: used)
+            routedGemm(cb2, T: T, slots: slots.count, bigSlots: gemmBigSlots,
+                       rowBytes: (UInt32(gateT.bytesPerRow), UInt32(downT.bytesPerRow)), pairSlot: ps, used: used)
             return cb2
         }
         var offsets = (UInt32(gateT.bytesPerRow), UInt32(downT.bytesPerRow))
@@ -1106,7 +1124,9 @@ package final class Qwen38Runner {
     /// by sgemm written back over the same expert's `gemmRows` (already consumed), and the weighted scatter.
     /// Reads the experts through the same per-slot views as the per-pair kernels (`routedArg`, `partOffsets`,
     /// `used` by part), so only the selected experts' pages are made resident.
-    private func routedGemm(_ cb: MTLCommandBuffer, T: Int, slots S: Int,
+    /// Slots `bigSlots..<S` (experts with few pairs, laid out last) skip the dequant: the per-pair kernels
+    /// run over their rows with top_k 1 and write the unweighted output back in place.
+    private func routedGemm(_ cb: MTLCommandBuffer, T: Int, slots S: Int, bigSlots SB: Int, rowBytes: (UInt32, UInt32),
                             pairSlot ps: UnsafeMutablePointer<UInt32>, used: [[MTLBuffer]]) {
         let P = T * topK, G = max(gemmGroup, 1)
         var count = [Int](repeating: 0, count: S)
@@ -1118,8 +1138,8 @@ package final class Qwen38Runner {
         ensureBuffer(&gemmAt, bytes: pairs * 4, shared: true)
         ensureBuffer(&gemmRows, bytes: pairs * e * 4)
         var groupPairs = 0
-        for g0 in stride(from: 0, to: S, by: G) { groupPairs = max(groupPairs, start[min(g0 + G, S)] - start[g0]) }
-        ensureBuffer(&gemmGateUp, bytes: groupPairs * 2 * F * 4)
+        for g0 in stride(from: 0, to: SB, by: G) { groupPairs = max(groupPairs, start[min(g0 + G, SB)] - start[g0]) }
+        ensureBuffer(&gemmGateUp, bytes: max(groupPairs, 1) * 2 * F * 4)
         ensureBuffer(&gemmWGateUp, bytes: G * 2 * F * e * 4)
         ensureBuffer(&gemmWDown, bytes: G * e * F * 4)
         let order = gemmOrder!.contents().bindMemory(to: UInt32.self, capacity: P)
@@ -1145,11 +1165,11 @@ package final class Qwen38Runner {
             enc.setBytes(&dV, length: 4, index: 3)
             enc.setBytes(&kV, length: 4, index: 4)
         }
-        for g0 in stride(from: 0, to: S, by: G) {
+        for g0 in stride(from: 0, to: SB, by: G) {
             // The per-expert MPSMatrix objects are autoreleased; without a pool they pile up for the whole
             // forward (+1.3 GB footprint at 8K, docs/qwen38/06 §3).
             autoreleasepool {
-                let n = min(G, S - g0)
+                let n = min(G, SB - g0)
                 var firstSlot = UInt32(g0)
                 var enc = cb.makeComputeCommandEncoder()!
                 enc.setComputePipelineState(psoDeqGateUp)
@@ -1195,6 +1215,57 @@ package final class Qwen38Runner {
                                 resultMatrix: matrix(rows, start[s] * e * 4, count[s], e))
                 }
             }
+        }
+        let p0 = start[SB], nSmall = P - p0
+        if nSmall > 0 {
+            ensureBuffer(&gemmPosSlot, bytes: pairs * 4, shared: true)
+            if gemmOnes == nil {
+                gemmOnes = device.makeBuffer(length: pairs * 4, options: .storageModeShared)
+                let one = gemmOnes!.contents().bindMemory(to: Float.self, capacity: pairs)
+                for i in 0..<pairs { one[i] = 1 }
+            }
+            let posSlot = gemmPosSlot!.contents().bindMemory(to: UInt32.self, capacity: nSmall)
+            for i in 0..<nSmall { posSlot[i] = ps[Int(order[p0 + i])] }
+            var offsets = rowBytes
+            var oneV = UInt32(1), nV = UInt32(nSmall)
+            var enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(psoPhase1)
+            enc.setBuffer(routedArg, offset: 0, index: 0)
+            enc.useResources(Array(used[0][SB..<S] + used[1][SB..<S]), usage: .read)
+            enc.setBytes(&offsets, length: 8, index: 1)
+            enc.setBuffer(rows, offset: p0 * e * 4, index: 2)
+            enc.setBuffer(acts, offset: 0, index: 3)
+            enc.setBytes(&dV, length: 4, index: 4)
+            enc.setBytes(&fV, length: 4, index: 5)
+            enc.setBytes(&oneV, length: 4, index: 6)
+            enc.setBytes(&strideV, length: 4, index: 7)
+            enc.setBuffer(partOffsets, offset: 0, index: 8)
+            enc.setBytes(&nV, length: 4, index: 9)
+            enc.setBuffer(gemmPosSlot, offset: 0, index: 10)
+            enc.setThreadgroupMemoryLength(256 * 8 + 128, index: 0)
+            enc.dispatchThreadgroups(size((nSmall * F + 7) / 8), threadsPerThreadgroup: size(64))
+            enc.endEncoding()
+            // phase 2 adds its residual: the region (already read) is cleared and used as both.
+            let blit = cb.makeBlitCommandEncoder()!
+            blit.fill(buffer: rows, range: (p0 * e * 4)..<(P * e * 4), value: 0)
+            blit.endEncoding()
+            enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(psoPhase2)
+            enc.setBuffer(routedArg, offset: 0, index: 0)
+            enc.useResources(Array(used[2][SB..<S]), usage: .read)
+            enc.setBytes(&offsets, length: 8, index: 1)
+            enc.setBuffer(acts, offset: 0, index: 2)
+            enc.setBuffer(gemmOnes, offset: 0, index: 3)
+            enc.setBuffer(rows, offset: p0 * e * 4, index: 4)
+            enc.setBuffer(rows, offset: p0 * e * 4, index: 5)
+            enc.setBytes(&dV, length: 4, index: 6)
+            enc.setBytes(&strideV, length: 4, index: 7)
+            enc.setBytes(&oneV, length: 4, index: 8)
+            enc.setBuffer(partOffsets, offset: 0, index: 9)
+            enc.setBytes(&nV, length: 4, index: 10)
+            enc.setBuffer(gemmPosSlot, offset: 0, index: 11)
+            enc.dispatchThreadgroups(size((nSmall * e + 7) / 8), threadsPerThreadgroup: size(64))
+            enc.endEncoding()
         }
         run(cb, psoScatterWeighted, size((e + 31) / 32, T)) { enc in
             enc.setBuffer(rows, offset: 0, index: 0)
