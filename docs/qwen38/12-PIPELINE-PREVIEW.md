@@ -99,9 +99,9 @@ Ornith は要取得の 64.5%、+8.4〜22.3% ([qwen35moe/27](../qwen35moe/27-PHAS
 
 ## 4. 未測定・次
 
-- **12K での prev10** (wired・file-backed・Swapouts)。既定を変える前に要る。
+- **12K での prev10** (wired・file-backed・Swapouts)。既定を変える前に要る。→ [13](13-KERNEL-TO-GPU-WAIT.md) §4 (投機で wired 15.0 GB、打ち切り。上位 N の掃引・前もって常駐させる腕も同じ軸なので回していない)。
 - 上位 N の掃引 (5 / 20)、検証の行ごとの N。
-- **kernel→GPU 開始の待ち (素 25〜34 ms・検証 47〜65 ms) の中身。**11 §3 で全部 pread 済みでも T=1 で 12〜13 ms 残ったので、SSD でない常駐の費用がある。
+- **kernel→GPU 開始の待ち (素 25〜34 ms・検証 47〜65 ms) の中身。**→ [13](13-KERNEL-TO-GPU-WAIT.md): 使用済みのビューは 0.05 ms、待ちは route 時点の未常駐 MB で R² 0.84〜0.91。11 §3 で全部 pread 済みでも T=1 で 12〜13 ms 残ったので、SSD でない常駐の費用がある。
   予測した expert を別スレッドで residency set に入れて `requestResidency` する腕 (Gemma P-5 [mtp/49](../mtp/49-D-P5-RESIDENCY-SET.md)、Ornith の commit 非同期 [qwen35moe/39](../qwen35moe/39-RESIDENCY-COMMIT.md)) は、予測があって初めて「前もって」出せる。
 - **MTP 固有の形。**検証の行 y はドラフトに依存しないので、ドラフト中に幹の層 0 を進められる。
   行 d を y の半層後ろに流せば、y の層 L の読みを d の層 L の計算で隠せる (いまは T=2 の和集合を同じ瞬間に読んでいる)。どちらも作っていない。

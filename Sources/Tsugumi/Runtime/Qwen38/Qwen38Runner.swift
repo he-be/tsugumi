@@ -126,6 +126,7 @@ package final class Qwen38Runner {
         package var sections: [String: Double] = [:]
         package var missBytes = 0      // selected expert bytes not in the page cache at route time (`countMisses`)
         package var distinctExperts = 0  // distinct (layer, expert) pairs of the batch, summed over layers
+        package var newViewBytes = 0     // expert views made by this forward (their first command buffer, docs/qwen38/13)
         package var routeTopK = 0.0, routeViews = 0.0, routeAdvise = 0.0   // parts of `route`
         package var missTime = 0.0      // the `countMisses` mincore calls (inside `routeAdvise`)
         /// Parts of `routed` - `routedGPU` (trunk only), from the buffers' host times: `commit` to `kernelStartTime`,
@@ -1138,6 +1139,7 @@ package final class Qwen38Runner {
                     }
                     v = made
                     expertParts[key] = v
+                    prof.newViewBytes += made.buffer.length
                 }
                 routedArgEncoder.setBuffer(v.buffer, offset: 0, index: part * nExperts + slot)
                 po[3 * slot + part] = UInt32(v.offset)

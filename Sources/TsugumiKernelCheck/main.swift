@@ -1681,6 +1681,19 @@ if let index = arguments.firstIndex(of: "--qwen38-generate"), index + 1 < argume
     exit(0)
 }
 
+// `--qwen38-residency-probe`: the routed buffer's kernel -> GPU start by view count, bytes and reuse (`--q38-rounds N`,
+// Qwen38ResidencyProbe.swift, docs/qwen38/13).
+if arguments.contains("--qwen38-residency-probe") {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    try runQwen38ResidencyProbe(
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        rounds: opt("--q38-rounds").flatMap { Int($0) } ?? 60)
+    exit(0)
+}
+
 // `--qwen38-prefill-bench <token file>`: prefill speed (`--q38-tokens N`, `--q38-chunk C`).
 if let index = arguments.firstIndex(of: "--qwen38-prefill-bench"), index + 1 < arguments.count {
     func opt(_ flag: String) -> String? {

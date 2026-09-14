@@ -64,10 +64,10 @@ func runQwen38MTPDump(tokenFile: String, out: String, tokens maxTokens: Int, ggu
 /// The trunk forward's route and routed host time split (docs/qwen38/11): route = top-k + views + advise (+ the
 /// `Q38_COUNT_MISS` mincore time, printed apart), routed = commit->kernel start + kernel->GPU start + GPU + after.
 func routeDetail(_ p: Qwen38Runner.StepProfile) -> String {
-    String(format: "  | route topk %.1f views %.1f advise %.1f (miss %.1f) calls %d | routed commit>kernel %.1f kernel>gpu %.1f gpu %.1f after %.1f | experts %d miss %.1f MB",
+    String(format: "  | route topk %.1f views %.1f advise %.1f (miss %.1f) calls %d | routed commit>kernel %.1f kernel>gpu %.1f gpu %.1f after %.1f | experts %d miss %.1f MB new views %.1f MB",
            p.routeTopK * 1000, p.routeViews * 1000, (p.routeAdvise - p.missTime) * 1000, p.missTime * 1000, p.adviseCalls,
            p.routedToKernel * 1000, p.routedKernelToGPU * 1000, p.routedGPU * 1000, p.routedAfterGPU * 1000,
-           p.distinctExperts, Double(p.missBytes) / 1e6)
+           p.distinctExperts, Double(p.missBytes) / 1e6, Double(p.newViewBytes) / 1e6)
         + (p.previewActual > 0 ? String(format: " | preview hit %d/%d named %d host %.1f",
                                         p.previewHit, p.previewActual, p.previewNamed, p.previewAdvise * 1000) : "")
 }
