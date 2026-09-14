@@ -220,18 +220,19 @@ package final class Qwen38Runner {
     private var mtpCat: MTLBuffer?
     package private(set) var lastMTPProfile = StepProfile()
 
-    // Speculative rollback (`docs/qwen38/10` §5-4).
-    /// Set before a verify forward of 2 ..< `gdnMinTokens` tokens: it then keeps what `rollbackToFirst` needs
-    /// (the GDN state after its first token, written by `q38_gdn_step`; the conv and PLE histories from before the
-    /// batch; the first token's rows that enter them). KV, indexer keys and the MTP KV are by position and need nothing.
-    package var snapshotFirst = false
-    private var snapshotTaken = false
-    private var linStateSnap: [Int: MTLBuffer] = [:]
+    // Speculative rollback (`docs/qwen38/10` §5-4, `14`).
+    /// Set (1 or 2) before a verify forward of more than that many and fewer than `gdnMinTokens` tokens: it then
+    /// keeps what `rollback(keep:)` needs for keep = 1 ..< snapshotRows + 1 (the GDN states after tokens 0 and 1,
+    /// written by `q38_gdn_step`; the conv and PLE histories from before the batch; the kept tokens' rows that enter
+    /// them). KV, indexer keys and the MTP KV are by position and need nothing.
+    package var snapshotRows = 0
+    private var snapshotTaken = 0
+    private var linStateSnap: [[Int: MTLBuffer]] = [[:], [:]]
     private var linHistBefore: [Int: MTLBuffer] = [:]
-    private var linQkv0: [Int: MTLBuffer] = [:]
+    private var linQkvHead: [Int: MTLBuffer] = [:]
     private var pleHistBefore: [Float] = []
     private var plePrevBefore: [Int] = []
-    private var firstToken = 0
+    private var snapTokens: [Int] = []
 
     package init(gguf: URL, ple: URL, capacity: Int, maxBatch: Int = 1) throws {
         let file = try GGUFFile(url: gguf)
@@ -496,11 +497,11 @@ package final class Qwen38Runner {
         let pre = "blk.\(il)."
         let C = 2 * Hk * Dl + Hv * Dl
         try gemv(cb, pre + "attn_qkv.weight", x: mixed, y: qkv, tokens: T)
-        if snapshotTaken {
-            let q0 = linQkv0[il] ?? device.makeBuffer(length: C * 4, options: .storageModeShared)!
-            linQkv0[il] = q0
+        if snapshotTaken > 0 {
+            let q0 = linQkvHead[il] ?? device.makeBuffer(length: 2 * C * 4, options: .storageModeShared)!
+            linQkvHead[il] = q0
             let blit = cb.makeBlitCommandEncoder()!
-            blit.copy(from: qkv, sourceOffset: 0, to: q0, destinationOffset: 0, size: C * 4)
+            blit.copy(from: qkv, sourceOffset: 0, to: q0, destinationOffset: 0, size: snapshotTaken * C * 4)
             blit.endEncoding()
         }
         try gemv(cb, pre + "attn_gate.weight", x: mixed, y: z, tokens: T)
@@ -548,12 +549,11 @@ package final class Qwen38Runner {
             }
             gdnChunked!.encode(cb, conv: conv, a: ga, b: gb, state: state, out: lo6144, T: T)
         } else {
-            var snapT = UInt32.max
-            var snap = state
-            if snapshotTaken {
-                snap = linStateSnap[il] ?? device.makeBuffer(length: state.length, options: .storageModeShared)!
-                linStateSnap[il] = snap
-                snapT = 0
+            var snapN = UInt32(snapshotTaken)
+            var snap = [state, state]
+            for r in 0..<snapshotTaken {
+                snap[r] = linStateSnap[r][il] ?? device.makeBuffer(length: state.length, options: .storageModeShared)!
+                linStateSnap[r][il] = snap[r]
             }
             lanes(cb, psoStep, size(Dl, Hv)) { enc in
                 enc.setBuffer(conv, offset: 0, index: 0)
@@ -563,8 +563,9 @@ package final class Qwen38Runner {
                 enc.setBuffer(lo6144, offset: 0, index: 6)
                 enc.setBytes(&gp, length: gpLen, index: 7)
                 enc.setBytes(&cV, length: 4, index: 8)
-                enc.setBuffer(snap, offset: 0, index: 9)
-                enc.setBytes(&snapT, length: 4, index: 10)
+                enc.setBuffer(snap[0], offset: 0, index: 9)
+                enc.setBytes(&snapN, length: 4, index: 10)
+                enc.setBuffer(snap[1], offset: 0, index: 11)
             }
         }
         cb = try section("gdn_step")
@@ -1527,28 +1528,29 @@ package final class Qwen38Runner {
 
     // MARK: - Forward
 
-    /// After a `snapshotFirst` forward, sets the recurrent state to what it was after that batch's first token only
-    /// (the rest of the batch was rejected): the GDN state from the step kernel's copy (buffers swapped), the conv
-    /// and PLE histories shifted by one from their copies with the first token's rows, and `plePrev`. Call it before
-    /// the next trunk forward (it reads that forward's first PLE row).
-    package func rollbackToFirst() {
-        precondition(snapshotTaken, "rollbackToFirst without a snapshotFirst forward")
+    /// After a `snapshotRows` forward, sets the recurrent state to what it was after that batch's first `keep`
+    /// tokens only (the rest of the batch was rejected): the GDN state from the step kernel's copy after token
+    /// keep - 1 (buffers swapped), the conv and PLE histories shifted by `keep` from their copies with the kept
+    /// tokens' rows, and `plePrev`. Call it before the next trunk forward (it reads that forward's PLE rows).
+    package func rollback(keep: Int) {
+        precondition(keep >= 1 && keep <= snapshotTaken, "rollback(keep: \(keep)) after a snapshot of \(snapshotTaken) rows")
+        precondition(keep <= convK - 1)
         let C = 2 * Hk * Dl + Hv * Dl
         for il in 0..<nTrunk where isLinear(il) {
-            let snap = linStateSnap[il]!
-            linStateSnap[il] = linState[il]
+            let snap = linStateSnap[keep - 1][il]!
+            linStateSnap[keep - 1][il] = linState[il]
             linState[il] = snap
             let hist = linHist[il]!.contents(), before = linHistBefore[il]!.contents()
-            hist.copyMemory(from: before + C * 4, byteCount: (convK - 2) * C * 4)
-            (hist + (convK - 2) * C * 4).copyMemory(from: linQkv0[il]!.contents(), byteCount: C * 4)
+            hist.copyMemory(from: before + keep * C * 4, byteCount: (convK - 1 - keep) * C * 4)
+            (hist + (convK - 1 - keep) * C * 4).copyMemory(from: linQkvHead[il]!.contents(), byteCount: keep * C * 4)
         }
         let W = hc * e
         let rowsH = pleHist.length / 4 / W
         let ph = pleHist.contents().bindMemory(to: Float.self, capacity: rowsH * W)
-        pleHistBefore.withUnsafeBufferPointer { ph.update(from: $0.baseAddress! + W, count: (rowsH - 1) * W) }
-        (ph + (rowsH - 1) * W).update(from: pleNormed.contents().bindMemory(to: Float.self, capacity: W), count: W)
-        plePrev = [firstToken] + plePrevBefore.dropLast()
-        snapshotTaken = false
+        pleHistBefore.withUnsafeBufferPointer { ph.update(from: $0.baseAddress! + keep * W, count: (rowsH - keep) * W) }
+        (ph + (rowsH - keep) * W).update(from: pleNormed.contents().bindMemory(to: Float.self, capacity: keep * W), count: keep * W)
+        plePrev = Array((snapTokens.prefix(keep).reversed() + plePrevBefore).prefix(plePrevBefore.count))
+        snapshotTaken = 0
     }
 
     /// Shared expert into `shY` / `shGate` and the router logits, from `mixed`.
@@ -1767,9 +1769,10 @@ package final class Qwen38Runner {
         var prof = StepProfile()
         let tStep = CFAbsoluteTimeGetCurrent()
         resizeBatch(T: T)
-        snapshotTaken = false
-        if snapshotFirst {
-            precondition(T >= 2 && (gdnChunk == 0 || T < gdnMinTokens), "snapshotFirst needs the serial GDN step")
+        snapshotTaken = 0
+        if snapshotRows > 0 {
+            precondition(snapshotRows <= 2 && T > snapshotRows && (gdnChunk == 0 || T < gdnMinTokens),
+                         "snapshotRows needs 1 or 2 rows below T and the serial GDN step")
             let C = 2 * Hk * Dl + Hv * Dl
             for il in 0..<nTrunk where isLinear(il) {
                 let before = linHistBefore[il] ?? device.makeBuffer(length: (convK - 1) * C * 4, options: .storageModeShared)!
@@ -1783,8 +1786,8 @@ package final class Qwen38Runner {
             pleHistBefore = Array(UnsafeBufferPointer(start: pleHist.contents().bindMemory(to: Float.self, capacity: pleHist.length / 4),
                                                       count: pleHist.length / 4))
             plePrevBefore = plePrev
-            firstToken = tokens[0]
-            snapshotTaken = true
+            snapTokens = Array(tokens.prefix(snapshotRows))
+            snapshotTaken = snapshotRows
         }
         try embed(tokens, copies: hc, into: R)
         try pleRows(tokens: tokens)

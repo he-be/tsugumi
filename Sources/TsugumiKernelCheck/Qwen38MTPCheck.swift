@@ -136,8 +136,14 @@ func runQwen38Generate(tokenFile: String, newTokens: Int, chunk: Int, greedy: Bo
     let prompt = text.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
     setvbuf(stdout, nil, _IOLBF, 0)
     let shadow = mtp == "shadow"
-    let spec = mtp == "spec" || mtp == "reject"
-    precondition(mtp == "off" || shadow || spec, "--q38-mtp off|shadow|spec|reject")
+    let spec = mtp == "spec" || mtp == "reject" || mtp == "reject2"
+    precondition(mtp == "off" || shadow || spec, "--q38-mtp off|shadow|spec|reject|reject2")
+    // `Q38_MTP_CHAIN=2` (docs/qwen38/14): drafts per step. Shadow: after d1, a second draft d2 from [d1] at pos + 1
+    // with the MTP head's own residual row (its KV row at pos + 1 is rewritten by the next step's first draft, so
+    // nothing is rolled back). Spec: verify [y, d1, d2] at T = 3.
+    let chain = Int(ProcessInfo.processInfo.environment["Q38_MTP_CHAIN"] ?? "") ?? 1
+    precondition(chain == 1 || chain == 2, "Q38_MTP_CHAIN=1|2")
+    precondition(mtp != "reject2" || chain == 2, "reject2 needs Q38_MTP_CHAIN=2")
     let useMTP = shadow || spec
     let n = prompt.count
     let runner = try Qwen38Runner(gguf: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath),
@@ -188,7 +194,7 @@ func runQwen38Generate(tokenFile: String, newTokens: Int, chunk: Int, greedy: Bo
     print(String(format: "  prefill %d tokens: trunk %.1f s%@", n, trunkPrefill, useMTP ? String(format: ", mtp %.1f s", mtpPrefill) : ""))
     if spec {
         try speculativeLoop(runner: runner, n: n, lastLogits: lastLogits, pendingH: pendingH, newTokens: newTokens,
-                            greedy: greedy, seed: seed, forceReject: mtp == "reject", out: out)
+                            greedy: greedy, seed: seed, chain: chain, mode: mtp, out: out)
         return
     }
 
@@ -199,6 +205,9 @@ func runQwen38Generate(tokenFile: String, newTokens: Int, chunk: Int, greedy: Bo
     var lines: [String] = []
     var trunkMs: [Double] = [], mtpMs: [Double] = []
     var accepted = 0, drafted = 0
+    var draft2Prev = -1, hit1Prev = false        // the previous step's d2, judged against this step's sample
+    var bothHit = 0, hit1Judged = 0, chainJudged = 0
+    var mtp2Ms: [Double] = []
     var pos = n
     while generated.count < newTokens && !eos.contains(y) {
         var draft = -1
@@ -213,6 +222,18 @@ func runQwen38Generate(tokenFile: String, newTokens: Int, chunk: Int, greedy: Bo
             mtpLine = String(format: "  mtp %.0f (pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] head %.0f)",
                              ms, pr.preRouter * 1000, pr.preGPU * 1000, pr.route * 1000, pr.routed * 1000, pr.routedGPU * 1000, pr.head * 1000)
         }
+        var draft2 = -1
+        if chain == 2 && shadow {
+            let t2 = Date()
+            let h1 = Array(UnsafeBufferPointer(start: runner.mtpHidden(row: 0), count: W))
+            let l2 = try h1.withUnsafeBufferPointer { try runner.mtpForward(tokens: [draft], startPos: pos + 1, hidden: $0.baseAddress!) }
+            draft2 = Q38Sampler.argmax(l2)
+            let ms2 = Date().timeIntervalSince(t2) * 1000
+            mtp2Ms.append(ms2)
+            let pr = runner.lastMTPProfile
+            mtpLine += String(format: "  d2 %6d mtp2 %.0f (pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] head %.0f)",
+                              draft2, ms2, pr.preRouter * 1000, pr.preGPU * 1000, pr.route * 1000, pr.routed * 1000, pr.routedGPU * 1000, pr.head * 1000)
+        }
         let t = Date()
         let l = try runner.forward(tokens: [y], startPos: pos)
         let ms = Date().timeIntervalSince(t) * 1000
@@ -223,6 +244,14 @@ func runQwen38Generate(tokenFile: String, newTokens: Int, chunk: Int, greedy: Bo
             pendingH = Array(UnsafeBufferPointer(start: runner.hidden(row: 0), count: W))
             drafted += 1
             if draft == next { accepted += 1 }
+            // d2 of the previous step drafted the token sampled now; it counts only after that step's d1 hit.
+            if draft2Prev >= 0 {
+                chainJudged += 1
+                if hit1Prev { hit1Judged += 1 }
+                if hit1Prev && draft2Prev == next { bothHit += 1 }
+            }
+            draft2Prev = draft2
+            hit1Prev = draft == next
         }
         lines.append(String(format: "  [%5d] in %6d out %6d logit %.6f%@  trunk %.0f (pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] head %.0f)%@",
                             pos, y, next, l[next], shadow ? String(format: " draft %6d %@", draft, draft == next ? "hit " : "miss") : "",
@@ -244,6 +273,13 @@ func runQwen38Generate(tokenFile: String, newTokens: Int, chunk: Int, greedy: Bo
         summary += String(format: "\n  shadow: accepted %d / %d = %.3f, draft first %.0f ms, steady median %.0f ms (mean %.0f)",
                           accepted, drafted, Double(accepted) / Double(max(drafted, 1)), mtpMs.first ?? .nan,
                           med(mSteady), mSteady.reduce(0, +) / Double(max(mSteady.count, 1)))
+        if chain == 2 {
+            let hit1 = hit1Judged   // d1 hits over the steps whose d2 has a following sample
+            let m2 = Array(mtp2Ms.dropFirst())
+            summary += String(format: "\n  chain 2: over %d steps with a next sample: d1 hit %d = %.3f, d1 and d2 hit %d = %.3f (d2 | d1 hit %.3f), draft2 first %.0f ms, steady median %.0f ms (mean %.0f)",
+                              chainJudged, hit1, Double(hit1) / Double(max(chainJudged, 1)), bothHit, Double(bothHit) / Double(max(chainJudged, 1)),
+                              Double(bothHit) / Double(max(hit1, 1)), mtp2Ms.first ?? .nan, med(m2), m2.reduce(0, +) / Double(max(m2.count, 1)))
+        }
     }
     print(summary)
     let body = "ids: " + generated.map(String.init).joined(separator: ",") + "\n" + lines.joined(separator: "\n") + "\n" + summary + "\n"
@@ -251,8 +287,13 @@ func runQwen38Generate(tokenFile: String, newTokens: Int, chunk: Int, greedy: Bo
     print("  written \(out)")
 }
 
+/// `--q38-mtp spec|reject|reject2` with `chain` drafts per step (docs/qwen38/10 §4, 14): the MTP head takes the
+/// previous step's accepted rows and y, drafts d1 (and with chain 2, d2 from [d1] and its own residual); the trunk
+/// verifies [y, d1 (, d2)] in one forward. Draft i is kept while the target's sample at row i - 1 equals it; with a
+/// kept drafts, a + 1 tokens are emitted and the recurrent state is rolled back to after row a. `reject` rejects
+/// every draft, `reject2` only d2: both must emit the `off` tokens.
 private func speculativeLoop(runner: Qwen38Runner, n: Int, lastLogits: [Float], pendingH h: [Float], newTokens: Int,
-                             greedy: Bool, seed: UInt64, forceReject: Bool, out: String) throws {
+                             greedy: Bool, seed: UInt64, chain: Int, mode: String, out: String) throws {
     let V = runner.vocab, W = runner.hc * runner.e
     let eos: Set<Int> = [248_046, 248_044]
     var sampler = Q38Sampler(greedy: greedy, seed: seed)
@@ -266,57 +307,64 @@ private func speculativeLoop(runner: Qwen38Runner, n: Int, lastLogits: [Float], 
     var lines: [String] = []
     var stepMs: [Double] = [], stepTokens: [Int] = []
     var draftMs: [Double] = [], verifyMs: [Double] = [], rollbackMs: [Double] = []
-    var accepted = 0, steps = 0
+    var acceptedAt = [Int](repeating: 0, count: chain)   // steps whose draft i (and every one before it) was kept
+    var steps = 0
     loop: while generated.count < newTokens && !eos.contains(y) {
         let tStep = Date()
         let pos0 = pos, draftT = mtpTokens.count + 1
         let hidden = mtpRows + pendingH
-        let dl = try hidden.withUnsafeBufferPointer {
+        var drafts = [Q38Sampler.argmax(try hidden.withUnsafeBufferPointer {
             try runner.mtpForward(tokens: mtpTokens + [y], startPos: pos - mtpTokens.count, hidden: $0.baseAddress!)
-        }
-        let d = Q38Sampler.argmax(dl)
-        let dMs = Date().timeIntervalSince(tStep) * 1000
+        })]
         let mp = runner.lastMTPProfile
+        var d2Ms = 0.0
+        if chain == 2 {
+            let t2 = Date()
+            let own = Array(UnsafeBufferPointer(start: runner.mtpHidden(row: draftT - 1), count: W))
+            drafts.append(Q38Sampler.argmax(try own.withUnsafeBufferPointer {
+                try runner.mtpForward(tokens: [drafts[0]], startPos: pos + 1, hidden: $0.baseAddress!)
+            }))
+            d2Ms = Date().timeIntervalSince(t2) * 1000
+        }
+        let dMs = Date().timeIntervalSince(tStep) * 1000
         let tVerify = Date()
-        runner.snapshotFirst = true
-        let logits = Array(try runner.forward(tokens: [y, d], startPos: pos, allLogits: true))
-        runner.snapshotFirst = false
+        runner.snapshotRows = chain
+        let logits = Array(try runner.forward(tokens: [y] + drafts, startPos: pos, allLogits: true))
+        runner.snapshotRows = 0
         let vMs = Date().timeIntervalSince(tVerify) * 1000
         let vp = runner.lastProfile
-        let h0 = Array(UnsafeBufferPointer(start: runner.hidden(row: 0), count: W))
-        let h1 = Array(UnsafeBufferPointer(start: runner.hidden(row: 1), count: W))
-        let t0 = logits.withUnsafeBufferPointer { sampler.sample(UnsafeBufferPointer(rebasing: $0[0..<V])) }
-        let logit0 = logits[t0]
-        var emitted = [t0]
-        var rMs = 0.0
-        let hit = t0 == d
-        if hit && !forceReject {
-            accepted += 1
-            if !eos.contains(d) && generated.count + 1 < newTokens {
-                let t1 = logits.withUnsafeBufferPointer { sampler.sample(UnsafeBufferPointer(rebasing: $0[V..<(2 * V)])) }
-                emitted.append(t1)
-            }
-            mtpTokens = [d]
-            mtpRows = h0
-            pendingH = h1
-            pos += 2
-        } else {
-            let tr = Date()
-            runner.rollbackToFirst()
-            rMs = Date().timeIntervalSince(tr) * 1000
-            mtpTokens = []
-            mtpRows = []
-            pendingH = h0
-            pos += 1
+        let rows = (0...chain).map { Array(UnsafeBufferPointer(start: runner.hidden(row: $0), count: W)) }
+        // Row i's sample is the token after [y, d1 .. d_i]; draft i + 1 is kept if it equals that sample.
+        var emitted: [Int] = []
+        var kept = 0
+        while true {
+            let t = logits.withUnsafeBufferPointer { sampler.sample(UnsafeBufferPointer(rebasing: $0[(kept * V)..<((kept + 1) * V)])) }
+            emitted.append(t)
+            let rejectHere = mode == "reject" || (mode == "reject2" && kept == 1)
+            guard kept < chain, t == drafts[kept], !rejectHere, !eos.contains(t), generated.count + emitted.count < newTokens else { break }
+            kept += 1
         }
+        for i in 0..<kept { acceptedAt[i] += 1 }
+        var rMs = 0.0
+        if kept < chain {
+            let tr = Date()
+            runner.rollback(keep: kept + 1)
+            rMs = Date().timeIntervalSince(tr) * 1000
+        }
+        // The MTP KV takes the kept drafts next step, each with the trunk residual of the position before it.
+        mtpTokens = Array(drafts.prefix(kept))
+        mtpRows = rows.prefix(kept).flatMap { $0 }
+        pendingH = rows[kept]
+        pos += kept + 1
         steps += 1
         draftMs.append(dMs); verifyMs.append(vMs); rollbackMs.append(rMs)
         stepMs.append(Date().timeIntervalSince(tStep) * 1000)
         stepTokens.append(emitted.count)
-        lines.append(String(format: "  [%5d] in %6d draft %6d %@ out %@ logit %.6f  step %.0f = draft %.0f (T=%d pre %.0f route %.0f routed %.0f head %.0f) + verify %.0f (pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] head %.0f) + rollback %.1f",
-                            pos0, y, d, hit ? "hit " : "miss", emitted.map(String.init).joined(separator: ",") as NSString, logit0,
+        lines.append(String(format: "  [%5d] in %6d draft %@ kept %d out %@ logit %.6f  step %.0f = draft %.0f (T=%d pre %.0f route %.0f routed %.0f head %.0f; d2 %.0f) + verify %.0f (pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] head %.0f) + rollback %.1f",
+                            pos0, y, drafts.map(String.init).joined(separator: ",") as NSString, kept,
+                            emitted.map(String.init).joined(separator: ",") as NSString, logits[emitted[0]],
                             stepMs.last!, dMs, draftT, mp.preRouter * 1000, mp.route * 1000,
-                            mp.routed * 1000, mp.head * 1000, vMs, vp.preRouter * 1000, vp.preGPU * 1000, vp.route * 1000,
+                            mp.routed * 1000, mp.head * 1000, d2Ms, vMs, vp.preRouter * 1000, vp.preGPU * 1000, vp.route * 1000,
                             vp.routed * 1000, vp.routedGPU * 1000, vp.head * 1000, rMs) + routeDetail(vp))
         print(lines.last!)
         for t in emitted {
@@ -327,9 +375,10 @@ private func speculativeLoop(runner: Qwen38Runner, n: Int, lastLogits: [Float], 
     }
     func med(_ v: [Double]) -> Double { let s = v.sorted(); return s.isEmpty ? .nan : s[s.count / 2] }
     let steadyMs = stepMs.dropFirst().reduce(0, +), steadyTokens = stepTokens.dropFirst().reduce(0, +)
-    let summary = String(format: "  %@ %d steps, %d tokens: accepted %d / %d = %.3f, tokens/step %.2f; first step %.0f ms; steady %.2f tok/s (%d tokens in %.1f s); median step %.0f ms = draft %.0f + verify %.0f + rollback %.1f",
-                         (forceReject ? "reject" : "spec") as NSString, steps, stepTokens.reduce(0, +), accepted, steps,
-                         Double(accepted) / Double(max(steps, 1)), Double(stepTokens.reduce(0, +)) / Double(max(steps, 1)),
+    let accepted = acceptedAt.map { String(format: "%d = %.3f", $0, Double($0) / Double(max(steps, 1))) }.joined(separator: ", ")
+    let summary = String(format: "  %@ chain %d, %d steps, %d tokens: accepted by position %@, tokens/step %.2f; first step %.0f ms; steady %.2f tok/s (%d tokens in %.1f s); median step %.0f ms = draft %.0f + verify %.0f + rollback %.1f",
+                         mode as NSString, chain, steps, stepTokens.reduce(0, +), accepted as NSString,
+                         Double(stepTokens.reduce(0, +)) / Double(max(steps, 1)),
                          stepMs.first ?? .nan, 1000 * Double(steadyTokens) / max(steadyMs, 1e-9), steadyTokens, steadyMs / 1000,
                          med(stepMs), med(draftMs), med(verifyMs), med(rollbackMs))
     print(summary)

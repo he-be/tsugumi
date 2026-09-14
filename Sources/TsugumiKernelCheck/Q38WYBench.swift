@@ -81,6 +81,10 @@ func runQ38WYBench(tokens T: Int, chunks: [Int], iterations: Int) throws {
         enc.setBuffer(outA, offset: 0, index: 6)
         enc.setBytes(&gp, length: 16, index: 7)
         enc.setBytes(&cV, length: 4, index: 8)
+        var snapN: UInt32 = 0
+        enc.setBuffer(stateA, offset: 0, index: 9)
+        enc.setBytes(&snapN, length: 4, index: 10)
+        enc.setBuffer(stateA, offset: 0, index: 11)
         enc.dispatchThreadgroups(MTLSize(width: d, height: hv, depth: 1), threadsPerThreadgroup: MTLSize(width: 32, height: 1, depth: 1))
         enc.endEncoding()
         cb.commit()
