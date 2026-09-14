@@ -7,7 +7,8 @@ import Metal
 /// Written for the Qwen3.8-Flash-Next Q2 verification
 /// (`docs/investigations/QWEN38_FLASH_NEXT_VERIFY_PLAN.md`), which runs straight off
 /// the DS4-IQ2 GGUF rather than repacking 41 GiB into a `.moepack`. Only the
-/// GGML types that checkpoint and its PLE sidecar use have byte sizes here.
+/// GGML types that checkpoint and its PLE / down sidecars use have byte sizes here (the down sidecar keeps
+/// its 212 B Q2_K rows as I8 bytes, docs/qwen38/15 §2 W).
 public final class GGUFFile: @unchecked Sendable {
     public enum GGMLType: UInt32, Sendable {
         case f32 = 0
@@ -18,6 +19,7 @@ public final class GGUFFile: @unchecked Sendable {
         case q2_K = 10
         case q4_K = 12
         case iq2_xxs = 16
+        case i8 = 24
         case i64 = 27
         case bf16 = 30
         case mxfp4 = 39
@@ -26,6 +28,7 @@ public final class GGUFFile: @unchecked Sendable {
         public var blockLayout: (bytes: Int, elements: Int) {
             switch self {
             case .f32: return (4, 1)
+            case .i8: return (1, 1)
             case .f16, .bf16: return (2, 1)
             case .i64: return (8, 1)
             case .q4_0: return (18, 32)
@@ -265,12 +268,18 @@ public final class GGUFFile: @unchecked Sendable {
     /// this way at 6.2-6.6 GB/s on the M3 Pro, against 0.7 GB/s faulting them through the mapping and
     /// 1.0 GB/s after `F_RDADVISE` (`docs/qwen38/05-EXPERT-READ.md`).
     public func preadRanges(_ ranges: [(offset: Int, byteCount: Int)], threads: Int, blockBytes: Int = 16 << 20) {
-        var blocks: [(Int, Int)] = []
+        GGUFFile.preadRanges(ranges.map { (self, $0.offset, $0.byteCount) }, threads: threads, blockBytes: blockBytes)
+    }
+
+    /// `preadRanges` over ranges of several files (a GGUF and its sidecars) on one set of threads.
+    public static func preadRanges(_ ranges: [(file: GGUFFile, offset: Int, byteCount: Int)], threads: Int,
+                                   blockBytes: Int = 16 << 20) {
+        var blocks: [(Int32, Int, Int)] = []
         for r in ranges {
             var o = r.offset
-            let end = min(r.offset + r.byteCount, fileSize)
+            let end = min(r.offset + r.byteCount, r.file.fileSize)
             while o < end {
-                blocks.append((o, min(blockBytes, end - o)))
+                blocks.append((r.file.fd, o, min(blockBytes, end - o)))
                 o += blockBytes
             }
         }
@@ -281,7 +290,7 @@ public final class GGUFFile: @unchecked Sendable {
             defer { buffer.deallocate() }
             var i = lane
             while i < blocks.count {
-                var (o, left) = blocks[i]
+                var (fd, o, left) = blocks[i]
                 while left > 0 {
                     let r = pread(fd, buffer, left, off_t(o))
                     if r <= 0 { break }

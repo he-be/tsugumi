@@ -216,11 +216,12 @@ func runQ2GemmBench(ggufPath: String, routePath: String, group G: Int, iteration
                 enc2.useResource(dBuf, usage: .read)
                 enc2.setBuffer(partOffBuf, offset: 0, index: 1)
                 enc2.setBuffer(wDown, offset: 0, index: 2)
-                var sV = UInt32(actStride), cV = UInt32(F)
+                var sV = UInt32(actStride), cV = UInt32(F), rbV = UInt32(downRow)
                 enc2.setBytes(&dV, length: 4, index: 3)
                 enc2.setBytes(&sV, length: 4, index: 4)
                 enc2.setBytes(&cV, length: 4, index: 5)
                 enc2.setBytes(&firstSlot, length: 4, index: 6)
+                enc2.setBytes(&rbV, length: 4, index: 7)
                 enc2.dispatchThreads(MTLSize(width: F / 16, height: D, depth: n),
                                      threadsPerThreadgroup: MTLSize(width: 4, height: 64, depth: 1))
                 enc2.endEncoding()

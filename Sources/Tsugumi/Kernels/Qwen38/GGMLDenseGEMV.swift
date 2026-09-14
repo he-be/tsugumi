@@ -17,6 +17,9 @@ package final class GGMLDenseGEMV {
     private let f32: MTLComputePipelineState
     private let f16Chunk: MTLComputePipelineState
     private let f32Chunk: MTLComputePipelineState
+    private let bf16: MTLComputePipelineState
+    private let bf16Chunk: MTLComputePipelineState
+    private let bf16Dequant: MTLComputePipelineState
     private let q8Dequant: MTLComputePipelineState
     private let f16Dequant: MTLComputePipelineState
     /// Token count from which the dequant + sgemm path runs (`Q38_MPS_MIN_T`, 0 = never).
@@ -44,10 +47,13 @@ package final class GGMLDenseGEMV {
         f32Chunk = try pso("ggml_f32_gemv_chunk")
         q8Dequant = try pso("ggml_q8_0_dequant_f32")
         f16Dequant = try pso("ggml_f16_dequant_f32")
+        bf16 = try pso("ggml_bf16_gemv")
+        bf16Chunk = try pso("ggml_bf16_gemv_chunk")
+        bf16Dequant = try pso("ggml_bf16_dequant_f32")
     }
 
     package static func supports(_ type: GGUFFile.GGMLType) -> Bool {
-        type == .q8_0 || type == .f16 || type == .f32
+        type == .q8_0 || type == .f16 || type == .f32 || type == .bf16
     }
 
     /// `y[t] = W x[t]` for `t < tokens`: `x` holds `tokens * n` floats, `y` `tokens * m`.
@@ -71,6 +77,8 @@ package final class GGMLDenseGEMV {
         // rows (320) leave most lanes idle in the chunk form and keep the stride form.
         case .f16: pso = n >= 1024 ? f16Chunk : f16
         case .f32: pso = n >= 1024 ? f32Chunk : f32
+        // BF16 reads back the F32 bits exactly (docs/qwen38/15 §2 W-4), same forms as F32.
+        case .bf16: pso = n >= 1024 ? bf16Chunk : bf16
         default: preconditionFailure("GGMLDenseGEMV: unsupported type \(type)")
         }
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
@@ -96,7 +104,7 @@ package final class GGMLDenseGEMV {
                 scratch = device.makeBuffer(length: m * n * 4, options: .storageModePrivate)
             }
             let enc = commandBuffer.makeComputeCommandEncoder()!
-            enc.setComputePipelineState(type == .q8_0 ? q8Dequant : f16Dequant)
+            enc.setComputePipelineState(type == .q8_0 ? q8Dequant : type == .bf16 ? bf16Dequant : f16Dequant)
             enc.setBuffer(weights, offset: weightsOffset, index: 0)
             enc.setBuffer(scratch, offset: 0, index: 1)
             var nv = UInt32(n)

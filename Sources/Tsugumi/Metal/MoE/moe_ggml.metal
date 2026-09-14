@@ -45,10 +45,23 @@ struct block_q2_K {
     half dmin;
 };
 
+/// The last block of a Q2_K down row with its pad dropped (docs/qwen38/15 §2 W): a 640-wide row is
+/// padded to 768 = 3 blocks, and weights 128..255 of block 2 only ever meet zero acts, so the sidecar
+/// (`Scripts/qwen38/down_sidecar.py`) keeps scales[0..7], qs[0..31], d and dmin of that block, in that
+/// order — only the scales stay where `block_q2_K` has them, so read the rest through this type. A row is then
+/// (nb - 1) x `block_q2_K` + 1 x `block_q2_K_half` (212 B instead of 252); the kernels tell the two
+/// row shapes apart by `down_row_bytes`.
+struct block_q2_K_half {
+    uchar scales[QK_K/32];
+    uchar qs[QK_K/8];
+    half d;
+    half dmin;
+};
+
 /// Per-row byte counts of the two formats.
 struct GgmlExpertOffsets {
     uint gate_row_bytes;   // IQ2_XXS row over D inputs
-    uint down_row_bytes;   // Q2_K row over `act_stride` inputs
+    uint down_row_bytes;   // Q2_K row over `act_stride` inputs, or with a `block_q2_K_half` last block
 };
 
 /// Per slot, the buffers holding that expert's gate, up and down rows. They may be
@@ -277,6 +290,7 @@ kernel void moe_q2k_phase2_down_reduce(
         const short is = (8 * ir) / 16;
         const int nb = int(act_stride / QK_K);
         const uint rb = off.down_row_bytes;
+        const bool half_tail = rb < uint(nb) * sizeof(block_q2_K);
         for (uint k = 0; k < top_k; k++) {
             const uint pair = tok * top_k + k;
             const uint slot = pair_slot[pair];
@@ -285,6 +299,8 @@ kernel void moe_q2k_phase2_down_reduce(
                 (device const block_q2_K*)(routed.down[slot] + part_off[3 * slot + 2] + row0 * rb);
             device const float* y4 = acts + pair * act_stride + ix * QK_K + 128 * iq + 8 * ir;
             for (int ib = ix; ib < nb; ib += 4) {
+                const bool tail = half_tail && ib == nb - 1;
+                if (tail && iq == 1) break;   // weights 128..255 of the last block: dropped, and their acts are 0
                 float yl[32];
                 float4 sumy = {0.f, 0.f, 0.f, 0.f};
                 for (short i = 0; i < 8; ++i) {
@@ -293,9 +309,11 @@ kernel void moe_q2k_phase2_down_reduce(
                     yl[i + 16] = y4[i + 64]; sumy[2] += yl[i + 16];
                     yl[i + 24] = y4[i + 96]; sumy[3] += yl[i + 24];
                 }
-                device const uint8_t* sc = (device const uint8_t*)xb[ib].scales + 8 * iq + is;
-                device const uint16_t* qs = (device const uint16_t*)xb[ib].qs + 16 * iq + 4 * ir;
-                device const half* dh = &xb[ib].d;
+                device const block_q2_K_half* xh = (device const block_q2_K_half*)(xb + ib);
+                device const uint8_t* sc = tail ? xh->scales + is : (device const uint8_t*)xb[ib].scales + 8 * iq + is;
+                device const uint16_t* qs = tail ? (device const uint16_t*)xh->qs + 4 * ir
+                                                 : (device const uint16_t*)xb[ib].qs + 16 * iq + 4 * ir;
+                device const half* dh = tail ? &xh->d : &xb[ib].d;
                 for (short row = 0; row < GGML_ROWS_PER_GROUP && row0 + uint(row) < D; row++) {
                     float4 acc1 = {0.f, 0.f, 0.f, 0.f};
                     float4 acc2 = {0.f, 0.f, 0.f, 0.f};
@@ -373,7 +391,7 @@ kernel void moe_iq2xxs_dequant_gate_up_f32(
     }
 }
 
-/// Down rows of the G experts in slots first_slot.., first `cols` (<= stride) columns -> float32
+/// Down rows of the G experts in slots first_slot.., first `cols` (<= stride, <= 640 with a half last block) columns -> float32
 /// out[g][row][col]. Thread (16-weight sub-block, row, g). Q2_K as in `dequantize_row_q2_K`:
 /// sub-block s reads byte 32 * (s / 8) + 16 * (s % 2) + l at shift 2 * ((s % 8) / 2).
 kernel void moe_q2k_dequant_down_f32(
@@ -384,18 +402,23 @@ kernel void moe_q2k_dequant_down_f32(
     constant uint& stride [[buffer(4)]],
     constant uint& cols [[buffer(5)]],
     constant uint& first_slot [[buffer(6)]],
+    constant uint& row_bytes [[buffer(7)]],   // (stride / QK_K) x 84, or 84 less 40 with a `block_q2_K_half` last block
     uint3 pos [[thread_position_in_grid]]
 ) {
-    const uint row_bytes = (stride / QK_K) * sizeof(block_q2_K);
+    const uint nb = stride / QK_K;
     const uint slot = first_slot + pos.z;
     const uint p = pos.x * 16;
+    const uint ib = p / QK_K;
     device const block_q2_K* b = (device const block_q2_K*)(
-        routed.down[slot] + part_off[3 * slot + 2] + pos.y * row_bytes + (p / QK_K) * sizeof(block_q2_K));
+        routed.down[slot] + part_off[3 * slot + 2] + pos.y * row_bytes + ib * sizeof(block_q2_K));
+    const bool tail = ib == nb - 1 && row_bytes < nb * sizeof(block_q2_K);
+    device const block_q2_K_half* h = (device const block_q2_K_half*)b;
     const uint s = (p % QK_K) / 16;
-    const uchar sc = b->scales[s];
-    const float dl = float(b->d) * float(sc & 0xF);
-    const float ml = float(b->dmin) * float(sc >> 4);
-    device const uint8_t* q = b->qs + 32 * (s / 8) + 16 * (s % 2);
+    const uchar sc = tail ? h->scales[s] : b->scales[s];
+    device const half* dm = tail ? &h->d : &b->d;
+    const float dl = float(dm[0]) * float(sc & 0xF);
+    const float ml = float(dm[1]) * float(sc >> 4);
+    device const uint8_t* q = (tail ? h->qs : b->qs) + 32 * (s / 8) + 16 * (s % 2);
     const uint shift = 2 * ((s % 8) / 2);
     device float* o = out + (ulong(pos.z) * D + pos.y) * cols + p;
     const uint n = min(16u, cols - p);

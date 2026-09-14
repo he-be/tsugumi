@@ -41,6 +41,16 @@ package final class Qwen38Runner {
     package let maxBatch: Int
     private let file: GGUFFile
     private let pleFile: GGUFFile
+    /// `Q38_DOWN_SIDECAR` (default: `down/Qwen3.8-Flash-Next-Q2KDown640.gguf` next to the GGUF when it exists; `0` = off,
+    /// or a path): the trunk's Q2_K down rows with the pad of their last block dropped, 252 -> 212 B a row,
+    /// 1,489,920 -> 1,387,520 B an expert (`Scripts/qwen38/down_sidecar.py`, docs/qwen38/15 §2 W). The kernels read
+    /// either row shape bit-identically (`--q2-down-sidecar`); layers the sidecar lacks (the MTP block) stay on `file`.
+    private let downFile: GGUFFile?
+    /// `Q38_BF16_SIDECAR` (default: `bf16/Qwen3.8-Flash-Next-GatesBF16.gguf` when it exists; `0` = off, or a path):
+    /// `ffn_gate_inp`, `ffn_gate_inp_shexp`, `ssm_alpha` and `ssm_beta` as BF16, 279 -> 140 MiB of dense views. Every
+    /// element of those F32 tensors has its low 16 mantissa bits zero, so the BF16 kernels read the same float32
+    /// bits (`Scripts/qwen38/bf16_sidecar.py`, docs/qwen38/15 §2 W-4). `view` takes a tensor from here when present.
+    private let bf16File: GGUFFile?
     private let device: MTLDevice
     private let queue: MTLCommandQueue
     private let dense: GGMLDenseGEMV
@@ -239,6 +249,28 @@ package final class Qwen38Runner {
         let pleFile = try GGUFFile(url: ple)
         self.file = file
         self.pleFile = pleFile
+        /// The sidecar named by `key`: unset = `defaultPath` next to the GGUF if it exists, `0` = none, `1` = `defaultPath`
+        /// (must exist), anything else a path.
+        func sidecar(_ key: String, _ defaultPath: String) throws -> GGUFFile? {
+            let v = ProcessInfo.processInfo.environment[key] ?? ""
+            if v == "0" { return nil }
+            let fallback = gguf.deletingLastPathComponent().appendingPathComponent(defaultPath)
+            if v.isEmpty && !FileManager.default.fileExists(atPath: fallback.path) { return nil }
+            return try GGUFFile(url: v.isEmpty || v == "1" ? fallback : URL(fileURLWithPath: (v as NSString).expandingTildeInPath))
+        }
+        downFile = try sidecar("Q38_DOWN_SIDECAR", "down/Qwen3.8-Flash-Next-Q2KDown640.gguf")
+        if let side = downFile {
+            guard try side.value("tsugumi.down.row_bytes").int == 212, try side.value("tsugumi.down.logical_input").int == F,
+                  try side.value("tsugumi.down.physical_input").int == downIn else {
+                throw GGUFFile.Error.format("\(side.url.path): not a 640-input Q2_K down sidecar")
+            }
+        }
+        bf16File = try sidecar("Q38_BF16_SIDECAR", "bf16/Qwen3.8-Flash-Next-GatesBF16.gguf")
+        if let side = bf16File {
+            guard side.metadata["tsugumi.bf16.of_f32"] != nil, side.tensors.values.allSatisfy({ $0.type == .bf16 }) else {
+                throw GGUFFile.Error.format("\(side.url.path): not a BF16 gate sidecar")
+            }
+        }
         self.capacity = capacity
         self.maxBatch = max(maxBatch, 1)
         guard try file.value("general.architecture").string == "qwen4exp" else {
@@ -380,8 +412,9 @@ package final class Qwen38Runner {
 
     private func view(_ name: String) throws -> (tensor: GGUFFile.Tensor, buffer: MTLBuffer, offset: Int) {
         if let v = views[name] { return v }
-        let t = try file.tensor(name)
-        guard let (b, off) = file.noCopyBuffer(device: device, tensor: t) else {
+        let src = bf16File.flatMap { $0.tensors[name] != nil ? $0 : nil } ?? file
+        let t = try src.tensor(name)
+        guard let (b, off) = src.noCopyBuffer(device: device, tensor: t) else {
             throw GGUFFile.Error.format("no-copy view failed for \(name)")
         }
         let v = (t, b, off)
@@ -1128,22 +1161,18 @@ package final class Qwen38Runner {
         let tTopK = CFAbsoluteTimeGetCurrent()
         prof.routeTopK += tTopK - tStart
 
-        let gateT = try file.tensor(pre + "ffn_gate_exps.weight")
-        let upT = try file.tensor(pre + "ffn_up_exps.weight")
-        let downT = try file.tensor(pre + "ffn_down_exps.weight")
-        let gateBytes = gateT.bytesPerRow * F
-        let downBytes = downT.bytesPerRow * e
+        let parts = try expertParts(pre)
+        let gateT = parts[0].tensor, downT = parts[2].tensor
         let po = partOffsets.contents().bindMemory(to: UInt32.self, capacity: 3 * nExperts)
         var used: [[MTLBuffer]] = [[], [], []]
-        let parts: [(GGUFFile.Tensor, Int)] = [(gateT, gateBytes), (upT, gateBytes), (downT, downBytes)]
         for (slot, ex) in slots.enumerated() {
-            for (part, (t, bytes)) in parts.enumerated() {
+            for (part, (pf, t, bytes)) in parts.enumerated() {
                 let key = (il * nExperts + ex) * 3 + part
                 let v: (buffer: MTLBuffer, offset: Int)
                 if let cached = expertParts[key] {
                     v = cached
                 } else {
-                    guard let made = file.noCopyBuffer(device: device, offset: t.offset + ex * bytes, byteCount: bytes) else {
+                    guard let made = pf.noCopyBuffer(device: device, offset: t.offset + ex * bytes, byteCount: bytes) else {
                         throw GGUFFile.Error.format("expert view failed: layer \(il) expert \(ex)")
                     }
                     v = made
@@ -1161,12 +1190,12 @@ package final class Qwen38Runner {
         let sorted = slots.sorted()
         if adviseExperts && Double(slots.count) >= adviseWholeFraction * Double(nExperts) {
             // Most of the layer is needed: one read-ahead per tensor.
-            for (t, _) in parts { file.adviseRead(offset: t.offset, byteCount: t.byteCount) }
+            for (pf, t, _) in parts { pf.adviseRead(offset: t.offset, byteCount: t.byteCount) }
             prof.adviseCalls += parts.count
         } else {
-        var runs: [(offset: Int, byteCount: Int)] = []
+        var runs: [(file: GGUFFile, offset: Int, byteCount: Int)] = []
         let preadThisBatch = adviseExperts && preadMinTokens > 0 && T >= preadMinTokens
-        for (t, bytes) in parts {
+        for (pf, t, bytes) in parts {
             var i = 0
             while i < sorted.count {
                 var j = i
@@ -1176,17 +1205,17 @@ package final class Qwen38Runner {
                 if countMisses {
                     let tm = CFAbsoluteTimeGetCurrent()
                     for ex in sorted[i]...sorted[j] where slotOf[ex] >= 0 {
-                        prof.missBytes += file.nonResidentBytes(offset: t.offset + ex * bytes, byteCount: bytes)
+                        prof.missBytes += pf.nonResidentBytes(offset: t.offset + ex * bytes, byteCount: bytes)
                     }
                     prof.missTime += CFAbsoluteTimeGetCurrent() - tm
                 }
-                if adviseExperts && !preadThisBatch { file.adviseRead(offset: fileOffset, byteCount: length) }
-                runs.append((fileOffset, length))
+                if adviseExperts && !preadThisBatch { pf.adviseRead(offset: fileOffset, byteCount: length) }
+                runs.append((pf, fileOffset, length))
                 prof.adviseCalls += 1
                 i = j + 1
             }
         }
-        if preadThisBatch { file.preadRanges(runs, threads: readThreads) }
+        if preadThisBatch { GGUFFile.preadRanges(runs, threads: readThreads) }
         }
         let tAdvise = CFAbsoluteTimeGetCurrent()
         prof.routeViews += tViews - tTopK
@@ -1199,7 +1228,7 @@ package final class Qwen38Runner {
             routedGemm(cb2, T: T, slots: slots.count, bigSlots: gemmBigSlots,
                        rowBytes: (UInt32(gateT.bytesPerRow), UInt32(downT.bytesPerRow)), pairSlot: ps, used: used,
                        dequant: mtpLayer ? (psoDeqQ4KGateUp, psoDeqMXFP4Down) : (psoDeqGateUp, psoDeqDown),
-                       downStride: downT.rowWidth)
+                       downStride: downT.type == .i8 ? downIn : downT.rowWidth)   // the sidecar's I8 rows are 212 bytes wide
             return cb2
         }
         var offsets = (UInt32(gateT.bytesPerRow), UInt32(downT.bytesPerRow))
@@ -1281,7 +1310,7 @@ package final class Qwen38Runner {
             fill[s] += 1
         }
         let rows = gemmRows!, gu = gemmGateUp!, wGU = gemmWGateUp!, wDown = gemmWDown!
-        var dV = UInt32(e), fV = UInt32(F), kV = UInt32(topK), strideV = UInt32(downStride)
+        var dV = UInt32(e), fV = UInt32(F), kV = UInt32(topK), strideV = UInt32(downStride), downRowV = rowBytes.1
         func matrix(_ b: MTLBuffer, _ offset: Int, _ r: Int, _ c: Int, rowBytes: Int? = nil) -> MPSMatrix {
             MPSMatrix(buffer: b, offset: offset,
                       descriptor: MPSMatrixDescriptor(rows: r, columns: c, rowBytes: rowBytes ?? c * 4, dataType: .float32))
@@ -1321,6 +1350,7 @@ package final class Qwen38Runner {
                 enc.setBytes(&strideV, length: 4, index: 4)
                 enc.setBytes(&fV, length: 4, index: 5)
                 enc.setBytes(&firstSlot, length: 4, index: 6)
+                enc.setBytes(&downRowV, length: 4, index: 7)   // Q2_K: 252 B, or 212 with the pad dropped (MXFP4 ignores it)
                 enc.dispatchThreads(size(F / 16, e, n), threadsPerThreadgroup: size(4, 64))
                 enc.endEncoding()
                 for s in g0..<(g0 + n) {
@@ -1600,19 +1630,26 @@ package final class Qwen38Runner {
         return named
     }
 
+    /// The gate, up and down expert tensors of a layer with the file each is read from and its bytes per expert:
+    /// down from `downFile` when the sidecar has the layer.
+    private func expertParts(_ pre: String) throws -> [(file: GGUFFile, tensor: GGUFFile.Tensor, bytes: Int)] {
+        let gateT = try file.tensor(pre + "ffn_gate_exps.weight")
+        let upT = try file.tensor(pre + "ffn_up_exps.weight")
+        let downName = pre + "ffn_down_exps.weight"
+        let (downF, downT) = try downFile.flatMap { side in side.tensors[downName].map { (side, $0) } } ?? (file, file.tensor(downName))
+        return [(file, gateT, gateT.bytesPerRow * F), (file, upT, upT.bytesPerRow * F), (downF, downT, downT.bytesPerRow * e)]
+    }
+
     /// `F_RDADVISE` for the experts `named` of layer `il` (adjacent runs merged, as in `moeRouted`).
     private func advisePreview(il: Int, named: Set<Int>) throws {
-        let pre = "blk.\(il)."
-        let parts = [try file.tensor(pre + "ffn_gate_exps.weight"), try file.tensor(pre + "ffn_up_exps.weight"),
-                     try file.tensor(pre + "ffn_down_exps.weight")]
-        let bytes = [parts[0].bytesPerRow * F, parts[1].bytesPerRow * F, parts[2].bytesPerRow * e]
+        let parts = try expertParts("blk.\(il).")
         let sorted = named.sorted()
-        for (k, t) in parts.enumerated() {
+        for (pf, t, bytes) in parts {
             var i = 0
             while i < sorted.count {
                 var j = i
                 while j + 1 < sorted.count && sorted[j + 1] == sorted[j] + 1 { j += 1 }
-                file.adviseRead(offset: t.offset + sorted[i] * bytes[k], byteCount: (sorted[j] - sorted[i] + 1) * bytes[k])
+                pf.adviseRead(offset: t.offset + sorted[i] * bytes, byteCount: (sorted[j] - sorted[i] + 1) * bytes)
                 i = j + 1
             }
         }

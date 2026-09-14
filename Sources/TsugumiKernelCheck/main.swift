@@ -1742,6 +1742,27 @@ if let index = arguments.firstIndex(of: "--q38-wy-bench") {
     exit(0)
 }
 
+// `--bf16-gemv-check <gguf> <bf16 sidecar> [tokens,...]`: the BF16 gate sidecar against the F32 tensors through
+// GGMLDenseGEMV, byte for byte (BF16GemvCheck.swift, docs/qwen38/15 §2 W-4).
+if let index = arguments.firstIndex(of: "--bf16-gemv-check"), index + 2 < arguments.count {
+    let tokens = index + 3 < arguments.count ? arguments[index + 3].split(separator: ",").compactMap { Int($0) } : [1, 3, 32, 64]
+    exit(try runBF16GemvCheck(ggufPath: arguments[index + 1], sidecarPath: arguments[index + 2], tokens: tokens) ? 0 : 1)
+}
+
+// `--q2-down-sidecar <gguf> <down sidecar> <route .bin> [tokens,...] [--q2-down-save dir | --q2-down-against dir]`:
+// the pad-dropped Q2_K down rows against the GGUF's, byte for byte (Q2DownSidecarCheck.swift, docs/qwen38/15 §2 W-2).
+if let index = arguments.firstIndex(of: "--q2-down-sidecar"), index + 3 < arguments.count {
+    let tokens = index + 4 < arguments.count && !arguments[index + 4].hasPrefix("--")
+        ? arguments[index + 4].split(separator: ",").compactMap { Int($0) } : [1, 2, 32, 1024]
+    func opt(_ name: String) -> String? {
+        arguments.firstIndex(of: name).flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+    }
+    let passed = try runQ2DownSidecarCheck(ggufPath: arguments[index + 1], sidecarPath: arguments[index + 2],
+                                           routePath: arguments[index + 3], tokens: tokens,
+                                           save: opt("--q2-down-save"), against: opt("--q2-down-against"))
+    exit(passed ? 0 : 1)
+}
+
 // `--q2-gemm-bench <gguf> <route .bin> [group] [iterations] [tokens]`: one layer of routed experts, per-pair
 // kernels against dequantize + MPS sgemm (Q2GemmBench.swift, docs/qwen38/06).
 if let index = arguments.firstIndex(of: "--q2-gemm-bench"), index + 2 < arguments.count {

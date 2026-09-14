@@ -60,7 +60,7 @@ kernel void ggml_q8_0_gemv(
     }
 }
 
-#define GGML_FLOAT_GEMV(NAME, WTYPE)                                                     \
+#define GGML_FLOAT_GEMV(NAME, WTYPE, LOAD)                                               \
 kernel void NAME(                                                                        \
     device const WTYPE* W [[buffer(0)]],                                                 \
     device const float* xs [[buffer(1)]],                                                \
@@ -81,7 +81,7 @@ kernel void NAME(                                                               
         for (uint row = 0; row < rows; ++row) {                                          \
             device const WTYPE* w = W + (row0 + row) * N;                                \
             float acc = 0.f;                                                             \
-            for (uint i = tiisg; i < N; i += 32) acc += float(w[i]) * x[i];              \
+            for (uint i = tiisg; i < N; i += 32) acc += LOAD(w[i]) * x[i];               \
             sum[row] = acc;                                                              \
         }                                                                                \
     }                                                                                    \
@@ -94,8 +94,20 @@ kernel void NAME(                                                               
     }                                                                                    \
 }
 
-GGML_FLOAT_GEMV(ggml_f16_gemv, half)
-GGML_FLOAT_GEMV(ggml_f32_gemv, float)
+// BF16 (1 sign, 8 exponent, 7 mantissa bits) is float32 with the low 16 mantissa bits cut, so shifting the
+// bits back up gives the float32 bit for bit. The router, shared-expert gate and GDN alpha/beta sidecar
+// (`Scripts/qwen38/bf16_sidecar.py`, docs/qwen38/15 §2 W-4) holds F32 tensors whose low 16 bits are all zero.
+#define GGML_LOAD_HALF(v) float(v)
+#define GGML_LOAD_FLOAT(v) (v)
+static inline float ggml_bf16_to_f32(ushort v) {
+    const uint bits = uint(v) << 16;   // bit_cast is not in MSL 3.2: read the same thread-local bits as a float
+    return *(thread const float*)(&bits);
+}
+#define GGML_LOAD_BF16(v) ggml_bf16_to_f32(v)
+
+GGML_FLOAT_GEMV(ggml_f16_gemv, half, GGML_LOAD_HALF)
+GGML_FLOAT_GEMV(ggml_f32_gemv, float, GGML_LOAD_FLOAT)
+GGML_FLOAT_GEMV(ggml_bf16_gemv, ushort, GGML_LOAD_BF16)
 
 // The two Q8_0 forms below are kept for `--ggml-dense-bench` only: on the
 // decode shapes both were slower than `ggml_q8_0_gemv` (1.05-1.75x and
@@ -154,7 +166,7 @@ kernel void ggml_q8_0_gemv_rows(
 // F16 / F32 GEMV with the Q8_0 kernel's access pattern: the row is cut into
 // 32-element chunks and lane l reads chunks l, l+32, l+64, ... whole, instead
 // of elements l, l+32, ... one at a time. Same dispatch as GGML_FLOAT_GEMV.
-#define GGML_FLOAT_GEMV_CHUNK(NAME, WTYPE)                                               \
+#define GGML_FLOAT_GEMV_CHUNK(NAME, WTYPE, LOAD)                                         \
 kernel void NAME(                                                                        \
     device const WTYPE* W [[buffer(0)]],                                                 \
     device const float* xs [[buffer(1)]],                                                \
@@ -178,7 +190,7 @@ kernel void NAME(                                                               
             for (uint row = 0; row < rows; ++row) {                                      \
                 device const WTYPE* w = W + (row0 + row) * N + c * 32;                   \
                 float acc = 0.f;                                                         \
-                for (uint j = 0; j < 32; ++j) acc += float(w[j]) * xc[j];                \
+                for (uint j = 0; j < 32; ++j) acc += LOAD(w[j]) * xc[j];                 \
                 sum[row] += acc;                                                         \
             }                                                                            \
         }                                                                                \
@@ -192,8 +204,9 @@ kernel void NAME(                                                               
     }                                                                                    \
 }
 
-GGML_FLOAT_GEMV_CHUNK(ggml_f16_gemv_chunk, half)
-GGML_FLOAT_GEMV_CHUNK(ggml_f32_gemv_chunk, float)
+GGML_FLOAT_GEMV_CHUNK(ggml_f16_gemv_chunk, half, GGML_LOAD_HALF)
+GGML_FLOAT_GEMV_CHUNK(ggml_f32_gemv_chunk, float, GGML_LOAD_FLOAT)
+GGML_FLOAT_GEMV_CHUNK(ggml_bf16_gemv_chunk, ushort, GGML_LOAD_BF16)
 
 // Q8_0 rows [M, N] -> float32 [M][N], thread (block b, row r) writes 32 weights.
 // The batched path of `GGMLDenseGEMV` dequantizes a tensor this way and hands
@@ -222,4 +235,15 @@ kernel void ggml_f16_dequant_f32(
     const uint base = pos.y * N + pos.x * 32;
     const uint end = min(base + 32, pos.y * N + N);
     for (uint i = base; i < end; ++i) out[i] = float(W[i]);
+}
+
+kernel void ggml_bf16_dequant_f32(
+    device const ushort* W [[buffer(0)]],
+    device float* out [[buffer(1)]],
+    constant uint& N [[buffer(2)]],
+    uint2 pos [[thread_position_in_grid]]
+) {
+    const uint base = pos.y * N + pos.x * 32;
+    const uint end = min(base + 32, pos.y * N + N);
+    for (uint i = base; i < end; ++i) out[i] = GGML_LOAD_BF16(W[i]);
 }
