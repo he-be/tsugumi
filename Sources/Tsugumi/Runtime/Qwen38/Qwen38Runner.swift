@@ -63,7 +63,7 @@ package final class Qwen38Runner {
     private var R, xn, lo, gate, mixed, inj, blk, blkShared, rmsScale: MTLBuffer!
     private var qkv, conv, z, ga, gb, lo6144: MTLBuffer!
     private var qg, q, qgate, ao, iq: MTLBuffer!
-    private var routerLogits, shG, shU, shY, shGate: MTLBuffer!
+    private var routerLogits, previewLogits, shG, shU, shY, shGate: MTLBuffer!
     private var acts, routeW, pairSlot: MTLBuffer!
     private var pleEmb, pleKey, pleValue, pleKeyN, pleQuery, pleGateBuf, pleGated, pleNormed: MTLBuffer!
     private let pleHist: MTLBuffer
@@ -133,6 +133,10 @@ package final class Qwen38Runner {
         /// `gpuEndTime` to `waitUntilCompleted` returning.
         package var routedToKernel = 0.0, routedKernelToGPU = 0.0, routedAfterGPU = 0.0
         package var adviseCalls = 0
+        /// Router preview (`previewTopN`): distinct experts of layers 1..<48 that the previous layer's preview named,
+        /// all of them, and the preview's distinct experts.
+        package var previewHit = 0, previewActual = 0, previewNamed = 0
+        package var previewAdvise = 0.0
     }
     package private(set) var lastProfile = StepProfile()
     /// Checks only: commit the pre-router work in several buffers so `sections` can
@@ -180,6 +184,21 @@ package final class Qwen38Runner {
     /// token after a prefill pages the dense back in, +1.5 s), and it kept 5.4 GB wired through the prefill.
     package var denseResident = ProcessInfo.processInfo.environment["Q38_DENSE_RESIDENT"] == "1"
     private var denseSet: MTLResidencySet?
+    /// Tsugumi's decode shape (Gemma `RealForwardRunner`, Ornith `QwenForwardRunner`): the routed buffer is
+    /// committed without a wait and the next layer's pre-router buffer queued behind it, so one wait per layer
+    /// (on the router logits) absorbs the previous layer's routed work and the host encodes under its expert
+    /// page-in (`Q38_PIPELINE=0`: wait on each routed buffer).
+    package var pipeline = ProcessInfo.processInfo.environment["Q38_PIPELINE"] != "0"
+    /// The shared expert leaves the pre-router buffer: its own buffer is committed as soon as the host has the
+    /// top-10, so it runs on the GPU while the host advises and the expert pages come in (`Q38_SHARED_LATE=0`).
+    package var sharedLate = ProcessInfo.processInfo.environment["Q38_SHARED_LATE"] != "0"
+    /// Cross-layer router preview (Ornith `TF_QWEN_EXPERT_PREFETCH`, Gemma `mtp/29`): the pre-router buffer of layer L
+    /// also runs layer L+1's router on layer L's FFN input, and the host takes each row's top `previewTopN`
+    /// (`Q38_PREVIEW_N`, 0 = off). Exact routing is untouched; `previewAdvise` (`Q38_PREVIEW_ADVISE=1`) issues
+    /// `F_RDADVISE` for the named experts right after layer L's routed commit, so their pages come in under
+    /// layer L's routed work and layer L+1's pre-router. Pipeline, batches under 32 tokens only (`docs/qwen38/12`).
+    package var previewTopN = Int(ProcessInfo.processInfo.environment["Q38_PREVIEW_N"] ?? "") ?? 0
+    package var previewAdvise = ProcessInfo.processInfo.environment["Q38_PREVIEW_ADVISE"] == "1"
     private var denseSetCount = 0
 
     // MTP (blk.<nTrunk>, `docs/qwen38/10`).
@@ -332,7 +351,7 @@ package final class Qwen38Runner {
         z = buf(B * Hv * Dl); ga = buf(B * Hv); gb = buf(B * Hv); lo6144 = buf(B * Hv * Dl)
         qg = buf(B * 2 * H * D); q = buf(B * H * D); qgate = buf(B * H * D); ao = buf(B * H * D)
         iq = buf(B * idxHeads * idxD)
-        routerLogits = buf(B * nExperts); shG = buf(B * F); shU = buf(B * F); shY = buf(B * e); shGate = buf(B)
+        routerLogits = buf(B * nExperts); previewLogits = buf(B * nExperts); shG = buf(B * F); shU = buf(B * F); shY = buf(B * e); shGate = buf(B)
         acts = buf(B * topK * downIn); routeW = buf(B * topK); pairSlot = buf(B * topK)
         pleEmb = buf(B * e); pleKey = buf(B * hc * e); pleValue = buf(B * e); pleKeyN = buf(B * hc * e)
         pleQuery = buf(B * hc * e); pleGateBuf = buf(B * hc); pleGated = buf(B * hc * e); pleNormed = buf(B * hc * e)
@@ -1025,7 +1044,10 @@ package final class Qwen38Runner {
     }
 
     /// Routed + shared experts for the T mixed inputs already in `mixed`; result in `blk`.
-    private func moeRouted(il: Int, T: Int, prof: inout StepProfile) throws -> MTLCommandBuffer {
+    /// `sharedCommitted`: the shared expert is not in the pre-router buffer; `commitShared` queues it (into
+    /// `blkShared`) right after the top-10, ahead of the views and the advise.
+    private func moeRouted(il: Int, T: Int, prof: inout StepProfile, sharedCommitted: Bool = false,
+                           previewed: Set<Int>? = nil) throws -> MTLCommandBuffer {
         let pre = "blk.\(il)."
         let tStart = CFAbsoluteTimeGetCurrent()
         // Host top-10 per token (ds4 reference: softmax over all, lowest index wins ties, renormalize).
@@ -1086,6 +1108,12 @@ package final class Qwen38Runner {
             experts.withUnsafeBytes { data.append(contentsOf: $0) }
             data.append(UnsafeBufferPointer(start: w, count: T * topK))
             try data.write(to: URL(fileURLWithPath: "\(prefix)-l\(il).bin"))
+        }
+        if sharedCommitted { try commitShared(pre: pre, T: T) }
+        if let named = previewed {
+            prof.previewActual += slots.count
+            prof.previewNamed += named.count
+            prof.previewHit += slots.reduce(0) { $0 + (named.contains($1) ? 1 : 0) }
         }
         let tTopK = CFAbsoluteTimeGetCurrent()
         prof.routeTopK += tTopK - tStart
@@ -1155,14 +1183,7 @@ package final class Qwen38Runner {
 
         let cb2 = queue.makeCommandBuffer()!
         // Shared expert (already computed into shY / shGate by the pre-router buffer).
-        run(cb2, psoAddScaled, size(T * e)) { enc in
-            enc.setBuffer(blkShared, offset: 0, index: 0)
-            enc.setBuffer(shY, offset: 0, index: 1)
-            enc.setBuffer(shGate, offset: 0, index: 2)
-            var op = UInt32(2), n = UInt32(e)
-            enc.setBytes(&op, length: 4, index: 3)
-            enc.setBytes(&n, length: 4, index: 4)
-        }
+        if !sharedCommitted { encodeSharedSum(cb2, T: T) }
         if gemm {
             routedGemm(cb2, T: T, slots: slots.count, bigSlots: gemmBigSlots,
                        rowBytes: (UInt32(gateT.bytesPerRow), UInt32(downT.bytesPerRow)), pairSlot: ps, used: used,
@@ -1522,6 +1543,69 @@ package final class Qwen38Runner {
 
     /// Shared expert into `shY` / `shGate` and the router logits, from `mixed`.
     private func sharedAndRouter(_ cb: MTLCommandBuffer, pre: String, T: Int) throws {
+        try shared(cb, pre: pre, T: T)
+        try gemv(cb, pre + "ffn_gate_inp.weight", x: mixed, y: routerLogits, tokens: T)
+    }
+
+    /// `blkShared` = sigmoid(`shGate`) * `shY`.
+    private func encodeSharedSum(_ cb: MTLCommandBuffer, T: Int) {
+        run(cb, psoAddScaled, size(T * e)) { enc in
+            enc.setBuffer(blkShared, offset: 0, index: 0)
+            enc.setBuffer(shY, offset: 0, index: 1)
+            enc.setBuffer(shGate, offset: 0, index: 2)
+            var op = UInt32(2), n = UInt32(e)
+            enc.setBytes(&op, length: 4, index: 3)
+            enc.setBytes(&n, length: 4, index: 4)
+        }
+    }
+
+    /// The shared expert in its own buffer, committed without a wait (`sharedLate`).
+    private func commitShared(pre: String, T: Int) throws {
+        let cb = queue.makeCommandBuffer()!
+        try shared(cb, pre: pre, T: T)
+        encodeSharedSum(cb, T: T)
+        cb.commit()
+    }
+
+    /// Each row's top `n` of `previewLogits` (lowest index first on ties), as one set.
+    private func previewExperts(T: Int, n: Int) -> Set<Int> {
+        let lg = previewLogits.contents().bindMemory(to: Float.self, capacity: T * nExperts)
+        var named = Set<Int>()
+        for t in 0..<T {
+            let row = lg + t * nExperts
+            var top: [(Float, Int)] = []
+            for i in 0..<nExperts {
+                let v = row[i]
+                if top.count == n, v <= top[n - 1].0 { continue }
+                var at = top.count
+                while at > 0 && top[at - 1].0 < v { at -= 1 }
+                top.insert((v, i), at: at)
+                if top.count > n { top.removeLast() }
+            }
+            for (_, i) in top { named.insert(i) }
+        }
+        return named
+    }
+
+    /// `F_RDADVISE` for the experts `named` of layer `il` (adjacent runs merged, as in `moeRouted`).
+    private func advisePreview(il: Int, named: Set<Int>) throws {
+        let pre = "blk.\(il)."
+        let parts = [try file.tensor(pre + "ffn_gate_exps.weight"), try file.tensor(pre + "ffn_up_exps.weight"),
+                     try file.tensor(pre + "ffn_down_exps.weight")]
+        let bytes = [parts[0].bytesPerRow * F, parts[1].bytesPerRow * F, parts[2].bytesPerRow * e]
+        let sorted = named.sorted()
+        for (k, t) in parts.enumerated() {
+            var i = 0
+            while i < sorted.count {
+                var j = i
+                while j + 1 < sorted.count && sorted[j + 1] == sorted[j] + 1 { j += 1 }
+                file.adviseRead(offset: t.offset + sorted[i] * bytes[k], byteCount: (sorted[j] - sorted[i] + 1) * bytes[k])
+                i = j + 1
+            }
+        }
+    }
+
+    private func shared(_ cb: MTLCommandBuffer, pre: String, T: Int) throws {
         try gemv(cb, pre + "ffn_gate_shexp.weight", x: mixed, y: shG, tokens: T)
         try gemv(cb, pre + "ffn_up_shexp.weight", x: mixed, y: shU, tokens: T)
         run(cb, psoSiluMul, size(T * F)) { enc in
@@ -1530,7 +1614,6 @@ package final class Qwen38Runner {
         }
         try gemv(cb, pre + "ffn_down_shexp.weight", x: shG, y: shY, tokens: T)
         try gemv(cb, pre + "ffn_gate_inp_shexp.weight", x: mixed, y: shGate, tokens: T)
-        try gemv(cb, pre + "ffn_gate_inp.weight", x: mixed, y: routerLogits, tokens: T)
     }
 
     private func resizeBatch(T: Int) {
@@ -1696,6 +1779,23 @@ package final class Qwen38Runner {
         try pleRows(tokens: tokens)
         prof.ple = CFAbsoluteTimeGetCurrent() - tStep
 
+        // The last routed buffer and its host commit time; with `pipeline` a later wait has completed it.
+        var pendingRouted: (cb: MTLCommandBuffer, commit: CFTimeInterval)?
+        func settleRouted(waited: Bool) throws {
+            guard let p = pendingRouted else { return }
+            pendingRouted = nil
+            if !waited { p.cb.waitUntilCompleted() }
+            let hostDone = CACurrentMediaTime()
+            if let error = p.cb.error { throw error }
+            prof.routedGPU += p.cb.gpuEndTime - p.cb.gpuStartTime
+            prof.routedToKernel += p.cb.kernelStartTime - p.commit
+            prof.routedKernelToGPU += p.cb.gpuStartTime - p.cb.kernelStartTime
+            if !waited { prof.routedAfterGPU += hostDone - p.cb.gpuEndTime }
+        }
+        let late = pipeline && sharedLate
+        let preview = pipeline && previewTopN > 0 && T < 32   // decode and verify batches only
+        var previewed: Set<Int>?     // layer il's experts named by layer il-1's preview
+
         for il in 0..<nTrunk {
             let t0 = CFAbsoluteTimeGetCurrent()
             let pre = "blk.\(il)."
@@ -1722,29 +1822,47 @@ package final class Qwen38Runner {
             combine(cb, block: blk, T: T)
             try hcMix(cb, prefix: pre + "hc_ffn", inject: true, T: T)
             try section("hc_ffn")
-            try sharedAndRouter(cb, pre: pre, T: T)
+            if late {
+                try gemv(cb, pre + "ffn_gate_inp.weight", x: mixed, y: routerLogits, tokens: T)
+            } else {
+                try sharedAndRouter(cb, pre: pre, T: T)
+            }
+            if preview && il + 1 < nTrunk {
+                try gemv(cb, "blk.\(il + 1).ffn_gate_inp.weight", x: mixed, y: previewLogits, tokens: T)
+            }
             cb.commit()
             cb.waitUntilCompleted()
             if let error = cb.error { throw error }
+            try settleRouted(waited: true)
             let t1 = CFAbsoluteTimeGetCurrent()
             prof.preRouter += t1 - t0
             prof.preGPU += cb.gpuEndTime - cb.gpuStartTime
             if splitPreRouter { prof.sections["shexp+router", default: 0] += (cb.gpuEndTime - cb.gpuStartTime) * 1000 }
 
-            let cb2 = try moeRouted(il: il, T: T, prof: &prof)
+            let cb2 = try moeRouted(il: il, T: T, prof: &prof, sharedCommitted: late, previewed: previewed)
             combine(cb2, block: blk, T: T)
             let t2 = CFAbsoluteTimeGetCurrent()
             prof.route += t2 - t1
-            let hostCommit = CACurrentMediaTime()
+            pendingRouted = (cb2, CACurrentMediaTime())
             cb2.commit()
-            cb2.waitUntilCompleted()
-            let hostDone = CACurrentMediaTime()
-            if let error = cb2.error { throw error }
+            // With `pipeline` the next layer's wait (or the one below) completes it: `routed` is then only the
+            // commit, and its GPU and page-in time land in the next `preRouter`.
+            if !pipeline { try settleRouted(waited: false) }
             prof.routed += CFAbsoluteTimeGetCurrent() - t2
-            prof.routedGPU += cb2.gpuEndTime - cb2.gpuStartTime
-            prof.routedToKernel += cb2.kernelStartTime - hostCommit
-            prof.routedKernelToGPU += cb2.gpuStartTime - cb2.kernelStartTime
-            prof.routedAfterGPU += hostDone - cb2.gpuEndTime
+            if preview && il + 1 < nTrunk {
+                let tp = CFAbsoluteTimeGetCurrent()
+                let named = previewExperts(T: T, n: previewTopN)
+                if previewAdvise { try advisePreview(il: il + 1, named: named) }
+                previewed = named
+                prof.previewAdvise += CFAbsoluteTimeGetCurrent() - tp
+            }
+        }
+        if let p = pendingRouted {
+            // The host reads `R` below.
+            let t3 = CFAbsoluteTimeGetCurrent()
+            p.cb.waitUntilCompleted()
+            try settleRouted(waited: true)
+            prof.routed += CFAbsoluteTimeGetCurrent() - t3
         }
 
         let tHead = CFAbsoluteTimeGetCurrent()

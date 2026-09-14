@@ -68,6 +68,8 @@ func routeDetail(_ p: Qwen38Runner.StepProfile) -> String {
            p.routeTopK * 1000, p.routeViews * 1000, (p.routeAdvise - p.missTime) * 1000, p.missTime * 1000, p.adviseCalls,
            p.routedToKernel * 1000, p.routedKernelToGPU * 1000, p.routedGPU * 1000, p.routedAfterGPU * 1000,
            p.distinctExperts, Double(p.missBytes) / 1e6)
+        + (p.previewActual > 0 ? String(format: " | preview hit %d/%d named %d host %.1f",
+                                        p.previewHit, p.previewActual, p.previewNamed, p.previewAdvise * 1000) : "")
 }
 
 /// Host sampler for the generation checks. `greedy`: argmax (lowest id on ties). `instruct`: the official non-thinking
