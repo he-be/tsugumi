@@ -133,8 +133,9 @@ struct Qwen38ToolLoopPromptTests {
             Step(label: "t1r2", request: request(history: [], prompt: q1, continuation: t1r2Continuation,
                                                  choice: .function(name: "fetch_page")),
                  generated: written([fetch], prose: prose)),
+            // The round budget is spent here: `none` keeps the declarations and forbids a call.
             Step(label: "t1r3", request: request(history: [], prompt: q1, continuation: t1r3Continuation,
-                                                 choice: .auto),
+                                                 choice: .none),
                  generated: answer1),
             Step(label: "t2r1", request: request(history: turn1, prompt: q2, continuation: [], choice: .auto),
                  generated: written([page])),
@@ -192,6 +193,17 @@ struct Qwen38ToolLoopPromptTests {
             let fresh = FileManager.default.temporaryDirectory.appendingPathComponent("qwen38-tool-loop-spec.json")
             try current.write(to: fresh)
             Issue.record("spec changed: new one at \(fresh.path); copy it to \(committedURL.path) and run Scripts/qwen38/tool_loop_fixture.py")
+        }
+    }
+
+    /// The request past the round budget declares the same tools (the prompt's head is unchanged) and leaves nothing
+    /// for the grammar or the decoder to call.
+    @Test("tool_choice none keeps the declarations and calls nothing")
+    func noneKeepsTheDeclarations() throws {
+        for step in try Self.steps() {
+            let validated = try RealInferenceSession.validatedChatRequest(for: step.request, kind: .qwen38)
+            #expect(validated.tools.map(\.name) == step.request.tools.map(\.name))
+            #expect(validated.callableTools.isEmpty == (step.request.toolChoice == .none), "\(step.label)")
         }
     }
 

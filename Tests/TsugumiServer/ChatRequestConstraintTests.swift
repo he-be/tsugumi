@@ -42,14 +42,17 @@ struct ChatRequestConstraintTests {
 
     // MARK: - GEN-4 / DEV-17: the four shapes of tool_choice
 
-    @Test("GEN-4: auto is the default and none still hides the tools")
+    @Test("GEN-4: auto is the default and none declares the tools but calls none")
     func GEN_4_tool_choice_auto_and_none() throws {
-        #expect(try Self.parse(Self.declaredTools).toolChoice == .auto)
+        let auto = try Self.parse(Self.declaredTools)
+        #expect(auto.toolChoice == .auto)
+        #expect(auto.callableTools.map(\.name) == ["lookup"])
         let none = try Self.parse(Self.declaredTools, #""tool_choice":"none""#)
         #expect(none.toolChoice == .none)
-        // `none` means the model may not call a tool, which this template
-        // expresses by not being told the tools exist.
-        #expect(none.tools.isEmpty)
+        // The declarations stay in the prompt (the reference renders them for
+        // every choice); only the grammar and the decoder see no tools.
+        #expect(none.tools.map(\.name) == ["lookup"])
+        #expect(none.callableTools.isEmpty)
     }
 
     @Test("GEN-4: required reaches the request instead of a 501")

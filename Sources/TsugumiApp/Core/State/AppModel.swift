@@ -1440,9 +1440,11 @@ public final class AppModel {
             request = try makeRequest(
                 continuation: chat.outputContinuationTurns,
                 systemPrompt: activeSystemPrompt,
-                // Past the round budget the tools are withdrawn: the model
-                // has to answer with what it has.
-                tools: exhausted ? [] : policy.tools,
+                // Past the round budget the model has to answer with what it
+                // has. The declarations stay (they head the prompt, so
+                // dropping them re-prefills everything); `none` is what stops
+                // a call.
+                tools: policy.tools,
                 toolChoice: exhausted ? .none : policy.choice,
                 prompt: chat.outputPromptAsSent,
                 imagePaths: chat.outputImagePaths,

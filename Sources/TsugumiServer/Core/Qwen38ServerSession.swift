@@ -263,13 +263,13 @@ public actor Qwen38ServerSession: ServerInferenceBackend {
 
         let startsInsideReasoning = QwenStructuredAssistantDecoder
             .promptEndsInsideReasoning(promptIDs, tokenizer: tokenizer)
-        let decoder = request.tools.isEmpty
+        let decoder = request.callableTools.isEmpty
             ? nil
             : QwenStructuredAssistantDecoder(tokenizer: tokenizer,
-                                             tools: request.tools,
+                                             tools: request.callableTools,
                                              emitsReasoning: true,
                                              startsInReasoning: startsInsideReasoning)
-        var splitter = request.tools.isEmpty
+        var splitter = request.callableTools.isEmpty
             ? QwenReasoningSplitter(tokenizer: tokenizer,
                                     startsInsideReasoning: startsInsideReasoning)
             : nil
@@ -335,7 +335,7 @@ public actor Qwen38ServerSession: ServerInferenceBackend {
                 greedy: greedy,
                 seed: UInt64.random(in: 1...UInt64.max),
                 checkpointsAt: request.cachePrompt ? wanted : [],
-                checkpointBefore: request.cachePrompt && !request.tools.isEmpty ? [tokenizer.toolCallStartID] : [],
+                checkpointBefore: request.cachePrompt && !request.callableTools.isEmpty ? [tokenizer.toolCallStartID] : [],
                 shouldStop: { shouldStop || Task.isCancelled },
                 onPrefill: { done, total in onPrefill?(done, total) },
                 onCheckpoint: { taken.append($0) },

@@ -29,6 +29,8 @@ struct Options {
     var repeats = 1
     var network = AppNetworkMode.online
     var context: Int?
+    /// Overrides the saved page text limit for this run only (the settings file is not written).
+    var pageCharacters: Int?
 
     init(_ arguments: [String]) {
         var iterator = arguments.dropFirst().makeIterator()
@@ -42,6 +44,7 @@ struct Options {
             case "--repeats": repeats = Int(value) ?? 1
             case "--network": network = AppNetworkMode(rawValue: value) ?? .online
             case "--context": context = Int(value)
+            case "--page-chars": pageCharacters = Int(value)
             default:
                 FileHandle.standardError.write(Data("unknown flag \(flag)\n".utf8))
                 exit(2)
@@ -178,6 +181,9 @@ func runCheck() async -> Int32 {
                          webSearchConfigurationURL: WebSearchConfigurationStore.defaultFileURL,
                          personaURL: AppPersonaStore.defaultFileURL)
     if let context = options.context { model.maxContextTokens = context }
+    if let pageCharacters = options.pageCharacters {
+        model.webSearchConfiguration.pageCharacterLimit = pageCharacters
+    }
     model.networkMode = options.network
     logLine("model \(model.selectedModelKind.rawValue) context=\(model.maxContextTokens) mtp=\(model.runtimeOptions.mtpEnabled) "
         + "thinking=\(model.thinkingEnabled) network=\(model.effectiveNetworkMode.rawValue) "

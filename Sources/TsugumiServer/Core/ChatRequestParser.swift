@@ -89,13 +89,14 @@ public enum ChatRequestParser {
                                   param: "messages")
         let validated = try ChatMessageValidator.validateMessages(messages,
                                                                   imagePolicy: imagePolicy)
-        // `tool_choice: none` means the model may not call a tool, which the
-        // template expresses by not being told the tools exist.
-        let declaredTools = toolChoice == .none
-            ? []
-            : try decode([OpenAITool].self,
-                         from: request["tools"] ?? .array([]),
-                         param: "tools")
+        // `tool_choice: none` still declares the tools: the declarations sit at
+        // the head of the prompt, so dropping them for one request would throw
+        // the whole prompt cache away (docs/qwen38/21). Not calling is the
+        // grammar's and the decoder's side (`callableTools`), as in the
+        // reference implementation, which renders `tools` for every choice.
+        let declaredTools = try decode([OpenAITool].self,
+                                       from: request["tools"] ?? .array([]),
+                                       param: "tools")
         let validatedTools = try declaredTools.map(ChatMessageValidator.validateTool)
         let tools = validatedTools.map(\.definition)
         try Self.checkConstraintsAreSatisfiable(toolChoice: toolChoice,

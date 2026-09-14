@@ -224,6 +224,7 @@ public struct ValidatedChatRequest: Sendable {
     /// parts are *not* in here — rendering goes through `vision.messages`
     /// instead, and the prompt cache (which keys on this array) is off.
     public let messages: [GFTokenizer.Message]
+    /// Every declared tool, rendered into the prompt whatever `toolChoice` is.
     public let tools: [GFTokenizer.FunctionDefinition]
     /// GEN-2 / DEV-16: what the declared tool schemas lost on the way into the
     /// prompt, in declaration order. Never an error — the server logs these.
@@ -244,6 +245,13 @@ public struct ValidatedChatRequest: Sendable {
     /// template answers (`ServerModelSession`): a request that declares tools
     /// goes through the tool-calling template, which pins thinking off.
     public let enableThinking: Bool
+
+    /// GEN-4: the tools the model may call — none under `tool_choice: none`.
+    /// The grammar, the tool-call decoder and the checkpoint before a call
+    /// read this; the template reads `tools`.
+    public var callableTools: [GFTokenizer.FunctionDefinition] {
+        toolChoice == .none ? [] : tools
+    }
 
     /// The conversation as the tool template takes it: the roles and tool
     /// metadata of `messages`, with the bodies of `vision.messages` when the

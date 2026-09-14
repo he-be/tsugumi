@@ -221,7 +221,7 @@ import Testing
     }
 
     @MainActor
-    @Test func exhaustedRoundsWithdrawTheTools() async throws {
+    @Test func exhaustedRoundsForbidCallsButKeepTheDeclarations() async throws {
         let calls = (1...3).map {
             AppToolCall(id: "c\($0)", name: "web_search", argumentsJSON: #"{"query":"q\#($0)"}"#)
         }
@@ -240,12 +240,16 @@ import Testing
         #expect(client.requests.count == 4)
         #expect(client.requests[0].toolChoice == .function(name: "web_search"))
         #expect(client.requests[1].toolChoice == .function(name: "fetch_page"))
-        // Two rounds used: the third request withdraws the tools.
-        #expect(client.requests[2].tools.isEmpty)
+        // Two rounds used: the third request forbids a call but keeps the
+        // declarations, which head the prompt the cache already holds.
+        let declared = client.requests[0].tools.map(\.name)
+        #expect(!declared.isEmpty)
+        #expect(client.requests[2].tools.map(\.name) == declared)
         #expect(client.requests[2].toolChoice == .none)
         // The script still emitted a call (a model can), and the loop ran it
         // rather than dropping it on the floor; the fourth request answers.
-        #expect(client.requests[3].tools.isEmpty)
+        #expect(client.requests[3].tools.map(\.name) == declared)
+        #expect(client.requests[3].toolChoice == .none)
         #expect(model.outputResponsePlainText == "done")
         #expect(model.error == nil)
     }

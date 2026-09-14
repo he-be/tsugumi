@@ -872,7 +872,7 @@ public actor ServerModelSession: ServerInferenceBackend {
         let decoder = needsToolTemplate || thinking
             ? StructuredAssistantDecoder(
                 tokenizer: tokenizer,
-                allowedTools: Set(request.tools.map(\.name)),
+                allowedTools: Set(request.callableTools.map(\.name)),
                 emitsReasoning: thinking)
             : nil
         var stopMatcher = StreamingStopMatcher(stops: request.generationConfig.stopStrings)

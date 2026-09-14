@@ -96,6 +96,8 @@ AppModel・実行器 (Serper → 自前 fetch / Jina、ローカル Wikipedia)�
 
 ## 4. 残り
 
+**続きの整理は [21](21-TOOL-LOOP-TRIAGE.md)** (同じ URL の再取得は `fetch_page` の打ち切りに続きが無いこと、上限の cache 外れは server の `tool_choice: none` の扱い)。
+
 - §0-4 の 2 つの落ち方 (文脈超過、上限でツールを外すと cache が外れる)。後者は Gemma と共有のアプリの経路 (WEB_SEARCH §2 の「宣言は毎回全部にする」に上限の分岐だけが反していた)。
 - ツール結果を毎回数千トークン読む必要があるか (ページの先頭 6,000 字を中身を選ばず渡している) はユーザーから問いが出ている。未着手。
 - smoke の Swapouts +7,276 (文脈 10K 台で decode の後に prefill する形) は 1 回だけで、原因は未確認。

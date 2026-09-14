@@ -377,13 +377,13 @@ public actor QwenServerSession: ServerInferenceBackend {
         // cannot drop it either, so this keeps the two arms telling the same
         // story. Where the text ends up is RSN-3's question, and
         // `ServerReasoningPlan.route` is the one place that answers it.
-        let decoder = request.tools.isEmpty
+        let decoder = request.callableTools.isEmpty
             ? nil
             : QwenStructuredAssistantDecoder(tokenizer: tokenizer,
-                                             tools: request.tools,
+                                             tools: request.callableTools,
                                              emitsReasoning: true,
                                              startsInReasoning: startsInsideReasoning)
-        var splitter = request.tools.isEmpty
+        var splitter = request.callableTools.isEmpty
             ? QwenReasoningSplitter(tokenizer: tokenizer,
                                     startsInsideReasoning: startsInsideReasoning)
             : nil
