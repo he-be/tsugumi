@@ -78,6 +78,54 @@ struct Qwen38PromptCacheTests {
         #expect(cache.decide(next, checkpoints: [3]).0 == .live(6))
     }
 
+    // `docs/qwen38/19`: the real split the app hit. The model generated `、` `前回` `答` (5205 247988 96517); rendering
+    // the answer back encodes `、` `前` `回答` (5205 95990 97913). Byte-level pieces from the checkpoint's tokenizer.json.
+    static let pieces: [Int32: String] = [
+        5205: "ãĢģ", 247988: "åīįåĽŀ", 96517: "çŃĶ", 95990: "åīį", 97913: "åĽŀçŃĶ",
+        172182: "ãģŁ", 393: " $", 87: "x", 1088: " \\", 20: "a", 21: "b", 7: "c",
+    ]
+    static let added: Set<Int32> = [99, 50, 51]
+    static func piece(_ id: Int32) -> String? { added.contains(id) ? nil : pieces[id] }
+
+    private static func afterSplitAnswer() -> Qwen38PromptCache {
+        var cache = Qwen38PromptCache()
+        cache.publish(prompt: prompt, generated: [20, 5205, 247988, 96517, 172182, 393, 87, 99], kvPosition: 13)
+        return cache
+    }
+
+    @Test("an answer re-rendered with a different split still continues from the live state")
+    func resplitAnswerIsLive() {
+        let cache = Self.afterSplitAnswer()
+        let rendered = Self.prompt + [20, 5205, 95990, 97913, 172182, 393, 87, 99, 7, 99, 50, 51]
+        #expect(cache.decide(rendered, checkpoints: [5]).0 == .restore(5))
+        let (aligned, spans) = cache.aligned(rendered, piece: Self.piece)
+        #expect(spans == 1)
+        #expect(aligned == Self.prompt + [20, 5205, 247988, 96517, 172182, 393, 87, 99, 7, 99, 50, 51])
+        #expect(cache.decide(aligned, checkpoints: [5]).0 == .live(13))
+    }
+
+    @Test("different bytes are not a re-split: the prompt is left as rendered")
+    func differentTextIsKept() {
+        let cache = Self.afterSplitAnswer()
+        // `前回` `ã` in place of `前回` `答`, and a trailing piece the answer did not have.
+        let changed = Self.prompt + [20, 5205, 247988, 172182, 172182, 393, 87, 99, 50, 51]
+        #expect(cache.aligned(changed, piece: Self.piece).tokens == changed)
+        let rendered = Self.prompt + [20, 5205, 95990, 97913, 172182, 1088, 87, 99, 50, 51]
+        let (aligned, spans) = cache.aligned(rendered, piece: Self.piece)
+        // The re-split before the difference is still taken; the rest stays rendered and the live state is passed over.
+        #expect(spans == 1)
+        #expect(aligned == Self.prompt + [20, 5205, 247988, 96517, 172182, 1088, 87, 99, 50, 51])
+        #expect(cache.decide(aligned, checkpoints: [5]).0 == .restore(5))
+    }
+
+    @Test("an added token is never re-split")
+    func addedTokensStay() {
+        var cache = Qwen38PromptCache()
+        cache.publish(prompt: [20, 99], generated: [21], kvPosition: 3)
+        let rendered: [Int32] = [20, 50, 21, 7]
+        #expect(cache.aligned(rendered, piece: Self.piece).tokens == rendered)
+    }
+
     @Test("cache_prompt false neither reads nor keeps anything")
     func optOut() {
         var cache = Self.afterFirstTurn()

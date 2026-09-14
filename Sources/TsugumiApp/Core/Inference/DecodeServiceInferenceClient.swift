@@ -231,6 +231,13 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
         let propertyListURL = URL(
             fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("\(label).plist")
+        // The service's own log (prompt cache decisions, failures) next to turn-metrics.jsonl, one launch's worth:
+        // with no path launchd sends it to /dev/null and a cache miss seen in the app cannot be traced.
+        let logURL = AppTurnMetricsLog.defaultFileURL.deletingLastPathComponent()
+            .appendingPathComponent("decode-service.log")
+        try? FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(),
+                                                 withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: logURL.path, contents: nil)
         let propertyList: [String: Any] = [
             "Label": label,
             "ProgramArguments": [
@@ -238,6 +245,7 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
                 "--socket", socketPath,
                 "--launch-label", label,
             ],
+            "StandardErrorPath": logURL.path,
             "RunAtLoad": true,
             "KeepAlive": false,
             "ProcessType": "Interactive",

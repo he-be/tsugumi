@@ -153,7 +153,14 @@ public actor Qwen38ServerSession: ServerInferenceBackend {
         onEvent: @escaping @Sendable (ServerInferenceEvent) -> Void
     ) async throws -> ServerCompletion {
         let request = prepared.request
-        let promptIDs = try prepared.promptIDs ?? renderPrompt(request)
+        let rendered = try prepared.promptIDs ?? renderPrompt(request)
+        // The history as the model generated it where the rendering only splits the same bytes differently.
+        let (promptIDs, resplit) = request.cachePrompt
+            ? promptCache.aligned(rendered, piece: { tokenizer.isAddedToken($0) ? nil : tokenizer.token(for: $0) })
+            : (rendered, 0)
+        if resplit > 0 {
+            ServerLog.promptCache("qwen38 resplit spans=\(resplit) rendered=\(rendered.count) prompt=\(promptIDs.count)")
+        }
         guard !promptIDs.isEmpty else {
             throw ServerRequestError.invalid(message: "the rendered prompt is empty",
                                              param: "messages",
@@ -216,6 +223,16 @@ public actor Qwen38ServerSession: ServerInferenceBackend {
             + "held=\(promptCache.tokens.count) take=\(wanted.filter { $0 > reused }) "
             + "checkpoints=\(checkpoints.keys.sorted())"
             + (restoreSeconds > 0 ? String(format: " restore_ms=%.0f", restoreSeconds * 1000) : ""))
+        if let live = promptCache.livePosition, agreed < live, agreed < promptIDs.count {
+            // The live state was passed over because the prompt leaves it before its end: show where.
+            let held = promptCache.tokens
+            let window = { (ids: [Int32]) -> String in
+                let slice = Array(ids[max(agreed - 6, 0)..<min(agreed + 6, ids.count)])
+                return "\(slice) \(String(reflecting: self.tokenizer.decode(slice, skipSpecialTokens: false)))"
+            }
+            ServerLog.promptCache("qwen38 diverged at=\(agreed) live=\(live) held=\(window(held)) "
+                + "prompt=\(window(promptIDs))")
+        }
         let promptSuffix = Array(promptIDs[reused...])
 
         let reasoning = ServerReasoningPlan(request: request,

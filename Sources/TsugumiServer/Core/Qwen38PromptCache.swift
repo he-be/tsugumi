@@ -21,6 +21,44 @@ struct Qwen38PromptCache: Equatable, Sendable {
         case miss
     }
 
+    /// The prompt with `tokens`' split wherever the two differ only in how the same bytes are cut into tokens.
+    ///
+    /// The model generates splits the tokenizer would not (`前回` + `答` where re-encoding the answer gives `前` +
+    /// `回答`), so the re-rendered history leaves `tokens` inside the answer. KV could be cut back to that point, the
+    /// recurrent state cannot: without this the request falls back to the checkpoint before the answer and pays the
+    /// whole answer again (`docs/qwen38/19`). `piece` is a token's byte-level string, nil for an added token — those
+    /// are never re-split, a different one is a different sequence. A span is matched within `window` tokens a side;
+    /// past the first span that is not a re-split, the prompt is left as rendered.
+    func aligned(_ prompt: [Int32], window: Int = 32, piece: (Int32) -> String?) -> (tokens: [Int32], spans: Int) {
+        let held = tokens
+        var i = 0, j = 0, spans = 0
+        var out: [Int32] = []
+        out.reserveCapacity(prompt.count)
+        scan: while i < held.count, j < prompt.count {
+            if held[i] == prompt[j] {
+                out.append(held[i]); i += 1; j += 1
+                continue
+            }
+            // Grow whichever side covers fewer bytes until both cover the same bytes, or they stop agreeing.
+            var a = i, b = j
+            var left: [Unicode.Scalar] = [], right: [Unicode.Scalar] = []
+            repeat {
+                if left.count <= right.count {
+                    guard a < held.count, a - i < window, let p = piece(held[a]) else { break scan }
+                    left.append(contentsOf: p.unicodeScalars); a += 1
+                } else {
+                    guard b < prompt.count, b - j < window, let p = piece(prompt[b]) else { break scan }
+                    right.append(contentsOf: p.unicodeScalars); b += 1
+                }
+                let shared = min(left.count, right.count)
+                guard left[..<shared] == right[..<shared] else { break scan }
+            } while left.count != right.count
+            out.append(contentsOf: held[i..<a]); i = a; j = b; spans += 1
+        }
+        guard spans > 0 else { return (prompt, 0) }
+        return (out + prompt[j...], spans)
+    }
+
     /// The newest position at or before the divergence that the live state or a checkpoint can be put back to, always
     /// leaving at least one prompt token to draw from; and how far the prompt agrees with `tokens`.
     func decide(_ prompt: [Int32], checkpoints: [Int], cachePrompt: Bool = true) -> (Decision, agreed: Int) {
