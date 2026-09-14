@@ -86,7 +86,7 @@ struct InspectorView: View {
         Section(L("Memory")) {
             LabeledContent(L("Context")) {
                 Picker(L("Context"), selection: $model.maxContextTokens) {
-                    ForEach(AppContextLengthOption.allCases) { option in
+                    ForEach(model.selectedModelKind.contextOptions) { option in
                         Text(option.menuLabel).tag(option.tokens)
                     }
                 }

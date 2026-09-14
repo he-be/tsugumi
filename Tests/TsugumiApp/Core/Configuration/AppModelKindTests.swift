@@ -20,10 +20,21 @@ import Testing
         #expect(AppModelKind.ornith.officialTopP == 0.95)
         #expect(AppModelKind.gemmaQATSym.officialTemperature == 1.0)
         #expect(AppModelKind.gemmaQATSym.officialTopK == 64)
-        // Both reach 128K.
-        for kind in AppModelKind.allCases {
+        // Gemma and Ornith reach 128K; 12K is Qwen3.8's alone.
+        for kind in [AppModelKind.gemmaQATSym, .ornith] {
             #expect(kind.contextOptions.contains(.oneTwentyEightK))
+            #expect(!kind.contextOptions.contains(.twelveK))
         }
+        // Qwen3.8: MTP n_max 1, thinking off, the non-thinking sampler pinned, 12K at most.
+        #expect(!AppModelKind.qwen38.supportsVision)
+        #expect(AppModelKind.qwen38.draftBlockSize == 2)
+        #expect(!AppModelKind.qwen38.thinkingDefault)
+        #expect(AppModelKind.qwen38.samplingIsLocked)
+        #expect(AppModelKind.qwen38.officialTemperature == 0.7)
+        #expect(AppModelKind.qwen38.officialTopK == 20)
+        #expect(AppModelKind.qwen38.officialTopP == 0.8)
+        #expect(AppModelKind.qwen38.contextOptions == [.fourK, .eightK, .twelveK])
+        #expect(AppModelKind.qwen38.archConfig == nil)
     }
 
     @Test func settingsDefaultsFollowTheKind() {
@@ -40,6 +51,12 @@ import Testing
         #expect(ornith.thinkingEnabled)
         #expect(ornith.mtpEnabled)
         #expect(ornith.contextTokens == 32_768)
+
+        let qwen38 = MacAppSettings.defaults(for: .qwen38)
+        #expect(qwen38.temperature == 0.7)
+        #expect(qwen38.topP == 0.8)
+        #expect(!qwen38.thinkingEnabled)
+        #expect(qwen38.contextTokens == 12_288)
     }
 
     @Test func probeReadsTheManifestFamily() throws {
@@ -63,6 +80,11 @@ import Testing
             manifest: "{\"arch\": {\"family\": \"qwen3_5_moe\"}}")
         defer { try? FileManager.default.removeItem(at: ornith) }
         #expect(AppModelKind.probe(modelDirectory: ornith) == .ornith)
+
+        let qwen38 = try makeDirectory(
+            manifest: "{\"arch\": {\"family\": \"qwen4exp\"}}")
+        defer { try? FileManager.default.removeItem(at: qwen38) }
+        #expect(AppModelKind.probe(modelDirectory: qwen38) == .qwen38)
 
         let unknown = try makeDirectory(
             manifest: "{\"arch\": {\"family\": \"someone-else\"}}")

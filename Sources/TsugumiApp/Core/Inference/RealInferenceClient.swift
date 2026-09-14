@@ -151,6 +151,7 @@ actor RealInferenceSession {
     enum Backend {
         case gemma(ServerModelSession)
         case ornith(QwenServerSession)
+        case qwen38(Qwen38ServerSession)
     }
 
     private var loadedKey: SessionLoadKey?
@@ -215,6 +216,15 @@ actor RealInferenceSession {
                         forModelDirectory: key.directory))
                 backend = .ornith(session)
                 loadedRuntimeOwnBytes = nil
+            case .qwen38:
+                // No runtime configuration: slots, prefill and the expert I/O are the runner's own
+                // (`Qwen38Runner`); the context is the load key's.
+                let session = try await Qwen38ServerSession.load(
+                    modelDirectory: key.directory,
+                    maxContext: key.maxContext,
+                    draftBlockSize: draftBlockSize)
+                backend = .qwen38(session)
+                loadedRuntimeOwnBytes = nil
             }
             try Task.checkCancellation()
 
@@ -257,6 +267,9 @@ actor RealInferenceSession {
             let sidecar = mtpSidecarDirectory(forModelDirectory: modelDirectory)
             let index = URL(fileURLWithPath: sidecar).appendingPathComponent("mtp_head.json")
             guard FileManager.default.fileExists(atPath: index.path) else { return 0 }
+            return kind.draftBlockSize
+        case .qwen38:
+            // The MTP block is part of the GGUF.
             return kind.draftBlockSize
         }
     }
@@ -350,6 +363,11 @@ actor RealInferenceSession {
                 completion = try await session.generate(
                     prepared, monitor: monitor, onPrefill: onPrefill, onEvent: onEvent)
             case .ornith(let session):
+                let prepared = try await session.prepare(validated)
+                progress.promptTokenCount = prepared.promptTokenCount
+                completion = try await session.generate(
+                    prepared, monitor: monitor, onPrefill: onPrefill, onEvent: onEvent)
+            case .qwen38(let session):
                 let prepared = try await session.prepare(validated)
                 progress.promptTokenCount = prepared.promptTokenCount
                 completion = try await session.generate(

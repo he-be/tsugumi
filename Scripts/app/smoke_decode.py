@@ -421,6 +421,16 @@ if __name__ == "__main__":
                              thinking=False, images=[sys.argv[2]],
                              max_new=64))
         session(installed_model("gemma4-qat-sym"), 8192, runs)
+    elif which == "qwen38":
+        # 運用点 (thinking off・12K・MTP n_max 1・英語) で 2 本。ディレクトリは
+        # scratch/Qwen3.8-Flash-Next-DS4-IQ2 (manifest が GGUF を指す、docs/qwen38/17)。
+        runs = [
+            dict(label="qwen38-plain", prompt="What is 7 times 8? Answer with the number only.",
+                 temperature=0.7, top_k=20, top_p=0.8, thinking=False, max_new=32),
+            dict(label="qwen38-code", prompt="Write a one-line Python expression that reverses a string s.",
+                 temperature=0.7, top_k=20, top_p=0.8, thinking=False, max_new=96),
+        ]
+        session(f"{MODEL_DIR}/Qwen3.8-Flash-Next-DS4-IQ2", 12288, runs)
     else:
         runs = [
             dict(label="ornith-think", prompt="1+1は?ひとことで。",

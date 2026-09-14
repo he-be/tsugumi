@@ -39,11 +39,23 @@ struct QwenGenerationPlan: Equatable, Sendable {
 
     var isConstrained: Bool { grammar != nil }
 
-    /// The official recommended sampler for `Ornith-1.5-35B-A3B`, and the only
-    /// one this server runs (`docs/qwen35moe/42-SAMPLING.md` §0 S1).
-    static let officialTemperature: Float = 0.6
-    static let officialTopP: Float = 0.95
-    static let officialTopK = 20
+    /// The official recommended sampler of a checkpoint, and the only one the
+    /// server runs for it.
+    struct OfficialSampler: Equatable, Sendable {
+        let temperature: Float
+        let topP: Float
+        let topK: Int
+
+        /// `Ornith-1.5-35B-A3B` (`docs/qwen35moe/42-SAMPLING.md` §0 S1).
+        static let ornith = OfficialSampler(temperature: 0.6, topP: 0.95, topK: 20)
+        /// Qwen3.8-Flash-Next's non-thinking settings, which `Qwen38Sampler`
+        /// runs (its presence penalty 1.5 has no field here and is not named).
+        static let qwen38 = OfficialSampler(temperature: 0.7, topP: 0.8, topK: 20)
+    }
+
+    static let officialTemperature: Float = OfficialSampler.ornith.temperature
+    static let officialTopP: Float = OfficialSampler.ornith.topP
+    static let officialTopK = OfficialSampler.ornith.topK
 
     /// The sampler the run will actually use, and the list of what it
     /// overrode.
@@ -63,8 +75,12 @@ struct QwenGenerationPlan: Equatable, Sendable {
     /// family's sampler does not implement, and `seed`, which the server does
     /// not take from a request.
     static func officialSampling(
-        _ requested: GenerationConfig
+        _ requested: GenerationConfig,
+        official: OfficialSampler = .ornith
     ) -> (config: GenerationConfig, approximations: [String]) {
+        let officialTemperature = official.temperature
+        let officialTopK = official.topK
+        let officialTopP = official.topP
         var config = requested
         var overridden: [String] = []
         if requested.temperature != officialTemperature {
@@ -90,7 +106,8 @@ struct QwenGenerationPlan: Equatable, Sendable {
         return (config, ["official-override: " + overridden.joined(separator: " ")])
     }
 
-    init(request: ValidatedChatRequest, markers: QwenToolCallMarkers) {
+    init(request: ValidatedChatRequest, markers: QwenToolCallMarkers,
+         official: OfficialSampler = .ornith) {
         // GEN-12 is settled before this point, by the same `ChatRequestParser`
         // check the Gemma path relies on: a constraining `response_format`
         // beside a `required` or named `tool_choice` is a 400 and never
@@ -104,7 +121,7 @@ struct QwenGenerationPlan: Equatable, Sendable {
         self.grammar = constraint?.grammar
         self.isLazy = constraint?.isLazy ?? false
         self.trigger = constraint?.trigger
-        let sampling = Self.officialSampling(request.generationConfig)
+        let sampling = Self.officialSampling(request.generationConfig, official: official)
         self.sampling = sampling.config
         self.approximations =
             request.toolSchemaSimplifications.map { "tools/" + $0 }

@@ -1,7 +1,7 @@
 import Foundation
 import Tsugumi
 
-/// The two checkpoints the Mac app ships with, and everything about them the
+/// The checkpoints the Mac app knows, and everything about them the
 /// UI or the engine has to branch on. One value, so a new model is one new
 /// case and the compiler lists every decision it has to make.
 ///
@@ -13,6 +13,10 @@ import Tsugumi
 public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable {
     case gemmaQATSym = "gemma4-qat-sym"
     case ornith = "ornith-oq4e-g64"
+    /// Qwen3.8-Flash-Next off the DS4-IQ2 GGUF (`docs/qwen38`). Not a `.moepack` and not downloadable: a local
+    /// directory whose manifest names the GGUF (`Qwen38ModelDirectory`). Operating point 12K, thinking off, MTP n_max 1
+    /// (memory of `docs/qwen38/15`).
+    case qwen38 = "qwen38-flash-next-iq2"
 
     public var id: String { rawValue }
 
@@ -20,6 +24,7 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
         switch self {
         case .gemmaQATSym: "Gemma 4 26B-A4B QAT (Vision + MTP)"
         case .ornith: "Ornith-1.5 35B-A3B (MTP)"
+        case .qwen38: "Qwen3.8-Flash-Next IQ2 (MTP)"
         }
     }
 
@@ -27,6 +32,7 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
         switch self {
         case .gemmaQATSym: "Gemma 4"
         case .ornith: "Ornith-1.5"
+        case .qwen38: "Qwen3.8"
         }
     }
 
@@ -43,13 +49,13 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
     public var draftBlockSize: Int {
         switch self {
         case .gemmaQATSym: 4
-        case .ornith: 2
+        case .ornith, .qwen38: 2
         }
     }
 
     /// S1: Ornith may only run the official recommended sampler, whatever the
     /// UI asked for, so its controls are shown pinned rather than editable.
-    public var samplingIsLocked: Bool { self == .ornith }
+    public var samplingIsLocked: Bool { self != .gemmaQATSym }
 
     /// The official recommended sampler for each checkpoint. Gemma's are the
     /// editable defaults; Ornith's are the pinned values the session enforces.
@@ -57,17 +63,18 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
         switch self {
         case .gemmaQATSym: 1.0
         case .ornith: 0.6
+        case .qwen38: 0.7
         }
     }
 
     public var officialTopK: Int {
         switch self {
         case .gemmaQATSym: 64
-        case .ornith: 20
+        case .ornith, .qwen38: 20
         }
     }
 
-    public var officialTopP: Double { 0.95 }
+    public var officialTopP: Double { self == .qwen38 ? 0.8 : 0.95 }
 
     /// Directory name of the installed checkpoint, shared by the package-root
     /// `scratch/` layout and the Application Support fallback.
@@ -75,6 +82,7 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
         switch self {
         case .gemmaQATSym: "gemma4-qat-sym.moepack"
         case .ornith: "ornith-oq4e-g64.moepack"
+        case .qwen38: "Qwen3.8-Flash-Next-DS4-IQ2"
         }
     }
 
@@ -86,6 +94,7 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
         switch self {
         case .gemmaQATSym: "gemma4-qat-sym.gturbo"
         case .ornith: "ornith-oq4e-g64.gturbo"
+        case .qwen38: "Qwen3.8-Flash-Next-DS4-IQ2"
         }
     }
 
@@ -96,18 +105,29 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
     /// the development machine keeps it.
     public static let mtpSidecarDirectoryName = "mtp-head"
 
-    /// The architecture the manifest must validate against for this kind.
-    public var archConfig: ArchConfig {
+    /// The architecture the manifest must validate against for this kind; nil for Qwen3.8, which has no `.moepack`
+    /// manifest to validate.
+    public var archConfig: ArchConfig? {
         switch self {
         case .gemmaQATSym: .gemma4_26B_A4B
         case .ornith: .ornith1_5_35B_A3B
+        case .qwen38: nil
         }
     }
 
     /// Contexts this kind may be loaded at. Both reach 128K; the note about
     /// Ornith's decode cliff at 128K lives in the UI, not here.
     public var contextOptions: [AppContextLengthOption] {
-        AppContextLengthOption.allCases
+        switch self {
+        case .gemmaQATSym, .ornith: AppContextLengthOption.allCases.filter { $0 != .twelveK }
+        // 12K is the operating point; 16K and above swap on 18 GB (`docs/qwen38/09`).
+        case .qwen38: [.fourK, .eightK, .twelveK]
+        }
+    }
+
+    /// The context a fresh settings file starts at.
+    public var defaultContextTokens: Int {
+        self == .qwen38 ? AppContextLengthOption.twelveK.tokens : AppContextLengthOption.thirtyTwoK.tokens
     }
 
     public static let defaultKind = AppModelKind.gemmaQATSym
@@ -129,6 +149,7 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
         switch peek.arch.family {
         case nil: return .gemmaQATSym
         case "qwen3_5_moe": return .ornith
+        case "qwen4exp": return .qwen38
         default: return nil
         }
     }

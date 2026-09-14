@@ -18,9 +18,21 @@ public enum AppModelInstallationProbe {
             return .missing
         }
 
+        guard let archConfig = descriptor.kind.archConfig else {
+            // Qwen3.8: the manifest names the GGUF files, and the tokenizer sidecar has to be beside them.
+            do {
+                _ = try Qwen38ModelDirectory(directory: directory)
+                guard GFTokenizer.tokenizerFolder(forModelDirectory: directory) != nil else {
+                    return .partial("tokenizer/ is missing")
+                }
+                return .complete
+            } catch {
+                return .partial("\(error)")
+            }
+        }
         do {
             let manifest = try ManifestReader.load(directoryURL: directory,
-                                                   expecting: descriptor.kind.archConfig)
+                                                   expecting: archConfig)
             let expectedSource = "sha256:" + descriptor.sourceIndexSHA256
             guard manifest.sourceSnapshotHash == expectedSource else {
                 return .partial("installed checkpoint does not match \(descriptor.displayName)")

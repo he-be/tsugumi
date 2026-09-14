@@ -51,8 +51,18 @@ public struct PrebuiltModelSource: Equatable, Sendable {
         switch kind {
         case .gemmaQATSym: gemmaQATSym
         case .ornith: ornith
+        case .qwen38: qwen38
         }
     }
+
+    /// Nothing is published for Qwen3.8: the directory is built on this machine (`docs/qwen38/16`) and the installer
+    /// has no file to fetch. The probe recognises the directory by its manifest instead of a snapshot hash.
+    public static let qwen38 = PrebuiltModelSource(
+        kind: .qwen38,
+        repoID: "",
+        revision: "",
+        sourceIndexSHA256: "",
+        files: [])
 
     /// The two published repositories still carry the project's former name
     /// (`turbofieldfare-*`). They are what is public and what the SHA-256 pins

@@ -3,6 +3,8 @@ import Tsugumi
 public enum AppContextLengthOption: Int, CaseIterable, Identifiable, Sendable {
     case fourK = 4_096
     case eightK = 8_192
+    /// Qwen3.8's operating point only (`AppModelKind.contextOptions`).
+    case twelveK = 12_288
     case sixteenK = 16_384
     case thirtyTwoK = 32_768
     case sixtyFourK = 65_536
@@ -38,6 +40,7 @@ public enum AppContextLengthOption: Int, CaseIterable, Identifiable, Sendable {
         switch self {
         case .fourK: AppLocalization.string("4K, Default")
         case .eightK: "8K, +85 MB"
+        case .twelveK: "12K"
         case .sixteenK: "16K, +250 MB"
         case .thirtyTwoK: "32K, +590 MB"
         case .sixtyFourK: "64K, +1.26 GB"

@@ -60,6 +60,9 @@ public struct ServerArguments: Equatable, Sendable {
     public let port: Int
     public let modelID: String
     public let maxContext: Int
+    /// `-c` as given, before the rounding: Qwen3.8 is not in the measured table and takes its operating point (12K,
+    /// `docs/qwen38/09`) from here.
+    public let requestedContext: Int
     public let queueLimit: Int
     public let expertCacheSlots: Int
     public let expertCachePolicy: RuntimeExpertCachePolicy
@@ -288,6 +291,7 @@ public struct ServerArguments: Equatable, Sendable {
         var port = 8080
         var modelID = "gemma-4-26b-a4b-it"
         var maxContext = 16_384
+        var requestedContext = 16_384
         var queueLimit = 4
         var expertCacheSlots = RuntimeConfiguration.production.expertCacheSlots
         var expertCachePolicy = RuntimeExpertCachePolicy.lfu
@@ -373,6 +377,7 @@ public struct ServerArguments: Equatable, Sendable {
                         "--ctx-size must be a positive number of tokens")
                 }
                 maxContext = Self.supportedContextSize(roundingDown: parsed)
+                requestedContext = parsed
             case "--queue-limit":
                 guard let parsed = Int(value), parsed > 0 else {
                     throw ServerArgumentError.invalid("--queue-limit must be positive")
@@ -512,6 +517,7 @@ public struct ServerArguments: Equatable, Sendable {
                                port: port,
                                modelID: modelID,
                                maxContext: maxContext,
+                               requestedContext: requestedContext,
                                queueLimit: queueLimit,
                                expertCacheSlots: expertCacheSlots,
                                expertCachePolicy: expertCachePolicy,

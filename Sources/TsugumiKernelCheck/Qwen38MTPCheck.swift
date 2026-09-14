@@ -72,53 +72,8 @@ func routeDetail(_ p: Qwen38Runner.StepProfile) -> String {
                                         p.previewHit, p.previewActual, p.previewNamed, p.previewAdvise * 1000) : "")
 }
 
-/// Host sampler for the generation checks. `greedy`: argmax (lowest id on ties). `instruct`: the official non-thinking
-/// settings (temp 0.7, top_p 0.8, top_k 20, presence_penalty 1.5 over the generated tokens, `HANDOVER-llm-server.md`),
-/// in Hugging Face's order: penalty, temperature, top_k, top_p over the tempered top-k mass, draw (xorshift64*).
-struct Q38Sampler {
-    let greedy: Bool
-    let temperature: Float = 0.7, topK = 20, topP: Float = 0.8, presence: Float = 1.5
-    var state: UInt64
-    var seen = Set<Int>()
-
-    init(greedy: Bool, seed: UInt64) {
-        self.greedy = greedy
-        state = seed &* 0x9E37_79B9_7F4A_7C15 | 1
-    }
-
-    static func argmax(_ l: UnsafeBufferPointer<Float>) -> Int {
-        var best = 0
-        for i in 1..<l.count where l[i] > l[best] { best = i }
-        return best
-    }
-
-    mutating func sample(_ l: UnsafeBufferPointer<Float>) -> Int {
-        if greedy { return Q38Sampler.argmax(l) }
-        var top: [(id: Int, z: Float)] = []
-        top.reserveCapacity(topK + 1)
-        for i in 0..<l.count {
-            let z = seen.contains(i) ? l[i] - presence : l[i]
-            if top.count == topK, z <= top[topK - 1].z { continue }
-            var at = top.count
-            while at > 0 && top[at - 1].z < z { at -= 1 }
-            top.insert((i, z), at: at)
-            if top.count > topK { top.removeLast() }
-        }
-        let zMax = top[0].z
-        var p = top.map { Double(exp(($0.z - zMax) / temperature)) }
-        let sum = p.reduce(0, +)
-        p = p.map { $0 / sum }
-        var keep = 0, acc = 0.0
-        while keep < p.count { acc += p[keep]; keep += 1; if acc >= Double(topP) { break } }
-        state ^= state >> 12; state ^= state << 25; state ^= state >> 27
-        let u = Double((state &* 0x2545_F491_4F6C_DD1D) >> 11) / Double(1 << 53) * acc
-        var run = 0.0
-        var id = top[0].id
-        for j in 0..<keep { run += p[j]; if u < run { id = top[j].id; break } }
-        seen.insert(id)
-        return id
-    }
-}
+/// The host sampler moved to `Tsugumi` (`Qwen38Sampler`) for the server path.
+typealias Q38Sampler = Qwen38Sampler
 
 /// `--qwen38-generate <prompt token file>`: prefill in chunks of `--q38-chunk`, then up to `--q38-new` tokens with
 /// `--q38-sampler greedy|instruct` (`--q38-seed`). `--q38-mtp off|shadow`: shadow also runs the MTP head over the

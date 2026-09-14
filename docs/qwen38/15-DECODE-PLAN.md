@@ -222,6 +222,9 @@ Ornith [qwen35moe/38](../qwen35moe/38-MTP-VERIFY-PATH.md) の split-KV がこれ
 
 ### G. 運用点に向けた統合 (速度と独立) — エージェントとして使えるための prompt cache
 
+**状態 (2026-09-14)**: G-1 の結線だけ先に入れた ([17](17-SERVER-APP-WIRING.md))。server・Mac アプリで動き、cache は生きている状態の厳密な延長だけ。G-0 のチェックポイント、G-1 の INV-1、G-2 は未着手。
+ツール定義の `tojson` が上流の描き方と違う (17 §3-1) のも G-1 の残り。
+
 **基準は Gemma (2026-09-14、ユーザー指定)。**Qwen3.8 がエージェントとして使えると言えるのは、Gemma の server 経路 (`ServerInference` + `ServerPromptCache`) で prefill を払わずに済む場面が、
 Qwen3.8 でも同じだけ済むときだけ。**Ornith の現状は要件の出所にしない**。Ornith は下の表のとおり Gemma に届いておらず、それを移すと届かないまま残る。
 

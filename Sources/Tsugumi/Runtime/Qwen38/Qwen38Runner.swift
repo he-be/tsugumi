@@ -1558,6 +1558,17 @@ package final class Qwen38Runner {
 
     // MARK: - Forward
 
+    /// Back to position 0: the recurrent state (GDN state and conv history), the PLE history and `plePrev` as `init`
+    /// left them. KV, indexer keys and the MTP KV are by position and are rewritten as the next prompt reaches them
+    /// (a block key is written by the batch that holds its 4th token).
+    package func reset() {
+        for b in Array(linHist.values) + Array(linState.values) { memset(b.contents(), 0, b.length) }
+        memset(pleHist.contents(), 0, pleHist.length)
+        plePrev = [Int](repeating: 248_044, count: 2)
+        snapshotTaken = 0
+        snapshotRows = 0
+    }
+
     /// After a `snapshotRows` forward, sets the recurrent state to what it was after that batch's first `keep`
     /// tokens only (the rest of the batch was rejected): the GDN state from the step kernel's copy after token
     /// keep - 1 (buffers swapped), the conv and PLE histories shifted by `keep` from their copies with the kept

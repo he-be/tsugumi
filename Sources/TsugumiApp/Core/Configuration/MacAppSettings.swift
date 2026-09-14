@@ -75,6 +75,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
     /// channel as each family recommends it.
     static func defaults(for kind: AppModelKind) -> MacAppSettings {
         MacAppSettings(
+            contextTokens: kind.defaultContextTokens,
             temperature: kind.officialTemperature,
             topK: kind.officialTopK,
             topP: kind.officialTopP,
