@@ -497,7 +497,8 @@ actor RealInferenceSession {
                 name: tool.name,
                 description: tool.description,
                 parameters: try Self.jsonValue(tool.parametersJSON,
-                                               what: "tool \(tool.name) parameters"))
+                                               what: "tool \(tool.name) parameters"),
+                parametersSource: tool.parametersJSON)
         }
         let toolChoice: ChatToolChoice = switch request.toolChoice {
         case .auto: .auto

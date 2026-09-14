@@ -17,6 +17,7 @@ let package = Package(
         .executable(name: "TsugumiMac", targets: ["TsugumiMac"]),
         .executable(name: "TsugumiDecodeService", targets: ["TsugumiDecodeService"]),
         .executable(name: "TsugumiServer", targets: ["TsugumiServer"]),
+        .executable(name: "TsugumiToolLoopCheck", targets: ["TsugumiToolLoopCheck"]),
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
@@ -129,6 +130,12 @@ let package = Package(
             name: "TsugumiServer",
             dependencies: ["TsugumiServerCore"],
             path: "Sources/TsugumiServer/Command"
+        ),
+        // The Mac app's tool loop without the window, for checks against the real model (docs/qwen38/20).
+        .executableTarget(
+            name: "TsugumiToolLoopCheck",
+            dependencies: ["TsugumiAppCore"],
+            path: "Sources/TsugumiToolLoopCheck"
         ),
         .executableTarget(
             name: "TsugumiMac",

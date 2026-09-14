@@ -89,6 +89,10 @@ public struct QwenTokenizer: @unchecked Sendable {
 
     @usableFromInline
     let tokenizer: any Tokenizer
+    /// The checkpoint's template with its one `{{- tool | tojson }}` printing the declaration `QwenToolDeclaration`
+    /// spelled instead. Nil when the template does not have exactly that line; the declarations then go through
+    /// swift-jinja's `tojson` as before.
+    let toolDeclarationTemplate: String?
 
     // MARK: - Loading
 
@@ -138,7 +142,8 @@ public struct QwenTokenizer: @unchecked Sendable {
         let tokenizerData = try await hub.tokenizerData
         let underlying = try AutoTokenizer.from(tokenizerConfig: tokenizerConfig,
                                                 tokenizerData: tokenizerData)
-        return try QwenTokenizer(tokenizer: underlying, tokenizerData: tokenizerData)
+        return try QwenTokenizer(tokenizer: underlying, tokenizerData: tokenizerData,
+                                 chatTemplate: tokenizerConfig.chatTemplate.string())
     }
 
     // MARK: - Verification
@@ -196,8 +201,12 @@ public struct QwenTokenizer: @unchecked Sendable {
         return value
     }
 
-    public init(tokenizer: any Tokenizer, tokenizerData: Config) throws {
+    public init(tokenizer: any Tokenizer, tokenizerData: Config, chatTemplate: String? = nil) throws {
         self.tokenizer = tokenizer
+        self.toolDeclarationTemplate = chatTemplate.flatMap { template in
+            let pieces = template.components(separatedBy: QwenToolDeclaration.templateLine)
+            return pieces.count == 2 ? pieces.joined(separator: QwenToolDeclaration.replacementLine) : nil
+        }
         try Self.verifyDecoderConfiguration(tokenizerData)
         try Self.verifyPreTokenizerConfiguration(tokenizerData)
 
@@ -317,19 +326,28 @@ public struct QwenTokenizer: @unchecked Sendable {
             if let name = message.name { value["name"] = name }
             return value
         }
-        let toolSpecs: [ToolSpec] = try tools.map { tool in
-            [
-                "type": "function",
-                "function": [
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": try tool.parameters.jinjaSendableValue(),
-                ] as [String: any Sendable],
-            ]
+        let toolSpecs: [ToolSpec]
+        let template: ChatTemplateArgument?
+        if let toolDeclarationTemplate, !tools.isEmpty {
+            // Upstream's `tojson` spelling (`QwenToolDeclaration`), printed as a string.
+            toolSpecs = tools.map { [QwenToolDeclaration.renderedKey: QwenToolDeclaration.json($0)] }
+            template = .literal(toolDeclarationTemplate)
+        } else {
+            toolSpecs = try tools.map { tool in
+                [
+                    "type": "function",
+                    "function": [
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": try tool.parameters.jinjaSendableValue(),
+                    ] as [String: any Sendable],
+                ]
+            }
+            template = nil
         }
         return try tokenizer.applyChatTemplate(
             messages: rendered,
-            chatTemplate: nil,
+            chatTemplate: template,
             addGenerationPrompt: true,
             truncation: false,
             maxLength: nil,

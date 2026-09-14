@@ -170,7 +170,7 @@
 "Unsupported reason" = "非対応の理由";
 "Web search" = "Web 検索";
 "Web search (%lld steps)" = "Web 検索 (%lld 手順)";
-"Web search is available with Gemma only." = "Web 検索は Gemma でのみ使えます。";
+"Web search is not available with Ornith." = "Web 検索は Ornith では使えません。";
 "Web · %lld searched · %lld read" = "Web · 検索 %lld · 取得 %lld";
 "Where you live, what you do, what you like. Used for weather, food, local questions." = "住んでいる所、仕事、好きなこと。天気や食べ物、地元の質問に効きます。";
 "Who the assistant is" = "アシスタントの自認";

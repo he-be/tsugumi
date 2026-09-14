@@ -39,6 +39,10 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
     /// Only Gemma carries the vision tower; Ornith's Phase 9 never happened.
     public var supportsVision: Bool { self == .gemmaQATSym }
 
+    /// Whether the app declares its tools (web search, the local Wikipedia) to this model. Gemma's and Qwen3.8's
+    /// tool loops are the ones the app runs (`docs/WEB_SEARCH.md`, `docs/qwen38/20`); Ornith declares none.
+    public var supportsTools: Bool { self != .ornith }
+
     /// Both templates can render the thought channel; what differs is the
     /// default the toggle starts at.
     public var thinkingDefault: Bool { self == .ornith }

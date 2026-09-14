@@ -308,6 +308,24 @@ import Testing
         #expect(try model.makeRequest().tools.isEmpty)
     }
 
+    /// Qwen3.8's tool loop is the app's (`docs/qwen38/20`): Online declares the tools and forces the search, and
+    /// with thinking off the first round has no pre-search budget.
+    @MainActor
+    @Test func qwen38DeclaresTheToolsWithoutAThinkingBudget() throws {
+        let model = readyModel(client: ScriptedToolClient([]), executor: ScriptedToolExecutor(results: [:]))
+        model.selectModel(.qwen38)
+        model.modelPathText = FileManager.default.temporaryDirectory.path
+        model.networkMode = .online
+        model.promptText = "q"
+        #expect(model.toolsAvailable)
+        #expect(!model.thinkingEnabled)
+        let request = try model.makeRequest()
+        #expect(request.tools.map(\.name) == ["web_search", "fetch_page"])
+        #expect(request.toolChoice == .function(name: "web_search"))
+        #expect(!request.enableThinking)
+        #expect(request.reasoningBudgetTokens == -1)
+    }
+
     @MainActor
     @Test func aPageTheAppPrefetchedSatisfiesTheOnlinePolicy() async throws {
         let seed = AppToolLookup(

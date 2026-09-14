@@ -170,7 +170,7 @@
 "Unsupported reason" = "Unsupported reason";
 "Web search" = "Web search";
 "Web search (%lld steps)" = "Web search (%lld steps)";
-"Web search is available with Gemma only." = "Web search is available with Gemma only.";
+"Web search is not available with Ornith." = "Web search is not available with Ornith.";
 "Web · %lld searched · %lld read" = "Web · %lld searched · %lld read";
 "Where you live, what you do, what you like. Used for weather, food, local questions." = "Where you live, what you do, what you like. Used for weather, food, local questions.";
 "Who the assistant is" = "Who the assistant is";

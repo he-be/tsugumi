@@ -1,0 +1,46 @@
+[
+  {
+    "name": "ja-news",
+    "turns": [
+      "今週の生成AI関連のニュースを3つ調べて、それぞれ要点をまとめて",
+      "その中で日本企業に関係するものを、もう少し詳しく調べて",
+      "ここまでの内容を5行で要約して"
+    ]
+  },
+  {
+    "name": "en-swift",
+    "turns": [
+      "What are the headline features of the most recent Swift release? Cite the official source.",
+      "Give a short code example for one of those features and explain what it does.",
+      "Which Xcode version ships that Swift release?"
+    ]
+  },
+  {
+    "name": "ja-howto",
+    "turns": [
+      "macOS で launchd のユーザーエージェントを作って毎朝7時にスクリプトを動かす方法を調べて、plist の例も書いて",
+      "StartCalendarInterval と StartInterval の違いは？公式ドキュメントで確認して"
+    ]
+  },
+  {
+    "name": "en-url",
+    "turns": [
+      "https://www.swift.org/blog/ What are the three most recent posts about?",
+      "Open the most recent one and summarize it in five bullet points."
+    ]
+  },
+  {
+    "name": "ja-price",
+    "turns": [
+      "M4 MacBook Air の日本での価格とメモリ構成を調べて",
+      "ローカル LLM を動かす前提なら 16GB と 24GB のどちらを選ぶべき？調べた情報をもとに答えて"
+    ]
+  },
+  {
+    "name": "en-facts",
+    "turns": [
+      "Who designed Tokyo Skytree and when did it open? Check sources.",
+      "How does its height compare with the CN Tower and the Burj Khalifa?"
+    ]
+  }
+]

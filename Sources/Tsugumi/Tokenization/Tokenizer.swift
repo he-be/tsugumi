@@ -294,11 +294,15 @@ public struct GFTokenizer: @unchecked Sendable {
         public let name: String
         public let description: String
         public let parameters: JSONValue
+        /// The schema as the client wrote it, when it has the text: `parameters` is a dictionary and has lost the
+        /// member order a template's `tojson` prints (`QwenToolDeclaration`).
+        public let parametersSource: String?
 
-        public init(name: String, description: String, parameters: JSONValue) {
+        public init(name: String, description: String, parameters: JSONValue, parametersSource: String? = nil) {
             self.name = name
             self.description = description
             self.parameters = parameters
+            self.parametersSource = parametersSource
         }
     }
 

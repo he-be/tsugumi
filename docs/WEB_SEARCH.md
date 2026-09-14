@@ -165,8 +165,9 @@ HTTP は、この MBP にキーが無いので未確認** — パースとフォ
 
 ## 5. 分かっている制約
 
-- **Gemma のみ。** Ornith (Qwen) 側もサーバ経路にはツール呼び出しがあるが、
-  GUI ではまだ宣言しない (`AppModel.webSearchAvailable`)。
+- **Gemma と Qwen3.8。** Ornith はサーバ経路にはツール呼び出しがあるが、
+  GUI では宣言しない (`AppModelKind.supportsTools`)。Qwen3.8 は 2026-09-14 から
+  (docs/qwen38/20、12K での文脈超過とラウンド上限の cache 外れが未解決)。
 - **prompt cache:** ツールを宣言すると tool template に切り替わり、宣言と
   system prompt (日付入り) がプレフィックスの頭に来る。同じチャット内で Off ↔
   Auto を切り替えるとプレフィックスが変わりキャッシュが短くなる。日付は日ごと。

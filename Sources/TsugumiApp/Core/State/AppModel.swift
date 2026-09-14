@@ -32,8 +32,8 @@ public final class AppModel {
     public var topPEnabled: Bool = true
     public var topP: Double = 0.95
     public var thinkingEnabled: Bool = false
-    /// Whether a turn may leave this Mac (`AppNetworkMode`). Only Gemma
-    /// declares tools (`toolsAvailable`); for another model the switch is
+    /// Whether a turn may leave this Mac (`AppNetworkMode`). Gemma and
+    /// Qwen3.8 declare tools (`toolsAvailable`); for Ornith the switch is
     /// kept but ignored.
     public var networkMode: AppNetworkMode = .offline
     /// Keys and limits for the web tools, one file for the app. Edited in
@@ -1483,10 +1483,9 @@ public final class AppModel {
 
     public var supportsVision: Bool { selectedModelKind.supportsVision }
 
-    /// Only Gemma declares the web tools for now; its tool template, grammar
-    /// and call parser are the ones the server path has exercised.
-    /// Tools are a Gemma affair; Ornith declares none whatever the switch.
-    public var toolsAvailable: Bool { selectedModelKind == .gemmaQATSym }
+    /// Gemma and Qwen3.8 get the tools (`AppModelKind.supportsTools`); Ornith
+    /// declares none whatever the switch.
+    public var toolsAvailable: Bool { selectedModelKind.supportsTools }
 
     public var effectiveNetworkMode: AppNetworkMode {
         toolsAvailable ? networkMode : .modelOnly
