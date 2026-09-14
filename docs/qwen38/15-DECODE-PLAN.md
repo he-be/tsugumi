@@ -1,7 +1,7 @@
 # 15. 今後の実験方針 — RAM を増やさずに 12K の decode を詰める順序 (A〜G) と、運用点に向けた統合
 
 書いた日: 2026-09-14。対象は [13](13-KERNEL-TO-GPU-WAIT.md) までの `Qwen38Runner` (DS4-IQ2 GGUF + PLE Q4_1、M3 Pro 18 GB)。
-表記は 01 と同じ (実測 / 導出 / 未確認)。**この文書に新しい実測は 1 つも無い。**数字はすべて 01〜13 と `scratch/qwen38/{pipe12,long13}/` のログからの引用か導出で、
+表記は 01 と同じ (実測 / 導出 / 未確認)。**この文書に新しい実測は 1 つも無い。**§2 G は 2026-09-14 に書き直した: 基準を Gemma の server 経路に置き、Ornith の現状 (末尾だけのチェックポイント) を要件にしない形にした (Gemma・Ornith のコードから)。数字はすべて 01〜13 と `scratch/qwen38/{pipe12,long13}/` のログからの引用か導出で、
 進退の根拠にはしない (メモリ `no-decision-on-derived-projections`)。各段は「測れる最小の段」から並べ、1 段ごとに実測を 1 つ出して次に進む。
 
 番号 14 は n_max 2 (連鎖ドラフト、[13 §9](13-KERNEL-TO-GPU-WAIT.md)) が使う (別セッションで進行中、`Q38_MTP_CHAIN`)。本書はその次以降の順序。
@@ -17,8 +17,10 @@
    W を B の前に置くのは、B の台帳の X (MB) と非常駐 MB が expert 1 個あたりのバイトで変わるため (§2 W)。
    B が一番大きく一番無茶で、Gemma D-P6/P7 ([mtp/51](../mtp/51-D-P6-MMAP-PROTOTYPE.md)・[52](../mtp/52-D-P7-PREFILL-QUEUE-DEPTH.md)) と Ornith q/39 ([qwen35moe/39](../qwen35moe/39-RESIDENCY-COMMIT.md)) で勝った形をまだ持っていない唯一のもの。
    ただし B は計器だけの段 (B-1) を先に置き、当たり率が出なければ B-2 以降に進まない。
-4. G (server 経路・会話状態の延長・英語のツール呼び出しでの品質) は速度と独立に要る。**12K の prefill 133 s をターンごとに払う限り運用点は成立しない**ので、
-   G-2 (厳密な延長) は B〜F の途中でも先に入れてよい。
+4. G (server 経路・prompt cache・英語のツール呼び出しでの品質) は速度と独立に要る。**12K の prefill 133 s をターンごとに払う限り運用点は成立しない**ので、
+   G-0〜G-2 は B〜F の途中でも先に入れてよい。**基準は Gemma の server 経路で prefill を払わずに済む場面で、Ornith の現状は要件にしない** (Ornith は 1 ターン目の再生成が全再処理、再生成・指示つき再生成で前の回答まで払う)。
+   GDN の再帰状態はカーソルで戻せないので手段は [SPEC CACHE-8](../serving/SPEC.md) のチェックポイントだが、取る位置 (P−1・最後のメッセージ本文の末尾・`<tool_call>` の直前) は Gemma の場面表から決める (§2 G)。
+   Gemma でも全部払う場面 (履歴の切り詰め・チャットの切り替え) は基準の外。
 
 ## 1. 現在地と床 (引用)
 
@@ -218,17 +220,98 @@ Ornith [qwen35moe/38](../qwen35moe/38-MTP-VERIFY-PATH.md) の split-KV がこれ
 02 §2-4 で「後回し」のまま: `attn_prep` 7.06 ms/48 回 (1 トークン約 1.8 ms)、GDN 3 本 (step / norm_gate / qk_norm、約 4 ms)。
 `--q38-small-bench` は 03 で消したので、T 行版の引数で作り直してから。取り分の上限は合計 6 ms 弱 (導出) なので、B〜E の後。
 
-### G. 運用点に向けた統合 (速度と独立)
+### G. 運用点に向けた統合 (速度と独立) — エージェントとして使えるための prompt cache
 
-**G-1. server 経路。**MTP と instruct サンプラは `--qwen38-generate` にだけある (10 §8-1)。`Qwen38Runner` を `docs/OPENAI_SERVER.md` の経路に繋ぎ、thinking off のテンプレートで英語のツール呼び出しを回す。
-品質の見方は 01 §1-1 のとおり「英語の短答 + ツール呼び出し」。IQ2_XXS の品質の根拠はいま参照一致・PLE 負例 1 本・受理率 0.72〜0.95 だけなので、ここで初めて外から測れる。
+**基準は Gemma (2026-09-14、ユーザー指定)。**Qwen3.8 がエージェントとして使えると言えるのは、Gemma の server 経路 (`ServerInference` + `ServerPromptCache`) で prefill を払わずに済む場面が、
+Qwen3.8 でも同じだけ済むときだけ。**Ornith の現状は要件の出所にしない**。Ornith は下の表のとおり Gemma に届いておらず、それを移すと届かないまま残る。
 
-**G-2. 会話状態の厳密な延長 (prompt cache)。**12K の prefill は 133 s。エージェントの履歴は追記のみなので、Ornith [qwen35moe/41](../qwen35moe/41-PROMPT-CACHE.md) の
-「厳密な延長のみ・その場保持 1 エントリ・追加メモリ 0」がそのまま当てはまる。GDN 状態・conv 履歴・PLE 履歴・インデクサ鍵・KV はランナーが持っているので、
-足すのは「前回のトークン列の接頭辞なら続きだけ prefill する」判定だけ。落とし穴は q/41 §0 の「投機の最後のパスで受理した行は既に再帰状態に入っている」。
-**これは prefill を速くする話ではなく、prefill をしない話。**
+**Gemma の形 (2026-09-14 にコードから)。**
+- 保持は 1 エントリ (直前の要求のプロンプト + 生成)。一致はトークン列の LCP (CACHE-1)。全一致なら末尾 1 トークンを捨てて再デコード (CACHE-3)。
+- 分岐点が KV の末尾から 2048 トークン以内なら、カーソルを分岐点へ戻して続きだけ prefill (CACHE-2、DEV-13 = `KVCacheManager.maximumSafeRewind`、SWA リングの余裕)。それより深ければ全再処理。
+- 例外で終わった要求はエントリを捨てる (`ServerInference.generate` の `defer`)。アプリの中断も `Task.checkCancellation` の `CancellationError` なのでここに入る。
+- 描き直し == 生成 (INV-1) を、tool call の文法を描き直しの正準形に縛ること (GEN-8) とサーバー用のテンプレート変種 (DEV-12) で閉じている。閉じないのは自由形式の値の中のキー順だけ (DEV-15)。
 
-**G-3. 文法つきツール強制** (Ornith [qwen35moe/40](../qwen35moe/40-MTP-GRAMMAR.md))。G-1 の後。
+**Gemma の形をそのまま使えない理由。**Qwen3.8 は GDN 36 層の再帰状態を持ち、1 トークンを引き算で取り出せない。カーソルで戻せるのは full attention 12 層の KV・インデクサ・MTP KV だけで、
+`KVCacheManager.maximumSafeRewind` も再帰層があれば 0 を返す。**分岐点に戻るには、分岐点以前で取ったスナップショットが要る** (CACHE-8)。
+Ornith から借りるのはこの機構 (`captureCheckpoint` / `restore` の API の形と `--qwen-resume` の検査の形) だけで、**どの位置で何本取るかは Gemma の場面表から決める**。
+
+**Ornith の現状が Gemma に届いていない点 (コードから)。**`QwenServerSession.captureAtPromptEnd` はプロンプト末尾 (位置 P) でだけ取り、`--ctx-checkpoints 2` で直近 2 要求分を持つ。
+SPEC CACHE-8 が求める「最後の user メッセージの直前」では取っていない。P のチェックポイントは同じ長さのプロンプトに使えない (`QwenPromptCache.match` の `candidate < promptIDs.count`) ので、
+1 ターン目の再生成は全再処理、2 ターン目以降の再生成・指示つき再生成は前の回答まで prefill し直す。
+
+**場面ごとの要件。**P = プロンプト長、U = 最後のメッセージ本文の末尾 (その `<|im_end|>` の手前) の位置。Gemma の列はコードの規則からの導出で、**Qwen3.8 も Gemma もこの表の実測は 0** (G-2 で両方測る)。
+
+| 場面 | 分岐点 | Gemma (基準) | Ornith の形を移した場合 | Qwen3.8 の要件 → 取る位置 |
+| --- | --- | --- | --- | --- |
+| 次のターン・ツール応答の往復・ストリーミング | KV の末尾以降 | 足した分 | 足した分 | 足した分 (生きている状態から継続) |
+| 同じプロンプトの再送・再生成 / 別回答 (U4)、**1 ターン目を含む** | P (全一致) | 1 トークン (回答が 2048 以内) | 1 ターン目は全部、以降は前の回答 + ユーザーターン | **1 トークン** → P−1 |
+| 指示つき再生成 (U5: 最後のユーザーターンの末尾に 1 行) | U 付近 | 足した 1 行 + 生成プロンプト | 前の回答 + ユーザーターン | **足した 1 行 + 生成プロンプト** → U−m |
+| tool call ターンの描き直し | 生成したターンの中 | INV-1 で分岐しない。ずれたら分岐点から (DEV-15) | そのターンの先頭 (前の要求の P) から | **INV-1 で分岐させない** (G-1)。残るずれは分岐点の直前から → decode 中の `<tool_call>` の直前 |
+| 回答が 2048 を超えた後の再生成 | P | 全部 (DEV-13) | 前の回答 + ユーザーターン | 1 トークン (P−1 と同じ。基準より上) |
+| 生成中に止めた後の再生成 | P | 全部 (エントリを捨てる) | 前の回答 + ユーザーターン | 基準は全部。P−1 は prefill 中に取るので、prefill 後に止めたなら 1 トークン (基準より上) |
+| 生成中の例外 (文法の行き止まりなど) | — | 次は全部 | 次は全部 | 基準は全部 |
+| 履歴の切り詰め・チャットの切り替え・ツール宣言や thinking の変更 | 先頭付近 | 全部 | 全部 | 基準も全部 (§G の末尾) |
+
+- m は U5 の 1 行を足したときに、元の本文の末尾のトークン化が変わる幅 (BPE の境界)。Qwen の pre_tokenizer は改行で区切るので 0 の見込みだが**未確認**。
+  トークナイザで「U5 の指示文を足した列の [0, U−m) が元と一致する」最小の m を決める。
+- 1 要求で持つのは P−1・U−m・その要求の生成中の `<tool_call>` の直前。前の要求の分は、次の要求が restore と取り直しを終えた時点で捨ててよい (Gemma の 1 エントリと同じ深さ)。
+  本数は 2 + tool call 数、1 本 112.6 MiB (G-0)。12K spec の wired 14.28〜14.57 GB に乗るかは memlog で測る (**未確認**)。RAM で乗らない場合の形 (SSD へ退避など) は測ってからユーザーに渡す。
+
+**G-0. ランナー側の状態 API と `--qwen38-resume` (GPU 半日、server 無し)。**
+
+`Qwen38Runner` には reset / position / checkpoint / restore が無い (2026-09-14 の grep。`rollback(keep:)` は投機用で、直前の 1〜2 行にしか戻れない)。ランナーが持つ状態と戻し方 (コードから):
+
+| 状態 | 持ち方 | 戻し方 | 1 チェックポイントのバイト (導出) |
+| --- | --- | --- | ---: |
+| GDN 36 層 (`linState` Hv×Dl×Dl f32、`linHist` (convK−1)×C f32) | 上書き。引き算が無い | コピーを取る | 36 × (3,145,728 + 122,880) B = 112.2 MiB |
+| PLE の履歴 (`pleHist` 3×ngram×hc×e f32、`plePrev` 2 トークン) | 上書き | コピー (トークン列からの再計算も可) | 0.35 MiB |
+| full attention 12 層の KV (`kCache` / `vCache`、f32) | 位置ごと (append-only) | カーソルを戻すだけ | 0 (12K で 576 MiB は生きている分) |
+| インデクサ鍵 (`idxRawKeys` 位置ごと、`idxBlockKeys` は 4 行ブロックが揃った時点で書く) | 位置ごと | カーソル。**ブロック途中の位置に戻したとき、次の prefill がそのブロック鍵を書き直すか** (未確認) | 0 |
+| MTP ヘッド (blk.48) の KV | 位置ごと | カーソル。ただし投機ループでは MTP KV が幹より `kept` 行遅れる (`mtpTokens` / `mtpRows`、[14](14-MTP-NMAX2.md)) | 0 (12K で 48 MiB) |
+
+→ 1 チェックポイント ≈ 112.6 MiB (文脈長に依らない)。
+
+- 足すもの: `reset()`、`position`、`captureCheckpoint()` (GDN・conv 履歴・PLE 履歴のコピー + 位置)、`restore()` (コピーを戻し、KV・インデクサ・MTP KV のカーソルを戻す)。
+- **取れる位置の要件。**要件表の P−1・U−m は prefill の途中なので、prefill を任意の位置で区切ってその場で取れること (P−1 → P は T=1 の 1 行)。`<tool_call>` の直前は decode の途中なので、
+  投機ループの受理・巻き戻しが済んだステップの境目で取れること (位置はランナーが言う位置、下の落とし穴 1)。
+- 検査 (`--qwen38-resume`、greedy、短文脈): 1 要求で通したときと接頭 N を持ち越したときで同じトークン列 (N を 3 つ) / 負例 (続きが違えば答えも違う) /
+  P−1 に戻して 1 トークンから同じトークン列 / U−m に戻して 1 行足した列を流し、全部計算し直したときと同じトークン列 / n_max 1 と 2 の投機で終わったときの位置。
+- 落とし穴 1 ([qwen35moe/41 §3-2](../qwen35moe/41-PROMPT-CACHE.md)): 記録する位置は**ランナーが言う位置**で、`prompt + 生成 − 1` の式ではない。いまの `--qwen38-generate` のループ (`Qwen38MTPCheck.swift`) は検証で kept+1 行を食って kept+1 個を出し、
+  最後に出したトークンは食っていないので式が成り立つが、server のループがそのままとは限らない。
+- 落とし穴 2 (Qwen3.8 固有): 投機の最後のステップで受理した `kept` 行は幹の状態に入っているが MTP KV には入っていない。継続の prefill は MTP ヘッドにその行から食わせる
+  (いまは prefill 全体を MTP に通している、[10 §8-1](10-MTP-SHADOW-SPEC.md)。D-3 と絡む)。restore したら MTP KV のカーソルも戻す。
+- 続きから走った答えは、全部計算し直した答えとバイト一致するとは限らない (q/41 §6: 前ターンで生成した行は decode カーネル、計算し直すと prefill カーネルが書く)。検査は短い決定的な答えで「同じトークン列」を見る。
+
+**G-1. server 経路と INV-1 (GPU 1 日)。**
+
+- `TsugumiServer` / `TsugumiApp` に Qwen38 の参照は 0 (2026-09-14 の grep)。生成ループ・MTP・instruct サンプラは検査 CLI (`--qwen38-generate`、`Qwen38MTPCheck.swift`) にだけあり、トークン化は Python (トークンファイル) で済ませている。
+- トークナイザ: `~/LLM/Qwen3.8-Flash-Next-tokenizer/tokenizer.json` は Ornith のものと vocab 248,044・merges 247,587・pre_tokenizer / normalizer / decoder / post_processor が同一で、
+  違いは added_tokens 7 個 (248070〜248076、audio / tts) だけ (2026-09-14 に json で比較)。`QwenTokenizer` に Qwen3.8 の `chat_template.jinja` と added_tokens を読ませれば足りる
+  (未確認: swift-jinja がこのテンプレートの `namespace` / `messages[::-1]` / `|items` / `preserve_thinking` を通すか)。
+- 重みは `.moepack` ではなく GGUF + PLE + サイドカー 2 本 (16)。manifest の `arch.family` で振り分ける既存の形 (`RealInferenceClient` は `gemma` / `ornith` の 2 択) に qwen4exp を足す。
+  `capacity` (12K) と `maxBatch` (prefill チャンク、12K は 2048) は init で固定。
+- **INV-1 (描き直し == 生成) を Gemma と同じ手段で閉じる。**テンプレート (2026-09-14 に読んだ) で描き直しがずれうるのは、文字列でない引数の `tojson` (メモリ `ornith-tojson-roundtrip`: `/` → `\/`)、
+  `arguments|items` の順、`content|trim`。thinking off の空の思考ブロック (`<think>\n\n</think>\n\n`) は読んだ限り生成プロンプトと合う (未確認、実機の cached で見る)。生成の文法をテンプレートが描く正準形に縛り (GEN-8 の Qwen3.8 版)、文法で縛れない分はサーバー用のテンプレート変種で描き直しを生成に合わせる (DEV-12 の Qwen3.8 版)。
+  検査は `QwenTurnRedrawTests` (Ornith の INV-1) と同じ形を Qwen3.8 のテンプレートで。残るずれは DEV-15 (自由形式の値の中のキー順) だけにする。
+- 品質の見方は 01 §1-1 のとおり「英語の短答 + ツール呼び出し」。IQ2_XXS の品質の根拠はいま参照一致・PLE 負例 1 本・受理率 0.72〜0.95 だけなので、ここで初めて外から測れる。
+- 「当たったか」はクライアントの記録と突き合わせる (メモリ `check-client-session-first`: pi は `~/.pi/agent/sessions`、Mac アプリは Inspector の cached / prefill)。
+
+**G-2. prompt cache のセッション (CACHE-1 / 2 / 3 / 8、GPU 1 日、G-0 と G-1 の後)。**
+
+- 判定: LCP で分岐点を出し、分岐点以前で戻れる最も新しい位置 (生きている状態か、要件表の位置で取ったチェックポイント) から続きだけ prefill。戻れる点が 1 つも無いときだけ全再処理。
+- 取る位置と捨て方は要件表のとおり。**Ornith の `captureAtPromptEnd` (P で 1 本、直近 2 要求) は使わない。**
+- **これは prefill を速くする話ではなく、prefill をしない話。**
+- 測り方: 要件表の場面を Mac アプリ (U4 / U5) と pi (ツールループ) で 1 回ずつ踏み、`cached` / `prompt_n` / prefill s を 1 行ずつ。**同じ操作を Gemma でも流して、場面ごとに `prompt_n` を並べる**
+  (Gemma の列はコードからの導出なので、基準の側も実測にする)。加えてチェックポイントを持った状態の wired 最大 / Swapouts (12K、memlog 越し)。
+- 止める条件: どれかの場面で Qwen3.8 の `prompt_n` が Gemma より大きい (= 取る位置か描き直しが要件を満たしていない。速度を読まずに直す)。
+
+基準の外 (Gemma も全部払う。進めるかはユーザー判断):
+
+- **CACHE-9 (会話 2 本以上)**: 1 会話の保存は 12K で ≈ 826 MiB (GDN 112 + KV 576 + インデクサ 90 + MTP KV 48、導出)。RAM には無い (wired 14.5 GB)。SSD なら書き 0.8 GB・読み 6.2 GB/s で 0.13 s (導出、未確認)。Mac アプリの複数チャットの切り替え。
+- **履歴の切り詰め**: サーバ側では塞げない。クライアント (Mac アプリ / pi) が 12K に収める形を、切り詰めではなく「要約して新しい会話」にするか。
+
+**G-3. 文法つきツール強制** (Ornith [qwen35moe/40](../qwen35moe/40-MTP-GRAMMAR.md))。G-1 の後。Qwen3.8 のツール呼び出しは Ornith と同じ `<function=…><parameter=…>` の XML 形 (テンプレート) なので `QwenToolCallGrammar` を流用できる見込み (未確認)。
+G-1 の INV-1 の文法 (正準形への縛り) と同じ文法の上に載せる。
 
 ## 3. 測り方の共通規則
 
@@ -258,20 +341,24 @@ Ornith [qwen35moe/38](../qwen35moe/38-MTP-VERIFY-PATH.md) の split-KV がこれ
 | 3 | B-1 | 無し (計器) | 半日 | 台帳の当たり率 (X = 2 / 4 / 6 GB) |
 | 4 | B-2 → B-3 | advise の省略 → 欠けだけ pread | 1〜3 日 | advise ms・kernel→GPU ms・tok/s |
 | 5 | C-1 | hc カーネル | 半日 | hc の GPU ms (T = 1 / 2 / 3) |
-| 6 | G-2 | 延長の判定 | 半日 | 2 ターン目の prefill s |
+| 6 | G-0 → G-1 → G-2 | reset / 任意位置の checkpoint / restore・server 結線・INV-1 (文法とテンプレート変種)・Gemma の場面表どおりの取る位置 | 2〜3 日 | `--qwen38-resume`・場面ごとの `prompt_n` (Gemma と並べる)・チェックポイントを持った wired |
 | 7 | D-1 → D-2 → D-3 | 注意カーネル・影モード | 2 日 | ドラフト ms・受理率 |
 | 8 | B-4 → B-5 | ビューの寿命・hit-first | 1〜2 日 | 定数 ms・wired 最大・tok/s |
 | 9 | E-1 → E-2 | 選択の GPU 化 | 半日 | pre の host ms |
 | 10 | C-2 | サイドカー (ユーザー判断) | 1 日 | logits の差・tok/s |
 | 11 | F | 小カーネル | 半日 | 単体の GPU ms |
-| 12 | G-1 → G-3 | server | — | ツール呼び出しの品質 |
+| 12 | G-3 | 文法つきツール強制 | 半日 | ツール呼び出しの品質 |
 | — | W-4 | 無し (検定) | GPU 無し | F32 の BF16 恒等式の成否 (成り立っても進退はユーザー判断) |
 
 W-2 / W-3 は `Qwen38Runner.swift` と `moe_ggml.metal` を触るので、A の未コミットの変更が入ってから始める。W-1 は SSD を使うので計測の無い時間に回す。
 
-G-2 を 6 番に置いたのは、B〜D の 12K の腕を回すたびに prefill 133 s を払っているためでもある (延長が入れば long の腕は 1 度の prefill で続けられる)。
+G を 6 番に置いたのは、B〜D の 12K の腕を回すたびに prefill 133 s を払っているためでもある (継続が入れば long の腕は 1 度の prefill で続けられる)。
 
 ## 6. 文書の食い違い (直すのは別作業)
 
 - `docs/SYSTEM_DESIGN.md` が指す `OPTIMIZATION_JOURNEY.md` は存在しない。実験史は `docs/mtp/` と `docs/qwen35moe/` にある。
+- `docs/OPENAI_SERVER.md` の「Ornith installs」の表 (prompt reuse: **none**、`cached_tokens` は常に 0) と `docs/MAC_APP.md` の「Ornith: 厳密な延長のみ」は、
+  2026-08-23 の CACHE-8 (`QwenServerSession` のチェックポイント、`--ctx-checkpoints 2`) より前の記述。q/41 自体も §0 #2 の「全ミス」が履歴になっている。
 - 同文書の「`RDADVISE` は既定 off」は [mtp/40 §2a](../mtp/40-HANDOFF.md) (2026-08-20 に mmap + residency set + `F_RDADVISE` を既定 on) と矛盾。
+- Ornith の prompt cache は Gemma に届いていない: `QwenServerSession.captureAtPromptEnd` はプロンプト末尾でだけ取り、SPEC CACHE-8 の「最後の user メッセージの直前」では取らない。
+  末尾のチェックポイントは同じ長さのプロンプトに使えないので、1 ターン目の再生成は全再処理。`RealInferenceClient.swift:58` のコメントは Ornith を「exact-extension prompt cache」と書いたまま。
