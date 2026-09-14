@@ -98,6 +98,11 @@ package final class Qwen38Runner {
     /// No-copy views of one expert's gate / up / down rows in the mapped GGUF,
     /// keyed (layer * nExperts + expert) * 3 + part. Created on first use.
     private var expertParts: [Int: (buffer: MTLBuffer, offset: Int)] = [:]
+    /// The shared-expert buffer `commitShared` queued last, for the routed buffer's queue wait (docs/qwen38/13 §5).
+    private var lastSharedBuffer: MTLCommandBuffer?
+    /// Check only (`Q38_FRESH_VIEWS=1`): make the expert views anew every forward instead of keeping them, so every
+    /// view pays its first command buffer's mapping (docs/qwen38/13 §5).
+    package var freshExpertViews = ProcessInfo.processInfo.environment["Q38_FRESH_VIEWS"] == "1"
     private let ropeFreq: MTLBuffer
 
     // Per-layer state.
@@ -133,6 +138,9 @@ package final class Qwen38Runner {
         /// `kernelStartTime` to `gpuStartTime` (scheduling, making the no-copy expert views resident),
         /// `gpuEndTime` to `waitUntilCompleted` returning.
         package var routedToKernel = 0.0, routedKernelToGPU = 0.0, routedAfterGPU = 0.0
+        /// Part of `routedKernelToGPU` with the shared-expert buffer queued ahead still unfinished
+        /// (its `gpuEndTime` after the routed buffer's `kernelStartTime`), and that buffer's GPU time.
+        package var routedBehindShared = 0.0, sharedGPU = 0.0
         package var adviseCalls = 0
         /// Router preview (`previewTopN`): distinct experts of layers 1..<48 that the previous layer's preview named,
         /// all of them, and the preview's distinct experts.
@@ -1138,7 +1146,7 @@ package final class Qwen38Runner {
                         throw GGUFFile.Error.format("expert view failed: layer \(il) expert \(ex)")
                     }
                     v = made
-                    expertParts[key] = v
+                    if !freshExpertViews { expertParts[key] = v }
                     prof.newViewBytes += made.buffer.length
                 }
                 routedArgEncoder.setBuffer(v.buffer, offset: 0, index: part * nExperts + slot)
@@ -1567,6 +1575,7 @@ package final class Qwen38Runner {
         try shared(cb, pre: pre, T: T)
         encodeSharedSum(cb, T: T)
         cb.commit()
+        lastSharedBuffer = cb
     }
 
     /// Each row's top `n` of `previewLogits` (lowest index first on ties), as one set.
@@ -1782,7 +1791,7 @@ package final class Qwen38Runner {
         prof.ple = CFAbsoluteTimeGetCurrent() - tStep
 
         // The last routed buffer and its host commit time; with `pipeline` a later wait has completed it.
-        var pendingRouted: (cb: MTLCommandBuffer, commit: CFTimeInterval)?
+        var pendingRouted: (cb: MTLCommandBuffer, commit: CFTimeInterval, shared: MTLCommandBuffer?)?
         func settleRouted(waited: Bool) throws {
             guard let p = pendingRouted else { return }
             pendingRouted = nil
@@ -1792,6 +1801,11 @@ package final class Qwen38Runner {
             prof.routedGPU += p.cb.gpuEndTime - p.cb.gpuStartTime
             prof.routedToKernel += p.cb.kernelStartTime - p.commit
             prof.routedKernelToGPU += p.cb.gpuStartTime - p.cb.kernelStartTime
+            if let sh = p.shared {
+                sh.waitUntilCompleted()
+                prof.sharedGPU += sh.gpuEndTime - sh.gpuStartTime
+                prof.routedBehindShared += max(0, min(sh.gpuEndTime, p.cb.gpuStartTime) - p.cb.kernelStartTime)
+            }
             if !waited { prof.routedAfterGPU += hostDone - p.cb.gpuEndTime }
         }
         let late = pipeline && sharedLate
@@ -1845,7 +1859,8 @@ package final class Qwen38Runner {
             combine(cb2, block: blk, T: T)
             let t2 = CFAbsoluteTimeGetCurrent()
             prof.route += t2 - t1
-            pendingRouted = (cb2, CACurrentMediaTime())
+            pendingRouted = (cb2, CACurrentMediaTime(), lastSharedBuffer)
+            lastSharedBuffer = nil
             cb2.commit()
             // With `pipeline` the next layer's wait (or the one below) completes it: `routed` is then only the
             // commit, and its GPU and page-in time land in the next `preRouter`.
