@@ -1681,6 +1681,22 @@ if let index = arguments.firstIndex(of: "--qwen38-generate"), index + 1 < argume
     exit(0)
 }
 
+// `--qwen38-resume <prompt A> <prompt B>`: checkpoints against a whole recompute (Qwen38ResumeCheck.swift).
+if let index = arguments.firstIndex(of: "--qwen38-resume"), index + 2 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    let passed = try runQwen38Resume(
+        promptA: arguments[index + 1], promptB: arguments[index + 2],
+        newTokens: opt("--q38-new").flatMap { Int($0) } ?? 48,
+        chunk: opt("--q38-chunk").flatMap { Int($0) } ?? 2048,
+        mtp: opt("--q38-mtp") ?? "off",
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf")
+    exit(passed ? 0 : 1)
+}
+
 // `--qwen38-residency-probe`: the routed buffer's kernel -> GPU start by view count, bytes and reuse (`--q38-rounds N`,
 // Qwen38ResidencyProbe.swift, docs/qwen38/13).
 if arguments.contains("--qwen38-residency-probe") {

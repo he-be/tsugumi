@@ -1569,6 +1569,43 @@ package final class Qwen38Runner {
         snapshotRows = 0
     }
 
+    /// Bytes `captureRecurrent` writes: the GDN state and conv history of every linear layer, the PLE history
+    /// (36 x (3,145,728 + 122,880) + 368,640 = 117.6 MiB, whatever the context).
+    package var recurrentBytes: Int {
+        let C = 2 * Hk * Dl + Hv * Dl
+        let linear = (0..<nTrunk).filter(isLinear).count
+        return linear * (Hv * Dl * Dl * 4 + (convK - 1) * C * 4) + pleHist.length
+    }
+
+    /// The state a position has and a cursor cannot give back (`docs/qwen38/15` §2 G-0): the GDN state and conv
+    /// history of every linear layer and the PLE history, as memory regions in a fixed order (`recurrentBytes` in
+    /// all), plus `plePrev`. KV, indexer keys and the MTP KV are by position: rows before the position stay as they are
+    /// and the rows after it are rewritten by the next forward (an indexer block key by the batch that holds its 4th
+    /// token). Regions a checkpoint is read into are the current buffers (`rollback` swaps buffer identities), made if
+    /// no forward has made them yet.
+    package func forEachRecurrentRegion(_ body: (UnsafeMutableRawPointer, Int) throws -> Void) rethrows {
+        let C = 2 * Hk * Dl + Hv * Dl
+        for il in 0..<nTrunk where isLinear(il) {
+            let state = linState[il] ?? device.makeBuffer(length: Hv * Dl * Dl * 4, options: .storageModeShared)!
+            let hist = linHist[il] ?? device.makeBuffer(length: (convK - 1) * C * 4, options: .storageModeShared)!
+            linState[il] = state
+            linHist[il] = hist
+            try body(state.contents(), state.length)
+            try body(hist.contents(), hist.length)
+        }
+        try body(pleHist.contents(), pleHist.length)
+    }
+
+    /// The last two tokens PLE hashes with (part of a checkpoint). Setting it drops any pending rollback.
+    package var plePrevious: [Int] {
+        get { plePrev }
+        set {
+            plePrev = newValue
+            snapshotTaken = 0
+            snapshotRows = 0
+        }
+    }
+
     /// After a `snapshotRows` forward, sets the recurrent state to what it was after that batch's first `keep`
     /// tokens only (the rest of the batch was rejected): the GDN state from the step kernel's copy after token
     /// keep - 1 (buffers swapped), the conv and PLE histories shifted by `keep` from their copies with the kept

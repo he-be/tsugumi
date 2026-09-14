@@ -21,6 +21,92 @@ package struct Qwen38Run: Sendable {
     package var newTokens: Int { tokens.count }
 }
 
+/// A copy of everything `Qwen38Engine` needs to continue from `position` (`docs/qwen38/15` §2 G-0): the runner's
+/// recurrent regions (117.6 MiB) and the engine's own MTP bookkeeping. The positional state (KV, indexer keys, MTP KV)
+/// is not copied: the rows before `position` are unchanged by anything that runs after it, as long as the tokens
+/// before `position` are the same.
+///
+/// Where the bytes live is `Qwen38Engine.checkpointStore`: `ssd` (default: a file written and read with `F_NOCACHE`,
+/// unlinked as soon as it is created so only the descriptor holds it) or `ram` (anonymous memory). Four copies in RAM
+/// (450 MB) swapped under the guard at 4K twice (`docs/qwen38/18`).
+package final class Qwen38Checkpoint: @unchecked Sendable {
+    package let position: Int
+    package let bytes: Int
+    /// Seconds the copy took.
+    package let captureSeconds: Double
+    private let memory: UnsafeMutableRawPointer?
+    private let fd: Int32
+    fileprivate let plePrev: [Int]
+    fileprivate let pendingH: [Float]
+    fileprivate let mtpTokens: [Int]
+    fileprivate let mtpRows: [Float]
+
+    fileprivate init(engine: Qwen38Engine) throws {
+        let t = Date()
+        position = engine.position
+        let runner = engine.runner
+        bytes = runner.recurrentBytes
+        plePrev = runner.plePrevious
+        pendingH = engine.pendingH
+        mtpTokens = engine.mtpTokens
+        mtpRows = engine.mtpRows
+        switch engine.checkpointStore {
+        case .ram:
+            let m = UnsafeMutableRawPointer.allocate(byteCount: bytes, alignment: 16)
+            var at = 0
+            runner.forEachRecurrentRegion { p, n in (m + at).copyMemory(from: p, byteCount: n); at += n }
+            memory = m
+            fd = -1
+        case .ssd(let directory):
+            let file = directory.appendingPathComponent("q38-checkpoint-\(UUID().uuidString).bin").path
+            let fd = open(file, O_CREAT | O_EXCL | O_RDWR, 0o600)
+            guard fd >= 0 else { throw GGUFFile.Error.open("\(file): errno \(errno)") }
+            unlink(file)
+            _ = fcntl(fd, F_NOCACHE, 1)
+            var ok = false
+            defer { if !ok { close(fd) } }
+            var at = 0
+            try runner.forEachRecurrentRegion { p, n in
+                var done = 0
+                while done < n {
+                    let w = pwrite(fd, p + done, n - done, off_t(at + done))
+                    guard w > 0 else { throw GGUFFile.Error.open("\(file): write errno \(errno)") }
+                    done += w
+                }
+                at += n
+            }
+            ok = true
+            memory = nil
+            self.fd = fd
+        }
+        captureSeconds = Date().timeIntervalSince(t)
+    }
+
+    fileprivate func read(into runner: Qwen38Runner) throws {
+        if let memory {
+            var at = 0
+            runner.forEachRecurrentRegion { p, n in p.copyMemory(from: memory + at, byteCount: n); at += n }
+        } else {
+            var at = 0
+            try runner.forEachRecurrentRegion { p, n in
+                var done = 0
+                while done < n {
+                    let r = pread(fd, p + done, n - done, off_t(at + done))
+                    guard r > 0 else { throw GGUFFile.Error.open("checkpoint read errno \(errno)") }
+                    done += r
+                }
+                at += n
+            }
+        }
+        runner.plePrevious = plePrev
+    }
+
+    deinit {
+        memory?.deallocate()
+        if fd >= 0 { close(fd) }
+    }
+}
+
 /// The Qwen3.8 generation loop over `Qwen38Runner` for the server and the app: chunked prefill, then plain decode or
 /// the MTP loop with one draft (`docs/qwen38/10` §5-4, n_max 1 = the default of `14`), the host sampler, a grammar
 /// gate, and the one state a family with a recurrent state can continue from without a checkpoint — its own live
@@ -35,12 +121,23 @@ package final class Qwen38Engine {
     package private(set) var position = 0
     /// The MTP head's input for the token at `position`: the trunk residual of `position - 1` (zeros at 0, as
     /// llama.cpp's first `pending_h`).
-    private var pendingH: [Float]
+    fileprivate var pendingH: [Float]
     /// Kept drafts whose rows the trunk holds but the MTP KV does not yet, each with the trunk residual of the position
     /// before it (`14` §4).
-    private var mtpTokens: [Int] = []
-    private var mtpRows: [Float] = []
+    fileprivate var mtpTokens: [Int] = []
+    fileprivate var mtpRows: [Float] = []
     private let mtpChunk = Int(ProcessInfo.processInfo.environment["Q38_MTP_CHUNK"] ?? "") ?? 256
+
+    package enum CheckpointStore {
+        case ram
+        case ssd(URL)
+    }
+    /// `Q38_CHECKPOINT_STORE=ssd|ram` (default ssd, in `Q38_CHECKPOINT_DIR` or the temporary directory).
+    package var checkpointStore: CheckpointStore = {
+        let env = ProcessInfo.processInfo.environment
+        if env["Q38_CHECKPOINT_STORE"] == "ram" { return .ram }
+        return .ssd(URL(fileURLWithPath: env["Q38_CHECKPOINT_DIR"] ?? NSTemporaryDirectory()))
+    }()
 
     package init(gguf: URL, ple: URL, capacity: Int, prefillChunk: Int, speculative: Bool) throws {
         runner = try Qwen38Runner(gguf: gguf, ple: ple, capacity: capacity, maxBatch: prefillChunk)
@@ -58,10 +155,31 @@ package final class Qwen38Engine {
         mtpRows = []
     }
 
+    /// A copy of the state at `position` (needs `position > 0`).
+    package func captureCheckpoint() throws -> Qwen38Checkpoint {
+        precondition(position > 0, "nothing to capture at position 0")
+        return try Qwen38Checkpoint(engine: self)
+    }
+
+    /// Back to where `checkpoint` was taken. The caller vouches that the tokens before its position are the ones the
+    /// next prompt starts with.
+    package func restore(_ checkpoint: Qwen38Checkpoint) throws {
+        try checkpoint.read(into: runner)
+        position = checkpoint.position
+        pendingH = checkpoint.pendingH
+        mtpTokens = checkpoint.mtpTokens
+        mtpRows = checkpoint.mtpRows
+    }
+
     /// Prefill `promptTokens` from `position` (= `cachedPromptTokens`) and generate up to `maxNewTokens`.
     /// `onPrefill(done, total)` after every chunk; `onToken(index, id)` for every emitted token, before the next draw
     /// (a caller that suppresses the grammar inside a thought block sets it there). `shouldStop` is asked after each
     /// token. Throws `CancellationError` between chunks and steps; the state is then unnamed and the caller resets.
+    ///
+    /// Checkpoints (`docs/qwen38/15` §2 G): the prefill is cut at every position of `checkpointsAt` inside it and
+    /// `onCheckpoint` gets a copy there (after the MTP head has taken the same rows). In decode, before a token of
+    /// `checkpointBefore` is fed, `onCheckpoint` gets a copy at that token's position; the speculative loop never keeps
+    /// such a token as a draft, so it is always the token fed next and never inside a verified pair.
     package func runCompletion(promptTokens: [Int32],
                                cachedPromptTokens: Int,
                                maxNewTokens: Int,
@@ -69,8 +187,11 @@ package final class Qwen38Engine {
                                constraint: (any GenerationConstraint)?,
                                greedy: Bool,
                                seed: UInt64,
+                               checkpointsAt: [Int] = [],
+                               checkpointBefore: Set<Int32> = [],
                                shouldStop: () -> Bool = { false },
                                onPrefill: ((Int, Int) -> Void)? = nil,
+                               onCheckpoint: ((Qwen38Checkpoint) -> Void)? = nil,
                                onToken: ((Int, Int32) throws -> Void)? = nil) throws -> Qwen38Run {
         precondition(!promptTokens.isEmpty, "the prompt must have at least one token")
         precondition(cachedPromptTokens == position,
@@ -94,9 +215,10 @@ package final class Qwen38Engine {
         }
         var lastLogits = [Float]()
         var done = 0
+        let cuts = checkpointsAt.filter { $0 > position && $0 < position + prompt.count }.sorted()
         while done < prompt.count {
             try Task.checkCancellation()
-            let T = min(prefillChunk, prompt.count - done)
+            let T = min(prefillChunk, prompt.count - done, (cuts.first { $0 > position } ?? Int.max) - position)
             let chunk = Array(prompt[done..<(done + T)])
             let l = try runner.forward(tokens: chunk, startPos: position)
             if done + T == prompt.count { lastLogits = Array(l) }
@@ -121,6 +243,7 @@ package final class Qwen38Engine {
             }
             position += T
             done += T
+            if cuts.contains(position), let onCheckpoint { onCheckpoint(try captureCheckpoint()) }
             onPrefill?(done, prompt.count)
         }
         let prefillSeconds = Date().timeIntervalSince(started)
@@ -148,6 +271,7 @@ package final class Qwen38Engine {
                 let V = runner.vocab
                 loop: while true {
                     try Task.checkCancellation()
+                    if checkpointBefore.contains(Int32(y)), let onCheckpoint { onCheckpoint(try captureCheckpoint()) }
                     let draft = Qwen38Sampler.argmax(try (mtpRows + pendingH).withUnsafeBufferPointer {
                         try runner.mtpForward(tokens: mtpTokens + [y], startPos: position - mtpTokens.count,
                                               hidden: $0.baseAddress!)
@@ -163,7 +287,8 @@ package final class Qwen38Engine {
                     let t0 = try verify.withUnsafeBufferPointer {
                         try sampler.sample(UnsafeBufferPointer(rebasing: $0[0..<V]), gate: gate, position: produced.count)
                     }
-                    let kept = t0 == draft && !stopTokens.contains(Int32(t0)) && produced.count + 1 < maxNewTokens ? 1 : 0
+                    let kept = t0 == draft && !stopTokens.contains(Int32(t0)) && !checkpointBefore.contains(Int32(t0))
+                        && produced.count + 1 < maxNewTokens ? 1 : 0
                     if kept == 0 { runner.rollback(keep: 1) }
                     accepted += kept
                     mtpTokens = kept == 1 ? [draft] : []
@@ -182,6 +307,7 @@ package final class Qwen38Engine {
             } else {
                 while true {
                     try Task.checkCancellation()
+                    if checkpointBefore.contains(Int32(y)), let onCheckpoint { onCheckpoint(try captureCheckpoint()) }
                     let l = try runner.forward(tokens: [y], startPos: position)
                     position += 1
                     y = try sampler.sample(l, gate: gate, position: produced.count)
