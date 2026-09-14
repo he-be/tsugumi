@@ -1688,6 +1688,11 @@ if arguments.contains("--qwen38-residency-probe") {
         guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
         return arguments[i + 1]
     }
+    let probeGGUF = opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf"
+    if arguments.contains("--q38-queues") {
+        try runQwen38QueueProbe(gguf: probeGGUF, rounds: opt("--q38-rounds").flatMap { Int($0) } ?? 30)
+        exit(0)
+    }
     try runQwen38ResidencyProbe(
         gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
         rounds: opt("--q38-rounds").flatMap { Int($0) } ?? 60)

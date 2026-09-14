@@ -188,3 +188,129 @@ func runQwen38ResidencyProbe(gguf: String, rounds: Int) throws {
                      q(g, 0.5), q(g, 0.9), q(wl, 0.5), q(wl, 0.9)))
     }
 }
+
+// MARK: - Does a buffer paging in block another queue (`--qwen38-residency-probe --q38-queues`)
+//
+// docs/qwen38/13 §6: the page-in happens between `kernelStartTime` and `gpuStartTime`. Reordering rows (the MTP
+// verify rows staggered by half a layer) can only hide it if a buffer paging in does not hold up buffers of another
+// command queue. Per round, fresh views of 10 cold experts (30 views) and 30 kept views over cached pages:
+//   warm       the cached buffer alone
+//   coldA+warmA the cold buffer on queue A, then the cached buffer on queue A (same queue: queued behind it)
+//   coldA+warmB the cold buffer on queue A, then the cached buffer on queue B, committed right after
+//   coldA+coldB two cold buffers (different experts) on queues A and B, committed back to back
+//   cold2A     the same two cold buffers' worth of views in one buffer on queue A (the T=2 union shape)
+
+func runQwen38QueueProbe(gguf: String, rounds: Int) throws {
+    setvbuf(stdout, nil, _IOLBF, 0)
+    let file = try GGUFFile(url: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath))
+    let device = MTLCreateSystemDefaultDevice()!
+    let queueA = device.makeCommandQueue()!, queueB = device.makeCommandQueue()!
+    let src = """
+    #include <metal_stdlib>
+    using namespace metal;
+    kernel void touch(constant uchar *b [[buffer(0)]], device uint *o [[buffer(1)]],
+                      uint i [[thread_position_in_grid]]) {
+        o[0] += b[i * 16384];
+    }
+    """
+    let lib = try device.makeLibrary(source: src, options: nil)
+    let pso = try device.makeComputePipelineState(function: lib.makeFunction(name: "touch")!)
+    let out = device.makeBuffer(length: 4, options: .storageModeShared)!
+    let page = Int(getpagesize())
+    let partNames = ["ffn_gate_exps.weight", "ffn_up_exps.weight", "ffn_down_exps.weight"]
+    func ranges(_ layer: Int, _ experts: [Int]) throws -> [(offset: Int, byteCount: Int)] {
+        var r: [(offset: Int, byteCount: Int)] = []
+        for part in partNames {
+            let t = try file.tensor("blk.\(layer).\(part)")
+            let per = t.byteCount / 512
+            for ex in experts { r.append((t.offset + ex * per, per)) }
+        }
+        return r
+    }
+    func views(_ rs: [(offset: Int, byteCount: Int)]) throws -> [MTLBuffer] {
+        try rs.map {
+            guard let v = file.noCopyBuffer(device: device, offset: $0.offset, byteCount: $0.byteCount) else {
+                throw GGUFFile.Error.format("view failed")
+            }
+            return v.buffer
+        }
+    }
+    func buffer(_ q: MTLCommandQueue, _ set: [MTLBuffer]) -> MTLCommandBuffer {
+        let cb = q.makeCommandBuffer()!
+        let enc = cb.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(pso)
+        enc.setBuffer(out, offset: 0, index: 1)
+        enc.useResources(set, usage: .read)
+        for v in set {
+            enc.setBuffer(v, offset: 0, index: 0)
+            enc.dispatchThreads(MTLSize(width: v.length / 16384, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 16, height: 1, depth: 1))
+        }
+        enc.endEncoding()
+        return cb
+    }
+
+    // Cold experts (layers 30..47, no page of any part cached), 6 groups of 10 per round, each group used once.
+    var cold: [(Int, Int)] = []
+    outer: for layer in 30..<48 {
+        for ex in 0..<512 {
+            if cold.count >= rounds * 60 { break outer }
+            if try ranges(layer, [ex]).allSatisfy({ file.nonResidentBytes(offset: $0.offset, byteCount: $0.byteCount) >= ($0.byteCount / page) * page }) {
+                cold.append((layer, ex))
+            }
+        }
+    }
+    let usable = cold.count / 60
+    var nextGroup = 0
+    func coldViews() throws -> [MTLBuffer] {
+        var list: [MTLBuffer] = []
+        for (layer, ex) in cold[(nextGroup * 10)..<(nextGroup * 10 + 10)] { list += try views(try ranges(layer, [ex])) }
+        nextGroup += 1
+        return list
+    }
+    let warmRanges = try ranges(8, Array(0..<10))
+    file.preadRanges(warmRanges, threads: 4)
+    let warm = try views(warmRanges)
+    do { let cb = buffer(queueA, warm); cb.commit(); cb.waitUntilCompleted() }
+    do { let cb = buffer(queueB, warm); cb.commit(); cb.waitUntilCompleted() }
+    print("Qwen3.8 queue probe: \(usable) rounds of cold experts")
+
+    // label -> [(kernel>gpu ms of the first buffer, of the second, commit of the first -> both done)]
+    var samples: [String: [(Double, Double, Double)]] = [:]
+    let arms = ["warm", "coldA+warmA", "coldA+warmB", "coldA+coldB", "cold2A"]
+    for round in 0..<usable {
+        for k in 0..<arms.count {
+            let arm = arms[(k + round) % arms.count]
+            try autoreleasepool { () throws -> Void in
+                let first: MTLCommandBuffer, second: MTLCommandBuffer?
+                switch arm {
+                case "warm": first = buffer(queueA, warm); second = nil
+                case "coldA+warmA": first = buffer(queueA, try coldViews()); second = buffer(queueA, warm)
+                case "coldA+warmB": first = buffer(queueA, try coldViews()); second = buffer(queueB, warm)
+                case "coldA+coldB": first = buffer(queueA, try coldViews()); second = buffer(queueB, try coldViews())
+                default: first = buffer(queueA, try coldViews() + coldViews()); second = nil
+                }
+                let c = CACurrentMediaTime()
+                first.commit()
+                second?.commit()
+                first.waitUntilCompleted()
+                second?.waitUntilCompleted()
+                let w = CACurrentMediaTime()
+                samples[arm, default: []].append(((first.gpuStartTime - first.kernelStartTime) * 1000,
+                                                  second.map { ($0.gpuStartTime - $0.kernelStartTime) * 1000 } ?? .nan,
+                                                  (w - c) * 1000))
+            }
+        }
+    }
+    func q(_ xs: [Double], _ p: Double) -> Double {
+        let s = xs.filter { !$0.isNaN }.sorted()
+        return s.isEmpty ? .nan : s[min(s.count - 1, Int(Double(s.count - 1) * p + 0.5))]
+    }
+    print("arm           n | first kernel>gpu p50 p90 | second kernel>gpu p50 p90 | both done p50 p90")
+    for arm in arms {
+        let s = samples[arm] ?? []
+        print(String(format: "%-12@ %3d | %9.3f %.3f | %10.3f %.3f | %8.3f %.3f", arm as NSString, s.count,
+                     q(s.map { $0.0 }, 0.5), q(s.map { $0.0 }, 0.9), q(s.map { $0.1 }, 0.5), q(s.map { $0.1 }, 0.9),
+                     q(s.map { $0.2 }, 0.5), q(s.map { $0.2 }, 0.9)))
+    }
+}
