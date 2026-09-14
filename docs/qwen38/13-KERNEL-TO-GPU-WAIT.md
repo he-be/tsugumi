@@ -145,3 +145,58 @@ warm は、層 8 の 10 expert をキャッシュ済みにして使い回すビ�
 | 検査 | `Qwen38ResidencyProbe.swift` (`--qwen38-residency-probe [--q38-rounds N] [--q38-queues]`) |
 | ランナー | `StepProfile.newViewBytes`・`routedBehindShared`・`sharedGPU`、`freshExpertViews` (`Q38_FRESH_VIEWS`、検査用)、`routeDetail` に `new views X MB`・`behind shared`・`shared gpu` |
 | スクリプト・ログ (git 管理外) | `scratch/qwen38/long13.sh`・`long13/`・`sweep13.sh` (未実行)、`resid13/` |
+
+## 9. 再開手順: MTP n_max 2 (連鎖ドラフト)
+
+ユーザー指示 (2026-09-14): 次は 10 §8-1 の未測定「n_max 2 以上」を新しいコンテキストで進める。**RAM 軸 (先読み・上位 N 増・前もって常駐) と prefill には話を逸らさない。**
+
+### 9-1. 状態
+
+- コードはこの節と同じコミットまで。既定は `Q38_PIPELINE=1`・`Q38_SHARED_LATE=1`・`Q38_PREVIEW_N=0`。MTP は検査 CLI の `--qwen38-generate --q38-mtp off|shadow|spec|reject` にだけある。
+- n_max 1 の実測 (12 §2、腕 late): steady は素 6.20〜7.30 tok/s、投機 7.92〜9.51 tok/s。12K は素 5.51・投機 7.31 (§4、n=1)。受理率は短文脈 0.72〜0.95、12K 0.72〜0.90 (10 §5)。
+- PC 側の n_max 2 の実測 (`ssh masah@192.168.0.199` の `C:\LLM`): 5080 + llama.cpp の受理 0.75〜0.89 (`HANDOVER-pc-qfn-mtp.md`)。llm-server は位置別 0.94 / 0.88、2.83 tok/step (`HANDOVER-llm-server.md`)。4K instruct は n_max 4 が最速 (`RESULTS-pc-qsa-gather.md` §6)。
+- Mac の T=3 の検証費用は 09 §3-1 にしか無い。どれもパイプライン化 (12) の前の値:
+  - 256: T=2 208 ms / T=3 360 ms。**pre GPU が T=2 58 → T=3 127 ms と倍に跳ねる。**
+  - 12K: T=2 334 ms / T=3 415 ms。
+- 部品:
+  - `mtpHidden(row:)`: MTP ヘッドの残差。連鎖ドラフトの h になる。
+  - `snapshotFirst` / `rollbackToFirst`: 1 行目の後の状態へ戻す。
+  - `q38_gdn_step` の `snap_t` 引数: どのトークンの後で退避するかを任意に指定できる。ただしランナーは 0 しか渡していない。
+  - 巻き戻しの対象は GDN 状態・conv 履歴 (`linHist`・`linQkv0` は 1 行分)・PLE 履歴 (`pleHist`・`plePrev`)。KV・インデクサ鍵・MTP の KV は位置で上書きされるので何もしない。
+
+### 9-2. 最初に確かめること
+
+```bash
+swift build -c release --product TsugumiKernelCheck
+B=.build/release/TsugumiKernelCheck; S=scratch/qwen38
+Scripts/qwen38/guarded.sh checks.out $S/checks07.sh; grep -c PASS checks.out   # 24
+$B --qwen38-mtp-dump $S/prompts/code.tokens $S/mtp-code.dump && ~/LLM/venv/bin/python Scripts/qwen38/mtp_reference.py $S/mtp-code.dump   # PASS
+PROMPTS=code $S/spec10.sh   # code-greedy-off == reject == spec
+```
+
+### 9-3. 順番 (測れる最小の段から)
+
+1. **影モードで連鎖の受理率を測る** (実装が小さく、損得の前提になる)。
+   - `--q38-mtp shadow` のループで、d1 = argmax mtpForward([y], pos, h) の直後に、d2 = argmax mtpForward([d1], pos+1, hidden: mtpHidden(row: 0)) を足す (`Q38_MTP_CHAIN=2` など)。
+   - logits は幹と共有のバッファなので、d1 の時点で配列にコピーする (10 §7)。
+   - 位置 pos+1 の MTP の KV は、次のステップの mtpForward([y'], pos+1) が上書きするので、巻き戻しは要らない。そうなっていることを greedy で確かめる: 連鎖あり/なしで d1 列が一致すること。
+   - 記録: 位置別の受理 (d1 == t1、d1 と d2 がともに一致)、d2 のドラフト ms。
+   - プロンプト: code / tool / explain + long / long2 / long3、instruct、seed 1〜2。12K は memlog 越し。
+2. **検証の幅の費用をいまの形で測り直す**: `Q38_BENCH_WIDTHS=1,2,3 Q38_BENCH_REPS=12 $B --qwen38-prefill-bench ...` を短文脈 (256) と 12K で。
+   - T=3 で pre GPU が倍に跳ねる件 (09 §3-1) が残っていれば、先にその経路を見る (T の閾値で遅いカーネルに落ちていないか、`Q38_SPLIT_PRE=1`)。
+3. **ループと巻き戻しを n_max 2 に広げる** (`speculativeLoop`)。
+   - 検証は [y, d1, d2] (T=3)。受理数 a = 0 / 1 / 2 で、出すトークンは a + 1 本。
+   - 巻き戻しは「行 a の後」へ戻す一般形にする: GDN 状態の退避を行 0 と行 1 の 2 本、conv 履歴に入る行を 2 行分、PLE 履歴も 2 行分。
+   - `snapshotFirst` の precondition (T < `gdnMinTokens`) はそのまま使える。
+   - MTP の追いつき (`mtpTokens` / `mtpRows`) は、受理した行の token と、その 1 つ前の位置の幹の h (verify の `hidden(row:)`) の組にする。
+   - 中立性の検査: greedy で off == 全部棄却 == 2 本目だけ棄却 (新しい強制モード) == spec のトークン列。`spec10.sh` に腕を足す。
+4. **端から端**: n_max 1 と n_max 2 を腕を交互に (ABBA)、短文脈 3 本 + 12K 3 本、instruct、seed 1〜2、200 トークン。
+   - steady tok/s・受理・1 ステップの内訳 (`routeDetail`)。12K は memlog で wired / file-backed / Swapouts を見る。
+
+### 9-4. 落とし穴
+
+- 12K の n_max 1 の投機で、すでに wired 14.0〜14.7 GB・file-backed 1.1〜2.1 GB (10 §5、§4)。T=3 は expert の和集合がさらに増える (12K で 1,222 本、09 §3-1)。**見張り (`guarded.sh` / `memlog.sh`) を外さない。**
+  止まったら、次を流す前に `pgrep -x TsugumiKernelCheck` が空であることを見る。
+- 反復が 3 未満のセルには数字だけを書く。仮の値を掛けた損益表で進退を決めない (10 §8、09 §0-5)。
+- zsh は `${=VAR:-a b c}`。集計では、MTP の prefill をチャンク行と合計行で二重に数えない (10 §7)。
+- `Q38_COUNT_MISS` (mincore) は速度に影響しうる (§3)。速度を比べる走行では切る。
