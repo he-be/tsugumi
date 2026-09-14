@@ -1433,6 +1433,18 @@ public final class AppModel {
         guard runState == .running, !isCancellationPending else { return }
         let maxRounds = webSearchConfiguration.resolved().maxToolRounds
         let exhausted = toolRoundsUsed >= maxRounds
+        if exhausted, let last = chat.outputContinuationTurns.indices.last,
+           chat.outputContinuationTurns[last].role == .tool {
+            // `none` alone left the model looking at tools it could still
+            // see, and it wrote a call as text (docs/qwen38/21 A-4). The
+            // line goes on the result it is about to read for the first
+            // time, so every later rendering of that result carries it and
+            // the cache stays a prefix.
+            let note = Self.roundBudgetReachedNote(maxRounds: maxRounds)
+            if !chat.outputContinuationTurns[last].text.hasSuffix(note) {
+                chat.outputContinuationTurns[last].text += "\n\n" + note
+            }
+        }
         let request: AppGenerationRequest
         let policy = onlineToolChoice(trace: chat.outputToolTrace,
                                       tools: activeToolExecutor?.definitions ?? [])
@@ -1456,6 +1468,11 @@ public final class AppModel {
         chat.outputText = ""
         chat.outputReasoningText = ""
         startRound(request)
+    }
+
+    /// What the last tool result says once the round budget is spent.
+    nonisolated static func roundBudgetReachedNote(maxRounds: Int) -> String {
+        "(ツール呼び出しは合計 \(maxRounds) 回までで、上限に達しました。これ以上ツールは呼べません。ここまでの結果で答えます。)"
     }
 
     public func cancel() {
@@ -1510,7 +1527,7 @@ public final class AppModel {
     /// an index is set, nothing otherwise (a plain turn). Online: those plus
     /// the web tools, which need a search key — going online without one
     /// is an error the user can act on, the Inspector names both ways out.
-    nonisolated static func makeToolExecutor(configuration: WebSearchConfiguration,
+    public nonisolated static func makeToolExecutor(configuration: WebSearchConfiguration,
                                              mode: AppNetworkMode,
                                              transport: any HTTPTransport = URLSessionTransport()) throws
         -> (any AppToolExecutor)? {

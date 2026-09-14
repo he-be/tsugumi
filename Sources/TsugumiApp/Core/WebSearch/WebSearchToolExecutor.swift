@@ -6,8 +6,9 @@ import Foundation
 /// Brave; the model reads titles, URLs and snippets and picks what to open.
 /// `fetch_page` reads one of those URLs through Jina Reader or the app's own
 /// fetch, in the order the configuration prefers, and hands back the text
-/// clipped to the configured length. Both return errors as text: a failed
-/// search is something the model can route around, not a failed turn.
+/// clipped to the configured length, with `from` to read on past the clip
+/// (the page is read again). Both return errors as text: a failed search is
+/// something the model can route around, not a failed turn.
 public struct WebSearchToolExecutor: AppToolExecutor {
     public static let searchToolName = "web_search"
     public static let fetchToolName = "fetch_page"
@@ -100,8 +101,8 @@ public struct WebSearchToolExecutor: AppToolExecutor {
                 parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","description":"検索クエリ。固有名詞と要点を短く並べる。"}},"required":["query"]}"#),
             AppToolDefinition(
                 name: Self.fetchToolName,
-                description: "web_search の結果の URL を 1 つ開いて、ページ本文のテキストを返す。スニペットだけでは足りないときに、最も有望な URL から順に読む。",
-                parametersJSON: #"{"type":"object","properties":{"url":{"type":"string","description":"読むページの URL (http または https)。"}},"required":["url"]}"#),
+                description: "web_search の結果の URL を 1 つ開いて、ページ本文のテキストを返す。スニペットだけでは足りないときに、最も有望な URL から順に読む。本文が長くて打ち切られたときは、from に示された文字位置を渡すと続きが読める。",
+                parametersJSON: #"{"type":"object","properties":{"url":{"type":"string","description":"読むページの URL (http または https)。"},"from":{"type":"integer","description":"本文を読み始める文字位置 (省略時は 0)。"}},"required":["url"]}"#),
         ]
     }
 
@@ -120,7 +121,8 @@ public struct WebSearchToolExecutor: AppToolExecutor {
                 return AppToolResult(content: "error: fetch_page needs a non-empty \"url\".",
                                      isError: true, summary: "missing url")
             }
-            return await fetch(text)
+            let from = Int(call.stringArgument("from") ?? "") ?? 0
+            return await fetch(text, from: max(0, from))
         default:
             return AppToolResult(content: "error: unknown tool \(call.name).",
                                  isError: true, summary: "unknown tool")
@@ -178,7 +180,7 @@ public struct WebSearchToolExecutor: AppToolExecutor {
         return lines.joined(separator: "\n")
     }
 
-    func fetch(_ text: String) async -> AppToolResult {
+    func fetch(_ text: String, from: Int = 0) async -> AppToolResult {
         guard let url = URL(string: text), url.isPublicWebAddress else {
             return AppToolResult(content: "error: \(WebToolError.unsafeURL(text)). Only public http(s) URLs can be read.",
                                  isError: true, summary: "refused URL")
@@ -195,14 +197,14 @@ public struct WebSearchToolExecutor: AppToolExecutor {
                     failures.append("\(reader.name): only \(page.text.count) characters")
                     continue
                 }
-                return Self.result(for: page, url: url, limit: configuration.pageCharacterLimit,
+                return Self.result(for: page, url: url, from: from, limit: configuration.pageCharacterLimit,
                                    dateStamp: dateStamp)
             } catch {
                 failures.append("\(reader.name): \(error)")
             }
         }
         if let thin {
-            return Self.result(for: thin, url: url, limit: configuration.pageCharacterLimit,
+            return Self.result(for: thin, url: url, from: from, limit: configuration.pageCharacterLimit,
                                dateStamp: dateStamp)
         }
         return AppToolResult(content: "error: could not read \(url.absoluteString) — "
@@ -210,18 +212,33 @@ public struct WebSearchToolExecutor: AppToolExecutor {
                              isError: true, summary: failures.joined(separator: "; "))
     }
 
-    static func result(for page: WebPageText, url: URL, limit: Int, dateStamp: String) -> AppToolResult {
-        let (clippedText, clipped) = HTMLTextExtractor.clip(page.text, to: limit)
+    /// The page text from character `from`, clipped to `limit`. A clipped
+    /// result ends with the whole length and the `from` that reads on — the
+    /// same line `wikipedia_page` writes. Without it a model that wanted the
+    /// rest had no way but to fetch the same URL again and receive the same
+    /// text twice (docs/qwen38/21 A-1).
+    static func result(for page: WebPageText, url: URL, from: Int = 0, limit: Int,
+                       dateStamp: String) -> AppToolResult {
+        let total = page.text.count
+        let start = min(from, total)
+        let rest = String(page.text.dropFirst(start))
+        let (clippedText, clipped) = HTMLTextExtractor.clip(rest, to: limit)
         var lines: [String] = []
         if !page.title.isEmpty { lines.append("タイトル: \(page.title)") }
         lines.append("URL: \(url.absoluteString)")
         lines.append(dateStamp)
+        if start > 0 { lines.append("(\(start) 文字目から)") }
         lines.append("")
-        lines.append(clippedText)
-        if clipped { lines.append("…(本文はここで打ち切り)") }
-        let characters = page.text.count.formatted()
+        if start >= total, total > 0 {
+            lines.append("(本文は全 \(total) 文字で、from=\(from) より後はありません)")
+        } else {
+            lines.append(clippedText)
+        }
+        if clipped {
+            lines.append("…(本文はここで打ち切り。全 \(total) 文字。続きは fetch_page の from=\(start + clippedText.count) で読めます)")
+        }
         return AppToolResult(content: lines.joined(separator: "\n"),
-                             summary: "\(page.reader) · \(characters) chars\(clipped ? " (clipped)" : "")")
+                             summary: "\(page.reader) · \(start > 0 ? "from \(start) of " : "")\(total.formatted()) chars\(clipped ? " (clipped)" : "")")
     }
 }
 

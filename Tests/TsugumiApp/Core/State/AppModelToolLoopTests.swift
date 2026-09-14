@@ -246,6 +246,14 @@ import Testing
         #expect(!declared.isEmpty)
         #expect(client.requests[2].tools.map(\.name) == declared)
         #expect(client.requests[2].toolChoice == .none)
+        // The result the exhausted round reads first says so; the earlier one does not change.
+        // A later request renders the same texts again, so the cache stays a prefix (INV-1).
+        let note = AppModel.roundBudgetReachedNote(maxRounds: 2)
+        #expect(client.requests[1].continuation.map(\.text).last == "r")
+        #expect(client.requests[2].continuation.map(\.text) == client.requests[1].continuation.map(\.text)
+            + [client.requests[2].continuation[2].text, "r\n\n" + note])
+        #expect(Array(client.requests[3].continuation.prefix(4)) == client.requests[2].continuation)
+        #expect(client.requests[3].continuation.last?.text == "r\n\n" + note)
         // The script still emitted a call (a model can), and the loop ran it
         // rather than dropping it on the floor; the fourth request answers.
         #expect(client.requests[3].tools.map(\.name) == declared)

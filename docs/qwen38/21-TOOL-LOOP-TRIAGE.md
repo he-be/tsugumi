@@ -139,3 +139,20 @@ p2000b の記録では、wired がラウンドごとに 8 GB 前後 ↔ 14 GB �
 - 会話の中身を読まずに、トークン数と Swapouts だけで打ち手を選んだ。20 §3-4 で「記録だけ」にした同じ URL の再取得が、超過の最大の件 (ja-howto) の中身だった。
 - ページを 2,000 字にしたのは、原因を確かめる前の当て推量だった。
 - 検査の `answer` 判定が「非空」だけで、ツール呼び出しの XML が回答になっていても合格にした。3 と一緒に「回答に `<tool_call>` / `<function=` を含まない」を判定に足す。
+
+## 8. 実施 (2026-09-15)
+
+§6 の見張りの値はユーザー指示「一時的な多少のスワップを許容、大容量の連続書き込みを正しく検知」で決めた。
+
+| 順 | 項目 | 変更 | 確かめたこと |
+| ---: | --- | --- | --- |
+| 1 | E-1 | `RecordedHTTPTransport` (Core/WebSearch): HTTP の層で記録し、同じ要求には記録を返す。鍵はメソッド + URL + 本文 (JSON はキーを整列、`JSONSerialization` はプロセスごとに辞書順が変わる)。要求ヘッダ (API キー) は鍵にも記録にも入れない。取得失敗も記録する。検査に `--web-store DIR`、ターンごとに `web_replayed` / `web_recorded`。`AppModel.makeToolExecutor` を public に | 単体テスト 2 件: 記録 → ネットワーク無しで同じ結果 4 本、ページ上限を変えても同じ本文から切る、鍵がキー順とヘッダによらない。実モデル (en-facts × 2 走行、n = 1): 2 回目は再生 1・新規 2 (1 ターン目)。**同じ引数だった呼び出し 2 本 (wikipedia_lookup、fetch_page 6,063 字) は結果が一致**。公式サンプラなので呼び出しの引数自体は走行ごとに変わり、変わった分は実際に引く |
+| 2 | E-2 | `guarded.sh`: 止めるのは Swapouts が **直近 60 秒で +32,768 ページ (512 MiB) 超** か **走行全体で +65,536 ページ (1 GiB) 超**。`GUARD_LOG` で 2 秒ごとに epoch・Swapouts・Swapins・wired・file-backed・圧縮を記録。検査の rounds.jsonl に各ラウンドの `started` / `ended` (epoch) | 既存の mem.log 5 本に同じ規則を当てて、止めた 3 本 (smoke +7,276、p2000 +8,392、p2000b +5,512) はどれも止まらない。`GUARD_PAGES=-1` / `GUARD_WINDOW_PAGES=-1` で発火し、`time` 越しの孫まで残らない |
+| 3 | A-1 | `fetch_page` に `from` (整数、省略時 0)。打ち切りの行は `…(本文はここで打ち切り。全 N 文字。続きは fetch_page の from=M で読めます)`、from > 0 は `(M 文字目から)`、本文より後は `(本文は全 N 文字で、from=M より後はありません)`。宣言が変わったので HF 描画の fixture を作り直した | 単体テスト: 打ち切りの from をたどると全文を 1 回ずつ読み、つないだ文字列が元の本文と一致。`Qwen38ToolLoopPromptTests` の 6 要求が作り直した HF 描画と一致 |
+| 4 | A-4 | 上限のラウンドで、最後のツール結果の末尾に `(ツール呼び出しは合計 N 回までで、上限に達しました。これ以上ツールは呼べません。ここまでの結果で答えます。)` を足す。そのツール結果が初めて描かれる要求の前に足すので、以後の描き直しも同じ文字列 | `AppModelToolLoopTests.exhaustedRoundsForbidCallsButKeepTheDeclarations`: 足すのは上限のラウンドの最後の結果だけ、次の要求の continuation は前の要求の continuation を前置に含む |
+| — | 検査 | `answer` の判定に「`<tool_call>` / `<function=` を含まない」(§7) | — |
+
+`Scripts/test.sh --filter "TsugumiServerTests|TsugumiAppCoreTests|TsugumiDecodeServiceTests"`: 719 件緑。
+
+走行中の出来事: 2 回目の en-facts の途中で Mac がバッテリー駆動でスリープし (06:29〜06:39)、そのラウンドが 33 分かかった。復帰の前後で Swapouts +11,692 ページ (60 秒窓の最大 +11,676)、新しい条件では止めていない。以後の走行は `caffeinate -i` を挟む。
+en-facts は 2 走行とも文脈超過で落ちた (1 回目: 1 ターン目 6 ラウンド目、prompt 12,014 の次。2 回目: 2 ターン目 3 ラウンド目)。

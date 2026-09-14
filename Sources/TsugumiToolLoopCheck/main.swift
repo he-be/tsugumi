@@ -10,7 +10,11 @@ import TsugumiAppCore
 // this process, so `Scripts/qwen38/guarded.sh` can watch and kill it.
 //
 //     .build/release/TsugumiToolLoopCheck --out DIR [--model DIR] [--conversations FILE] [--only a,b] [--repeats N]
-//                                         [--network online|offline|model] [--context N]
+//                                         [--network online|offline|model] [--context N] [--page-chars N]
+//                                         [--web-store DIR]
+//
+// `--web-store DIR` answers the web tools' HTTP requests from DIR and records the ones it does not have
+// (`RecordedHTTPTransport`), so a second run reads the same search results and pages (`docs/qwen38/21` §4 E-1).
 //
 // Writes `rounds.jsonl` (one line per round), `turns.jsonl` (one line per turn: answer, trace, checks) and prints a
 // summary. Exit status 1 when a check failed. Checks per turn:
@@ -18,7 +22,7 @@ import TsugumiAppCore
 //             (cached == previous prompt + previous generated − 1); the first round of a later turn likewise
 //             continues from the previous turn's last round
 //   error     no error
-//   answer    a non-empty answer
+//   answer    a non-empty answer that is not a tool call written as text (`<tool_call>` / `<function=`, docs/qwen38/21 §3)
 //   online    (Online) a web search ran, a page read was tried, and the answer names a source
 
 struct Options {
@@ -31,6 +35,7 @@ struct Options {
     var context: Int?
     /// Overrides the saved page text limit for this run only (the settings file is not written).
     var pageCharacters: Int?
+    var webStore: String?
 
     init(_ arguments: [String]) {
         var iterator = arguments.dropFirst().makeIterator()
@@ -45,6 +50,7 @@ struct Options {
             case "--network": network = AppNetworkMode(rawValue: value) ?? .online
             case "--context": context = Int(value)
             case "--page-chars": pageCharacters = Int(value)
+            case "--web-store": webStore = value
             default:
                 FileHandle.standardError.write(Data("unknown flag \(flag)\n".utf8))
                 exit(2)
@@ -65,6 +71,8 @@ struct Conversation: Decodable {
 /// One round as it left and came back.
 struct RoundRecord: Sendable {
     var request: AppGenerationRequest
+    var started = Date()
+    var ended: Date?
     var outcome = "running"
     var diagnostics: AppDiagnostics?
     var error: String?
@@ -114,10 +122,14 @@ final class RecordingClient: AppModelLifecycleClient, AppInferenceRuntimeReporti
                     for try await event in stream {
                         switch event {
                         case .toolCall(let call): self.update(index) { $0.toolCalls.append(call) }
-                        case .finished(let d): self.update(index) { $0.outcome = "finished"; $0.diagnostics = d }
-                        case .cancelled(let d): self.update(index) { $0.outcome = "cancelled"; $0.diagnostics = d }
+                        case .finished(let d):
+                            self.update(index) { $0.outcome = "finished"; $0.diagnostics = d; $0.ended = Date() }
+                        case .cancelled(let d):
+                            self.update(index) { $0.outcome = "cancelled"; $0.diagnostics = d; $0.ended = Date() }
                         case .failed(let e, let d):
-                            self.update(index) { $0.outcome = "failed"; $0.diagnostics = d; $0.error = e.userMessage }
+                            self.update(index) {
+                                $0.outcome = "failed"; $0.diagnostics = d; $0.error = e.userMessage; $0.ended = Date()
+                            }
                         default: break
                         }
                         continuation.yield(event)
@@ -125,7 +137,9 @@ final class RecordingClient: AppModelLifecycleClient, AppInferenceRuntimeReporti
                     continuation.finish()
                 } catch {
                     let text = "\(error)"
-                    self.update(index) { if $0.outcome == "running" { $0.outcome = "threw"; $0.error = text } }
+                    self.update(index) {
+                        if $0.outcome == "running" { $0.outcome = "threw"; $0.error = text; $0.ended = Date() }
+                    }
                     continuation.finish(throwing: error)
                 }
             }
@@ -176,10 +190,22 @@ func runCheck() async -> Int32 {
     }
 
     let client = RecordingClient()
+    var webStore: RecordedHTTPTransport?
+    if let path = options.webStore {
+        do {
+            webStore = try RecordedHTTPTransport(directory: URL(fileURLWithPath: path, isDirectory: true))
+        } catch {
+            logLine("cannot use --web-store \(path): \(error)")
+            return 2
+        }
+    }
+    let toolExecutorProvider: ((WebSearchConfiguration, AppNetworkMode) throws -> (any AppToolExecutor)?)? =
+        webStore.map { store in { try AppModel.makeToolExecutor(configuration: $0, mode: $1, transport: store) } }
     let model = AppModel(modelDirectory: URL(fileURLWithPath: options.model), client: client,
                          turnMetricsLog: AppTurnMetricsLog(fileURL: outDirectory.appendingPathComponent("turn-metrics.jsonl")),
                          webSearchConfigurationURL: WebSearchConfigurationStore.defaultFileURL,
-                         personaURL: AppPersonaStore.defaultFileURL)
+                         personaURL: AppPersonaStore.defaultFileURL,
+                         toolExecutorProvider: toolExecutorProvider)
     if let context = options.context { model.maxContextTokens = context }
     if let pageCharacters = options.pageCharacters {
         model.webSearchConfiguration.pageCharacterLimit = pageCharacters
@@ -214,6 +240,7 @@ func runCheck() async -> Int32 {
                 _ = await waitUntil(timeout: 3_600) { !model.isRunning }
                 let wall = Date().timeIntervalSince(started)
                 let records = client.take()
+                let web = webStore?.takeCounts()
 
                 var checks: [String: Bool] = [:]
                 var liveNotes: [String] = []
@@ -236,6 +263,9 @@ func runCheck() async -> Int32 {
                         "tools": record.request.tools.count, "choice": record.request.toolChoice.rawValue,
                         "prompt": prompt, "cached": cached, "generated": generated,
                         "calls": record.toolCalls.map { "\($0.name) \($0.argumentsJSON)" },
+                        // Epoch seconds, to line up with `GUARD_LOG` (Scripts/qwen38/guarded.sh).
+                        "started": record.started.timeIntervalSince1970,
+                        "ended": record.ended?.timeIntervalSince1970 ?? NSNull(),
                     ]
                     if let shortfall { row["shortfall"] = shortfall }
                     if let d {
@@ -256,6 +286,7 @@ func runCheck() async -> Int32 {
                 checks["error"] = model.error == nil
                 let answer = model.outputText
                 checks["answer"] = !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && !answer.contains("<tool_call>") && !answer.contains("<function=")
                 let trace = model.outputToolTrace
                 let grounding = AppAnswerGrounding.of(trace)
                 if model.effectiveNetworkMode == .online {
@@ -279,13 +310,15 @@ func runCheck() async -> Int32 {
                     "wikipedia_steps": grounding.wikipediaSteps, "cites": AppAnswerGrounding.citesSources(answer),
                     "japanese_ratio": answer.isEmpty ? 0 : Double(japanese) / Double(answer.count),
                     "checks": checks, "error": model.error?.userMessage ?? NSNull(),
+                    "web_replayed": web.map { $0.replayed } ?? NSNull(), "web_recorded": web.map { $0.recorded } ?? NSNull(),
                     "continuation": model.outputContinuationTurns.map { turn -> [String: Any] in
                         ["role": turn.role.rawValue, "text": turn.text, "name": turn.toolName ?? "",
                          "calls": turn.toolCalls.map { "\($0.name) \($0.argumentsJSON)" }]
                     },
                 ], to: turns)
                 summary.append(String(format: "%@: %d rounds, %.0f s, %@", label, records.count, wall,
-                                      failed.isEmpty ? "ok" : "FAIL " + failed.joined(separator: ",")))
+                                      failed.isEmpty ? "ok" : "FAIL " + failed.joined(separator: ","))
+                    + (web.map { ", web replayed \($0.replayed) recorded \($0.recorded)" } ?? ""))
                 logLine(summary.last!)
                 if model.error != nil { break }
             }

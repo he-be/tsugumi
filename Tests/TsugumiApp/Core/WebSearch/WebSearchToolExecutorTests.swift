@@ -179,13 +179,49 @@ final class StubTransport: HTTPTransport, @unchecked Sendable {
             AppToolCall(id: "c2", name: "fetch_page", argumentsJSON: #"{"url":"https://example.jp/tokyo"}"#))
         #expect(!result.isError)
         #expect(result.content.hasPrefix("タイトル: 記事\nURL: https://example.jp/tokyo\n取得日 2026年9月2日\n\n本文の一行。"))
-        #expect(result.content.hasSuffix("…(本文はここで打ち切り)"))
-        #expect(result.content.count < 700)
+        let total = HTMLTextExtractor.normalize(long).count
+        let tail = try #require(result.content.split(separator: "\n").last)
+        #expect(tail.hasPrefix("…(本文はここで打ち切り。全 \(total) 文字。続きは fetch_page の from=") && tail.hasSuffix(" で読めます)"))
+        #expect(result.content.count < 750)
         #expect(result.summary.hasPrefix("Jina Reader · "))
         #expect(result.summary.hasSuffix("(clipped)"))
         let request = try #require(transport.requests.first)
         #expect(request.url?.absoluteString == "https://r.jina.ai/https://example.jp/tokyo")
         #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
+    }
+
+    /// Reading on with the `from` each clipped result names walks the whole page once, and nothing is left past it.
+    @Test func fetchReadsOnFromWhereTheClipStopped() async throws {
+        let long = (1...300).map { "本文の \($0) 行目。" }.joined(separator: "\n")
+        let jina = Data(#"{"data":{"title":"記事","content":"\#(long.replacingOccurrences(of: "\n", with: "\\n"))"}}"#.utf8)
+        let transport = StubTransport(["r.jina.ai": [.init(status: 200, body: jina)]])
+        let executor = executor(transport: transport)
+        let total = HTMLTextExtractor.normalize(long).count
+        var from = 0
+        var pieces: [String] = []
+        for step in 1...20 {
+            let arguments = from == 0 ? #"{"url":"https://example.jp/long"}"#
+                : #"{"url":"https://example.jp/long","from":\#(from)}"#
+            let result = await executor.execute(AppToolCall(id: "c\(step)", name: "fetch_page", argumentsJSON: arguments))
+            #expect(!result.isError)
+            let content = result.content
+            #expect(content.contains(from == 0 ? "取得日 2026年9月2日\n\n" : "取得日 2026年9月2日\n(\(from) 文字目から)\n\n"))
+            let body = String(content[try #require(content.range(of: "\n\n")).upperBound...])
+            guard let marker = body.range(of: "\n…(本文はここで打ち切り。全 \(total) 文字。続きは fetch_page の from=") else {
+                pieces.append(body)
+                break
+            }
+            pieces.append(String(body[..<marker.lowerBound]))
+            let next = try #require(Int(body[marker.upperBound...].prefix { $0.isNumber }))
+            #expect(next > from)
+            from = next
+        }
+        #expect(pieces.count > 2)
+        #expect(pieces.joined() == HTMLTextExtractor.normalize(long))
+        let past = await executor.execute(AppToolCall(
+            id: "past", name: "fetch_page", argumentsJSON: #"{"url":"https://example.jp/long","from":\#(total + 5)}"#))
+        #expect(past.content.hasSuffix("(本文は全 \(total) 文字で、from=\(total + 5) より後はありません)"))
+        #expect(!past.content.contains("打ち切り"))
     }
 
     @Test func aThinJinaPageFallsBackToTheDirectFetch() async throws {

@@ -441,9 +441,9 @@
       "parametersJSON" : "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"description\":\"検索クエリ。固有名詞と要点を短く並べる。\"}},\"required\":[\"query\"]}"
     },
     {
-      "description" : "web_search の結果の URL を 1 つ開いて、ページ本文のテキストを返す。スニペットだけでは足りないときに、最も有望な URL から順に読む。",
+      "description" : "web_search の結果の URL を 1 つ開いて、ページ本文のテキストを返す。スニペットだけでは足りないときに、最も有望な URL から順に読む。本文が長くて打ち切られたときは、from に示された文字位置を渡すと続きが読める。",
       "name" : "fetch_page",
-      "parametersJSON" : "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\",\"description\":\"読むページの URL (http または https)。\"}},\"required\":[\"url\"]}"
+      "parametersJSON" : "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\",\"description\":\"読むページの URL (http または https)。\"},\"from\":{\"type\":\"integer\",\"description\":\"本文を読み始める文字位置 (省略時は 0)。\"}},\"required\":[\"url\"]}"
     }
   ]
 }
