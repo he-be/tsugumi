@@ -2,25 +2,28 @@ import Testing
 @testable import TsugumiMacPresentation
 
 @Suite struct ReasoningLivePresentationTests {
-    @Test func shortTextPassesThroughUntouched() {
-        #expect(ReasoningLivePresentation.liveTail(of: "brief thought", cap: 20)
-            == "brief thought")
+    @Test func sameTextIsUnchanged() {
+        #expect(ReasoningLivePresentation.edit(from: "thought", to: "thought") == .unchanged)
+        #expect(ReasoningLivePresentation.edit(from: "", to: "") == .unchanged)
     }
 
-    @Test func textAtTheCapIsNotElided() {
-        let text = String(repeating: "x", count: 10)
-        #expect(ReasoningLivePresentation.liveTail(of: text, cap: 10) == text)
+    @Test func aGrowingTextAppendsOnlyWhatIsNew() {
+        #expect(ReasoningLivePresentation.edit(from: "", to: "The user") == .append("The user"))
+        #expect(ReasoningLivePresentation.edit(from: "The user", to: "The user wants")
+            == .append(" wants"))
     }
 
-    @Test func longTextKeepsOnlyTheNewestSlice() {
-        let text = "old head that must go " + String(repeating: "y", count: 30)
-        let tail = ReasoningLivePresentation.liveTail(of: text, cap: 30)
-        #expect(tail == "…" + String(repeating: "y", count: 30))
+    /// A delta can end in the middle of a grapheme (a combining mark or a
+    /// joiner arrives in the next token); the split is by scalars so the
+    /// appended piece is exactly what was added.
+    @Test func multibyteAndSplitGraphemesAppendByScalars() {
+        #expect(ReasoningLivePresentation.edit(from: "寿司ネタ", to: "寿司ネタの名前")
+            == .append("の名前"))
+        #expect(ReasoningLivePresentation.edit(from: "e", to: "e\u{301}x") == .append("\u{301}x"))
     }
 
-    @Test func multibyteTextIsCutOnCharacterBoundaries() {
-        let text = String(repeating: "思", count: 40)
-        let tail = ReasoningLivePresentation.liveTail(of: text, cap: 8)
-        #expect(tail == "…" + String(repeating: "思", count: 8))
+    @Test func anythingElseReplaces() {
+        #expect(ReasoningLivePresentation.edit(from: "old turn", to: "new") == .replace("new"))
+        #expect(ReasoningLivePresentation.edit(from: "thought", to: "") == .replace(""))
     }
 }

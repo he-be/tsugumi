@@ -139,26 +139,12 @@ struct OutputPaneView: View {
             .buttonStyle(.plain)
 
             if reasoningExpanded || isThinkingLive {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        // Live: only the tail, so per-token layout cost stays
-                        // bounded however long the model thinks.
-                        Text(isThinkingLive
-                             ? ReasoningLivePresentation.liveTail(
-                                of: model.outputReasoningText)
-                             : model.outputReasoningText)
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Color.clear.frame(height: 1).id("reasoning-tail")
-                    }
-                    .frame(maxHeight: isThinkingLive ? 160 : 280)
-                    .onChange(of: model.outputReasoningText) {
-                        guard isThinkingLive else { return }
-                        proxy.scrollTo("reasoning-tail", anchor: .bottom)
-                    }
-                }
+                // Appends what each token added; a SwiftUI `Text` measured and
+                // drew the whole string per token and starved the main thread
+                // (`ReasoningLivePresentation`).
+                LiveReasoningTextView(text: model.outputReasoningText,
+                                      maxHeight: isThinkingLive ? 160 : 280,
+                                      followsEnd: isThinkingLive)
                 .padding(10)
                 .background {
                     RoundedRectangle(cornerRadius: 12)
@@ -383,6 +369,80 @@ private struct LoadingModelText: View {
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(L("Loading Model"))
+    }
+}
+
+/// The thought channel as a read-only text view that grows by appending.
+private struct LiveReasoningTextView: NSViewRepresentable {
+    var text: String
+    var maxHeight: CGFloat
+    /// Keeps the newest line in view while the model is thinking.
+    var followsEnd: Bool
+
+    @MainActor
+    final class Coordinator {
+        var shown = ""
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeNSView(context: Context) -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.drawsBackground = false
+
+        let textView = NSTextView()
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.isRichText = false
+        textView.drawsBackground = false
+        textView.textContainerInset = .zero
+        textView.isVerticallyResizable = true
+        textView.isHorizontallyResizable = false
+        textView.autoresizingMask = [.width]
+        textView.textContainer?.widthTracksTextView = true
+        textView.textContainer?.lineFragmentPadding = 0
+        textView.isAutomaticLinkDetectionEnabled = false
+        textView.isAutomaticDataDetectionEnabled = false
+        textView.setAccessibilityLabel(L("Thought process"))
+        scrollView.documentView = textView
+        return scrollView
+    }
+
+    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+        guard let textView = scrollView.documentView as? NSTextView,
+              let storage = textView.textStorage else { return }
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.preferredFont(forTextStyle: .callout),
+            .foregroundColor: NSColor.secondaryLabelColor,
+        ]
+        switch ReasoningLivePresentation.edit(from: context.coordinator.shown, to: text) {
+        case .unchanged:
+            return
+        case .append(let added):
+            storage.append(NSAttributedString(string: added, attributes: attributes))
+        case .replace(let all):
+            storage.setAttributedString(NSAttributedString(string: all, attributes: attributes))
+        }
+        context.coordinator.shown = text
+        if followsEnd { textView.scrollToEndOfDocument(nil) }
+    }
+
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView scrollView: NSScrollView,
+                      context: Context) -> CGSize? {
+        let width = proposal.width ?? scrollView.frame.width
+        guard let textView = scrollView.documentView as? NSTextView,
+              let container = textView.textContainer,
+              let layout = textView.layoutManager else {
+            return CGSize(width: width, height: maxHeight)
+        }
+        if width > 0, container.containerSize.width != width {
+            container.containerSize = NSSize(width: width, height: .greatestFiniteMagnitude)
+        }
+        layout.ensureLayout(for: container)
+        let height = ceil(layout.usedRect(for: container).height)
+        return CGSize(width: width, height: min(max(height, 1), maxHeight))
     }
 }
 

@@ -35,6 +35,9 @@ import TsugumiDecodeProtocol
                     if case .shutdown = command { break }
                 }
             } catch {
+                // The app is gone (quit, crashed): nobody reads the rest of
+                // this generation, so stop it instead of decoding to the end.
+                client.cancel()
                 commands.close()
             }
         }
