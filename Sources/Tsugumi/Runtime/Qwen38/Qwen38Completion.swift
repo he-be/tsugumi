@@ -172,7 +172,8 @@ package final class Qwen38Engine {
     }
 
     /// Prefill `promptTokens` from `position` (= `cachedPromptTokens`) and generate up to `maxNewTokens`.
-    /// `onPrefill(done, total)` after every chunk; `onToken(index, id)` for every emitted token, before the next draw
+    /// `onPrefill(done, total)` in prompt positions (the cached ones included, as `CompletionPrefill` reports): once
+    /// before any work, after every trunk layer of a chunk, and at every chunk's end; `onToken(index, id)` for every emitted token, before the next draw
     /// (a caller that suppresses the grammar inside a thought block sets it there). `shouldStop` is asked after each
     /// token. Throws `CancellationError` between chunks and steps; the state is then unnamed and the caller resets.
     ///
@@ -216,11 +217,19 @@ package final class Qwen38Engine {
         var lastLogits = [Float]()
         var done = 0
         let cuts = checkpointsAt.filter { $0 > position && $0 < position + prompt.count }.sorted()
+        // Report the total before the first chunk: at ~95 tok/s one chunk of 2,048 is over 20 s.
+        let total = position + prompt.count
+        onPrefill?(position, total)
         while done < prompt.count {
             try Task.checkCancellation()
             let T = min(prefillChunk, prompt.count - done, (cuts.first { $0 > position } ?? Int.max) - position)
             let chunk = Array(prompt[done..<(done + T)])
-            let l = try runner.forward(tokens: chunk, startPos: position)
+            let chunkStart = position
+            let layers = runner.nTrunk
+            // Inside the chunk the count stays below its end: `done == total` is what tells the app decode began.
+            let l = try runner.forward(tokens: chunk, startPos: position, onLayer: onPrefill.map { report in
+                { n in report(chunkStart + min(T * n / layers, T - 1), total) }
+            })
             if done + T == prompt.count { lastLogits = Array(l) }
             if speculative {
                 var s = 0
@@ -244,7 +253,7 @@ package final class Qwen38Engine {
             position += T
             done += T
             if cuts.contains(position), let onCheckpoint { onCheckpoint(try captureCheckpoint()) }
-            onPrefill?(done, prompt.count)
+            onPrefill?(position, total)
         }
         let prefillSeconds = Date().timeIntervalSince(started)
         let decodeStart = Date()

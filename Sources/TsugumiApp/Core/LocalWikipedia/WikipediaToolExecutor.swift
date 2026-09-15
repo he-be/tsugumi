@@ -3,8 +3,10 @@ import Foundation
 /// The two tools the chat declares when a local Wikipedia index is
 /// configured. `wikipedia_search` runs the full-text search and hands back
 /// titles with a line of each opening; `wikipedia_page` returns one
-/// article's text, clipped to the configured length, with `from` to read
-/// on. Nothing here touches the network: the index is a file on this Mac.
+/// article: a short one whole, a long one as its outline and opening parts,
+/// with `sections` to read the parts the model picks (`PageOutline`; the
+/// index keeps no headings, so the parts are cut from the plain text).
+/// Nothing here touches the network: the index is a file on this Mac.
 public struct WikipediaToolExecutor: AppToolExecutor {
     public static let searchToolName = "wikipedia_search"
     public static let pageToolName = "wikipedia_page"
@@ -38,8 +40,8 @@ public struct WikipediaToolExecutor: AppToolExecutor {
                 parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","description":"検索語。記事名か、固有名詞と要点を短く並べる。"}},"required":["query"]}"#),
             AppToolDefinition(
                 name: Self.pageToolName,
-                description: "日本語版 Wikipedia の記事を 1 つ開いて本文を返す。wikipedia_search の結果の題名をそのまま渡す。本文が長くて打ち切られたときは、from に示された文字位置を渡すと続きが読める。",
-                parametersJSON: #"{"type":"object","properties":{"title":{"type":"string","description":"記事の題名。"},"from":{"type":"integer","description":"本文を読み始める文字位置 (省略時は 0)。"}},"required":["title"]}"#),
+                description: "日本語版 Wikipedia の記事を 1 つ開いて本文を返す。wikipedia_search の結果の題名をそのまま渡す。長い記事は目次 (番号つきの節) と冒頭の節を返すので、質問に必要な節の番号を sections に渡して読む。",
+                parametersJSON: #"{"type":"object","properties":{"title":{"type":"string","description":"記事の題名。"},"sections":{"type":"string","description":"読む節の番号 (目次の [ ] の数字)。1 つか、2,3 のようにカンマで区切って並べる。省略すると目次と冒頭の節を返す。"}},"required":["title"]}"#),
         ]
     }
 
@@ -58,8 +60,7 @@ public struct WikipediaToolExecutor: AppToolExecutor {
                 return AppToolResult(content: "error: wikipedia_page needs a non-empty \"title\".",
                                      isError: true, summary: "missing title")
             }
-            let from = Int(call.stringArgument("from") ?? "") ?? 0
-            return page(title, from: max(0, from))
+            return page(title, sections: call.integerListArgument("sections"))
         default:
             return AppToolResult(content: "error: unknown tool \(call.name).",
                                  isError: true, summary: "unknown tool")
@@ -138,19 +139,19 @@ public struct WikipediaToolExecutor: AppToolExecutor {
         lines.append("")
         var summary = "Wikipedia · \(hits.count) hits"
         if Self.shouldGo(hits, query: query), let page = index.page(id: hits[0].pageID) {
-            let body = Self.body(of: page, from: 0, limit: pageCharacterLimit)
+            let body = Self.body(of: page, sections: nil, limit: pageCharacterLimit)
             lines.append("[1] \(page.title) の本文:")
             lines.append(contentsOf: body.lines)
             lines.append("")
             lines.append("他の記事を読むには wikipedia_page に題名を渡します。")
-            summary += " + \(page.title) \(body.shown.formatted()) chars\(body.clipped ? " (clipped)" : "")"
+            summary += " + \(page.title) \(body.summary)"
         } else {
             lines.append("本文を読むには wikipedia_page に題名を渡します。")
         }
         return AppToolResult(content: lines.joined(separator: "\n"), summary: summary)
     }
 
-    func page(_ title: String, from: Int) -> AppToolResult {
+    func page(_ title: String, sections: [Int]?) -> AppToolResult {
         guard let page = index.page(title: title) else {
             let near = index.search(title, limit: 5)
             var lines = ["Wikipedia に「\(title)」という記事はありません。"]
@@ -161,30 +162,29 @@ public struct WikipediaToolExecutor: AppToolExecutor {
             return AppToolResult(content: lines.joined(separator: "\n"),
                                  isError: true, summary: "Wikipedia · not found")
         }
-        let body = Self.body(of: page, from: from, limit: pageCharacterLimit)
-        var lines = ["Wikipedia 記事: \(page.title) (\(dateStamp))"]
-        if body.start > 0 { lines.append("(\(body.start) 文字目から)") }
-        lines.append("")
+        let body = Self.body(of: page, sections: sections, limit: pageCharacterLimit)
+        var lines = ["Wikipedia 記事: \(page.title) (\(dateStamp))", ""]
         lines.append(contentsOf: body.lines)
-        return AppToolResult(content: lines.joined(separator: "\n"),
-                             summary: "Wikipedia · \(body.shown.formatted()) / \(page.text.count.formatted()) chars\(body.clipped ? " (clipped)" : "")")
+        return AppToolResult(content: lines.joined(separator: "\n"), isError: body.isError,
+                             summary: "Wikipedia · \(body.summary)")
     }
 
-    /// The article text from `from`, clipped to `limit` characters, with
-    /// the line that says how to read on.
-    static func body(of page: LocalWikipediaIndex.Page, from: Int, limit: Int)
-        -> (lines: [String], start: Int, shown: Int, clipped: Bool) {
-        let total = page.text.count
-        let start = min(max(0, from), total)
-        let startIndex = page.text.index(page.text.startIndex, offsetBy: start)
-        let endIndex = page.text.index(startIndex, offsetBy: limit,
-                                       limitedBy: page.text.endIndex) ?? page.text.endIndex
-        let clipped = endIndex < page.text.endIndex
-        var lines = [String(page.text[startIndex..<endIndex])]
-        if clipped {
-            let next = page.text.distance(from: page.text.startIndex, to: endIndex)
-            lines.append("…(本文はここで打ち切り。全 \(total) 文字。続きは wikipedia_page の from=\(next) で読めます)")
+    /// The article as a read shows it: whole when short, else the outline and opening parts, or the parts
+    /// `sections` names.
+    static func body(of page: LocalWikipediaIndex.Page, sections: [Int]?, limit: Int)
+        -> (lines: [String], summary: String, isError: Bool) {
+        let outline = PageOutline(text: page.text, pageLimit: limit)
+        let total = outline.totalCharacters.formatted()
+        if outline.isWhole(limit: limit) {
+            let (text, clipped) = HTMLTextExtractor.clip(page.text, to: limit)
+            return ([text], "\(total) chars\(clipped ? " (clipped)" : "")", false)
         }
-        return (lines, start, page.text.distance(from: startIndex, to: endIndex), clipped)
+        guard let sections, !sections.isEmpty else {
+            return (outline.overview(tool: pageToolName, limit: limit).lines,
+                    "\(total) chars · \(outline.sections.count) sections", false)
+        }
+        let read = outline.read(sections, tool: pageToolName, limit: limit)
+        let shown = read.shown.isEmpty ? "none" : PageOutline.numbers(read.shown)
+        return (read.lines, "sections \(shown) of \(outline.sections.count)", read.isError)
     }
 }

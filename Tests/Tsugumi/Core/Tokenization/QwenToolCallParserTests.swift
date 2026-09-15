@@ -57,6 +57,21 @@ struct QwenToolCallParserTests {
         #expect(call.argumentsJSON == #"{"city":"Kyoto","days":3}"#)
     }
 
+    /// SPEC §12 DEV-15: the JSON keeps the order the model wrote, which is the order the redraw writes back.
+    @Test("the arguments JSON keeps the written order")
+    func written_order() throws {
+        let call = try Self.parse(Self.body("get_weather",
+                                            Self.parameter("days", "3"),
+                                            Self.parameter("city", "Kyoto/東京"),
+                                            Self.parameter("hours", "[1,2]")))
+        #expect(call.argumentsJSON == #"{"days":3,"city":"Kyoto/東京","hours":[1,2]}"#)
+        let source = GFTokenizer.HistoricalToolCall(id: "c", name: "get_weather", arguments: call.arguments,
+                                                    argumentsSource: call.argumentsJSON)
+        #expect(QwenTokenizer.argumentOrder(source, tools: [Self.weather]) == ["days", "city", "hours"])
+        let sourceless = GFTokenizer.HistoricalToolCall(id: "c", name: "get_weather", arguments: call.arguments)
+        #expect(QwenTokenizer.argumentOrder(sourceless, tools: [Self.weather]).prefix(1) == ["city"])
+    }
+
     @Test("a call with no parameters")
     func noParameters() throws {
         let call = try Self.parse(Self.body("get_weather"))

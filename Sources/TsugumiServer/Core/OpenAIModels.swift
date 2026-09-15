@@ -471,7 +471,8 @@ public enum ChatMessageValidator {
                 }
                 knownCalls[call.id] = (call.function.name, false)
                 return GFTokenizer.HistoricalToolCall(
-                    id: call.id, name: call.function.name, arguments: arguments)
+                    id: call.id, name: call.function.name, arguments: arguments,
+                    argumentsSource: call.function.arguments)
             }
             if role == .tool {
                 guard let id = message.toolCallID,

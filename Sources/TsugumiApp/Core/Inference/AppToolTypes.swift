@@ -29,6 +29,35 @@ public struct AppToolCall: Equatable, Sendable, Codable, Identifiable {
         if let number = value as? NSNumber { return number.stringValue }
         return nil
     }
+
+    /// A list of whole numbers from a string such as "2,3", "2〜4" or "[2, 3]", a JSON array of numbers, or a single
+    /// number — the forms a model writes when it means section numbers. A range is capped at 100 numbers. Nil when
+    /// absent or holding none.
+    public func integerListArgument(_ key: String) -> [Int]? {
+        guard let value = arguments?[key] else { return nil }
+        let text: String
+        switch value {
+        case let list as [Any]:
+            text = list.map { "\($0)" }.joined(separator: ",")
+        case let number as NSNumber:
+            text = number.stringValue
+        case let string as String:
+            text = string
+        default:
+            return nil
+        }
+        var numbers: [Int] = []
+        let unified = text.map { "〜~～ー－‐–—".contains($0) ? "-" : $0 }
+        for token in String(unified).split(whereSeparator: { !$0.isASCII || !($0.isNumber || $0 == "-") }) {
+            let ends = token.split(separator: "-").compactMap { Int($0) }
+            if ends.count == 2, token.contains("-"), ends[0] <= ends[1] {
+                numbers.append(contentsOf: ends[0]...min(ends[1], ends[0] + 99))
+            } else if let first = ends.first {
+                numbers.append(first)
+            }
+        }
+        return numbers.isEmpty ? nil : numbers
+    }
 }
 
 /// One function the request declares to the model. `parametersJSON` is the

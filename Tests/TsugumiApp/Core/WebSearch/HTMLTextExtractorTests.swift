@@ -29,6 +29,19 @@ import Testing
         #expect(!extract.text.contains("\n\n"))
     }
 
+    @Test func headingsAreKeptAsLines() {
+        let html = """
+        <html><body><h1>題名</h1><p>導入。</p><h2 class="x"> <span>価格</span> </h2><h3></h3>
+        <p>219,800円 から。</p><h3>発売日</h3><p>9月18日。</p></body></html>
+        """
+        let extract = HTMLTextExtractor.extract(html: html)
+        #expect(extract.text == "題名\n導入。\n価格\n219,800円 から。\n発売日\n9月18日。")
+        #expect(extract.headingLines == [0, 2, 4])
+        let markdown = HTMLTextExtractor.markdownHeadings(in: "# 題名\n本文\n#タグ\n## 節\n続き")
+        #expect(markdown.text == "題名\n本文\n#タグ\n節\n続き")
+        #expect(markdown.headingLines == [0, 3])
+    }
+
     @Test func fallsBackToTheBodyWhenThereIsNoArticle() {
         let html = "<html><body><div>ひとつ</div><div>ふたつ</div></body></html>"
         let extract = HTMLTextExtractor.extract(html: html)

@@ -5,11 +5,14 @@ public struct WebPageText: Equatable, Sendable {
     public var reader: String
     public var title: String
     public var text: String
+    /// The lines of `text` (0-based) that are the page's headings; empty when the reader cannot tell.
+    public var headingLines: Set<Int>
 
-    public init(reader: String, title: String, text: String) {
+    public init(reader: String, title: String, text: String, headingLines: Set<Int> = []) {
         self.reader = reader
         self.title = title
         self.text = text
+        self.headingLines = headingLines
     }
 }
 
@@ -89,14 +92,16 @@ public struct DirectPageReader: WebPageReader {
         let contentType = response.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
         let body = data.prefix(maximumBytes)
         if contentType.contains("text/plain") || contentType.contains("markdown") {
-            let text = HTMLTextExtractor.decode(body, contentType: contentType)
-            return WebPageText(reader: name, title: "", text: HTMLTextExtractor.normalize(text))
+            let text = HTMLTextExtractor.normalize(HTMLTextExtractor.decode(body, contentType: contentType))
+            guard contentType.contains("markdown") else { return WebPageText(reader: name, title: "", text: text) }
+            let marked = HTMLTextExtractor.markdownHeadings(in: text)
+            return WebPageText(reader: name, title: "", text: marked.text, headingLines: marked.headingLines)
         }
         guard contentType.isEmpty || contentType.contains("html") || contentType.contains("xml") else {
             throw WebToolError.unsupportedContent(contentType)
         }
         let html = HTMLTextExtractor.decode(body, contentType: contentType)
         let extract = HTMLTextExtractor.extract(html: html)
-        return WebPageText(reader: name, title: extract.title, text: extract.text)
+        return WebPageText(reader: name, title: extract.title, text: extract.text, headingLines: extract.headingLines)
     }
 }

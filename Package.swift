@@ -21,6 +21,10 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "1.3.0"),
+        // Already resolved through swift-transformers; named here so a Qwen tool call's arguments reach the template
+        // as an ordered object (the order the model wrote them, SPEC §12 DEV-15).
+        .package(url: "https://github.com/huggingface/swift-jinja.git", from: "2.0.0"),
+        .package(url: "https://github.com/apple/swift-collections.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", exact: "2.101.3"),
         // GFM parser for the Mac app's response renderer: tables, HTML nodes
         // and nesting come back as a typed AST rather than flattened runs.
@@ -44,6 +48,8 @@ let package = Package(
                 "TsugumiBundleLocation",
                 .product(name: "Tokenizers", package: "swift-transformers"),
                 .product(name: "Hub", package: "swift-transformers"),
+                .product(name: "Jinja", package: "swift-jinja"),
+                .product(name: "OrderedCollections", package: "swift-collections"),
             ],
             path: "Sources/Tsugumi",
             resources: [

@@ -282,11 +282,15 @@ public struct GFTokenizer: @unchecked Sendable {
         public let id: String
         public let name: String
         public let arguments: JSONValue
+        /// The arguments as the call's JSON text, when there is one: `arguments` has lost the member order, and a
+        /// Qwen template writes the members in the order the call has (SPEC §12 DEV-15).
+        public let argumentsSource: String?
 
-        public init(id: String, name: String, arguments: JSONValue) {
+        public init(id: String, name: String, arguments: JSONValue, argumentsSource: String? = nil) {
             self.id = id
             self.name = name
             self.arguments = arguments
+            self.argumentsSource = argumentsSource
         }
     }
 

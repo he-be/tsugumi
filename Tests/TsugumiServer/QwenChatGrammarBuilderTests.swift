@@ -227,7 +227,7 @@ struct QwenChatGrammarBuilderTests {
         }
     }
 
-    @Test("parameters go in ascending key order")
+    @Test("without a declaration text, parameters go in ascending key order")
     func parameters_are_ordered_by_key() throws {
         let constraint = try #require(Self.constraint(tools: [Self.weather]))
         let swapped = Self.body("get_weather",
@@ -236,31 +236,56 @@ struct QwenChatGrammarBuilderTests {
         #expect(try !Self.walk(constraint.grammar, Self.call(swapped)))
     }
 
-    @Test("a required parameter cannot be dropped and an optional one can")
+    /// SPEC §12 DEV-15: required parameters first, then optional ones, each in the declaration's order. Ascending keys
+    /// alone put the optional `format` before `zone`, and a model that wrote `zone` first could not add `format`.
+    @Test("required parameters come first, then optional ones")
     func required_and_optional_parameters() throws {
         let constraint = try #require(Self.constraint(tools: [Self.clock]))
-        // `format` is optional; `zone` is not. Ascending key order puts
-        // `format` first.
         let zoneOnly = Self.body("get_time", Self.parameter("zone", "Asia/Tokyo"))
         #expect(try Self.walk(constraint.grammar, Self.call(zoneOnly)))
         let both = Self.body("get_time",
-                             Self.parameter("format", "iso"),
-                             Self.parameter("zone", "Asia/Tokyo"))
+                             Self.parameter("zone", "Asia/Tokyo"),
+                             Self.parameter("format", "iso"))
         #expect(try Self.walk(constraint.grammar, Self.call(both)))
+        let optionalFirst = Self.body("get_time",
+                                      Self.parameter("format", "iso"),
+                                      Self.parameter("zone", "Asia/Tokyo"))
+        #expect(try !Self.walk(constraint.grammar, Self.call(optionalFirst)))
         let formatOnly = Self.body("get_time", Self.parameter("format", "iso"))
         #expect(try !Self.walk(constraint.grammar, Self.call(formatOnly)))
+    }
+
+    /// The declaration text's member order wins over ascending keys: `fetch_page(url, sections?)` is written `url`
+    /// then `sections`, the call the app's page tool needs (`docs/qwen38/24` §3).
+    @Test("the declaration text sets the order")
+    func declaration_order() throws {
+        let source = #"{"type":"object","properties":{"url":{"type":"string"},"sections":{"type":"string"},"note":{"type":"string"}},"required":["url","note"]}"#
+        let parameters = try JSONDecoder().decode(JSONValue.self, from: Data(source.utf8))
+        let tool = GFTokenizer.FunctionDefinition(name: "fetch_page", description: "page",
+                                                  parameters: parameters, parametersSource: source)
+        #expect(QwenToolDeclaration.parameterOrder(tool) == ["url", "note", "sections"])
+        let constraint = try #require(Self.constraint(tools: [tool]))
+        let declared = Self.body("fetch_page", Self.parameter("url", "https://a.jp/"),
+                                 Self.parameter("note", "n"), Self.parameter("sections", "2,3"))
+        #expect(try Self.walk(constraint.grammar, Self.call(declared)))
+        let ascending = Self.body("fetch_page", Self.parameter("note", "n"),
+                                  Self.parameter("sections", "2,3"), Self.parameter("url", "https://a.jp/"))
+        #expect(try !Self.walk(constraint.grammar, Self.call(ascending)))
+        let withoutSource = GFTokenizer.FunctionDefinition(name: "fetch_page", description: "page",
+                                                           parameters: parameters)
+        #expect(QwenToolDeclaration.parameterOrder(withoutSource) == ["note", "url", "sections"])
     }
 
     @Test("a string enum is spelled raw, not quoted")
     func string_enum_is_written_raw() throws {
         let constraint = try #require(Self.constraint(tools: [Self.clock]))
         let quoted = Self.body("get_time",
-                               Self.parameter("format", "\"iso\""),
-                               Self.parameter("zone", "Asia/Tokyo"))
+                               Self.parameter("zone", "Asia/Tokyo"),
+                               Self.parameter("format", "\"iso\""))
         #expect(try !Self.walk(constraint.grammar, Self.call(quoted)))
         let outside = Self.body("get_time",
-                                Self.parameter("format", "rfc"),
-                                Self.parameter("zone", "Asia/Tokyo"))
+                                Self.parameter("zone", "Asia/Tokyo"),
+                                Self.parameter("format", "rfc"))
         #expect(try !Self.walk(constraint.grammar, Self.call(outside)))
     }
 

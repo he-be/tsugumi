@@ -5,10 +5,11 @@ import Foundation
 /// `web_search` asks Serper (Google, Japan / Japanese) and falls back to
 /// Brave; the model reads titles, URLs and snippets and picks what to open.
 /// `fetch_page` reads one of those URLs through Jina Reader or the app's own
-/// fetch, in the order the configuration prefers, and hands back the text
-/// clipped to the configured length, with `from` to read on past the clip
-/// (the page is read again). Both return errors as text: a failed search is
-/// something the model can route around, not a failed turn.
+/// fetch, in the order the configuration prefers. A short page comes back
+/// whole; a long one as its outline and opening sections, and `sections`
+/// reads the numbered sections the model picks (`PageOutline`). A page is
+/// read from the network once a turn. Both return errors as text: a failed
+/// search is something the model can route around, not a failed turn.
 public struct WebSearchToolExecutor: AppToolExecutor {
     public static let searchToolName = "web_search"
     public static let fetchToolName = "fetch_page"
@@ -16,6 +17,9 @@ public struct WebSearchToolExecutor: AppToolExecutor {
     let configuration: WebSearchConfiguration
     let searchProviders: [any WebSearchProvider]
     let pageReaders: [any WebPageReader]
+    /// The pages read this turn (the executor is made per turn): the sections a model asks for are cut from the
+    /// same text its outline was, and asking for them does not fetch the page again.
+    let pages = WebPageCache()
     /// When the results are fetched — stamped on each so the model reads
     /// them as today's internet, not as undated text it must place in time.
     let today: Date
@@ -101,8 +105,8 @@ public struct WebSearchToolExecutor: AppToolExecutor {
                 parametersJSON: #"{"type":"object","properties":{"query":{"type":"string","description":"検索クエリ。固有名詞と要点を短く並べる。"}},"required":["query"]}"#),
             AppToolDefinition(
                 name: Self.fetchToolName,
-                description: "web_search の結果の URL を 1 つ開いて、ページ本文のテキストを返す。スニペットだけでは足りないときに、最も有望な URL から順に読む。本文が長くて打ち切られたときは、from に示された文字位置を渡すと続きが読める。",
-                parametersJSON: #"{"type":"object","properties":{"url":{"type":"string","description":"読むページの URL (http または https)。"},"from":{"type":"integer","description":"本文を読み始める文字位置 (省略時は 0)。"}},"required":["url"]}"#),
+                description: "web_search の結果の URL を 1 つ開いて、ページ本文のテキストを返す。スニペットだけでは足りないときに、最も有望な URL から順に読む。長いページは目次 (番号つきの節) と冒頭の節を返すので、質問に必要な節の番号を sections に渡して読む。",
+                parametersJSON: #"{"type":"object","properties":{"url":{"type":"string","description":"読むページの URL (http または https)。"},"sections":{"type":"string","description":"読む節の番号 (目次の [ ] の数字)。1 つか、2,3 のようにカンマで区切って並べる。省略すると目次と冒頭の節を返す。"}},"required":["url"]}"#),
         ]
     }
 
@@ -121,8 +125,7 @@ public struct WebSearchToolExecutor: AppToolExecutor {
                 return AppToolResult(content: "error: fetch_page needs a non-empty \"url\".",
                                      isError: true, summary: "missing url")
             }
-            let from = Int(call.stringArgument("from") ?? "") ?? 0
-            return await fetch(text, from: max(0, from))
+            return await fetch(text, sections: call.integerListArgument("sections"))
         default:
             return AppToolResult(content: "error: unknown tool \(call.name).",
                                  isError: true, summary: "unknown tool")
@@ -180,10 +183,14 @@ public struct WebSearchToolExecutor: AppToolExecutor {
         return lines.joined(separator: "\n")
     }
 
-    func fetch(_ text: String, from: Int = 0) async -> AppToolResult {
+    func fetch(_ text: String, sections: [Int]? = nil) async -> AppToolResult {
         guard let url = URL(string: text), url.isPublicWebAddress else {
             return AppToolResult(content: "error: \(WebToolError.unsafeURL(text)). Only public http(s) URLs can be read.",
                                  isError: true, summary: "refused URL")
+        }
+        if let page = pages[url] {
+            return Self.result(for: page, url: url, sections: sections, limit: configuration.pageCharacterLimit,
+                               dateStamp: dateStamp)
         }
         var failures: [String] = []
         var thin: WebPageText?
@@ -197,14 +204,16 @@ public struct WebSearchToolExecutor: AppToolExecutor {
                     failures.append("\(reader.name): only \(page.text.count) characters")
                     continue
                 }
-                return Self.result(for: page, url: url, from: from, limit: configuration.pageCharacterLimit,
+                pages[url] = page
+                return Self.result(for: page, url: url, sections: sections, limit: configuration.pageCharacterLimit,
                                    dateStamp: dateStamp)
             } catch {
                 failures.append("\(reader.name): \(error)")
             }
         }
         if let thin {
-            return Self.result(for: thin, url: url, from: from, limit: configuration.pageCharacterLimit,
+            pages[url] = thin
+            return Self.result(for: thin, url: url, sections: sections, limit: configuration.pageCharacterLimit,
                                dateStamp: dateStamp)
         }
         return AppToolResult(content: "error: could not read \(url.absoluteString) — "
@@ -212,33 +221,44 @@ public struct WebSearchToolExecutor: AppToolExecutor {
                              isError: true, summary: failures.joined(separator: "; "))
     }
 
-    /// The page text from character `from`, clipped to `limit`. A clipped
-    /// result ends with the whole length and the `from` that reads on — the
-    /// same line `wikipedia_page` writes. Without it a model that wanted the
-    /// rest had no way but to fetch the same URL again and receive the same
-    /// text twice (docs/qwen38/21 A-1).
-    static func result(for page: WebPageText, url: URL, from: Int = 0, limit: Int,
+    /// What a read of `page` hands the model. A page no longer than a read (and short enough that an outline
+    /// would cost more than it saves) comes back whole. A longer one without `sections` comes back as its outline
+    /// and opening sections; with `sections`, as those sections (`PageOutline`).
+    static func result(for page: WebPageText, url: URL, sections: [Int]? = nil, limit: Int,
                        dateStamp: String) -> AppToolResult {
-        let total = page.text.count
-        let start = min(from, total)
-        let rest = String(page.text.dropFirst(start))
-        let (clippedText, clipped) = HTMLTextExtractor.clip(rest, to: limit)
-        var lines: [String] = []
-        if !page.title.isEmpty { lines.append("タイトル: \(page.title)") }
-        lines.append("URL: \(url.absoluteString)")
-        lines.append(dateStamp)
-        if start > 0 { lines.append("(\(start) 文字目から)") }
-        lines.append("")
-        if start >= total, total > 0 {
-            lines.append("(本文は全 \(total) 文字で、from=\(from) より後はありません)")
-        } else {
-            lines.append(clippedText)
+        let lines = page.text.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let outline = PageOutline(lines: lines, headingLines: page.headingLines, pageLimit: limit)
+        var header: [String] = []
+        if !page.title.isEmpty { header.append("タイトル: \(page.title)") }
+        header.append("URL: \(url.absoluteString)")
+        header.append(dateStamp)
+        header.append("")
+        let total = outline.totalCharacters.formatted()
+        if outline.isWhole(limit: limit) {
+            let (text, clipped) = HTMLTextExtractor.clip(page.text, to: limit)
+            return AppToolResult(content: (header + [text]).joined(separator: "\n"),
+                                 summary: "\(page.reader) · \(total) chars\(clipped ? " (clipped)" : "")")
         }
-        if clipped {
-            lines.append("…(本文はここで打ち切り。全 \(total) 文字。続きは fetch_page の from=\(start + clippedText.count) で読めます)")
+        guard let sections, !sections.isEmpty else {
+            let overview = outline.overview(tool: fetchToolName, limit: limit)
+            return AppToolResult(content: (header + overview.lines).joined(separator: "\n"),
+                                 summary: "\(page.reader) · \(total) chars · \(outline.sections.count) sections")
         }
-        return AppToolResult(content: lines.joined(separator: "\n"),
-                             summary: "\(page.reader) · \(start > 0 ? "from \(start) of " : "")\(total.formatted()) chars\(clipped ? " (clipped)" : "")")
+        let read = outline.read(sections, tool: fetchToolName, limit: limit)
+        let shown = read.shown.isEmpty ? "none" : PageOutline.numbers(read.shown)
+        return AppToolResult(content: (header + read.lines).joined(separator: "\n"), isError: read.isError,
+                             summary: "\(page.reader) · sections \(shown) of \(outline.sections.count)")
+    }
+}
+
+/// The pages one turn has read, by URL. A class so the executor (a value) shares one store across its rounds.
+final class WebPageCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pages: [String: WebPageText] = [:]
+
+    subscript(url: URL) -> WebPageText? {
+        get { lock.withLock { pages[url.absoluteString] } }
+        set { lock.withLock { pages[url.absoluteString] = newValue } }
     }
 }
 

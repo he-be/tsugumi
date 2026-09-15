@@ -24,6 +24,9 @@ import TsugumiAppCore
 //   error     no error
 //   answer    a non-empty answer that is not a tool call written as text (`<tool_call>` / `<function=`, docs/qwen38/21 §3)
 //   online    (Online) a web search ran, a page read was tried, and the answer names a source
+//   progress  every round whose prefill took over 5 s reported its progress within 1 s of the round's start, starting
+//             at the cached position, and never went more than 5 s without a report until the prefill ended (the
+//             app's prefill counter, docs/qwen38/24 §1)
 
 struct Options {
     var model = NSString(string: "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2").expandingTildeInPath
@@ -77,6 +80,8 @@ struct RoundRecord: Sendable {
     var diagnostics: AppDiagnostics?
     var error: String?
     var toolCalls: [AppToolCall] = []
+    /// `(seconds after started, done, total)` for each prefill progress event.
+    var prefill: [(seconds: Double, done: Int, total: Int)] = []
 }
 
 /// `RealInferenceClient`, recording each generation.
@@ -122,6 +127,10 @@ final class RecordingClient: AppModelLifecycleClient, AppInferenceRuntimeReporti
                     for try await event in stream {
                         switch event {
                         case .toolCall(let call): self.update(index) { $0.toolCalls.append(call) }
+                        case .prefillProgress(let done, let total):
+                            self.update(index) {
+                                $0.prefill.append((Date().timeIntervalSince($0.started), done, total))
+                            }
                         case .finished(let d):
                             self.update(index) { $0.outcome = "finished"; $0.diagnostics = d; $0.ended = Date() }
                         case .cancelled(let d):
@@ -244,6 +253,7 @@ func runCheck() async -> Int32 {
 
                 var checks: [String: Bool] = [:]
                 var liveNotes: [String] = []
+                var progressNotes: [String] = []
                 for (roundIndex, record) in records.enumerated() {
                     let d = record.diagnostics
                     let cached = d?.cachedPromptTokens ?? 0
@@ -276,6 +286,25 @@ func runCheck() async -> Int32 {
                         if let spec = d.speculative { row["draft"] = "\(spec.accepted)/\(spec.proposed)" }
                     }
                     if let error = record.error { row["error"] = error }
+                    let times = record.prefill.map(\.seconds)
+                    let gaps = zip(times.dropFirst(), times).map { $0 - $1 }
+                    row["prefill_events"] = record.prefill.count
+                    if let first = record.prefill.first {
+                        row["prefill_first_s"] = first.seconds
+                        row["prefill_first_done"] = first.done
+                        row["prefill_max_gap_s"] = gaps.max() ?? 0
+                    }
+                    if let seconds = d?.prefillSeconds, seconds > 5 {
+                        let first = record.prefill.first
+                        if first == nil || first!.seconds > 1 || first!.done != cached || (gaps.max() ?? 0) > 5
+                            || record.prefill.last.map({ $0.done != $0.total }) ?? true {
+                            progressNotes.append(String(
+                                format: "round %d prefill %.1f s: %d events, first %@ at %@, max gap %.1f s",
+                                roundIndex + 1, seconds, record.prefill.count,
+                                first.map { "\($0.done)/\($0.total)" } ?? "-",
+                                first.map { String(format: "%.1f s", $0.seconds) } ?? "-", gaps.max() ?? 0))
+                        }
+                    }
                     jsonLine(row, to: rounds)
                     logLine("\(label) round \(roundIndex + 1): \(record.outcome) prompt=\(prompt) cached=\(cached) "
                         + "generated=\(generated) shortfall=\(shortfall.map(String.init) ?? "-") calls=\(row["calls"]!)")
@@ -283,6 +312,7 @@ func runCheck() async -> Int32 {
                     livePosition = record.outcome == "finished" && prompt > 0 ? prompt + generated - 1 : nil
                 }
                 checks["live"] = liveNotes.isEmpty
+                checks["progress"] = progressNotes.isEmpty
                 checks["error"] = model.error == nil
                 let answer = model.outputText
                 checks["answer"] = !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -298,6 +328,7 @@ func runCheck() async -> Int32 {
                 if !failed.isEmpty {
                     failures.append("\(label): \(failed.joined(separator: ", "))"
                         + (liveNotes.isEmpty ? "" : " [\(liveNotes.joined(separator: "; "))]")
+                        + (progressNotes.isEmpty ? "" : " [\(progressNotes.joined(separator: "; "))]")
                         + (model.error.map { " error: \($0.userMessage)" } ?? ""))
                 }
                 let japanese = answer.unicodeScalars.filter { (0x3040...0x30FF).contains($0.value) || (0x4E00...0x9FFF).contains($0.value) }.count

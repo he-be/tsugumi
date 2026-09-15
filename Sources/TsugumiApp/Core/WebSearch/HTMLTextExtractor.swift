@@ -10,7 +10,12 @@ public enum HTMLTextExtractor {
     public struct Extract: Equatable, Sendable {
         public var title: String
         public var text: String
+        /// The lines of `text` (0-based) that were `<h1>`–`<h6>`: the page's own outline (`PageOutline`).
+        public var headingLines: Set<Int> = []
     }
+
+    /// Put before a heading's text while tags are stripped, and taken off again with the line it marks.
+    static let headingMark: Character = "\u{1}"
 
     /// Decodes the bytes with the charset the response or the page names,
     /// falling back through the encodings a Japanese page is likely to use.
@@ -47,6 +52,7 @@ public enum HTMLTextExtractor {
         } else if let inner = firstMatch(#"<body\b[^>]*>(.*)</body>"#, in: body) {
             body = inner
         }
+        body = replacing(#"<\s*h[1-6]\b[^>]*>"#, in: body, with: "\n\(headingMark)")
         body = replacing(#"<\s*li\b[^>]*>"#, in: body, with: "\n- ")
         body = replacing(#"<\s*(br|hr)\b[^>]*/?>"#, in: body, with: "\n")
         body = replacing(
@@ -55,7 +61,44 @@ public enum HTMLTextExtractor {
         body = replacing(#"</\s*(td|th)\b[^>]*>"#, in: body, with: "\t")
         body = replacing(#"<[^>]+>"#, in: body, with: " ")
         body = decodeEntities(body)
-        return Extract(title: title, text: normalize(body))
+        let (text, headingLines) = headings(in: normalize(body))
+        return Extract(title: title, text: text, headingLines: headingLines)
+    }
+
+    /// The marked lines of normalized text as heading line numbers, with the marks taken off and headings that
+    /// held no text dropped.
+    static func headings(in marked: String) -> (text: String, headingLines: Set<Int>) {
+        var lines: [String] = []
+        var headingLines: Set<Int> = []
+        for line in marked.split(separator: "\n") {
+            guard line.contains(headingMark) else {
+                lines.append(String(line))
+                continue
+            }
+            let text = collapseWhitespace(line.filter { $0 != headingMark })
+            guard !text.isEmpty else { continue }
+            if line.first == headingMark { headingLines.insert(lines.count) }
+            lines.append(text)
+        }
+        return (lines.joined(separator: "\n"), headingLines)
+    }
+
+    /// Markdown's `#` lines as heading line numbers (a page served as `text/markdown`), marks kept off the text.
+    static func markdownHeadings(in text: String) -> (text: String, headingLines: Set<Int>) {
+        var lines: [String] = []
+        var headingLines: Set<Int> = []
+        for line in text.split(separator: "\n") {
+            let hashes = line.prefix { $0 == "#" }.count
+            if (1...6).contains(hashes), line.dropFirst(hashes).first == " " {
+                let heading = collapseWhitespace(String(line.dropFirst(hashes)))
+                guard !heading.isEmpty else { continue }
+                headingLines.insert(lines.count)
+                lines.append(heading)
+            } else {
+                lines.append(String(line))
+            }
+        }
+        return (lines.joined(separator: "\n"), headingLines)
     }
 
     /// Whitespace as the model should see it: single spaces within a line,

@@ -1905,14 +1905,17 @@ package final class Qwen38Runner {
 
     /// Forward `tokens` at positions `startPos ..< startPos + tokens.count` (the cache must hold
     /// every earlier position). Returns the last token's logits, or with `allLogits` every
-    /// token's (`[T][vocab]`).
-    package func forward(tokens: [Int], startPos: Int, allLogits: Bool = false) throws -> UnsafeBufferPointer<Float> {
+    /// token's (`[T][vocab]`). `onLayer(n)` after the host has handed over trunk layer `n - 1` (a prefill chunk
+    /// is tens of seconds; the app's progress moves with it).
+    package func forward(tokens: [Int], startPos: Int, allLogits: Bool = false,
+                         onLayer: ((Int) -> Void)? = nil) throws -> UnsafeBufferPointer<Float> {
         // Command buffers and encoders are autoreleased; without a pool (the CLI) they, and the batch scratch
         // they reference, outlive the forward (+1.2 GB after `allocateBatch` shrank it, docs/qwen38/09).
-        try autoreleasepool { try forwardBody(tokens: tokens, startPos: startPos, allLogits: allLogits) }
+        try autoreleasepool { try forwardBody(tokens: tokens, startPos: startPos, allLogits: allLogits, onLayer: onLayer) }
     }
 
-    private func forwardBody(tokens: [Int], startPos: Int, allLogits: Bool) throws -> UnsafeBufferPointer<Float> {
+    private func forwardBody(tokens: [Int], startPos: Int, allLogits: Bool,
+                             onLayer: ((Int) -> Void)?) throws -> UnsafeBufferPointer<Float> {
         let T = tokens.count
         precondition(T >= 1 && T <= maxBatch && startPos + T <= capacity)
         var prof = StepProfile()
@@ -2025,6 +2028,7 @@ package final class Qwen38Runner {
                 previewed = named
                 prof.previewAdvise += CFAbsoluteTimeGetCurrent() - tp
             }
+            onLayer?(il + 1)
         }
         if let p = pendingRouted {
             // The host reads `R` below.

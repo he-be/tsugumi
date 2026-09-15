@@ -33,6 +33,30 @@ public enum QwenToolDeclaration {
         ])
         return declaration.pythonDumps()
     }
+
+    /// The order a Qwen tool call writes `tool`'s parameters in (SPEC §12 DEV-15): the required ones first, then the
+    /// optional ones, each in the declaration's order when `parametersSource` spells the same schema and in ascending
+    /// key order when there is no source. The same rule as llama.cpp's `json-schema-to-grammar`.
+    ///
+    /// Ascending keys alone (the Gemma rule, whose template writes arguments through `dictsort`) closed the call to an
+    /// optional parameter that sorts before a required one: a model that wrote `url` first — the order the declaration
+    /// shows — could not add `sections` (or `from`) after it, and fetched the same page again (`docs/qwen38/24` §3).
+    /// The Qwen templates write `arguments|items`, the order the call has.
+    public static func parameterOrder(_ tool: GFTokenizer.FunctionDefinition) -> [String] {
+        guard case .object(let schema) = tool.parameters,
+              case .object(let properties)? = schema["properties"] else { return [] }
+        var declared = properties.keys.sorted()
+        if let source = tool.parametersSource.flatMap(OrderedJSON.parse), source.jsonValue == tool.parameters,
+           case .object(let members) = source,
+           case .object(let ordered)? = members.first(where: { $0.0 == "properties" })?.1 {
+            declared = ordered.map(\.0)
+        }
+        var required: Set<String> = []
+        if case .array(let names)? = schema["required"] {
+            for case .string(let name) in names { required.insert(name) }
+        }
+        return declared.filter { required.contains($0) } + declared.filter { !required.contains($0) }
+    }
 }
 
 /// A JSON value that remembers the order of its object members.

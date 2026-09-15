@@ -68,7 +68,7 @@ struct Qwen38ToolLoopPromptTests {
     }
 
     /// Two Online turns: the app's own lookup, a forced search, prose and a forced fetch, the answer; then a follow-up
-    /// that reads a Wikipedia page from a character offset (an integer argument) and answers; then a third question.
+    /// that reads two sections of a Wikipedia page and answers; then a third question.
     static func steps() throws -> [Step] {
         let (tools, system) = try declarations()
         func request(history: [AppChatTurn], prompt: String, continuation: [AppChatTurn],
@@ -101,9 +101,9 @@ struct Qwen38ToolLoopPromptTests {
         let turn1 = [AppChatTurn(role: .user, text: q1)] + t1r3Continuation
             + [AppChatTurn(role: .assistant, text: answer1)]
 
-        let q2 = "Summarize that in English, and read the Wikipedia article body from character 2000."
-        let page = call("call_3", "wikipedia_page", #"{"from":2000,"title":"ツグミ"}"#)
-        let wikiResult = "ツグミ (Wikipedia、2026年8月30日 時点の複製、2000 字目から)\n\n繁殖地はシベリア中部・東部。日本では冬鳥。\n"
+        let q2 = "Summarize that in English, and read sections 2 and 3 of the Wikipedia article."
+        let page = call("call_3", "wikipedia_page", #"{"title":"ツグミ","sections":"2,3"}"#)
+        let wikiResult = "Wikipedia 記事: ツグミ (2026年8月30日 時点)\n\n節 2, 3 (全 5 節、本文は全 6200 文字)\n\n[2] 繁殖地はシベリア中部・東部。\n繁殖地はシベリア中部・東部。日本では冬鳥。\n"
         let answer2 = "Dusky thrushes (Turdus eunomus) winter in Japan from late October to April.\n\nSources:\n- https://example.jp/birds/tsugumi?year=2026\n- Wikipedia: ツグミ"
         let t2r2Continuation = [AppChatTurn(role: .assistant, text: "", toolCalls: [page]),
                                 .toolResult(callID: page.id, name: page.name, content: wikiResult)]
@@ -111,12 +111,17 @@ struct Qwen38ToolLoopPromptTests {
             + [AppChatTurn(role: .assistant, text: answer2)]
 
         func written(_ calls: [AppToolCall], prose: String = "") -> String {
-            // What the grammar lets the model write for a call: parameters in ascending order, a string raw, anything
-            // else as compact JSON (`QwenToolCallGrammar`).
+            // What the grammar lets the model write for a call: parameters required first, then optional, in the
+            // declaration's order (SPEC §12 DEV-15), a string raw, anything else as compact JSON (`QwenToolCallGrammar`).
             let body = calls.map { call -> String in
                 let object = try! JSONDecoder().decode(JSONValue.self, from: Data(call.argumentsJSON.utf8))
                 guard case .object(let arguments) = object else { return "" }
-                let parameters = arguments.keys.sorted().map { key -> String in
+                let tool = tools.first { $0.name == call.name }!
+                let order = QwenToolDeclaration.parameterOrder(GFTokenizer.FunctionDefinition(
+                    name: tool.name, description: tool.description,
+                    parameters: try! JSONDecoder().decode(JSONValue.self, from: Data(tool.parametersJSON.utf8)),
+                    parametersSource: tool.parametersJSON))
+                let parameters = order.filter { arguments[$0] != nil }.map { key -> String in
                     let value: String = if case .string(let text) = arguments[key]! { text }
                         else { try! arguments[key]!.encoded() }
                     return "<parameter=\(key)>\n\(value)\n</parameter>\n"

@@ -1,4 +1,6 @@
 import Foundation
+import Jinja
+import OrderedCollections
 
 public indirect enum JSONValue: Codable, Equatable, Sendable {
     case object([String: JSONValue])
@@ -77,6 +79,26 @@ public indirect enum JSONValue: Codable, Equatable, Sendable {
             }
         }
         return rendered
+    }
+
+    /// `jinjaToolArgumentsValue()` as an object whose members come in `order` (keys it does not name follow in
+    /// ascending order): swift-jinja sorts a Swift dictionary's keys, and a Qwen template's `arguments|items` writes
+    /// the members in the order it is given.
+    public func jinjaToolArgumentsValue(order: [String]) throws -> any Sendable {
+        guard case .object(let arguments) = self else {
+            return try jinjaSendableValue()
+        }
+        let named = order.filter { arguments[$0] != nil }
+        let keys = named + arguments.keys.filter { !named.contains($0) }.sorted()
+        var rendered = OrderedDictionary<String, Jinja.Value>()
+        for key in keys {
+            if case .string(let text) = arguments[key]! {
+                rendered[key] = .string(text)
+            } else {
+                rendered[key] = .string(try arguments[key]!.encoded())
+            }
+        }
+        return Jinja.Value.object(rendered)
     }
 
     public func jinjaSendableValue() throws -> any Sendable {

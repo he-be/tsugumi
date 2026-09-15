@@ -182,7 +182,7 @@ public enum QwenToolCallGrammar {
             }
         }
         var blocks: [String] = []
-        for key in properties.keys.sorted() {
+        for key in QwenToolDeclaration.parameterOrder(tool) {
             let property = properties[key]!
             let value = valueRule(&builder, tool: tool.name, key: key, schema: property)
             let block = builder.addRule(

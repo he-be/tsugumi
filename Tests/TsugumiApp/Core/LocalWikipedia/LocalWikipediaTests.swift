@@ -190,9 +190,9 @@ private func fixtureIndex() throws -> LocalWikipediaIndex {
         // A title match among several terms: the fold is on and clipped.
         let exact = await executor.execute(AppToolCall(id: "1", name: "wikipedia_search",
                                                        argumentsJSON: #"{"query":"長い記事"}"#))
-        #expect(exact.content.contains("[1] 長い記事 の本文:\n長い記事の導入部。"))
-        #expect(exact.content.contains("続きは wikipedia_page の from=500"))
-        #expect(exact.summary.hasSuffix("(clipped)"))
+        #expect(exact.content.contains("[1] 長い記事 の本文:\n本文は全 577 文字、2 節。"))
+        #expect(exact.content.contains("\n\n[1] 長い記事の導入部。\n長い記事の導入部。\nあいうえお"))
+        #expect(exact.summary.hasSuffix("長い記事 577 chars · 2 sections"))
         // A redirect name is a title match too.
         let redirect = await executor.execute(AppToolCall(id: "2", name: "wikipedia_search",
                                                           argumentsJSON: #"{"query":"米国"}"#))
@@ -206,18 +206,25 @@ private func fixtureIndex() throws -> LocalWikipediaIndex {
         #expect(!WikipediaToolExecutor.shouldGo([], query: "x"))
     }
 
-    @Test func pageClipsAndOffersTheContinuation() async throws {
+    @Test func pageShowsTheOutlineAndReadsSections() async throws {
         let executor = try executor(limit: 500)
         let first = await executor.execute(AppToolCall(id: "1", name: "wikipedia_page",
                                                        argumentsJSON: #"{"title":"長い記事"}"#))
-        #expect(first.content.hasPrefix("Wikipedia 記事: 長い記事 (2026年8月30日 時点)\n\n長い記事の導入部。"))
-        #expect(first.content.contains("続きは wikipedia_page の from=500"))
-        #expect(first.summary.hasSuffix("(clipped)"))
+        #expect(first.content.hasPrefix("Wikipedia 記事: 長い記事 (2026年8月30日 時点)\n\n本文は全 577 文字、2 節。目次と節 1 の本文です。"))
+        #expect(first.content.contains("wikipedia_page の sections に番号を渡すと読めます"))
+        #expect(first.content.contains("\n目次:\n[1] 長い記事の導入部。 ("))
+        let article = try #require(try fixtureIndex().page(title: "長い記事"))
+        let second = try #require(PageOutline(text: article.text, pageLimit: 500).sections.last)
+        #expect(first.content.hasSuffix("\n\n(次の節: [2] あいうえおかきくけこさしすせそたちつてとなにぬねのはひふへほ… (\(second.text.count)字))"))
+        #expect(first.summary == "Wikipedia · 577 chars · 2 sections")
         let rest = await executor.execute(AppToolCall(id: "2", name: "wikipedia_page",
-                                                      argumentsJSON: #"{"title":"長い記事","from":500}"#))
-        #expect(rest.content.contains("(500 文字目から)"))
-        #expect(rest.content.hasSuffix("おわり"))
-        #expect(!rest.summary.hasSuffix("(clipped)"))
+                                                      argumentsJSON: #"{"sections":"2","title":"長い記事"}"#))
+        #expect(rest.content.contains("節 2 (全 2 節、本文は全 577 文字)"))
+        #expect(rest.content.hasSuffix("おわり\n\n(これが最後の節です)"))
+        #expect(rest.summary == "Wikipedia · sections 2 of 2")
+        let short = await executor.execute(AppToolCall(id: "3", name: "wikipedia_page",
+                                                       argumentsJSON: #"{"title":"東京タワー"}"#))
+        #expect(!short.content.contains("目次:"))
     }
 
     @Test func lookupRendersTheOpeningsAsAReference() async throws {

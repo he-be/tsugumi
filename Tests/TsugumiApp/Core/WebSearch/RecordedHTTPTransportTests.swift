@@ -24,7 +24,7 @@ import Testing
         AppToolCall(id: "c3", name: "fetch_page", argumentsJSON: #"{"url":"https://down.example.jp/"}"#),
     ]
 
-    /// The second run reads the same results without the network, and a smaller page limit clips the same body.
+    /// The second run reads the same results without the network, and a smaller page limit cuts the same body finer.
     @Test func aRecordedRunReplaysWithoutTheNetwork() async throws {
         let directory = try store()
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -49,8 +49,9 @@ import Testing
         #expect(second.map(\.isError) == first.map(\.isError))
 
         let short = await executor(replaying, pageCharacters: 500).execute(Self.calls[1])
-        #expect(first[1].content.contains("…(本文はここで打ち切り。") && short.content.contains("…(本文はここで打ち切り。"))
-        #expect(short.content.count < first[1].content.count)
+        #expect(first[1].content.contains("\n目次:\n") && short.content.contains("\n目次:\n"))
+        #expect(short.content.split(separator: "\n").filter { $0.hasPrefix("[") }.count
+                    > first[1].content.split(separator: "\n").filter { $0.hasPrefix("[") }.count)
         #expect(offline.requests.isEmpty)
     }
 

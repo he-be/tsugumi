@@ -448,7 +448,8 @@ actor RealInferenceSession {
                 GFTokenizer.HistoricalToolCall(
                     id: call.id, name: call.name,
                     arguments: try Self.jsonValue(call.argumentsJSON,
-                                                  what: "tool call \(call.name) arguments"))
+                                                  what: "tool call \(call.name) arguments"),
+                    argumentsSource: call.argumentsJSON)
             }
             multimodal.append(GFTokenizer.MultimodalMessage(
                 role: role,

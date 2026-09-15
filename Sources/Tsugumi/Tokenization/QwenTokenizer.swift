@@ -288,6 +288,17 @@ public struct QwenTokenizer: @unchecked Sendable {
 
     // MARK: - Chat template
 
+    /// The order a past call's arguments are written back in (SPEC §12 DEV-15): the order of its JSON text when it
+    /// has one that says the same arguments, else the order the grammar has the model write (`parameterOrder`).
+    static func argumentOrder(_ call: GFTokenizer.HistoricalToolCall,
+                              tools: [GFTokenizer.FunctionDefinition]) -> [String] {
+        if let source = call.argumentsSource.flatMap(OrderedJSON.parse), source.jsonValue == call.arguments,
+           case .object(let members) = source {
+            return members.map(\.0)
+        }
+        return tools.first { $0.name == call.name }.map(QwenToolDeclaration.parameterOrder) ?? []
+    }
+
     /// Render the checkpoint's own `chat_template.jinja` and encode it.
     ///
     /// Ornith ships the template, so — unlike Gemma, where the runtime owns the
@@ -315,7 +326,8 @@ public struct QwenTokenizer: @unchecked Sendable {
                         "type": "function",
                         "function": [
                             "name": call.name,
-                            "arguments": try call.arguments.jinjaToolArgumentsValue(),
+                            "arguments": try call.arguments.jinjaToolArgumentsValue(
+                                order: Self.argumentOrder(call, tools: tools)),
                         ] as [String: any Sendable],
                     ] as [String: any Sendable]
                 }

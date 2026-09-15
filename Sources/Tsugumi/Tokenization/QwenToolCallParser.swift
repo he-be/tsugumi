@@ -73,6 +73,7 @@ public struct QwenToolCallParser: Sendable {
         try Self.expectNewline(&rest)
 
         var arguments: [String: JSONValue] = [:]
+        var written: [String] = []
         while true {
             if rest.hasPrefix("</function>") {
                 rest = rest.dropFirst("</function>".count)
@@ -96,16 +97,19 @@ public struct QwenToolCallParser: Sendable {
             arguments[key] = try Self.value(raw,
                                             schema: Self.property(key, of: parameters),
                                             key: key)
+            written.append(key)
         }
 
         guard rest.drop(while: \.isWhitespace).isEmpty else {
             throw QwenToolCallParserError.malformed
         }
         let object = JSONValue.object(arguments)
+        // The members in the order the model wrote them: the redraw writes them back in that order (DEV-15).
+        let members = try written.map { try JSONValue.string($0).encoded() + ":" + arguments[$0]!.encoded() }
         return ParsedToolCall(id: id,
                               name: name,
                               arguments: object,
-                              argumentsJSON: try object.encoded())
+                              argumentsJSON: "{" + members.joined(separator: ",") + "}")
     }
 
     // MARK: - Scanning

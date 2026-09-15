@@ -169,7 +169,7 @@ final class StubTransport: HTTPTransport, @unchecked Sendable {
         #expect(result.summary == "missing query")
     }
 
-    @Test func fetchGoesThroughJinaFirstAndClips() async throws {
+    @Test func fetchGoesThroughJinaFirstAndShowsTheOutline() async throws {
         let long = String(repeating: "本文の一行。\n", count: 200)
         let jina = Data(#"{"data":{"title":"記事","content":"\#(long.replacingOccurrences(of: "\n", with: "\\n"))"}}"#.utf8)
         let transport = StubTransport([
@@ -178,50 +178,66 @@ final class StubTransport: HTTPTransport, @unchecked Sendable {
         let result = await executor(transport: transport).execute(
             AppToolCall(id: "c2", name: "fetch_page", argumentsJSON: #"{"url":"https://example.jp/tokyo"}"#))
         #expect(!result.isError)
-        #expect(result.content.hasPrefix("タイトル: 記事\nURL: https://example.jp/tokyo\n取得日 2026年9月2日\n\n本文の一行。"))
         let total = HTMLTextExtractor.normalize(long).count
-        let tail = try #require(result.content.split(separator: "\n").last)
-        #expect(tail.hasPrefix("…(本文はここで打ち切り。全 \(total) 文字。続きは fetch_page の from=") && tail.hasSuffix(" で読めます)"))
-        #expect(result.content.count < 750)
-        #expect(result.summary.hasPrefix("Jina Reader · "))
-        #expect(result.summary.hasSuffix("(clipped)"))
+        #expect(result.content.hasPrefix("タイトル: 記事\nURL: https://example.jp/tokyo\n取得日 2026年9月2日\n\n本文は全 \(total) 文字、"))
+        #expect(result.content.contains("\n目次:\n[1] 本文の一行。 ("))
+        #expect(result.content.contains("fetch_page の sections に番号を渡すと読めます (1 回 500 文字まで)"))
+        #expect(result.content.contains("\n(次の節: [2] "))
+        #expect(result.content.count < 900)
+        #expect(result.summary.hasPrefix("Jina Reader · \(total.formatted()) chars · "))
+        #expect(result.summary.hasSuffix(" sections"))
         let request = try #require(transport.requests.first)
         #expect(request.url?.absoluteString == "https://r.jina.ai/https://example.jp/tokyo")
         #expect(request.value(forHTTPHeaderField: "Authorization") == nil)
     }
 
-    /// Reading on with the `from` each clipped result names walks the whole page once, and nothing is left past it.
-    @Test func fetchReadsOnFromWhereTheClipStopped() async throws {
+    /// A short page is not worth an outline: it comes back whole, as before.
+    @Test func aShortPageComesBackWhole() async throws {
+        let body = "短い本文。" + String(repeating: "続きの文。", count: 60)
+        let jina = Data(#"{"data":{"title":"短い","content":"\#(body)"}}"#.utf8)
+        let transport = StubTransport(["r.jina.ai": [.init(status: 200, body: jina)]])
+        let result = await executor(transport: transport).execute(
+            AppToolCall(id: "c", name: "fetch_page", argumentsJSON: #"{"url":"https://example.jp/short"}"#))
+        #expect(result.content == "タイトル: 短い\nURL: https://example.jp/short\n取得日 2026年9月2日\n\n\(body)")
+        #expect(result.summary == "Jina Reader · 305 chars")
+    }
+
+    /// Reading every section the outline names gives back the whole page once, from one fetch; a number past the
+    /// outline and a request larger than a read are said.
+    @Test func sectionsCoverThePageFromOneFetch() async throws {
         let long = (1...300).map { "本文の \($0) 行目。" }.joined(separator: "\n")
         let jina = Data(#"{"data":{"title":"記事","content":"\#(long.replacingOccurrences(of: "\n", with: "\\n"))"}}"#.utf8)
         let transport = StubTransport(["r.jina.ai": [.init(status: 200, body: jina)]])
         let executor = executor(transport: transport)
-        let total = HTMLTextExtractor.normalize(long).count
-        var from = 0
+        let overview = await executor.execute(AppToolCall(id: "o", name: "fetch_page",
+                                                          argumentsJSON: #"{"url":"https://example.jp/long"}"#))
+        let count = try #require(Int(overview.content.split(separator: "、")[1].prefix { $0.isNumber }))
+        #expect(count > 5)
         var pieces: [String] = []
-        for step in 1...20 {
-            let arguments = from == 0 ? #"{"url":"https://example.jp/long"}"#
-                : #"{"url":"https://example.jp/long","from":\#(from)}"#
-            let result = await executor.execute(AppToolCall(id: "c\(step)", name: "fetch_page", argumentsJSON: arguments))
+        for number in 1...count {
+            let result = await executor.execute(AppToolCall(
+                id: "s\(number)", name: "fetch_page",
+                argumentsJSON: #"{"url":"https://example.jp/long","sections":"\#(number)"}"#))
             #expect(!result.isError)
             let content = result.content
-            #expect(content.contains(from == 0 ? "取得日 2026年9月2日\n\n" : "取得日 2026年9月2日\n(\(from) 文字目から)\n\n"))
-            let body = String(content[try #require(content.range(of: "\n\n")).upperBound...])
-            guard let marker = body.range(of: "\n…(本文はここで打ち切り。全 \(total) 文字。続きは fetch_page の from=") else {
-                pieces.append(body)
-                break
-            }
-            pieces.append(String(body[..<marker.lowerBound]))
-            let next = try #require(Int(body[marker.upperBound...].prefix { $0.isNumber }))
-            #expect(next > from)
-            from = next
+            #expect(content.contains("取得日 2026年9月2日\n\n節 \(number) (全 \(count) 節、"))
+            let start = try #require(content.range(of: "\n[\(number)] "))
+            let text = content[start.upperBound...].drop { $0 != "\n" }.dropFirst()
+            let end = try #require(text.range(of: "\n\n("))
+            pieces.append(String(text[..<end.lowerBound]))
+            #expect(content.hasSuffix(number == count ? "(これが最後の節です)" : "(次の節: [\(number + 1)] "
+                                      + content.split(separator: "(次の節: [\(number + 1)] ").last!))
         }
-        #expect(pieces.count > 2)
-        #expect(pieces.joined() == HTMLTextExtractor.normalize(long))
+        #expect(pieces.joined(separator: "\n") == HTMLTextExtractor.normalize(long))
+        #expect(transport.requests.count == 1)
+
+        let all = await executor.execute(AppToolCall(
+            id: "all", name: "fetch_page", argumentsJSON: #"{"url":"https://example.jp/long","sections":"1-\#(count)"}"#))
+        #expect(all.content.contains("は 1 回 500 文字の上限を超えるので出していません。fetch_page の sections に渡すと読めます)"))
         let past = await executor.execute(AppToolCall(
-            id: "past", name: "fetch_page", argumentsJSON: #"{"url":"https://example.jp/long","from":\#(total + 5)}"#))
-        #expect(past.content.hasSuffix("(本文は全 \(total) 文字で、from=\(total + 5) より後はありません)"))
-        #expect(!past.content.contains("打ち切り"))
+            id: "past", name: "fetch_page", argumentsJSON: #"{"url":"https://example.jp/long","sections":"\#(count + 5)"}"#))
+        #expect(past.isError)
+        #expect(past.content.contains("節 \(count + 5) はありません。節は 1〜\(count) です。\n\n目次:\n[1] "))
     }
 
     @Test func aThinJinaPageFallsBackToTheDirectFetch() async throws {
@@ -293,7 +309,8 @@ final class StubTransport: HTTPTransport, @unchecked Sendable {
         let text = WebSearchPrompt.system(date: date, maxRounds: 6)
         #expect(text.contains("2026年9月2日"))
         #expect(text.contains("6 回まで"))
-        #expect(text.contains("添えられた本文を読んで答えます"))
+        #expect(text.contains("添えられた本文と、必要なら sections で読んだ節に基づいて答えます"))
+        #expect(text.contains("その番号を sections に渡して読みます"))
     }
 
     @Test func configurationRoundTripsAndAppliesTheEnvironment() throws {
