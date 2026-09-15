@@ -262,6 +262,56 @@ import Testing
         #expect(model.error == nil)
     }
 
+    /// Each round's last result says what is left before the model reads it
+    /// the first time, and later requests render the same text (INV-1); the
+    /// exhausted round still reads the limit line alone.
+    @MainActor
+    @Test(arguments: [AppToolBudgetNotes.rounds, .roundsAndContext])
+    func budgetNotesGoOnEachRoundsLastResult(notes: AppToolBudgetNotes) async throws {
+        let calls = (1...3).map {
+            AppToolCall(id: "c\($0)", name: "web_search", argumentsJSON: #"{"query":"q\#($0)"}"#)
+        }
+        let client = ScriptedToolClient([
+            .calls([calls[0]]), .calls([calls[1], calls[2]]), .answer("done"),
+        ])
+        let executor = ScriptedToolExecutor(results: Dictionary(
+            uniqueKeysWithValues: calls.map { ($0.id, AppToolResult(content: "r\($0.id)", summary: "s")) }))
+        let model = readyModel(client: client, executor: executor)
+        model.webSearchConfiguration.maxToolRounds = 2
+        model.maxContextTokens = 16_384
+        model.toolBudgetNotes = notes
+        model.networkMode = .online
+        model.promptText = "q"
+        model.run()
+        await waitForIdle(model)
+
+        #expect(client.requests.count == 3)
+        // The scripted client reports prompt 1 and 1 generated token (one call) per round.
+        let first = AppModel.roundBudgetNote(notes: notes, roundsUsed: 1, maxRounds: 2,
+                                             contextUsed: 2, maxContext: 16_384)
+        #expect(first == (notes == .rounds
+            ? "(ツール呼び出し: 2 回中 1 回使用、残り 1 回。)"
+            : "(ツール呼び出し: 2 回中 1 回使用、残り 1 回。文脈: 16,384 トークン中、この結果の前までで 2 使用、残り 16,382。)"))
+        #expect(client.requests[1].continuation.map(\.text).last == "rc1\n\n" + first!)
+        // The second round had two calls: only its last result carries the limit line.
+        let limit = AppModel.roundBudgetReachedNote(maxRounds: 2)
+        let texts = client.requests[2].continuation.map(\.text)
+        #expect(Array(texts.prefix(client.requests[1].continuation.count)) == client.requests[1].continuation.map(\.text))
+        #expect(texts.suffix(2) == ["rc2", "rc3\n\n" + limit])
+        #expect(model.outputResponsePlainText == "done")
+    }
+
+    @Test func budgetNotesGroupDigitsAndStopAtZero() {
+        #expect(AppModel.roundBudgetNote(notes: .limitOnly, roundsUsed: 1, maxRounds: 6,
+                                         contextUsed: 10, maxContext: 100) == nil)
+        #expect(AppModel.roundBudgetNote(notes: .roundsAndContext, roundsUsed: 5, maxRounds: 6,
+                                         contextUsed: 1_234_567, maxContext: 32_768)
+            == "(ツール呼び出し: 6 回中 5 回使用、残り 1 回。文脈: 32,768 トークン中、この結果の前までで 1,234,567 使用、残り 0。)")
+        #expect(AppModel.roundBudgetNote(notes: .roundsAndContext, roundsUsed: 2, maxRounds: 6,
+                                         contextUsed: nil, maxContext: 32_768)
+            == "(ツール呼び出し: 6 回中 2 回使用、残り 4 回。)")
+    }
+
     @MainActor
     @Test func failedToolResultReachesTheModelAndTheTrace() async throws {
         let client = ScriptedToolClient([.calls([searchCall]), .answer("分かりません")])

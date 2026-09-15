@@ -1681,6 +1681,43 @@ if let index = arguments.firstIndex(of: "--qwen38-generate"), index + 1 < argume
     exit(0)
 }
 
+// `--qwen38-restore-check <token file> <trunk file> <position>`: a checkpoint restored before and after the state ran on.
+if let index = arguments.firstIndex(of: "--qwen38-restore-check"), index + 3 < arguments.count {
+    try runQwen38RestoreCheck(
+        tokenFile: arguments[index + 1], trunkFile: arguments[index + 2], position: Int(arguments[index + 3])!,
+        gguf: "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf")
+    exit(0)
+}
+
+// `--qwen38-path-check <token file>`: one prompt's last logits through different prefill paths (Qwen38BranchProbe.swift).
+if let index = arguments.firstIndex(of: "--qwen38-path-check"), index + 1 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    try runQwen38PathCheck(
+        tokenFile: arguments[index + 1],
+        cuts: (opt("--q38-cuts") ?? "").split(separator: ",").compactMap { Int($0) },
+        resumeAt: opt("--q38-resume-at").flatMap { Int($0) } ?? 1,
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf")
+    exit(0)
+}
+
+// `--qwen38-branch-probe <manifest>`: the first token at one decision point across prompt tails (Qwen38BranchProbe.swift).
+if let index = arguments.firstIndex(of: "--qwen38-branch-probe"), index + 1 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    try runQwen38BranchProbe(
+        manifest: arguments[index + 1], chunk: opt("--q38-chunk").flatMap { Int($0) } ?? 2048,
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf")
+    exit(0)
+}
+
 // `--qwen38-resume <prompt A> <prompt B>`: checkpoints against a whole recompute (Qwen38ResumeCheck.swift).
 if let index = arguments.firstIndex(of: "--qwen38-resume"), index + 2 < arguments.count {
     func opt(_ flag: String) -> String? {
