@@ -320,6 +320,10 @@ public struct GFTokenizer: @unchecked Sendable {
         /// client (SPEC MSG-5). It is what the `.serverRedraw` variant needs to
         /// draw that turn as the model wrote it.
         public let reasoningContent: String?
+        /// `content` is the text this runtime generated for the turn, whitespace and all — not a client's copy. A
+        /// Qwen template then writes the whitespace the model put before its first call instead of its own `\n\n`
+        /// (`QwenTokenizer.generatedCallSeparator`, INV-1, `docs/qwen38/26` §4).
+        public let contentIsGenerated: Bool
 
         public init(role: Role, content: String) {
             self.role = role
@@ -328,6 +332,7 @@ public struct GFTokenizer: @unchecked Sendable {
             self.toolCallID = nil
             self.name = nil
             self.reasoningContent = nil
+            self.contentIsGenerated = false
         }
 
         public init(role: Role,
@@ -335,13 +340,15 @@ public struct GFTokenizer: @unchecked Sendable {
                     toolCalls: [HistoricalToolCall] = [],
                     toolCallID: String? = nil,
                     name: String? = nil,
-                    reasoningContent: String? = nil) {
+                    reasoningContent: String? = nil,
+                    contentIsGenerated: Bool = false) {
             self.role = role
             self.content = content
             self.toolCalls = toolCalls
             self.toolCallID = toolCallID
             self.name = name
             self.reasoningContent = reasoningContent
+            self.contentIsGenerated = contentIsGenerated
         }
     }
 

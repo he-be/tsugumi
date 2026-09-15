@@ -104,7 +104,8 @@ private func qwenTools(args: Args) throws -> [GFTokenizer.FunctionDefinition] {
         Data(contentsOf: URL(fileURLWithPath: path), options: [.mappedIfSafe]))
 }
 
-/// The grammar `--tool-choice` asks for, or nil for no constraint.
+/// The constraint `--tool-choice` asks for, or nil for no constraint: a grammar,
+/// or for `none` the forbidden `<tool_call>` token.
 ///
 /// This is the CLI's half of what `QwenChatGrammarBuilder` does for the server,
 /// and deliberately only that half: which tools the choice selects and whether
@@ -116,14 +117,17 @@ private func qwenToolConstraint(
     choice: CLIToolChoice,
     parallelToolCalls: Bool,
     tokenizer: QwenTokenizer
-) throws -> (constraint: GrammarTokenConstraint?, approximations: [String]) {
-    guard !tools.isEmpty else { return (nil, []) }
+) throws -> (constraint: (any GenerationConstraint)?, grammar: GrammarTokenConstraint?,
+             approximations: [String]) {
+    guard !tools.isEmpty else { return (nil, nil, []) }
     let selected: [GFTokenizer.FunctionDefinition]
     switch choice {
     case .none:
         // GEN-4: the declarations still go into the prompt — the model is told
-        // what it has — but nothing constrains it.
-        return (nil, [])
+        // what it has — so the only thing that keeps a call out is that its
+        // start token cannot be drawn (`docs/qwen38/26` §2).
+        let markers = QwenToolCallMarkers(tokenizer: tokenizer)
+        return (ForbiddenTokensConstraint(forbiddenTokenIDs: [markers.toolCallStartTokenID]), nil, [])
     case .auto, .required:
         selected = tools
     case .function(let name):
@@ -144,7 +148,7 @@ private func qwenToolConstraint(
         vocabulary: GrammarVocabulary(tokenizer),
         // GEN-5: a lazy grammar sleeps until the model itself opens a call.
         trigger: isLazy ? GrammarTrigger.token(markers.toolCallStartTokenID) : nil)
-    return (constraint, result.approximations)
+    return (constraint, constraint, result.approximations)
 }
 
 private func qwenPrompt(args: Args,
@@ -216,7 +220,7 @@ func runQwen(args: Args,
 
         let tokenizer = try await QwenTokenizer.load(forModelDirectory: modelURL)
         let tools = try qwenTools(args: args)
-        let (constraint, approximations) = try qwenToolConstraint(
+        let (constraint, grammarConstraint, approximations) = try qwenToolConstraint(
             tools: tools,
             choice: args.toolChoice,
             parallelToolCalls: args.parallelToolCalls,
@@ -348,7 +352,7 @@ func runQwen(args: Args,
                 // left in by *this* token is the one the next draw is judged by.
                 // A lazy grammar that armed inside the thought block would
                 // constrain reasoning the model is allowed to write freely.
-                constraint?.setSuppressed(decoder.isInsideReasoning)
+                grammarConstraint?.setSuppressed(decoder.isInsideReasoning)
                 emit(events)
         }
         // Nil is greedy. A non-greedy config is passed through as it was asked

@@ -94,7 +94,8 @@ struct Qwen38ToolLoopPromptTests {
         let t1r2Continuation = t1r1Continuation
             + [AppChatTurn(role: .assistant, text: "", toolCalls: [search]),
                .toolResult(callID: search.id, name: search.name, content: searchResult)]
-        let prose = "1 件目のページを読みます。"
+        // As the app stores it: the generated body with the whitespace the model wrote before its call.
+        let prose = "1 件目のページを読みます。\n\n"
         let t1r3Continuation = t1r2Continuation
             + [AppChatTurn(role: .assistant, text: prose, toolCalls: [fetch]),
                .toolResult(callID: fetch.id, name: fetch.name, content: pageResult)]
@@ -128,7 +129,7 @@ struct Qwen38ToolLoopPromptTests {
                 }.joined()
                 return "<tool_call>\n<function=\(call.name)>\n\(parameters)</function>\n</tool_call>"
             }.joined(separator: "\n")
-            return (prose.isEmpty ? "" : prose + "\n\n") + body
+            return prose + body
         }
 
         return [
@@ -232,22 +233,60 @@ struct Qwen38ToolLoopPromptTests {
     @Test("each round and each turn continues from the live state (INV-1)")
     func continuesFromLiveState() throws {
         let steps = try Self.steps()
-        let piece = { (id: Int32) -> String? in tokenizer.isAddedToken(id) ? nil : tokenizer.token(for: id) }
         for (step, next) in zip(steps, steps.dropFirst()) {
-            let prompt = try render(step.request)
-            let generated = tokenizer.encode(step.generated!) + [tokenizer.imEndID]
-            var cache = Qwen38PromptCache()
-            cache.publish(prompt: prompt, generated: generated, kvPosition: prompt.count + generated.count - 1)
-            let (aligned, _) = cache.aligned(try render(next.request), piece: piece)
-            let (decision, agreed) = cache.decide(aligned, checkpoints: [])
-            if decision != .live(prompt.count + generated.count - 1) {
-                let held = cache.tokens
-                let window = { (ids: [Int32]) in
-                    String(reflecting: tokenizer.decode(Array(ids[max(agreed - 8, 0)..<min(agreed + 8, ids.count)]),
-                                                        skipSpecialTokens: false))
-                }
-                Issue.record("\(step.label) → \(next.label): \(decision) agreed \(agreed) of \(held.count); held \(window(held)) next \(window(aligned))")
+            try expectLive(step.request, generated: step.generated!, next: next.request, "\(step.label) → \(next.label)")
+        }
+    }
+
+    /// The model does not always put the template's `\n\n` between a body and its call (`docs/qwen38/21` §9: one
+    /// newline, and the next round re-prefilled 1,233 tokens). The app's turn is redrawn with what was written.
+    @Test("a body's separator before the call is redrawn as generated (INV-1)", arguments: ["\n", "", "\n\n\n", " \n"])
+    func separatorIsRedrawnAsGenerated(separator: String) throws {
+        let steps = try Self.steps()
+        let (round, next) = (steps[1], steps[2])
+        let prose = "1 件目のページを読みます。"
+        let written = round.generated!
+        #expect(written.hasPrefix(prose + "\n\n"))
+        var request = next.request
+        let index = try #require(request.continuation.lastIndex { !$0.toolCalls.isEmpty })
+        request.continuation[index].text = prose + separator
+        try expectLive(round.request, generated: prose + separator + written.dropFirst(prose.count + 2),
+                       next: request, "separator \(String(reflecting: separator))")
+    }
+
+    /// A client's turn (the OpenAI route) keeps the template's form: the body is trimmed and `\n\n` goes before the call.
+    @Test("a client's assistant turn keeps the template's separator")
+    func clientTurnKeepsTheTemplateSeparator() throws {
+        let call = GFTokenizer.HistoricalToolCall(id: "c", name: "web_search", arguments: .object(["query": .string("q")]))
+        for generated in [false, true] {
+            let messages = [GFTokenizer.Message(role: .user, content: "q"),
+                            GFTokenizer.Message(role: .assistant, content: "読みます。\n", toolCalls: [call],
+                                                contentIsGenerated: generated),
+                            GFTokenizer.Message(role: .tool, content: "r", toolCallID: "c")]
+            let tools = [GFTokenizer.FunctionDefinition(name: "web_search", description: "d",
+                                                        parameters: .object(["type": .string("object")]))]
+            let text = tokenizer.decode(try tokenizer.applyChatTemplate(messages, tools: tools, enableThinking: false),
+                                        skipSpecialTokens: false)
+            #expect(text.contains(generated ? "読みます。\n<tool_call>" : "読みます。\n\n<tool_call>"), "\(generated)")
+        }
+    }
+
+    private func expectLive(_ request: AppGenerationRequest, generated text: String, next: AppGenerationRequest,
+                            _ label: String) throws {
+        let piece = { (id: Int32) -> String? in tokenizer.isAddedToken(id) ? nil : tokenizer.token(for: id) }
+        let prompt = try render(request)
+        let generated = tokenizer.encode(text) + [tokenizer.imEndID]
+        var cache = Qwen38PromptCache()
+        cache.publish(prompt: prompt, generated: generated, kvPosition: prompt.count + generated.count - 1)
+        let (aligned, _) = cache.aligned(try render(next), piece: piece)
+        let (decision, agreed) = cache.decide(aligned, checkpoints: [])
+        if decision != .live(prompt.count + generated.count - 1) {
+            let held = cache.tokens
+            let window = { (ids: [Int32]) in
+                String(reflecting: tokenizer.decode(Array(ids[max(agreed - 8, 0)..<min(agreed + 8, ids.count)]),
+                                                    skipSpecialTokens: false))
             }
+            Issue.record("\(label): \(decision) agreed \(agreed) of \(held.count); held \(window(held)) next \(window(aligned))")
         }
     }
 }

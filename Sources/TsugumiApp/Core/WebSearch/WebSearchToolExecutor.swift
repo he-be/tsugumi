@@ -383,17 +383,6 @@ public enum WebSearchPrompt {
     ]
 }
 
-/// What a round's last tool result tells the model about the budget left.
-/// `limitOnly` is the line once the rounds are spent (docs/qwen38/21 A-4);
-/// `rounds` adds the rounds left to every round before that, and
-/// `roundsAndContext` the context tokens used and left as well
-/// (docs/qwen38/25).
-public enum AppToolBudgetNotes: String, CaseIterable, Sendable {
-    case limitOnly = "limit"
-    case rounds
-    case roundsAndContext = "context"
-}
-
 /// Whether a turn may leave this Mac. Offline declares only the local
 /// Wikipedia tools (nothing when no index is set); Online adds the web
 /// tools — queries to Serper or Brave, pages from their sites, thin ones

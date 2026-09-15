@@ -120,7 +120,7 @@
         {
           "reasoningText" : "",
           "role" : "assistant",
-          "text" : "1 件目のページを読みます。",
+          "text" : "1 件目のページを読みます。\n\n",
           "toolCalls" : [
             {
               "argumentsJSON" : "{\"url\":\"https://example.jp/birds/tsugumi?year=2026\"}",
@@ -196,7 +196,7 @@
         {
           "reasoningText" : "",
           "role" : "assistant",
-          "text" : "1 件目のページを読みます。",
+          "text" : "1 件目のページを読みます。\n\n",
           "toolCalls" : [
             {
               "argumentsJSON" : "{\"url\":\"https://example.jp/birds/tsugumi?year=2026\"}",
@@ -291,7 +291,7 @@
         {
           "reasoningText" : "",
           "role" : "assistant",
-          "text" : "1 件目のページを読みます。",
+          "text" : "1 件目のページを読みます。\n\n",
           "toolCalls" : [
             {
               "argumentsJSON" : "{\"url\":\"https://example.jp/birds/tsugumi?year=2026\"}",
@@ -368,7 +368,7 @@
         {
           "reasoningText" : "",
           "role" : "assistant",
-          "text" : "1 件目のページを読みます。",
+          "text" : "1 件目のページを読みます。\n\n",
           "toolCalls" : [
             {
               "argumentsJSON" : "{\"url\":\"https://example.jp/birds/tsugumi?year=2026\"}",

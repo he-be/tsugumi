@@ -1,4 +1,5 @@
 import Foundation
+import Tsugumi
 
 /// The error taxonomy of SPEC §10 (ERR-2).
 ///
@@ -118,6 +119,28 @@ public struct ServerRequestError: Error, Equatable, Sendable {
                                          param: String? = nil,
                                          code: String? = nil) -> Self {
         Self(type: .exceedContextSize, message: message, param: param, code: code)
+    }
+
+    /// S-2 (`docs/qwen38/26` §5): a structured output the decoder could not
+    /// finish is a context overflow, not a malformed call, when generation was
+    /// stopped by the context itself. The prompt fit, the model began a call,
+    /// and the last position of the context cut it in half — the same
+    /// condition as a prompt that does not fit, reported the same way.
+    ///
+    /// `reserved` is what the loop keeps back past the prompt (the verify
+    /// pass's drafted row). Nil when the stop was the request's own limit or
+    /// anything but the token budget: that failure is still the decoder's.
+    static func generationReachedContext(stop: StopReason,
+                                         promptTokens: Int,
+                                         generatedTokens: Int,
+                                         reserved: Int = 0,
+                                         maxContext: Int) -> Self? {
+        guard stop == .maxTokens, promptTokens + generatedTokens + reserved >= maxContext else { return nil }
+        return .exceedContextSize(
+            message: "prompt of \(promptTokens) tokens and \(generatedTokens) generated tokens reached the "
+                + "configured context of \(maxContext) inside a tool call",
+            param: "messages",
+            code: "context_length_exceeded")
     }
 
     /// LIF-4: a full slot and a full queue is a 503, not a 429 — the client

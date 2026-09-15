@@ -350,10 +350,10 @@ public actor QwenServerSession: ServerInferenceBackend {
         // GEN-1 / GEN-3 / GEN-5. Built after the prefill-only exit for the
         // reason the Gemma session builds it there: parsing a grammar is real
         // work and that request samples nothing.
-        let constraint: GrammarTokenConstraint?
+        let grammarConstraint: GrammarTokenConstraint?
         if let grammarText = plan.grammar {
             do {
-                constraint = try GrammarTokenConstraint(
+                grammarConstraint = try GrammarTokenConstraint(
                     grammarText,
                     vocabulary: grammarVocabulary,
                     trigger: plan.trigger.map { .token($0.tokenID) })
@@ -361,8 +361,10 @@ public actor QwenServerSession: ServerInferenceBackend {
                 throw ServerGrammarBuildFailure(shape: plan.shape, underlying: error)
             }
         } else {
-            constraint = nil
+            grammarConstraint = nil
         }
+        // GEN-4: `none` forbids `<tool_call>` instead of building a grammar.
+        let constraint: (any GenerationConstraint)? = grammarConstraint ?? plan.forbiddenTokensConstraint()
 
         // Two producers, one channel rule (`QwenReasoningSplitter`'s header).
         // With no tools declared a `<tool_call>` the model writes unasked is
@@ -460,7 +462,7 @@ public actor QwenServerSession: ServerInferenceBackend {
                         // next draw is judged by. A lazy grammar that armed
                         // inside the thought block would constrain reasoning
                         // the model is allowed to write freely.
-                        constraint?.setSuppressed(decoder.isInsideReasoning)
+                        grammarConstraint?.setSuppressed(decoder.isInsideReasoning)
                     } else {
                         events = splitter!.consume(tokenID: id, delta: delta)
                     }
@@ -550,6 +552,11 @@ public actor QwenServerSession: ServerInferenceBackend {
                 // reporting the ones before it as if the turn were complete.
                 try decoder.finish()
             } catch {
+                if let overflow = ServerRequestError.generationReachedContext(
+                    stop: run.reason, promptTokens: promptIDs.count, generatedTokens: run.newTokens,
+                    reserved: speculative ? 1 : 0, maxContext: maxContext) {
+                    throw overflow
+                }
                 throw QwenStructuredOutputFailure(shape: plan.shape,
                                                   promptTokens: promptIDs.count,
                                                   newTokens: run.newTokens,

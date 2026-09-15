@@ -28,12 +28,12 @@ public enum QwenChatGrammarBuilder {
         parallelToolCalls: Bool,
         responseFormat: ChatGrammarBuilder.ResponseFormat,
         markers: QwenToolCallMarkers
-    ) -> ChatGrammarConstraint? {
+    ) -> ChatConstraint? {
         if let schema = responseFormat.schema {
-            return responseFormatConstraint(schema: schema,
-                                            tools: tools,
-                                            toolChoice: toolChoice,
-                                            markers: markers)
+            return .grammar(responseFormatConstraint(schema: schema,
+                                                     tools: tools,
+                                                     toolChoice: toolChoice,
+                                                     markers: markers))
         }
         return toolConstraint(tools: tools,
                               toolChoice: toolChoice,
@@ -75,12 +75,13 @@ public enum QwenChatGrammarBuilder {
         toolChoice: ChatToolChoice,
         parallelToolCalls: Bool,
         markers: QwenToolCallMarkers
-    ) -> ChatGrammarConstraint? {
+    ) -> ChatConstraint? {
         let selected: [GFTokenizer.FunctionDefinition]
         switch toolChoice {
-        // GEN-4: `none` is no tool grammar at all.
+        // GEN-4: `none` cannot call — `<tool_call>` is never drawn
+        // (`ChatGrammarBuilder` has the same rule and the reason).
         case .none:
-            return nil
+            return .forbiddenTokens([markers.toolCallStartTokenID])
         case .auto, .required:
             selected = tools
         // DEV-17: a named choice pins that one function.
@@ -96,7 +97,7 @@ public enum QwenChatGrammarBuilder {
         let result = QwenToolCallGrammar.grammar(tools: selected,
                                                  parallelToolCalls: parallelToolCalls,
                                                  markers: markers)
-        return ChatGrammarConstraint(
+        return .grammar(ChatGrammarConstraint(
             grammar: result.grammar,
             isLazy: isLazy,
             // GEN-5: the section-start token.
@@ -104,6 +105,6 @@ public enum QwenChatGrammarBuilder {
                 ? ChatGrammarTrigger(tokenID: markers.toolCallStartTokenID,
                                      text: markers.toolCallStart)
                 : nil,
-            approximations: result.approximations)
+            approximations: result.approximations))
     }
 }

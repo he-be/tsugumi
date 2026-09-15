@@ -11,7 +11,7 @@ import TsugumiAppCore
 //
 //     .build/release/TsugumiToolLoopCheck --out DIR [--model DIR] [--conversations FILE] [--only a,b] [--repeats N]
 //                                         [--network online|offline|model] [--context N] [--page-chars N]
-//                                         [--web-store DIR] [--budget-notes limit|rounds|context]
+//                                         [--web-store DIR]
 //
 // `--web-store DIR` answers the web tools' HTTP requests from DIR and records the ones it does not have
 // (`RecordedHTTPTransport`), so a second run reads the same search results and pages (`docs/qwen38/21` §4 E-1).
@@ -39,7 +39,6 @@ struct Options {
     /// Overrides the saved page text limit for this run only (the settings file is not written).
     var pageCharacters: Int?
     var webStore: String?
-    var budgetNotes = AppToolBudgetNotes.limitOnly
 
     init(_ arguments: [String]) {
         var iterator = arguments.dropFirst().makeIterator()
@@ -55,12 +54,6 @@ struct Options {
             case "--context": context = Int(value)
             case "--page-chars": pageCharacters = Int(value)
             case "--web-store": webStore = value
-            case "--budget-notes":
-                guard let notes = AppToolBudgetNotes(rawValue: value) else {
-                    FileHandle.standardError.write(Data("--budget-notes takes limit, rounds or context\n".utf8))
-                    exit(2)
-                }
-                budgetNotes = notes
             default:
                 FileHandle.standardError.write(Data("unknown flag \(flag)\n".utf8))
                 exit(2)
@@ -227,11 +220,9 @@ func runCheck() async -> Int32 {
         model.webSearchConfiguration.pageCharacterLimit = pageCharacters
     }
     model.networkMode = options.network
-    model.toolBudgetNotes = options.budgetNotes
     logLine("model \(model.selectedModelKind.rawValue) context=\(model.maxContextTokens) mtp=\(model.runtimeOptions.mtpEnabled) "
         + "thinking=\(model.thinkingEnabled) network=\(model.effectiveNetworkMode.rawValue) "
-        + "rounds=\(model.webSearchConfiguration.resolved().maxToolRounds) page=\(model.webSearchConfiguration.resolved().pageCharacterLimit) "
-        + "budget-notes=\(model.toolBudgetNotes.rawValue)")
+        + "rounds=\(model.webSearchConfiguration.resolved().maxToolRounds) page=\(model.webSearchConfiguration.resolved().pageCharacterLimit)")
     model.loadModel()
     guard await waitUntil(timeout: 600, { model.loadState.isReady || model.error != nil }),
           model.loadState.isReady else {

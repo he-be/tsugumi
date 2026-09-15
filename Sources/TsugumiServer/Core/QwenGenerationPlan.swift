@@ -18,8 +18,11 @@ import Tsugumi
 /// pure function of the validated request and the checkpoint's marker ids.
 struct QwenGenerationPlan: Equatable, Sendable {
     /// GBNF text rooted at `root`, or `nil` when this request asks for no
-    /// constraint at all.
+    /// grammar (GEN-4's `none` forbids a token instead).
     let grammar: String?
+    /// GEN-4's `none`: token ids that may never be drawn (the tool-call start
+    /// token). Empty whenever `grammar` is set.
+    let forbiddenTokenIDs: [Int32]
     /// GEN-5: `true` means the grammar is not applied until `trigger` fires.
     let isLazy: Bool
     /// GEN-5. Non-nil exactly when `isLazy`.
@@ -37,7 +40,14 @@ struct QwenGenerationPlan: Equatable, Sendable {
     /// request asked for. See `officialSampling`.
     let sampling: GenerationConfig
 
-    var isConstrained: Bool { grammar != nil }
+    var isConstrained: Bool { grammar != nil || !forbiddenTokenIDs.isEmpty }
+
+    /// GEN-4's runtime half. The grammar is built by the session, which owns
+    /// the vocabulary and turns a parse failure into a 500; this one has
+    /// nothing to fail.
+    func forbiddenTokensConstraint() -> ForbiddenTokensConstraint? {
+        forbiddenTokenIDs.isEmpty ? nil : ForbiddenTokensConstraint(forbiddenTokenIDs: Set(forbiddenTokenIDs))
+    }
 
     /// The official recommended sampler of a checkpoint, and the only one the
     /// server runs for it.
@@ -118,9 +128,10 @@ struct QwenGenerationPlan: Equatable, Sendable {
             parallelToolCalls: request.parallelToolCalls,
             responseFormat: Self.responseFormat(request.responseFormat),
             markers: markers)
-        self.grammar = constraint?.grammar
-        self.isLazy = constraint?.isLazy ?? false
-        self.trigger = constraint?.trigger
+        self.grammar = constraint?.grammar?.grammar
+        self.forbiddenTokenIDs = constraint?.forbiddenTokenIDs ?? []
+        self.isLazy = constraint?.grammar?.isLazy ?? false
+        self.trigger = constraint?.grammar?.trigger
         let sampling = Self.officialSampling(request.generationConfig, official: official)
         self.sampling = sampling.config
         self.approximations =

@@ -101,6 +101,32 @@ public struct ChatGrammarConstraint: Equatable, Sendable {
     }
 }
 
+/// What one request constrains generation with (SPEC §6): a grammar, or —
+/// GEN-4's `none` — a set of token ids that may not be drawn.
+///
+/// Two shapes because they are two mechanisms, not two grammars: `none` has
+/// nothing to spell, only the call's start token to rule out, and a grammar
+/// that says "any token but this one" would put a matcher on every token of an
+/// unconstrained answer.
+public enum ChatConstraint: Equatable, Sendable {
+    case grammar(ChatGrammarConstraint)
+    /// GEN-4: the tool-call start token, which the decoders read a call from.
+    /// Everything else stays allowed, the end of generation included.
+    case forbiddenTokens([Int32])
+
+    public var grammar: ChatGrammarConstraint? {
+        if case .grammar(let constraint) = self { return constraint }
+        return nil
+    }
+
+    public var forbiddenTokenIDs: [Int32] {
+        if case .forbiddenTokens(let ids) = self { return ids }
+        return []
+    }
+
+    public var approximations: [String] { grammar?.approximations ?? [] }
+}
+
 /// SPEC §6: a request's `tools` / `tool_choice` / `parallel_tool_calls` /
 /// `response_format` turned into the grammar that constrains generation.
 ///
@@ -155,12 +181,12 @@ public enum ChatGrammarBuilder {
         parallelToolCalls: Bool,
         responseFormat: ResponseFormat,
         markers: ChatGrammarMarkers
-    ) -> ChatGrammarConstraint? {
+    ) -> ChatConstraint? {
         if let schema = responseFormat.schema {
-            return responseFormatConstraint(schema: schema,
-                                            tools: tools,
-                                            toolChoice: toolChoice,
-                                            markers: markers)
+            return .grammar(responseFormatConstraint(schema: schema,
+                                                     tools: tools,
+                                                     toolChoice: toolChoice,
+                                                     markers: markers))
         }
         return toolConstraint(tools: tools,
                               toolChoice: toolChoice,
@@ -244,12 +270,15 @@ public enum ChatGrammarBuilder {
         toolChoice: ChatToolChoice,
         parallelToolCalls: Bool,
         markers: ChatGrammarMarkers
-    ) -> ChatGrammarConstraint? {
+    ) -> ChatConstraint? {
         let selected: [GFTokenizer.FunctionDefinition]
         switch toolChoice {
-        // GEN-4: `none` is no tool grammar at all.
+        // GEN-4: `none` cannot call — the start token is never drawn. The
+        // declarations stay in the prompt, so this is the only thing that
+        // keeps a call out (`docs/qwen38/26` §2). With nothing declared it is
+        // the same guarantee.
         case .none:
-            return nil
+            return .forbiddenTokens([markers.toolCallStartTokenID])
         case .auto, .required:
             selected = tools
         // DEV-17: a named choice pins that one function.
@@ -291,7 +320,7 @@ public enum ChatGrammarBuilder {
                                           parallelToolCalls ? body + "+" : body)
             addRoot(&builder, body: section, isLazy: isLazy, markers: markers)
         }
-        return ChatGrammarConstraint(
+        return .grammar(ChatGrammarConstraint(
             grammar: result.grammar,
             isLazy: isLazy,
             // GEN-5: the tool-call start token.
@@ -299,7 +328,7 @@ public enum ChatGrammarBuilder {
                 ? ChatGrammarTrigger(tokenID: markers.toolCallStartTokenID,
                                      text: markers.toolCallStart)
                 : nil,
-            approximations: result.approximations)
+            approximations: result.approximations))
     }
 
     /// The template always writes the arguments as `{…}`, so a tool that

@@ -72,6 +72,21 @@ struct ChatGrammarBuilderTests {
         responseFormat: ChatGrammarBuilder.ResponseFormat = .text,
         markers: ChatGrammarMarkers = markers
     ) -> ChatGrammarConstraint? {
+        chatConstraint(tools: tools,
+                       toolChoice: toolChoice,
+                       parallelToolCalls: parallelToolCalls,
+                       responseFormat: responseFormat,
+                       markers: markers)?.grammar
+    }
+
+    /// The builder's whole answer, for the `none` shape that is not a grammar.
+    private static func chatConstraint(
+        tools: [GFTokenizer.FunctionDefinition] = [],
+        toolChoice: ChatToolChoice = .auto,
+        parallelToolCalls: Bool = true,
+        responseFormat: ChatGrammarBuilder.ResponseFormat = .text,
+        markers: ChatGrammarMarkers = markers
+    ) -> ChatConstraint? {
         ChatGrammarBuilder.constraint(
             tools: tools,
             toolChoice: toolChoice,
@@ -169,11 +184,15 @@ struct ChatGrammarBuilderTests {
 
     // MARK: - GEN-4: the four tool_choice values
 
-    @Test("GEN-4: none produces no grammar at all")
-    func GEN_4_none_has_no_grammar() {
+    @Test("GEN-4: none forbids only the call's start token")
+    func GEN_4_none_forbids_the_start_token() {
+        // No grammar: the start token is simply never drawn, and everything
+        // else — the end of generation included — stays free (docs/qwen38/26 §2).
+        #expect(Self.chatConstraint(tools: [Self.weather], toolChoice: .none)
+                == .forbiddenTokens([Self.toolCallStartID]))
+        // The same guarantee when the client also declared no tools.
+        #expect(Self.chatConstraint(toolChoice: .none) == .forbiddenTokens([Self.toolCallStartID]))
         #expect(Self.constraint(tools: [Self.weather], toolChoice: .none) == nil)
-        // Not even when the client also declared no tools.
-        #expect(Self.constraint(toolChoice: .none) == nil)
     }
 
     @Test("GEN-4/GEN-5: auto is lazy and triggered by the tool-call start token")

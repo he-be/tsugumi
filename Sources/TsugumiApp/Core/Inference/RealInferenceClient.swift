@@ -461,7 +461,9 @@ actor RealInferenceSession {
                 toolCalls: historical,
                 toolCallID: toolCallID,
                 name: toolName,
-                reasoningContent: reasoningContent))
+                reasoningContent: reasoningContent,
+                // Every assistant turn the app holds is text its own session generated, whitespace kept.
+                contentIsGenerated: role == .assistant))
         }
 
         func appendTurn(_ turn: AppChatTurn) throws {

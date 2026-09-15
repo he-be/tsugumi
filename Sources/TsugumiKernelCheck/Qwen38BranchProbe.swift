@@ -8,8 +8,12 @@ import Tsugumi
 // official sampler.
 //
 // manifest: {"trunk": "<token file>", "samples": 4, "sampleTokens": 16, "capacity": 16384, "cuts": [2018, …],
-//            "variants": [{"label": "…", "tokens": "<token file>"}, …]}
+//            "forbid": [248058], "speculative": true, "variants": [{"label": "…", "tokens": "<token file>"}, …]}
 // Token files are comma-separated ids. Prints one JSON line per variant.
+//
+// `forbid` draws under `ForbiddenTokensConstraint` (what `tool_choice: none` is, docs/qwen38/26 §2); `p_tool_call`
+// stays the model's own probability and `draws_tool_call` counts the draws that contain `<tool_call>` anywhere.
+// `speculative` builds the engine with the MTP head, so the draws take the speculative loop.
 
 private struct BranchManifest: Decodable {
     struct Variant: Decodable { let label: String; let tokens: String }
@@ -20,6 +24,9 @@ private struct BranchManifest: Decodable {
     let capacity: Int?
     /// Extra chunk boundaries in the trunk's prefill, e.g. where the app resumed each round.
     let cuts: [Int]?
+    /// Token ids the draws may never produce.
+    let forbid: [Int32]?
+    let speculative: Bool?
     let variants: [Variant]
 }
 
@@ -46,7 +53,8 @@ func runQwen38BranchProbe(manifest path: String, chunk: Int, gguf: String, ple: 
     let longest = max(trunk.count, variants.map(\.1.count).max()!)
     let engine = try Qwen38Engine(gguf: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath),
                                   ple: URL(fileURLWithPath: (ple as NSString).expandingTildeInPath),
-                                  capacity: max(manifest.capacity ?? 0, longest + sampleTokens + 8), prefillChunk: chunk, speculative: false)
+                                  capacity: max(manifest.capacity ?? 0, longest + sampleTokens + 8), prefillChunk: chunk,
+                                  speculative: manifest.speculative ?? false)
     var checkpoints: [Int: Qwen38Checkpoint] = [:]
     engine.reset()
     let t0 = Date()
@@ -81,14 +89,19 @@ func runQwen38BranchProbe(manifest path: String, chunk: Int, gguf: String, ple: 
         for seed in 1...max(samples, 1) where samples > 0 {
             try engine.restore(checkpoint)
             let run = try engine.runCompletion(promptTokens: tail, cachedPromptTokens: cut, maxNewTokens: sampleTokens,
-                                               stopTokens: stops, constraint: nil, greedy: false, seed: UInt64(seed))
+                                               stopTokens: stops,
+                                               constraint: manifest.forbid.map { ForbiddenTokensConstraint(forbiddenTokenIDs: Set($0)) },
+                                               greedy: false, seed: UInt64(seed))
             draws.append(run.tokens)
         }
         let topText = ranked.map { String(format: "[%d, %.4f]", $0, probability($0)) }.joined(separator: ", ")
         let drawText = draws.map { "[" + $0.map(String.init).joined(separator: ",") + "]" }.joined(separator: ", ")
-        print(String(format: "{\"label\": \"%@\", \"tokens\": %d, \"from\": %d, \"p_tool_call\": %.4f, \"top\": [%@], \"draws\": [%@], \"s\": %.1f}",
-                     label as NSString, tokens.count, cut, probability(toolCall), topText as NSString,
-                     drawText as NSString, Date().timeIntervalSince(t)))
+        let withCall = draws.filter { $0.contains(Int32(toolCall)) }.count
+        let forbidText = (manifest.forbid ?? []).map(String.init).joined(separator: ",")
+        print(String(format: "{\"label\": \"%@\", \"tokens\": %d, \"from\": %d, \"forbid\": [%@], \"speculative\": %@, \"p_tool_call\": %.4f, \"top\": [%@], \"draws_tool_call\": %d, \"draws\": [%@], \"s\": %.1f}",
+                     label as NSString, tokens.count, cut, forbidText as NSString,
+                     (manifest.speculative ?? false) ? "true" : "false", probability(toolCall), topText as NSString,
+                     withCall, drawText as NSString, Date().timeIntervalSince(t)))
     }
 }
 

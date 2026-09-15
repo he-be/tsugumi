@@ -50,12 +50,17 @@ struct QwenGenerationPlanTests {
 
     // MARK: - GEN-4 / GEN-5: what a tool_choice plans
 
-    @Test("GEN-4: none plans no constraint at all")
-    func GEN_4_tool_choice_none_plans_no_constraint() throws {
+    @Test("GEN-4: none plans no grammar and forbids the call's start token")
+    func GEN_4_tool_choice_none_forbids_the_start_token() throws {
         let plan = try Self.plan(Self.declaredTools, #""tool_choice":"none""#)
         #expect(plan.grammar == nil)
-        #expect(!plan.isConstrained)
+        #expect(plan.forbiddenTokenIDs == [248_058])
+        #expect(plan.isConstrained)
         #expect(plan.trigger == nil)
+        #expect(plan.forbiddenTokensConstraint()?.forbiddenTokenIDs == [248_058])
+        // Every other shape leaves the ids alone.
+        #expect(try Self.plan(Self.declaredTools).forbiddenTokenIDs.isEmpty)
+        #expect(try Self.plan().forbiddenTokensConstraint() == nil)
     }
 
     @Test("GEN-5: auto plans a lazy grammar triggered by <tool_call>")

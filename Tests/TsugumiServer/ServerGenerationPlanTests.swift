@@ -43,12 +43,17 @@ struct ServerGenerationPlanTests {
 
     // MARK: - GEN-4: the four tool_choice values
 
-    @Test("GEN-4: none plans no constraint at all")
-    func GEN_4_tool_choice_none_plans_no_constraint() throws {
+    @Test("GEN-4: none plans no grammar and forbids the call's start token")
+    func GEN_4_tool_choice_none_forbids_the_start_token() throws {
         let plan = try Self.plan(Self.declaredTools, #""tool_choice":"none""#)
         #expect(plan.grammar == nil)
-        #expect(!plan.isConstrained)
+        #expect(plan.forbiddenTokenIDs == [7])
+        #expect(plan.isConstrained)
         #expect(plan.trigger == nil)
+        #expect(plan.forbiddenTokensConstraint()?.forbiddenTokenIDs == [7])
+        // Every other shape leaves the ids alone.
+        #expect(try Self.plan(Self.declaredTools).forbiddenTokenIDs.isEmpty)
+        #expect(try Self.plan().forbiddenTokensConstraint() == nil)
     }
 
     @Test("GEN-4/GEN-5: auto plans a lazy grammar triggered by the tool-call start token")
@@ -161,6 +166,7 @@ struct ServerGenerationPlanTests {
     @Test("GEN-14: a constrained plan keeps the speculative path")
     func GEN_14_a_constrained_plan_keeps_the_speculative_path() throws {
         for parts in [[Self.declaredTools],
+                      [Self.declaredTools, #""tool_choice":"none""#],
                       [Self.declaredTools, #""tool_choice":"required""#],
                       [Self.declaredTools, #""tool_choice":{"type":"function","function":{"name":"lookup"}}"#],
                       [#""response_format":{"type":"json_object"}"#]] {
@@ -174,7 +180,6 @@ struct ServerGenerationPlanTests {
     @Test("GEN-14: an unconstrained plan keeps it too")
     func GEN_14_an_unconstrained_plan_keeps_the_speculative_path() throws {
         for parts in [[String](),
-                      [Self.declaredTools, #""tool_choice":"none""#],
                       [#""response_format":{"type":"text"}"#]] {
             let request = try ChatRequestParser.parse(Self.body(parts))
             let plan = ServerGenerationPlan(request: request, markers: Self.markers)
@@ -188,6 +193,7 @@ struct ServerGenerationPlanTests {
     @Test("GEN-7: only a constrained plan needs the logits head")
     func GEN_7_only_a_constrained_plan_needs_the_logits_head() throws {
         #expect(try Self.plan(Self.declaredTools).requiresLogitsHead)
+        #expect(try Self.plan(Self.declaredTools, #""tool_choice":"none""#).requiresLogitsHead)
         #expect(try !Self.plan().requiresLogitsHead)
     }
 

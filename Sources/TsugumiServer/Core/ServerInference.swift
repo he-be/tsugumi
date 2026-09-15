@@ -825,26 +825,28 @@ public actor ServerModelSession: ServerInferenceBackend {
         // grammar that will not parse is our bug, and it becomes a 500 that
         // names the request shape rather than a silent fall back to
         // unconstrained text (R4).
-        let constraint: GrammarTokenConstraint?
+        //
+        // GEN-7 applies the constraint by masking logits, and the fused
+        // greedy head answers with a GPU argmax without ever writing them.
+        // The server always builds its runner with `forceLogitsHead: true`
+        // (`ServerArguments.resolvedRuntimeConfiguration`), which is why
+        // this holds; the guard turns that cross-file assumption into a
+        // checked dependency instead of an implicit one, and refusing is
+        // the only honest answer — the alternative is free-form text under
+        // a constrained request. GEN-4's `none` is constrained too: the
+        // forbidden start token is masked the same way.
+        if plan.isConstrained, runner.usesFusedGreedyHead {
+            throw ServerGrammarBuildFailure(
+                shape: plan.shape,
+                underlying: GenerationConstraintError.logitsUnavailable(
+                    "this server built its runner with the fused greedy head, so a "
+                    + "constrained request cannot be masked; start it with the "
+                    + "logits head (forceLogitsHead: true)"))
+        }
+        let grammarConstraint: GrammarTokenConstraint?
         if let grammarText = plan.grammar {
-            // GEN-7 applies the constraint by masking logits, and the fused
-            // greedy head answers with a GPU argmax without ever writing them.
-            // The server always builds its runner with `forceLogitsHead: true`
-            // (`ServerArguments.resolvedRuntimeConfiguration`), which is why
-            // this holds; the guard turns that cross-file assumption into a
-            // checked dependency instead of an implicit one, and refusing is
-            // the only honest answer — the alternative is free-form text under
-            // a constrained request.
-            guard !runner.usesFusedGreedyHead else {
-                throw ServerGrammarBuildFailure(
-                    shape: plan.shape,
-                    underlying: GenerationConstraintError.logitsUnavailable(
-                        "this server built its runner with the fused greedy head, so a "
-                        + "constrained request cannot be masked; start it with the "
-                        + "logits head (forceLogitsHead: true)"))
-            }
             do {
-                constraint = try GrammarTokenConstraint(
+                grammarConstraint = try GrammarTokenConstraint(
                     grammarText,
                     vocabulary: grammarVocabulary,
                     // GEN-5: a lazy grammar needs nothing at this call site
@@ -856,11 +858,12 @@ public actor ServerModelSession: ServerInferenceBackend {
                 throw ServerGrammarBuildFailure(shape: plan.shape, underlying: error)
             }
         } else {
-            constraint = nil
+            grammarConstraint = nil
         }
+        let constraint: (any GenerationConstraint)? = grammarConstraint ?? plan.forbiddenTokensConstraint()
         // GEN-6: the constraint never infers the thought channel, so the
         // decoder's verdict for each token drives it from `onProgress` below.
-        let suppression = constraint?.isLazy == true
+        let suppression = grammarConstraint?.isLazy == true
             ? ServerThoughtSuppression(tokenizer: tokenizer)
             : nil
 
@@ -946,8 +949,8 @@ public actor ServerModelSession: ServerInferenceBackend {
                     // now is the state the *next* token is judged by — which is
                     // exactly the rule: `<channel|>` itself is still inside the
                     // block, and everything after it is not.
-                    if let constraint, let suppression {
-                        constraint.setSuppressed(
+                    if let grammarConstraint, let suppression {
+                        grammarConstraint.setSuppressed(
                             suppression.observe(tokenID: tokenID, events: events))
                     }
                     handle(events)
@@ -1031,8 +1034,8 @@ public actor ServerModelSession: ServerInferenceBackend {
                 // token is observed again with its events when it is emitted,
                 // and no draw happens in between.
                 onDrawnToken: { tokenID in
-                    if let constraint, let suppression {
-                        constraint.setSuppressed(suppression.observe(tokenID: tokenID))
+                    if let grammarConstraint, let suppression {
+                        grammarConstraint.setSuppressed(suppression.observe(tokenID: tokenID))
                     }
                 },
                 // Passed as a literal rather than as `onProgress` itself:
@@ -1071,8 +1074,14 @@ public actor ServerModelSession: ServerInferenceBackend {
         func structuredFailure(
             kind: StructuredOutputFailureKind,
             cause: StructuredOutputFailureCause
-        ) -> StructuredOutputFailure {
-            StructuredOutputFailure(
+        ) -> Error {
+            // S-2: a call cut by the end of the context is an overflow.
+            if let overflow = ServerRequestError.generationReachedContext(
+                stop: result.reason, promptTokens: effectivePromptIDs.count,
+                generatedTokens: result.newTokens, maxContext: maxContext) {
+                return overflow
+            }
+            return StructuredOutputFailure(
                 kind: kind,
                 cause: cause,
                 diagnostics: StructuredOutputFailureDiagnostics(

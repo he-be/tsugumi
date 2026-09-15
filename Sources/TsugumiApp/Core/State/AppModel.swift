@@ -36,9 +36,6 @@ public final class AppModel {
     /// Qwen3.8 declare tools (`toolsAvailable`); for Ornith the switch is
     /// kept but ignored.
     public var networkMode: AppNetworkMode = .offline
-    /// What the tool results tell the model about the budget left
-    /// (`AppToolBudgetNotes`, docs/qwen38/25).
-    public var toolBudgetNotes: AppToolBudgetNotes = .limitOnly
     /// Keys and limits for the web tools, one file for the app. Edited in
     /// the Inspector; `saveWebSearchConfiguration` writes it back.
     public var webSearchConfiguration: WebSearchConfiguration
@@ -109,9 +106,6 @@ public final class AppModel {
     private var roundGeneration: UInt64 = 0
     private var pendingToolCalls: [AppToolCall] = []
     private var toolRoundsUsed = 0
-    /// Prompt + generated tokens of the round that ended on tool calls: the
-    /// context the next round's results come after.
-    private var toolRoundContextTokens: Int?
     private var toolTask: Task<Void, Never>?
     private let memorySampler: AppMemorySampler
     private let hostMemorySampler: AppHostMemorySampler
@@ -1266,7 +1260,6 @@ public final class AppModel {
         activeTurnRound = 0
         pendingToolCalls = []
         toolRoundsUsed = 0
-        toolRoundContextTokens = nil
         activeRunRuntimeKey = AppLoadedRuntimeKey(
             modelDirectory: request.modelDirectory,
             maxContextTokens: request.maxContextTokens,
@@ -1396,7 +1389,6 @@ public final class AppModel {
         let calls = pendingToolCalls
         pendingToolCalls = []
         recordRoundMetrics(diagnostics, outcome: "tools", toolCalls: calls.count)
-        toolRoundContextTokens = diagnostics.promptTokenCount.map { $0 + diagnostics.generatedTokens }
         let reasoning = chat.id == mailboxOwnerChatID
             ? (generationTranscriptMailbox?.completeReasoningText ?? chat.outputReasoningText)
             : chat.outputReasoningText
@@ -1441,18 +1433,15 @@ public final class AppModel {
         guard runState == .running, !isCancellationPending else { return }
         let maxRounds = webSearchConfiguration.resolved().maxToolRounds
         let exhausted = toolRoundsUsed >= maxRounds
-        if let last = chat.outputContinuationTurns.indices.last,
+        if exhausted, let last = chat.outputContinuationTurns.indices.last,
            chat.outputContinuationTurns[last].role == .tool {
-            // `none` alone left the model looking at tools it could still
-            // see, and it wrote a call as text (docs/qwen38/21 A-4). The
-            // line goes on the result it is about to read for the first
-            // time, so every later rendering of that result carries it and
-            // the cache stays a prefix.
-            let note: String? = exhausted
-                ? Self.roundBudgetReachedNote(maxRounds: maxRounds)
-                : Self.roundBudgetNote(notes: toolBudgetNotes, roundsUsed: toolRoundsUsed, maxRounds: maxRounds,
-                                       contextUsed: toolRoundContextTokens, maxContext: maxContextTokens)
-            if let note, !chat.outputContinuationTurns[last].text.hasSuffix(note) {
+            // Tells the model why it can no longer call (a fact, not the
+            // guarantee — that is `none`'s forbidden start token,
+            // docs/qwen38/26 §2). The line goes on the result it is about to
+            // read for the first time, so every later rendering of that
+            // result carries it and the cache stays a prefix.
+            let note = Self.roundBudgetReachedNote(maxRounds: maxRounds)
+            if !chat.outputContinuationTurns[last].text.hasSuffix(note) {
                 chat.outputContinuationTurns[last].text += "\n\n" + note
             }
         }
@@ -1465,8 +1454,8 @@ public final class AppModel {
                 systemPrompt: activeSystemPrompt,
                 // Past the round budget the model has to answer with what it
                 // has. The declarations stay (they head the prompt, so
-                // dropping them re-prefills everything); `none` is what stops
-                // a call.
+                // dropping them re-prefills everything); `none` stops a call
+                // in the sampler, which never draws the call's start token.
                 tools: policy.tools,
                 toolChoice: exhausted ? .none : policy.choice,
                 prompt: chat.outputPromptAsSent,
@@ -1479,36 +1468,6 @@ public final class AppModel {
         chat.outputText = ""
         chat.outputReasoningText = ""
         startRound(request)
-    }
-
-    /// What the last result of a round says while rounds are left: nothing
-    /// (`limitOnly`), the rounds left, or those and the context left before
-    /// the results (the previous round's prompt + generated, exact; the
-    /// results themselves are not counted, the app has no tokenizer).
-    nonisolated static func roundBudgetNote(notes: AppToolBudgetNotes, roundsUsed: Int, maxRounds: Int,
-                                            contextUsed: Int?, maxContext: Int) -> String? {
-        let rounds = "ツール呼び出し: \(maxRounds) 回中 \(roundsUsed) 回使用、残り \(maxRounds - roundsUsed) 回。"
-        switch notes {
-        case .limitOnly:
-            return nil
-        case .rounds:
-            return "(\(rounds))"
-        case .roundsAndContext:
-            guard let contextUsed else { return "(\(rounds))" }
-            let left = max(maxContext - contextUsed, 0)
-            return "(\(rounds)文脈: \(grouped(maxContext)) トークン中、この結果の前までで \(grouped(contextUsed)) 使用、"
-                + "残り \(grouped(left))。)"
-        }
-    }
-
-    nonisolated private static func grouped(_ value: Int) -> String {
-        let digits = String(value)
-        var out = ""
-        for (index, character) in digits.enumerated() {
-            if index > 0, (digits.count - index) % 3 == 0 { out.append(",") }
-            out.append(character)
-        }
-        return out
     }
 
     /// What the last tool result says once the round budget is spent.

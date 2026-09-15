@@ -473,6 +473,45 @@ import TsugumiValidationSupport
         }
     }
 
+    // MARK: - GEN-4: `none` forbids the call's start token
+
+    /// Only the forbidden ids leave the mask and the probe; every other id and
+    /// the end of generation stay allowed, before and after any token.
+    @Test func GEN_4_forbiddenTokensLeaveOnlyThoseIDsOut() throws {
+        let constraint = ForbiddenTokensConstraint(forbiddenTokenIDs: [5])
+        let gate = ConstraintGate(constraint: constraint, endOfGenerationTokenIDs: [1])
+        for _ in 0..<2 {
+            #expect(constraint.mayEndHere)
+            #expect(gate.allows(1))
+            #expect(!gate.allows(5))
+            #expect((0..<8).filter { gate.allows(Int32($0)) } == [0, 1, 2, 3, 4, 6, 7])
+            var mask = [Bool](repeating: false, count: 8)
+            try mask.withUnsafeMutableBufferPointer { try gate.fillAllowedMask($0) }
+            #expect(mask == [true, true, true, true, true, false, true, true])
+            try gate.accept(3)
+        }
+    }
+
+    /// End to end with a sampled draw that almost always lands on the forbidden
+    /// id: it never comes out, and the run still ends on the stop token.
+    @Test func GEN_4_forbiddenTokenIsNeverEmitted() async throws {
+        let tok = try await GFTokenizer.load()
+        let idA = tok.encode("a", addBOS: false).first!
+        let idB = tok.encode("b", addBOS: false).first!
+        let eos = tok.eosID
+        let producer = ScriptedLogitProducer(vocabSize: tok.vocabSize) { input, _ in
+            input == idB ? .argmax(eos) : Self.logits([idA: 30, idB: 6])
+        }
+        let constraint = ForbiddenTokensConstraint(forbiddenTokenIDs: [idA])
+        let outcome = try await runLoop(producer: producer, tokenizer: tok,
+                                        config: GenerationConfig(maxNewTokens: 8,
+                                                                 temperature: 1.0,
+                                                                 seed: 7),
+                                        constraint: constraint)
+        #expect(outcome.emitted == [idB])
+        #expect(outcome.result.reason == .eos)
+    }
+
     // MARK: - GEN-14
 
     // 拘束のある要求が投機デコードを使えることは

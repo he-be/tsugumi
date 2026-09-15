@@ -91,8 +91,29 @@ public struct QwenTokenizer: @unchecked Sendable {
     let tokenizer: any Tokenizer
     /// The checkpoint's template with its one `{{- tool | tojson }}` printing the declaration `QwenToolDeclaration`
     /// spelled instead. Nil when the template does not have exactly that line; the declarations then go through
-    /// swift-jinja's `tojson` as before.
+    /// swift-jinja's `tojson` as before. The call-separator lines (`generatedCallSeparatorLines`) are replaced in
+    /// the same text when each is there exactly once.
     let toolDeclarationTemplate: String?
+
+    /// What the template writes between an assistant turn's body and its first call: `\n\n` after a body, nothing
+    /// without one. The model does not always write that — one newline, three (`docs/qwen38/21` §9: the next round
+    /// diverged at the body and re-prefilled 1,233 tokens). For a turn this runtime generated the template writes the
+    /// whitespace the body ended with instead, so the redraw is the generated text (INV-1). A client's turn keeps the
+    /// template's form.
+    static let generatedCallSeparatorKey = "tsugumi_call_separator"
+    static let generatedCallSeparatorLines: [(String, String)] = [
+        ("{{- '\\n\\n<tool_call>\\n<function=' + tool_call.name + '>\\n' }}",
+         "{{- (message.\(generatedCallSeparatorKey) if message.\(generatedCallSeparatorKey) is string else '\\n\\n')"
+            + " + '<tool_call>\\n<function=' + tool_call.name + '>\\n' }}"),
+        ("{{- '<tool_call>\\n<function=' + tool_call.name + '>\\n' }}",
+         "{{- (message.\(generatedCallSeparatorKey) if message.\(generatedCallSeparatorKey) is string else '')"
+            + " + '<tool_call>\\n<function=' + tool_call.name + '>\\n' }}"),
+    ]
+
+    /// The whitespace a generated body ends with: what the model wrote before `<tool_call>`.
+    static func generatedCallSeparator(_ content: String) -> String {
+        String(content.reversed().prefix { $0.isWhitespace }.reversed())
+    }
 
     // MARK: - Loading
 
@@ -205,7 +226,13 @@ public struct QwenTokenizer: @unchecked Sendable {
         self.tokenizer = tokenizer
         self.toolDeclarationTemplate = chatTemplate.flatMap { template in
             let pieces = template.components(separatedBy: QwenToolDeclaration.templateLine)
-            return pieces.count == 2 ? pieces.joined(separator: QwenToolDeclaration.replacementLine) : nil
+            guard pieces.count == 2 else { return nil }
+            var patched = pieces.joined(separator: QwenToolDeclaration.replacementLine)
+            for (line, replacement) in Self.generatedCallSeparatorLines {
+                let parts = patched.components(separatedBy: line)
+                if parts.count == 2 { patched = parts.joined(separator: replacement) }
+            }
+            return patched
         }
         try Self.verifyDecoderConfiguration(tokenizerData)
         try Self.verifyPreTokenizerConfiguration(tokenizerData)
@@ -334,6 +361,9 @@ public struct QwenTokenizer: @unchecked Sendable {
             }
             if let reasoning = message.reasoningContent, !reasoning.isEmpty {
                 value["reasoning_content"] = reasoning
+            }
+            if message.contentIsGenerated, !message.toolCalls.isEmpty {
+                value[Self.generatedCallSeparatorKey] = Self.generatedCallSeparator(message.content ?? "")
             }
             if let name = message.name { value["name"] = name }
             return value

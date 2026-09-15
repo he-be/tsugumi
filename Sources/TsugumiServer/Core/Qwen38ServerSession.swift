@@ -247,10 +247,10 @@ public actor Qwen38ServerSession: ServerInferenceBackend {
                 "reasoning/budget-not-enforced: this family has no forced closing tag yet")
         }
 
-        let constraint: GrammarTokenConstraint?
+        let grammarConstraint: GrammarTokenConstraint?
         if let grammarText = plan.grammar {
             do {
-                constraint = try GrammarTokenConstraint(
+                grammarConstraint = try GrammarTokenConstraint(
                     grammarText,
                     vocabulary: grammarVocabulary,
                     trigger: plan.trigger.map { .token($0.tokenID) })
@@ -258,8 +258,10 @@ public actor Qwen38ServerSession: ServerInferenceBackend {
                 throw ServerGrammarBuildFailure(shape: plan.shape, underlying: error)
             }
         } else {
-            constraint = nil
+            grammarConstraint = nil
         }
+        // GEN-4: `none` forbids `<tool_call>` instead of building a grammar.
+        let constraint: (any GenerationConstraint)? = grammarConstraint ?? plan.forbiddenTokensConstraint()
 
         let startsInsideReasoning = QwenStructuredAssistantDecoder
             .promptEndsInsideReasoning(promptIDs, tokenizer: tokenizer)
@@ -348,7 +350,7 @@ public actor Qwen38ServerSession: ServerInferenceBackend {
                     let events: [StructuredAssistantEvent]
                     if let decoder {
                         events = try decoder.consume(tokenID: id, delta: delta)
-                        constraint?.setSuppressed(decoder.isInsideReasoning)
+                        grammarConstraint?.setSuppressed(decoder.isInsideReasoning)
                     } else {
                         events = splitter!.consume(tokenID: id, delta: delta)
                     }
@@ -380,6 +382,11 @@ public actor Qwen38ServerSession: ServerInferenceBackend {
                 handle(try decoder.consumeTail(tail))
                 try decoder.finish()
             } catch {
+                if let overflow = ServerRequestError.generationReachedContext(
+                    stop: run.reason, promptTokens: promptIDs.count, generatedTokens: run.newTokens,
+                    reserved: speculative ? 1 : 0, maxContext: maxContext) {
+                    throw overflow
+                }
                 throw QwenStructuredOutputFailure(shape: plan.shape,
                                                   promptTokens: promptIDs.count,
                                                   newTokens: run.newTokens,
