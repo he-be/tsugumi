@@ -208,8 +208,11 @@ func runQwen38Generate(tokenFile: String, newTokens: Int, chunk: Int, greedy: Bo
             draft2Prev = draft2
             hit1Prev = draft == next
         }
-        lines.append(String(format: "  [%5d] in %6d out %6d logit %.6f%@  trunk %.0f (pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] head %.0f)%@",
-                            pos, y, next, l[next], shadow ? String(format: " draft %6d %@", draft, draft == next ? "hit " : "miss") : "",
+        // The runner-up (the gap where two KV storage types part, docs/qwen38/23).
+        var second = next == 0 ? 1 : 0
+        for i in 0..<l.count where i != next && l[i] > l[second] { second = i }
+        lines.append(String(format: "  [%5d] in %6d out %6d logit %.6f 2nd %6d %.6f%@  trunk %.0f (pre %.0f [gpu %.0f] route %.0f routed %.0f [gpu %.0f] head %.0f)%@",
+                            pos, y, next, l[next], second, l[second], shadow ? String(format: " draft %6d %@", draft, draft == next ? "hit " : "miss") : "",
                             ms, pr.preRouter * 1000, pr.preGPU * 1000, pr.route * 1000, pr.routed * 1000, pr.routedGPU * 1000,
                             pr.head * 1000, mtpLine) + routeDetail(pr))
         print(lines.last!)

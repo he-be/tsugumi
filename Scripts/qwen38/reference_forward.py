@@ -64,6 +64,25 @@ def rms(x, g, eps=EPS):
     return out * g if g is not None else out
 
 
+def q8_0_roundtrip(x):
+    """ggml `quantize_row_q8_0_ref` → dequant の往復 (KV の Q8_0、docs/qwen38/22)。32 要素のブロックごとに
+    d = max|x| / 127 (fp16 に丸めて持つ)、q = roundf(x / d) (0.5 は 0 から遠い側、np.rint は偶数丸めで合わない)。"""
+    x = np.asarray(x, dtype=np.float32)
+    b = x.reshape(-1, 32)
+    d = (np.abs(b).max(axis=1) / np.float32(127)).astype(np.float32)
+    inv = np.where(d != 0, np.float32(1) / np.where(d != 0, d, np.float32(1)), np.float32(0)).astype(np.float32)
+    v = b * inv[:, None]
+    a = np.abs(v)
+    r = np.floor(a)
+    r = r + (a - r >= np.float32(0.5))
+    q = np.clip(np.copysign(r, v), -128, 127).astype(np.int8).astype(np.float32)  # int8 を経由 (-0.0 を作らない)
+    return (d.astype(np.float16).astype(np.float32)[:, None] * q).reshape(x.shape)
+
+
+def f16_roundtrip(x):
+    return np.asarray(x, dtype=np.float32).astype(np.float16).astype(np.float32)
+
+
 def grouped_rms(x, g, groups, n):
     xs = x.reshape(groups, n).astype(np.float64)
     scale = 1.0 / np.sqrt((xs ** 2).mean(axis=1, keepdims=True).astype(np.float32) + np.float32(EPS))
@@ -176,6 +195,7 @@ class Model:
         self.rope_freq = np.array([self.rope_base ** (-2.0 * i / self.n_rot) for i in range(half)], np.float64)
         self.indexer_top_k = int(w.field("qwen4exp.attention.indexer.top_k"))  # トークン数。--indexer-top-k で上書き
         self.last_selection = {}  # il -> 選ばれたトークン番号 (検査用)
+        self.kv_q8 = False  # --kv-type q8_0: RoPE 後の K と V を Q8_0、インデクサ鍵を F16 に往復 (Metal の保持と同じ)
 
     def is_linear(self, il):
         return (il + 1) % self.full_interval != 0
@@ -316,6 +336,8 @@ class Model:
         qi = w.matvec(pre + "indexer.q_proj.weight", x).reshape(Hi, Di)
         ik = st.idx_k.setdefault(il, np.zeros((st.cap, Di), np.float32))
         ik[pos] = w.matvec(pre + "indexer.k_proj.weight", x)
+        if self.kv_q8:
+            ik[pos] = f16_roundtrip(ik[pos])
         n_vis = pos + 1
         n_blocks = n_vis // ratio
         if n_blocks <= k_blocks:
@@ -327,6 +349,8 @@ class Model:
         pooled = ik[: n_blocks * ratio].reshape(n_blocks, ratio, Di).astype(np.float64).mean(axis=1).astype(np.float32)
         keys = np.stack([rms(pooled[b], gk) for b in range(n_blocks)])
         self.rope_at(keys, np.arange(n_blocks) * ratio)
+        if self.kv_q8:
+            keys = f16_roundtrip(keys)
         dots = q.astype(np.float64) @ keys.astype(np.float64).T      # [Hi, n_blocks]
         score = np.maximum(dots, 0.0).sum(axis=0).astype(np.float32)
         taken = np.sort(np.argsort(-score, kind="stable")[:k_blocks])  # 同点は小さい番号
@@ -349,6 +373,8 @@ class Model:
         self.rope(k, pos)
         kc = st.attn_k.setdefault(il, np.zeros((st.cap, Hkv, D), np.float32))
         vc = st.attn_v.setdefault(il, np.zeros((st.cap, Hkv, D), np.float32))
+        if self.kv_q8:
+            k, v = q8_0_roundtrip(k), q8_0_roundtrip(v)
         kc[pos], vc[pos] = k, v
         sel = self.select(il, st, x, pos)
         self.last_selection[il] = sel
@@ -448,6 +474,8 @@ def main() -> int:
                     help="QSA の予算 (トークン) を上書きする。短い文で選択を発動させて Metal と突き合わせる検査用")
     ap.add_argument("--ablate-ple", action="store_true",
                     help="負例: PLE を足さない。正しい PLE より NLL が悪くなることを見る")
+    ap.add_argument("--kv-type", choices=["f32", "q8_0"], default="f32",
+                    help="q8_0: K (RoPE 後) と V を Q8_0、インデクサの raw 鍵と block 鍵を F16 に往復する (Q38_KV_TYPE=q8_0 の参照)")
     args = ap.parse_args()
 
     from tokenizers import Tokenizer
@@ -459,6 +487,9 @@ def main() -> int:
 
     model = Model(args.gguf, args.ple)
     model.ablate_ple = args.ablate_ple
+    model.kv_q8 = args.kv_type == "q8_0"
+    if model.kv_q8:
+        print("KV: K/V Q8_0、インデクサ鍵 F16")
     if args.indexer_top_k is not None:
         model.indexer_top_k = args.indexer_top_k
         print(f"indexer top_k 上書き: {args.indexer_top_k} トークン ({args.indexer_top_k // 4} ブロック)")

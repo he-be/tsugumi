@@ -124,14 +124,15 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
     public var contextOptions: [AppContextLengthOption] {
         switch self {
         case .gemmaQATSym, .ornith: AppContextLengthOption.allCases.filter { $0 != .twelveK }
-        // 12K is the operating point; 16K and above swap on 18 GB (`docs/qwen38/09`).
-        case .qwen38: [.fourK, .eightK, .twelveK]
+        // 32K is the operating point: with the KV cache in Q8_0 and the indexer keys in F16 it holds 0.59 GB, less than
+        // the float32 cache at 12K that `docs/qwen38/09` measured (0.75 GB, `docs/qwen38/22`, `23`).
+        case .qwen38: [.fourK, .eightK, .twelveK, .sixteenK, .thirtyTwoK]
         }
     }
 
     /// The context a fresh settings file starts at.
     public var defaultContextTokens: Int {
-        self == .qwen38 ? AppContextLengthOption.twelveK.tokens : AppContextLengthOption.thirtyTwoK.tokens
+        AppContextLengthOption.thirtyTwoK.tokens
     }
 
     public static let defaultKind = AppModelKind.gemmaQATSym

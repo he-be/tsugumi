@@ -162,16 +162,13 @@ struct QwenChatGrammarBuilderTests {
         #expect(constraint.grammar.contains("root ::= tool-call\n"))
     }
 
-    @Test("required constrains from the first token, behind a preamble")
+    @Test("required constrains from the first token, with no preamble")
     func required_is_not_lazy() throws {
         let required = try #require(
             Self.constraint(tools: [Self.weather], toolChoice: .required))
         #expect(!required.isLazy)
         #expect(required.trigger == nil)
-        // The preamble is "any token that is not the section start" — the
-        // reasoning block the template left open lives in there.
-        #expect(required.grammar.contains(
-            "root ::= !<[\(Self.toolCallStartID)]>* tool-call\n"))
+        #expect(required.grammar.contains("root ::= tool-call\n"))
     }
 
     @Test("a named function pins that one tool")
@@ -282,25 +279,20 @@ struct QwenChatGrammarBuilderTests {
         #expect(try !Self.walk(constraint.grammar, Self.call(other)))
     }
 
-    @Test("the preamble a non-lazy tool grammar allows is tokens, and ends at the marker")
-    func required_preamble_is_walked_as_tokens() throws {
-        let constraint = try #require(
-            Self.constraint(tools: [Self.weather], toolChoice: .required))
-        // Thinking on: the reasoning the template left open, then `</think>`,
-        // then the separator the template writes — all of it inside the
-        // preamble, which is a run of `TOKEN_NOT` elements and so is walked by
-        // id rather than by bytes.
-        let preamble: [Emission] = [
-            .token(700, "The user wants the weather."),
-            .token(Self.thinkEndID, "</think>"),
-            .token(701, "\n\n"),
-            .token(702, "Let me look that up."),
-        ]
-        #expect(try Self.walk(constraint.grammar, preamble + Self.call(Self.weatherBody)))
-        // Nothing may follow the call — this template's own system prompt says
-        // natural language goes before a call and not after.
-        #expect(try !Self.walk(constraint.grammar,
-                               Self.call(Self.weatherBody) + [.token(703, " there.")]))
+    @Test("a forced call is the first thing generated: no text before it, no stop without it")
+    func forced_call_has_no_preamble() throws {
+        for choice in [ChatToolChoice.required, .function(name: "get_weather")] {
+            let constraint = try #require(Self.constraint(tools: [Self.weather], toolChoice: choice))
+            #expect(try Self.walk(constraint.grammar, Self.call(Self.weatherBody)))
+            // An answer written in place of the call: refused at its first token. With text allowed there and the stop
+            // refused until a call, the model could not end (docs/qwen38/23: 14,700 tokens of filler in one round).
+            #expect(try !Self.walk(constraint.grammar,
+                                   [.token(702, "Let me look that up.")] + Self.call(Self.weatherBody)))
+            #expect(try !Self.walk(constraint.grammar, [.text("- 要点 1\n- 要点 2\n")]))
+            // Nothing may follow the call either.
+            #expect(try !Self.walk(constraint.grammar,
+                                   Self.call(Self.weatherBody) + [.token(703, " there.")]))
+        }
     }
 
     // MARK: - The raw string value

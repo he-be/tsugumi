@@ -25,7 +25,7 @@ import Testing
             #expect(kind.contextOptions.contains(.oneTwentyEightK))
             #expect(!kind.contextOptions.contains(.twelveK))
         }
-        // Qwen3.8: MTP n_max 1, thinking off, the non-thinking sampler pinned, 12K at most.
+        // Qwen3.8: MTP n_max 1, thinking off, the non-thinking sampler pinned, 32K at most.
         #expect(!AppModelKind.qwen38.supportsVision)
         #expect(AppModelKind.qwen38.draftBlockSize == 2)
         #expect(!AppModelKind.qwen38.thinkingDefault)
@@ -33,7 +33,7 @@ import Testing
         #expect(AppModelKind.qwen38.officialTemperature == 0.7)
         #expect(AppModelKind.qwen38.officialTopK == 20)
         #expect(AppModelKind.qwen38.officialTopP == 0.8)
-        #expect(AppModelKind.qwen38.contextOptions == [.fourK, .eightK, .twelveK])
+        #expect(AppModelKind.qwen38.contextOptions == [.fourK, .eightK, .twelveK, .sixteenK, .thirtyTwoK])
         #expect(AppModelKind.qwen38.archConfig == nil)
     }
 
@@ -56,7 +56,7 @@ import Testing
         #expect(qwen38.temperature == 0.7)
         #expect(qwen38.topP == 0.8)
         #expect(!qwen38.thinkingEnabled)
-        #expect(qwen38.contextTokens == 12_288)
+        #expect(qwen38.contextTokens == 32_768)
     }
 
     @Test func probeReadsTheManifestFamily() throws {

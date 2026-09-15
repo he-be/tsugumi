@@ -138,7 +138,6 @@ private func qwenToolConstraint(
     let markers = QwenToolCallMarkers(tokenizer: tokenizer)
     let result = QwenToolCallGrammar.grammar(tools: selected,
                                              parallelToolCalls: parallelToolCalls,
-                                             withPreamble: !isLazy,
                                              markers: markers)
     let constraint = try GrammarTokenConstraint(
         result.grammar,

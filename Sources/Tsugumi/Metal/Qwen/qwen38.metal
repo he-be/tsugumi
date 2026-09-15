@@ -22,6 +22,74 @@ static inline float q38_sigmoid(float x) {
 // MSL has no log1p; below -15 the float32 log(1 + e^x) rounds to 0, so take e^x there.
 static inline float q38_softplus(float x) { return x > 20.0f ? x : (x < -15.0f ? exp(x) : log(1.0f + exp(x))); }
 
+// KV storage (`Q38_KV_TYPE`, docs/qwen38/22). Function constant 0 set: the attention K and V caches are ggml
+// `block_q8_0` rows (Hkv x 256 elements = 8 blocks of 34 B: half d, int8 q[32], x = d * q) and the indexer's raw and
+// block keys are half. Unset (or false): all float32. The same buffers are bound either way as `uchar` / `float`.
+constant bool q38_kv_q8_c [[function_constant(0)]];
+constant bool Q38_KV_Q8 = is_function_constant_defined(q38_kv_q8_c) && q38_kv_q8_c;
+#define Q38_Q8_BLOCK 34u
+
+/// Element j of the Q8_0 row at `row`.
+static inline float q38_q8_at(device const uchar* row, uint j) {
+    device const uchar* b = row + (j / 32) * Q38_Q8_BLOCK;
+    return float(reinterpret_cast<device const half*>(b)[0]) * float(reinterpret_cast<device const char*>(b)[2 + j % 32]);
+}
+
+/// ggml `quantize_row_q8_0_ref` of n (a multiple of 32) floats into the Q8_0 row at `row`:
+/// d = max|x| / 127 kept as half, q = round(x * (1 / d)) (halfway away from zero).
+static inline void q38_q8_write(device uchar* row, thread const float* x, uint n) {
+    for (uint k = 0; k < n / 32; ++k) {
+        float amax = 0.0f;
+        for (uint j = 0; j < 32; ++j) amax = max(amax, abs(x[k * 32 + j]));
+        const float d = amax / 127.0f;
+        const float id = d != 0.0f ? 1.0f / d : 0.0f;
+        device uchar* b = row + k * Q38_Q8_BLOCK;
+        reinterpret_cast<device half*>(b)[0] = half(d);
+        for (uint j = 0; j < 32; ++j) {
+            reinterpret_cast<device char*>(b)[2 + j] = char(clamp(round(x[k * 32 + j] * id), -128.0f, 127.0f));
+        }
+    }
+}
+
+/// Q8_0: cache row (row0 + r) <- quantize(x[r]), rows of d floats (d a multiple of 32). Thread r.
+kernel void q38_kv_quantize(
+    device const float* x [[buffer(0)]],
+    device uchar* cache [[buffer(1)]],
+    constant uint& d [[buffer(2)]],
+    constant uint& row0 [[buffer(3)]],
+    uint r [[thread_position_in_grid]]
+) {
+    float t[512];
+    for (uint i = 0; i < d; ++i) t[i] = x[r * d + i];
+    q38_q8_write(cache + (row0 + r) * (d / 32) * Q38_Q8_BLOCK, t, d);
+}
+
+/// Dequant rows of a Q8_0 buffer back to float (checks). Thread per element.
+kernel void q38_kv_dequantize(
+    device const uchar* cache [[buffer(0)]],
+    device float* x [[buffer(1)]],
+    constant uint& d [[buffer(2)]],
+    uint i [[thread_position_in_grid]]
+) {
+    x[i] = q38_q8_at(cache + (i / d) * (d / 32) * Q38_Q8_BLOCK, i % d);
+}
+
+kernel void q38_f32_to_f16(
+    device const float* x [[buffer(0)]],
+    device half* y [[buffer(1)]],
+    uint i [[thread_position_in_grid]]
+) {
+    y[i] = half(x[i]);
+}
+
+kernel void q38_f16_to_f32(
+    device const half* x [[buffer(0)]],
+    device float* y [[buffer(1)]],
+    uint i [[thread_position_in_grid]]
+) {
+    y[i] = float(x[i]);
+}
+
 struct Q38RmsParams {
     uint groups;    // all groups in the batch (tokens x groups per token)
     uint n;
@@ -463,16 +531,18 @@ static inline void q38_rms_rope(thread float* t, device const float* gamma, uint
 }
 
 /// Thread (h, t), h < H: q[t][h] = rope(rms(qg[t][h][:D])), gate[t][h] = qg[t][h][D:].
-/// h >= H: k-cache row (pos + t, h - H) normed and roped in place.
+/// h >= H: k-cache row (pos + t, h - H) normed and roped in place; with `Q38_KV_Q8` the batch's k rows come from
+/// `ktmp` ([t][hkv][D] floats) and the result is quantized into the cache row.
 kernel void q38_attn_prep(
     device const float* qg [[buffer(0)]],
-    device float* kcache [[buffer(1)]],
+    device uchar* kraw [[buffer(1)]],
     device const float* qnw [[buffer(2)]],
     device const float* knw [[buffer(3)]],
     device const float* freq [[buffer(4)]],
     device float* q [[buffer(5)]],
     device float* gate [[buffer(6)]],
     constant Q38AttnParams& p [[buffer(7)]],
+    device const float* ktmp [[buffer(8)]],
     uint2 hp [[thread_position_in_grid]]
 ) {
     const uint h = hp.x, tok = hp.y, D = p.d;
@@ -487,7 +557,13 @@ kernel void q38_attn_prep(
         }
         q38_rms_rope(t, qnw, D, p.nrot, at, p.eps, freq);
         for (uint i = 0; i < D; ++i) q[dst + i] = t[i];
+    } else if (Q38_KV_Q8) {
+        const uint src = (tok * p.hkv + (h - p.h)) * D;
+        for (uint i = 0; i < D; ++i) t[i] = ktmp[src + i];
+        q38_rms_rope(t, knw, D, p.nrot, at, p.eps, freq);
+        q38_q8_write(kraw + (at * p.hkv + (h - p.h)) * (D / 32) * Q38_Q8_BLOCK, t, D);
     } else {
+        device float* kcache = reinterpret_cast<device float*>(kraw);
         const uint base = (at * p.hkv + (h - p.h)) * D;
         for (uint i = 0; i < D; ++i) t[i] = kcache[base + i];
         q38_rms_rope(t, knw, D, p.nrot, at, p.eps, freq);
@@ -513,9 +589,10 @@ static inline uint q38_tok(device const uint* sel, device const uint* useSel, co
 }
 
 /// scores = q[t][h] . k[tok] / sqrt(D). Threadgroups (nMax, H, T), 32 threads; lane l reads dims l, l+32, ...
+/// (with `Q38_KV_Q8`: element l of every block).
 kernel void q38_attn_score(
     device const float* q [[buffer(0)]],
-    device const float* kcache [[buffer(1)]],
+    device const uchar* kraw [[buffer(1)]],
     device float* scores [[buffer(2)]],
     device const uint* sel [[buffer(3)]],
     constant Q38AttnPassParams& p [[buffer(4)]],
@@ -528,9 +605,15 @@ kernel void q38_attn_score(
     if (h >= p.h || t >= p.T || i >= nq[t]) return;
     const uint kvh = h / (p.h / p.hkv);
     device const float* qh = q + (t * p.h + h) * p.d;
-    device const float* kt = kcache + (q38_tok(sel, useSel, p, t, i) * p.hkv + kvh) * p.d;
+    const uint row = q38_tok(sel, useSel, p, t, i) * p.hkv + kvh;
     float dot = 0.0f;
-    for (uint j = lane; j < p.d; j += 32) dot += qh[j] * kt[j];
+    if (Q38_KV_Q8) {
+        device const uchar* kr = kraw + row * (p.d / 32) * Q38_Q8_BLOCK;
+        for (uint j = lane; j < p.d; j += 32) dot += qh[j] * q38_q8_at(kr, j);
+    } else {
+        device const float* kt = reinterpret_cast<device const float*>(kraw) + row * p.d;
+        for (uint j = lane; j < p.d; j += 32) dot += qh[j] * kt[j];
+    }
     dot = simd_sum(dot);
     if (lane == 0) scores[(t * p.h + h) * p.nCap + i] = dot / sqrt(float(p.d));
 }
@@ -600,13 +683,15 @@ kernel void q38_attn_gather_q(
 
 /// kg[i * D + j] = cache[(i * Hkv + g) * D + j]. Thread per element.
 kernel void q38_attn_gather_kv(
-    device const float* cache [[buffer(0)]],
+    device const uchar* cache [[buffer(0)]],
     device float* kg [[buffer(1)]],
     constant Q38AttnPassParams& p [[buffer(2)]],
     constant uint& g [[buffer(3)]],
     uint i [[thread_position_in_grid]]
 ) {
-    kg[i] = cache[((i / p.d) * p.hkv + g) * p.d + i % p.d];
+    const uint row = (i / p.d) * p.hkv + g;
+    kg[i] = Q38_KV_Q8 ? q38_q8_at(cache + row * (p.d / 32) * Q38_Q8_BLOCK, i % p.d)
+                      : reinterpret_cast<device const float*>(cache)[row * p.d + i % p.d];
 }
 
 /// o[(t * H + g * G + h) * D + j] = og[(t * G + h) * D + j] * sigmoid(gate[same]). Thread per element of og.
@@ -628,7 +713,7 @@ kernel void q38_attn_scatter_out(
 /// Threadgroups (D, H, T), 32 threads; lane l reads tokens l, l+32, ...
 kernel void q38_attn_mix(
     device const float* w [[buffer(0)]],
-    device const float* vcache [[buffer(1)]],
+    device const uchar* vraw [[buffer(1)]],
     device const float* gate [[buffer(2)]],
     device float* o [[buffer(3)]],
     device const uint* sel [[buffer(4)]],
@@ -644,8 +729,16 @@ kernel void q38_attn_mix(
     const uint kvh = h / (p.h / p.hkv);
     device const float* wh = w + (t * p.h + h) * p.nCap;
     float acc = 0.0f;
-    for (uint i = lane; i < n; i += 32) {
-        acc += wh[i] * vcache[(q38_tok(sel, useSel, p, t, i) * p.hkv + kvh) * p.d + j];
+    if (Q38_KV_Q8) {
+        const uint rowBytes = (p.d / 32) * Q38_Q8_BLOCK;
+        for (uint i = lane; i < n; i += 32) {
+            acc += wh[i] * q38_q8_at(vraw + (q38_tok(sel, useSel, p, t, i) * p.hkv + kvh) * rowBytes, j);
+        }
+    } else {
+        device const float* vcache = reinterpret_cast<device const float*>(vraw);
+        for (uint i = lane; i < n; i += 32) {
+            acc += wh[i] * vcache[(q38_tok(sel, useSel, p, t, i) * p.hkv + kvh) * p.d + j];
+        }
     }
     acc = simd_sum(acc);
     const uint k = (t * p.h + h) * p.d + j;
@@ -656,23 +749,38 @@ kernel void q38_attn_mix(
 // QSA indexer (ds4 `qwen4_ref_select`): blocks of 4 tokens, pooled raw keys, normed and roped at the
 // block's first position; score = sum_h relu(q_h . key_b). Small batches select on the host, large ones below.
 
-/// blockKeys[b] = rope(rms(mean(rawKeys[4b .. 4b+3])), 4b) for b = pos + u. Thread u.
+/// blockKeys[b] = rope(rms(mean(rawKeys[4b .. 4b+3])), 4b) for b = pos + u (both half with `Q38_KV_Q8`). Thread u.
 kernel void q38_idx_block_key(
-    device const float* rawKeys [[buffer(0)]],
+    device const uchar* rawRaw [[buffer(0)]],
     device const float* gk [[buffer(1)]],
     device const float* freq [[buffer(2)]],
-    device float* blockKeys [[buffer(3)]],
+    device uchar* blockRaw [[buffer(3)]],
     constant Q38AttnParams& p [[buffer(4)]],   // d = 128, pos = first block
     uint u [[thread_position_in_grid]]
 ) {
     float t[512];
     const uint b = p.pos + u, base = 4 * b;
-    for (uint i = 0; i < p.d; ++i) {
-        t[i] = (rawKeys[base * p.d + i] + rawKeys[(base + 1) * p.d + i] +
-                rawKeys[(base + 2) * p.d + i] + rawKeys[(base + 3) * p.d + i]) / 4.0f;
+    if (Q38_KV_Q8) {
+        device const half* rawKeys = reinterpret_cast<device const half*>(rawRaw);
+        for (uint i = 0; i < p.d; ++i) {
+            t[i] = (float(rawKeys[base * p.d + i]) + float(rawKeys[(base + 1) * p.d + i]) +
+                    float(rawKeys[(base + 2) * p.d + i]) + float(rawKeys[(base + 3) * p.d + i])) / 4.0f;
+        }
+    } else {
+        device const float* rawKeys = reinterpret_cast<device const float*>(rawRaw);
+        for (uint i = 0; i < p.d; ++i) {
+            t[i] = (rawKeys[base * p.d + i] + rawKeys[(base + 1) * p.d + i] +
+                    rawKeys[(base + 2) * p.d + i] + rawKeys[(base + 3) * p.d + i]) / 4.0f;
+        }
     }
     q38_rms_rope(t, gk, p.d, p.nrot, base, p.eps, freq);
-    for (uint i = 0; i < p.d; ++i) blockKeys[b * p.d + i] = t[i];
+    if (Q38_KV_Q8) {
+        device half* blockKeys = reinterpret_cast<device half*>(blockRaw);
+        for (uint i = 0; i < p.d; ++i) blockKeys[b * p.d + i] = half(t[i]);
+    } else {
+        device float* blockKeys = reinterpret_cast<device float*>(blockRaw);
+        for (uint i = 0; i < p.d; ++i) blockKeys[b * p.d + i] = t[i];
+    }
 }
 
 /// iq[t][h] = rope(rms(iq[t][h]), pos + t), in place. Thread (h, t).
@@ -693,7 +801,7 @@ kernel void q38_idx_q_prep(
 /// score[t][b] = sum_h relu(iq[t][h] . blockKeys[b]). Thread (b, t).
 kernel void q38_idx_score(
     device const float* iq [[buffer(0)]],
-    device const float* blockKeys [[buffer(1)]],
+    device const uchar* blockRaw [[buffer(1)]],
     device float* score [[buffer(2)]],
     constant uint& heads [[buffer(3)]],
     constant uint& d [[buffer(4)]],
@@ -702,9 +810,17 @@ kernel void q38_idx_score(
 ) {
     const uint b = pos.x, t = pos.y;
     float acc = 0.0f;
+    float key[512];
+    if (Q38_KV_Q8) {
+        device const half* blockKeys = reinterpret_cast<device const half*>(blockRaw);
+        for (uint i = 0; i < d; ++i) key[i] = float(blockKeys[b * d + i]);
+    } else {
+        device const float* blockKeys = reinterpret_cast<device const float*>(blockRaw);
+        for (uint i = 0; i < d; ++i) key[i] = blockKeys[b * d + i];
+    }
     for (uint h = 0; h < heads; ++h) {
         float dot = 0.0f;
-        for (uint i = 0; i < d; ++i) dot += iq[(t * heads + h) * d + i] * blockKeys[b * d + i];
+        for (uint i = 0; i < d; ++i) dot += iq[(t * heads + h) * d + i] * key[i];
         acc += max(dot, 0.0f);
     }
     score[t * nBlocks + b] = acc;
@@ -838,7 +954,7 @@ kernel void q38_attn_mask_sel(
 
 /// kg[i * D + j] = cache[(list[i] * Hkv + g) * D + j], 0 for padding (list[i] = ~0). Thread per element.
 kernel void q38_attn_gather_kv_list(
-    device const float* cache [[buffer(0)]],
+    device const uchar* cache [[buffer(0)]],
     device float* kg [[buffer(1)]],
     device const uint* list [[buffer(2)]],
     constant Q38AttnPassParams& p [[buffer(3)]],
@@ -846,7 +962,10 @@ kernel void q38_attn_gather_kv_list(
     uint i [[thread_position_in_grid]]
 ) {
     const uint tok = list[i / p.d];
-    kg[i] = tok == 0xFFFFFFFFu ? 0.0f : cache[(tok * p.hkv + g) * p.d + i % p.d];
+    if (tok == 0xFFFFFFFFu) { kg[i] = 0.0f; return; }
+    const uint row = tok * p.hkv + g;
+    kg[i] = Q38_KV_Q8 ? q38_q8_at(cache + row * (p.d / 32) * Q38_Q8_BLOCK, i % p.d)
+                      : reinterpret_cast<device const float*>(cache)[row * p.d + i % p.d];
 }
 
 // ---------------------------------------------------------------------------

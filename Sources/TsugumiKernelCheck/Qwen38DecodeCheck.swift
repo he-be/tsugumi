@@ -35,6 +35,15 @@ private func parseQwen38RefLog(_ path: String) throws -> (prompt: [Int], top1: [
     return (prompt, (0..<n).map { top1[$0] ?? -1 })
 }
 
+/// The worst logit relative error a reference check accepts: 1e-3, or `Q38_LOGIT_TOL`. With `Q38_KV_TYPE=q8_0` the runner
+/// and the reference quantize K / V from float32 values that differ by their own rounding, a few elements a row land on
+/// the other side of a Q8_0 step, and past a QSA selection or router near-tie that grows to 1e-2 (docs/qwen38/23 §1).
+func qwen38LogitTolerance() -> Double {
+    let tol = Double(ProcessInfo.processInfo.environment["Q38_LOGIT_TOL"] ?? "") ?? 1e-3
+    if tol != 1e-3 { print("  logit tolerance \(tol) (Q38_LOGIT_TOL)") }
+    return tol
+}
+
 func runQwen38DecodeCheck(refLog: String, refLogits: String?, gguf: String, ple: String,
                           indexerTopK: Int? = nil) throws -> Bool {
     let ref = try parseQwen38RefLog(refLog)
@@ -90,7 +99,7 @@ func runQwen38DecodeCheck(refLog: String, refLogits: String?, gguf: String, ple:
         // reference's later positions are a different sequence, so stop there.
         if !ok && pos + 1 >= ref.prompt.count { break }
     }
-    let pass = mismatches == 0 && (refLogitsData == nil || worstLogit < 1e-3)
+    let pass = mismatches == 0 && (refLogitsData == nil || worstLogit < qwen38LogitTolerance())
     print("  top-1 mismatches: \(mismatches)" + (refLogitsData != nil ? String(format: ", worst logit rel err %.2e", worstLogit) : ""))
     print("  \(pass ? "PASS" : "FAIL")")
     return pass
@@ -157,7 +166,7 @@ func runQwen38PrefillCheck(refLog: String, refLogits: String?, gguf: String, ple
                      refLogitsData != nil ? String(format: "  logit rel err %.2e", worstChunk) : "", line))
         start += T
     }
-    let pass = mismatches == 0 && (refLogitsData == nil || worstLogit < 1e-3)
+    let pass = mismatches == 0 && (refLogitsData == nil || worstLogit < qwen38LogitTolerance())
     print("  top-1 mismatches: \(mismatches)" + (refLogitsData != nil ? String(format: ", worst logit rel err %.2e", worstLogit) : ""))
     print("  \(pass ? "PASS" : "FAIL")")
     return pass

@@ -244,7 +244,6 @@ private func roundTripCases(tokenizer: QwenTokenizer,
     var cases: [ToolsCase] = []
     let grammarText = QwenToolCallGrammar.grammar(tools: [weatherTool],
                                                   parallelToolCalls: true,
-                                                  withPreamble: false,
                                                   markers: markers).grammar
     let grammar = try GBNFGrammar(grammarText)
 
@@ -357,7 +356,6 @@ private func maskCases(tokenizer: QwenTokenizer,
                        markers: QwenToolCallMarkers) throws -> [ToolsCase] {
     let grammarText = QwenToolCallGrammar.grammar(tools: [weatherTool],
                                                   parallelToolCalls: false,
-                                                  withPreamble: false,
                                                   markers: markers).grammar
     guard let span = try renderedCallSpan(
         tokenizer: tokenizer,
@@ -417,12 +415,10 @@ private func negativeCases(tokenizer: QwenTokenizer,
     let lazyGrammar = try GBNFGrammar(
         QwenToolCallGrammar.grammar(tools: [weatherTool],
                                     parallelToolCalls: true,
-                                    withPreamble: false,
                                     markers: markers).grammar)
     let grammar = try GBNFGrammar(
         QwenToolCallGrammar.grammar(tools: [weatherTool],
                                     parallelToolCalls: true,
-                                    withPreamble: true,
                                     markers: markers).grammar)
 
     /// Walk a token run and say whether the grammar took all of it and could

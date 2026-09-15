@@ -95,7 +95,6 @@ public enum QwenChatGrammarBuilder {
         let isLazy = toolChoice == .auto
         let result = QwenToolCallGrammar.grammar(tools: selected,
                                                  parallelToolCalls: parallelToolCalls,
-                                                 withPreamble: !isLazy,
                                                  markers: markers)
         return ChatGrammarConstraint(
             grammar: result.grammar,

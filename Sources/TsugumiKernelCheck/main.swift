@@ -1798,6 +1798,11 @@ if let index = arguments.firstIndex(of: "--ggml-dense-bench"), index + 1 < argum
     try runGGMLDenseBench(ggufPath: arguments[index + 1], iterations: iterations)
     exit(0)
 }
+// `--q38-kv-quant-check [dump dir]`: Q8_0 / F16 KV storage kernels against ggml's rounding (Q38KVQuantCheck.swift).
+if let index = arguments.firstIndex(of: "--q38-kv-quant-check") {
+    let dir = index + 1 < arguments.count && !arguments[index + 1].hasPrefix("--") ? arguments[index + 1] : nil
+    exit(try runQwen38KVQuantCheck(dumpDir: dir) ? 0 : 1)
+}
 // `--q38-select-check`: QSA top-k / union / mask kernels against the host rule (Qwen38SelectCheck.swift).
 if arguments.contains("--q38-select-check") {
     exit(try runQwen38SelectCheck() ? 0 : 1)

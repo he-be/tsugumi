@@ -91,13 +91,16 @@ public enum QwenToolCallGrammar {
     /// not contain.
     public static let parameterCloser = "\n</parameter>"
 
-    /// The tool-call grammar. `withPreamble` is for a grammar that is applied
-    /// from the first generated token; a lazy one is not applied until the
-    /// section start fires and so never sees the text in front of it.
+    /// The tool-call grammar: the call section and nothing else. A lazy grammar
+    /// is not applied until the section start fires; a forced one (`required`,
+    /// a named function) is applied from the first generated token, so the
+    /// first token has to be `<tool_call>`. Text in front of a forced call is
+    /// refused: with it allowed and the stop token refused until a call, a model
+    /// that answered instead of calling could not end and repeated filler to the
+    /// end of the context (`docs/qwen38/23`, 14,700 tokens in one round at 32K).
     public static func grammar(
         tools: [GFTokenizer.FunctionDefinition],
         parallelToolCalls: Bool,
-        withPreamble: Bool,
         markers: QwenToolCallMarkers
     ) -> JSONSchemaGrammarResult {
         // GEN-8. A non-string value is written by the redraw as
@@ -129,11 +132,7 @@ public enum QwenToolCallGrammar {
             let section = builder.addRule(
                 "tool-call",
                 parallelToolCalls ? body + " (\"\\n\" " + body + ")*" : body)
-            if withPreamble {
-                _ = builder.addRule("root", "\(toolPreamble(markers)) \(section)")
-            } else {
-                _ = builder.addRule("root", section)
-            }
+            _ = builder.addRule("root", section)
         }
     }
 
@@ -156,33 +155,6 @@ public enum QwenToolCallGrammar {
                 "reasoning", "!<[\(thinkEnd)]>* <[\(thinkEnd)]> [ \\t\\n]{0,20}")
             _ = builder.addRule("root", "\(prefix)? \(body)")
         }
-    }
-
-    // MARK: - The prefix a non-lazy grammar needs
-
-    /// Everything the model is allowed to write before the call.
-    ///
-    /// A grammar applied from the first generated token has to allow it: with
-    /// thinking on that token is inside the reasoning block — the template
-    /// opened it — so a `root` that only spells the call leaves no token
-    /// allowed at all, which GEN-7 turns into a 500.
-    ///
-    /// The prefix is **"any token that is not the section start"** rather than
-    /// a precise `!</think>* </think>` block. Two reasons, and either is
-    /// enough:
-    ///
-    /// 1. After `</think>` the template writes `\n\n` and *then* the content,
-    ///    and this checkpoint's own system prompt says in as many words that
-    ///    natural language before the call is allowed ("You may provide
-    ///    optional reasoning for your function call in natural language BEFORE
-    ///    the function call, but NOT after"). A grammar that forbids it
-    ///    contradicts the prompt the model is reading.
-    /// 2. It costs nothing in what is actually constrained. The model cannot
-    ///    *stop* in the prefix — the grammar is incomplete there, so
-    ///    `mayEndHere` is false and the stop token is rejected — so the only
-    ///    way out is to write the call.
-    private static func toolPreamble(_ markers: QwenToolCallMarkers) -> String {
-        "!<[\(markers.toolCallStartTokenID)]>*"
     }
 
     // MARK: - One tool's parameters

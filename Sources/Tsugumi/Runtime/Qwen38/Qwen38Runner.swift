@@ -37,6 +37,13 @@ package final class Qwen38Runner {
     private let eps: Float
 
     package let capacity: Int
+    /// `Q38_KV_TYPE=q8_0` (docs/qwen38/22): the attention K (after RMS + RoPE) and V caches, the MTP layer's included,
+    /// are ggml `block_q8_0` rows and the indexer's raw and block keys half: 17,984 B a position instead of 60,928
+    /// (32K: 0.59 GB, 12K float32: 0.75 GB); the default. `f32` keeps everything float32 (the comparison arm).
+    package let kvQ8: Bool
+    /// Bytes of one position's K (or V) cache row (Hkv heads), and of one indexer raw or block key.
+    private let kvRowBytes: Int
+    private let idxKeyBytes: Int
     /// Largest T one `forward` takes.
     package let maxBatch: Int
     private let file: GGUFFile
@@ -66,6 +73,7 @@ package final class Qwen38Runner {
     private let psoPhase1, psoPhase2: MTLComputePipelineState
     private let psoDeqGateUp, psoDeqDown, psoGatherPairs, psoSiluHalves, psoScatterWeighted: MTLComputePipelineState
     private let psoDeqQ4KGateUp, psoDeqMXFP4Down: MTLComputePipelineState
+    private let psoKVQuantize, psoF32ToF16, psoF16ToF32: MTLComputePipelineState
 
     private var views: [String: (tensor: GGUFFile.Tensor, buffer: MTLBuffer, offset: Int)] = [:]
 
@@ -78,6 +86,11 @@ package final class Qwen38Runner {
     private var pleEmb, pleKey, pleValue, pleKeyN, pleQuery, pleGateBuf, pleGated, pleNormed: MTLBuffer!
     private let pleHist: MTLBuffer
     private var attnMax, attnSum, nq, useSel: MTLBuffer!
+    /// `kvQ8` only: the batch's K and V rows ([t][Hkv][D]) and indexer raw keys ([t][idxD]) as float32 before they
+    /// are quantized into the caches.
+    private var kTmp, vTmp, iTmp: MTLBuffer?
+    /// `kvQ8` only: the half block keys as float32 for the indexer sgemm of `attentionSelected`.
+    private var idxKeysF32: MTLBuffer?
     /// Rows the batch scratch is allocated for: `maxBatch` while prefilling, `smallBatchRows` in decode.
     /// Sized from maxBatch they stayed resident through decode (~3 GB at chunk 2048) and a 12K decode
     /// swapped (`docs/qwen38/09`). `Q38_SHRINK_BATCH=0` keeps them at maxBatch.
@@ -244,7 +257,16 @@ package final class Qwen38Runner {
     private var plePrevBefore: [Int] = []
     private var snapTokens: [Int] = []
 
-    package init(gguf: URL, ple: URL, capacity: Int, maxBatch: Int = 1) throws {
+    package static var defaultKVType: String { ProcessInfo.processInfo.environment["Q38_KV_TYPE"] ?? "q8_0" }
+
+    /// `kvType`: `f32` or `q8_0` (nil: `Q38_KV_TYPE`, default `defaultKVType`).
+    package init(gguf: URL, ple: URL, capacity: Int, maxBatch: Int = 1, kvType: String? = nil) throws {
+        let kvName = kvType ?? Self.defaultKVType
+        guard kvName == "f32" || kvName == "q8_0" else { throw GGUFFile.Error.format("Q38_KV_TYPE \(kvName): f32 or q8_0") }
+        let kvQ8 = kvName == "q8_0"
+        self.kvQ8 = kvQ8
+        kvRowBytes = kvQ8 ? Hkv * (D / 32) * 34 : Hkv * D * 4
+        idxKeyBytes = kvQ8 ? idxD * 2 : idxD * 4
         let file = try GGUFFile(url: gguf)
         let pleFile = try GGUFFile(url: ple)
         self.file = file
@@ -309,6 +331,13 @@ package final class Qwen38Runner {
             }
             return try device.makeComputePipelineState(function: fn)
         }
+        let kvConstants = MTLFunctionConstantValues()
+        var q8Flag = kvQ8
+        kvConstants.setConstantValue(&q8Flag, type: .bool, index: 0)
+        /// A kernel that reads or writes the KV / indexer key caches, specialized to their storage type.
+        func psoKV(_ name: String) throws -> MTLComputePipelineState {
+            try device.makeComputePipelineState(function: lib.makeFunction(name: name, constantValues: kvConstants))
+        }
         psoRmsScale = try pso(lib, "q38_group_rms_scale")
         psoRmsApply = try pso(lib, "q38_rms_apply")
         psoUnary = try pso(lib, "q38_unary")
@@ -322,26 +351,29 @@ package final class Qwen38Runner {
         psoGates = try pso(lib, "q38_gdn_gates")
         psoStep = try pso(lib, "q38_gdn_step")
         psoNormGate = try pso(lib, "q38_gdn_norm_gate")
-        psoAttnPrep = try pso(lib, "q38_attn_prep")
-        psoAttnScore = try pso(lib, "q38_attn_score")
+        psoAttnPrep = try psoKV("q38_attn_prep")
+        psoAttnScore = try psoKV("q38_attn_score")
         psoAttnStat = try pso(lib, "q38_attn_stat")
         psoAttnWeight = try pso(lib, "q38_attn_weight")
-        psoAttnMix = try pso(lib, "q38_attn_mix")
+        psoAttnMix = try psoKV("q38_attn_mix")
         psoAttnGatherQ = try pso(lib, "q38_attn_gather_q")
-        psoAttnGatherKV = try pso(lib, "q38_attn_gather_kv")
+        psoAttnGatherKV = try psoKV("q38_attn_gather_kv")
         psoAttnScatter = try pso(lib, "q38_attn_scatter_out")
-        psoIdxBlockKey = try pso(lib, "q38_idx_block_key")
+        psoIdxBlockKey = try psoKV("q38_idx_block_key")
         psoIdxQPrep = try pso(lib, "q38_idx_q_prep")
-        psoIdxScore = try pso(lib, "q38_idx_score")
+        psoIdxScore = try psoKV("q38_idx_score")
         psoIdxReluSum = try pso(lib, "q38_idx_relu_sum")
         psoIdxTopK = try pso(lib, "q38_idx_topk")
         psoIdxUnion = try pso(lib, "q38_idx_union")
         psoAttnMaskSel = try pso(lib, "q38_attn_mask_sel")
-        psoAttnGatherKVList = try pso(lib, "q38_attn_gather_kv_list")
+        psoAttnGatherKVList = try psoKV("q38_attn_gather_kv_list")
         psoPleGate = try pso(lib, "q38_ple_gate")
         psoPleGated = try pso(lib, "q38_ple_gated")
         psoPleConvAdd = try pso(lib, "q38_ple_conv_add")
         psoPleHist = try pso(lib, "q38_ple_hist")
+        psoKVQuantize = try pso(lib, "q38_kv_quantize")
+        psoF32ToF16 = try pso(lib, "q38_f32_to_f16")
+        psoF16ToF32 = try pso(lib, "q38_f16_to_f32")
         indexerTopK = try file.value("qwen4exp.attention.indexer.top_k").int ?? 2048
         let moeLib = try MetalContext.moduleLibrary(device: device, module: "moe_ggml")
         psoPhase1 = try pso(moeLib, "moe_iq2xxs_phase1_gate_up_act")
@@ -399,6 +431,7 @@ package final class Qwen38Runner {
         pleQuery = buf(B * hc * e); pleGateBuf = buf(B * hc); pleGated = buf(B * hc * e); pleNormed = buf(B * hc * e)
         attnMax = buf(B * H); attnSum = buf(B * H); nq = buf(B); useSel = buf(B); selThr = buf(B); selCut = buf(B)
         idxScores = buf(B * (capacity / 4 + 1))
+        if kvQ8 { kTmp = buf(B * Hkv * D); vTmp = buf(B * Hkv * D); iTmp = buf(B * idxD) }
         attnScores = buf(1); selection = buf(1)
         attnQG = nil; attnOG = nil; attnKG = nil; attnVG = nil
         idxDots = nil; attnSelScores = nil; selAny = nil; selList = nil
@@ -633,26 +666,47 @@ package final class Qwen38Runner {
     /// `dense` (the MTP layer, as llama.cpp `graph_mtp`): no indexer, every query attends its whole prefix.
     private func attention(_ cb: inout MTLCommandBuffer, il: Int, pos0: Int, T: Int, dense: Bool = false) throws {
         let pre = "blk.\(il)."
-        let kc = kCache[il] ?? device.makeBuffer(length: capacity * Hkv * D * 4, options: .storageModeShared)!
-        let vc = vCache[il] ?? device.makeBuffer(length: capacity * Hkv * D * 4, options: .storageModeShared)!
+        let kc = kCache[il] ?? device.makeBuffer(length: capacity * kvRowBytes, options: .storageModeShared)!
+        let vc = vCache[il] ?? device.makeBuffer(length: capacity * kvRowBytes, options: .storageModeShared)!
         kCache[il] = kc
         vCache[il] = vc
         try gemv(cb, pre + "attn_q.weight", x: mixed, y: qg, tokens: T)
-        try gemv(cb, pre + "attn_k.weight", x: mixed, y: kc, yOffset: pos0 * Hkv * D * 4, tokens: T)
-        try gemv(cb, pre + "attn_v.weight", x: mixed, y: vc, yOffset: pos0 * Hkv * D * 4, tokens: T)
+        if kvQ8 {
+            // K is quantized by `attnPrep` after its norm and rope.
+            try gemv(cb, pre + "attn_k.weight", x: mixed, y: kTmp!, tokens: T)
+            try gemv(cb, pre + "attn_v.weight", x: mixed, y: vTmp!, tokens: T)
+            var dV = UInt32(D), row0 = UInt32(pos0 * Hkv)
+            run(cb, psoKVQuantize, size(T * Hkv)) { enc in
+                enc.setBuffer(vTmp, offset: 0, index: 0)
+                enc.setBuffer(vc, offset: 0, index: 1)
+                enc.setBytes(&dV, length: 4, index: 2)
+                enc.setBytes(&row0, length: 4, index: 3)
+            }
+        } else {
+            try gemv(cb, pre + "attn_k.weight", x: mixed, y: kc, yOffset: pos0 * Hkv * D * 4, tokens: T)
+            try gemv(cb, pre + "attn_v.weight", x: mixed, y: vc, yOffset: pos0 * Hkv * D * 4, tokens: T)
+        }
         if dense {
             try attentionHost(&cb, il: il, pos0: pos0, T: T, kc: kc, vc: vc, bk: kc, kBlocks: capacity)
             try gemv(cb, pre + "attn_output.weight", x: ao, y: blk, tokens: T)
             return
         }
-        let ik = idxRawKeys[il] ?? device.makeBuffer(length: capacity * idxD * 4, options: .storageModeShared)!
-        let bk = idxBlockKeys[il] ?? device.makeBuffer(length: (capacity / 4 + 1) * idxD * 4, options: .storageModeShared)!
+        let ik = idxRawKeys[il] ?? device.makeBuffer(length: capacity * idxKeyBytes, options: .storageModeShared)!
+        let bk = idxBlockKeys[il] ?? device.makeBuffer(length: (capacity / 4 + 1) * idxKeyBytes, options: .storageModeShared)!
         idxRawKeys[il] = ik
         idxBlockKeys[il] = bk
 
         // QSA indexer: raw keys for the batch; a block's key once its 4th token is in.
         try gemv(cb, pre + "indexer.q_proj.weight", x: mixed, y: iq, tokens: T)
-        try gemv(cb, pre + "indexer.k_proj.weight", x: mixed, y: ik, yOffset: pos0 * idxD * 4, tokens: T)
+        if kvQ8 {
+            try gemv(cb, pre + "indexer.k_proj.weight", x: mixed, y: iTmp!, tokens: T)
+            run(cb, psoF32ToF16, size(T * idxD)) { enc in
+                enc.setBuffer(iTmp, offset: 0, index: 0)
+                enc.setBuffer(ik, offset: pos0 * idxKeyBytes, index: 1)
+            }
+        } else {
+            try gemv(cb, pre + "indexer.k_proj.weight", x: mixed, y: ik, yOffset: pos0 * idxD * 4, tokens: T)
+        }
         let gk = try view(pre + "indexer.k_norm.weight")
         let firstBlock = (max(pos0 - 3, 0) + 3) / 4       // first block whose 4th token is in the batch
         let endBlock = (pos0 + T) / 4
@@ -671,11 +725,11 @@ package final class Qwen38Runner {
         if attnMpsMinTokens > 0 && T >= attnMpsMinTokens && lastBlocks > kBlocks {
             if compareSelected {
                 // Both paths on the same input: the host one first, the batch's k rows and indexer queries
-                // restored in between (both are roped in place).
+                // restored in between (both are roped in place; with `kvQ8` the k rows are rewritten from `kTmp`).
                 cb.commit()
                 cb.waitUntilCompleted()
                 cb = queue.makeCommandBuffer()!
-                let rowBytes = Hkv * D * 4
+                let rowBytes = kvRowBytes
                 let kRows = Data(bytes: kc.contents() + pos0 * rowBytes, count: T * rowBytes)
                 let iqRows = Data(bytes: iq.contents(), count: T * idxHeads * idxD * 4)
                 try attentionHost(&cb, il: il, pos0: pos0, T: T, kc: kc, vc: vc, bk: bk, kBlocks: kBlocks)
@@ -824,6 +878,7 @@ package final class Qwen38Runner {
             enc.setBuffer(q, offset: 0, index: 5)
             enc.setBuffer(qgate, offset: 0, index: 6)
             enc.setBytes(&p, length: MemoryLayout.size(ofValue: p), index: 7)
+            enc.setBuffer(kvQ8 ? kTmp! : kc, offset: 0, index: 8)
         }
     }
 
@@ -862,7 +917,16 @@ package final class Qwen38Runner {
         // Indexer scores, in query chunks that keep the per-head dots within 64 MB.
         let rowsPer = max(1, min(T, (16 << 20) / (idxHeads * nb)))
         ensureBuffer(&idxDots, bytes: rowsPer * idxHeads * nb * 4)
-        let keys = MPSMatrix(buffer: bk, descriptor: MPSMatrixDescriptor(rows: nb, columns: idxD, rowBytes: idxD * 4, dataType: .float32))
+        var keyBuffer = bk
+        if kvQ8 {
+            ensureBuffer(&idxKeysF32, bytes: nb * idxD * 4)
+            run(cb, psoF16ToF32, size(nb * idxD)) { enc in
+                enc.setBuffer(bk, offset: 0, index: 0)
+                enc.setBuffer(idxKeysF32, offset: 0, index: 1)
+            }
+            keyBuffer = idxKeysF32!
+        }
+        let keys = MPSMatrix(buffer: keyBuffer, descriptor: MPSMatrixDescriptor(rows: nb, columns: idxD, rowBytes: idxD * 4, dataType: .float32))
         var r0 = 0
         while r0 < T {
             let R = min(rowsPer, T - r0)
@@ -1459,7 +1523,7 @@ package final class Qwen38Runner {
             ("attnScores+selection", lens([attnScores, selection])),
             ("attn QG/OG/KG/VG", lens([attnQG, attnOG, attnKG, attnVG])),
             ("attnSelScores", len(attnSelScores)),
-            ("idxDots+selAny+selList", lens([idxDots, selAny, selList])),
+            ("idxDots+selAny+selList", lens([idxDots, selAny, selList, idxKeysF32, kTmp, vTmp, iTmp])),
             ("gemm", lens([gemmRows, gemmGateUp, gemmWGateUp, gemmWDown, gemmOrder, gemmAt, gemmPosSlot, gemmOnes])),
             ("hidden + mtp", lens([hiddenOut, mtpHiddenOut, mtpCat])),
             ("dense scratch", dense.scratchBytes),
