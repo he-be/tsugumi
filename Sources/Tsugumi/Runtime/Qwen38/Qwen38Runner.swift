@@ -255,7 +255,19 @@ package final class Qwen38Runner {
     package var llkvSplit = Int(ProcessInfo.processInfo.environment["Q38_LLKV_SPLIT"] ?? "") ?? 0
     /// The prompt's last tokens that `Qwen38Completion` runs through every layer (`forward`'s `exactTail`).
     package var llkvSuffix = Int(ProcessInfo.processInfo.environment["Q38_LLKV_SUFFIX"] ?? "") ?? 256
+    /// Checks (`--qwen38-llkv-dump`): with a directory, a forward writes `<tag>-boundary.f32` (the residual after layer
+    /// `llkvSplit - 1`) and, for layers `llkvSplit...`, the input projections before anything changes them
+    /// (`<tag>-L<il>-qkv|b|a.f32`, `-k|v|ik.f32`: K before its norm, the indexer's raw key), all rows as float32.
+    /// Needs `splitPreRouter` (the GDN projections are read at its `gdn_in` section) and the Q8_0 KV.
+    package var llkvDumpDir: String?
+    package var llkvDumpTag = "exact"
     package var llkvFill = LLKVFill(rawValue: ProcessInfo.processInfo.environment["Q38_LLKV_FILL"] ?? "") ?? .hcmix
+
+    private func llkvDump(_ name: String, _ buffer: MTLBuffer, floats: Int) {
+        guard let dir = llkvDumpDir else { return }
+        let url = URL(fileURLWithPath: dir).appendingPathComponent("\(llkvDumpTag)-\(name).f32")
+        try! Data(bytes: buffer.contents(), count: floats * 4).write(to: url)
+    }
 
     // Speculative rollback (`docs/qwen38/10` §5-4, `14`).
     /// Set (1 or 2) before a verify forward of more than that many and fewer than `gdnMinTokens` tokens: it then
@@ -590,6 +602,12 @@ package final class Qwen38Runner {
         try gemv(cb, pre + "ssm_beta.weight", x: mixed, y: gb, tokens: T)
         try gemv(cb, pre + "ssm_alpha.weight", x: mixed, y: ga, tokens: T)
         cb = try section("gdn_in")
+        if llkvDumpDir != nil && llkvSplit > 0 && il >= llkvSplit {
+            precondition(splitPreRouter || recurrentOnly, "the dump reads the projections at the gdn_in section")
+            llkvDump("L\(il)-qkv", qkv, floats: T * C)
+            llkvDump("L\(il)-b", gb, floats: T * Hv)
+            llkvDump("L\(il)-a", ga, floats: T * Hv)
+        }
         let hist = linHist[il] ?? device.makeBuffer(length: (convK - 1) * C * 4, options: .storageModeShared)!
         let state = linState[il] ?? device.makeBuffer(length: Hv * Dl * Dl * 4, options: .storageModeShared)!
         linHist[il] = hist
@@ -721,6 +739,7 @@ package final class Qwen38Runner {
                 enc.setBuffer(iTmp, offset: 0, index: 0)
                 enc.setBuffer(ik, offset: pos0 * idxKeyBytes, index: 1)
             }
+            if llkvDumpDir != nil && llkvSplit > 0 && il >= llkvSplit { try dumpAttention(&cb, il: il, T: T) }
         } else {
             try gemv(cb, pre + "indexer.k_proj.weight", x: mixed, y: ik, yOffset: pos0 * idxD * 4, tokens: T)
         }
@@ -780,7 +799,7 @@ package final class Qwen38Runner {
     /// The LLKVApprox fill of an attention layer: the batch's K / V cache rows and indexer raw and block keys from
     /// `mixed`, the same path as `attention` without the queries (`attnPrep` also preps `qg`, whose rows are
     /// stale here and whose output nothing reads).
-    private func attentionFill(_ cb: MTLCommandBuffer, il: Int, pos0: Int, T: Int) throws {
+    private func attentionFill(_ cb: inout MTLCommandBuffer, il: Int, pos0: Int, T: Int) throws {
         let pre = "blk.\(il)."
         let kc = kCache[il] ?? device.makeBuffer(length: capacity * kvRowBytes, options: .storageModeShared)!
         let vc = vCache[il] ?? device.makeBuffer(length: capacity * kvRowBytes, options: .storageModeShared)!
@@ -805,6 +824,7 @@ package final class Qwen38Runner {
                 enc.setBuffer(iTmp, offset: 0, index: 0)
                 enc.setBuffer(ik, offset: pos0 * idxKeyBytes, index: 1)
             }
+            if llkvDumpDir != nil { try dumpAttention(&cb, il: il, T: T) }
         } else {
             try gemv(cb, pre + "attn_k.weight", x: mixed, y: kc, yOffset: pos0 * Hkv * D * 4, tokens: T)
             try gemv(cb, pre + "attn_v.weight", x: mixed, y: vc, yOffset: pos0 * Hkv * D * 4, tokens: T)
@@ -824,6 +844,17 @@ package final class Qwen38Runner {
             }
         }
         try attnPrep(cb, il: il, pos0: pos0, T: T, kc: kc)
+    }
+
+    /// `llkvDumpDir`: the batch's K (before its norm), V and indexer raw keys, from `kTmp` / `vTmp` / `iTmp`.
+    private func dumpAttention(_ cb: inout MTLCommandBuffer, il: Int, T: Int) throws {
+        cb.commit()
+        cb.waitUntilCompleted()
+        if let error = cb.error { throw error }
+        cb = queue.makeCommandBuffer()!
+        llkvDump("L\(il)-k", kTmp!, floats: T * Hkv * D)
+        llkvDump("L\(il)-v", vTmp!, floats: T * Hkv * D)
+        llkvDump("L\(il)-ik", iTmp!, floats: T * idxD)
     }
 
     /// The host-selection attention (and `attentionSgemm` for large batches below the budget). Writes `ao`.
@@ -1572,6 +1603,14 @@ package final class Qwen38Runner {
 
     /// Bytes held by the runner, by kind (checks only, `Q38_MEM_LOG`): Metal's allocated total, the fixed
     /// per-batch buffers, the grown scratch, caches and the no-copy views (dense in the residency set, experts).
+    /// An F32 tensor's values (checks: the norms a dump's reader applies).
+    package func f32Values(_ name: String) throws -> [Float] {
+        let v = try view(name)
+        precondition(v.tensor.type == .f32, "\(name) is not F32")
+        let n = v.tensor.rowCount * v.tensor.rowWidth
+        return Array(UnsafeBufferPointer(start: (v.buffer.contents() + v.offset).bindMemory(to: Float.self, capacity: n), count: n))
+    }
+
     package func memoryReport() -> [(String, Int)] {
         func len(_ b: MTLBuffer?) -> Int { b?.length ?? 0 }
         func lens(_ bs: [MTLBuffer?]) -> Int { bs.reduce(0) { $0 + len($1) } }
@@ -2102,6 +2141,13 @@ package final class Qwen38Runner {
                 prof.previewAdvise += CFAbsoluteTimeGetCurrent() - tp
             }
             if report { onLayer?(il + 1) }
+            if llkvDumpDir != nil && il + 1 == llkvSplit {
+                if let p = pendingRouted {
+                    p.cb.waitUntilCompleted()
+                    try settleRouted(waited: true)
+                }
+                llkvDump("boundary", R, floats: rows * hc * e)
+            }
         }
         let split = llkvSplit > 0 && llkvSplit < nTrunk ? llkvSplit : nTrunk
         let tail = min(exactTail ?? T, T)
@@ -2136,12 +2182,19 @@ package final class Qwen38Runner {
                     }
                 }
                 for il in split..<nTrunk {
-                    let cb = queue.makeCommandBuffer()!
+                    var cb = queue.makeCommandBuffer()!
                     if llkvFill == .hcmix { try hcMix(cb, prefix: "blk.\(il).hc_attn", inject: false, T: M) }
                     if isLinear(il) {
-                        try linear(cb, il: il, T: M, recurrentOnly: true, section: { _ in cb })
+                        // With a dump the projections are read between the sections.
+                        try linear(cb, il: il, T: M, recurrentOnly: true, section: { _ in
+                            guard self.llkvDumpDir != nil else { return cb }
+                            cb.commit()
+                            cb.waitUntilCompleted()
+                            cb = self.queue.makeCommandBuffer()!
+                            return cb
+                        })
                     } else {
-                        try attentionFill(cb, il: il, pos0: startPos, T: M)
+                        try attentionFill(&cb, il: il, pos0: startPos, T: M)
                     }
                     cb.commit()
                     cb.waitUntilCompleted()

@@ -101,3 +101,35 @@ func runQwen38LLKVCheck(tokenFile: String, tokens: Int, chunk: Int, newTokens: I
     print(String(format: "  whole again     prefill %6.1f s  max|Δ| %.3f", again.seconds,
                  zip(again.prefill, base.prefill).map { abs($0 - $1) }.max()!))
 }
+
+// `--qwen38-llkv-dump <token file> <dir> [--q38-tokens N]`: one prefill of the first N tokens (one chunk) three times,
+// whole (`exact-*`), filled with `mean` and with `hcmix`, each writing the boundary residual and layers 24...'s input
+// projections (`Qwen38Runner.llkvDumpDir`), plus the late layers' K and indexer K norm weights (`norm-L<il>-k|ik.f32`).
+// `Scripts/qwen38/llkv_projector_fit.py` reads them with the HF projector (docs/qwen38/30).
+func runQwen38LLKVDump(tokenFile: String, dir: String, tokens: Int, gguf: String, ple: String) throws {
+    let ids = try String(contentsOfFile: tokenFile, encoding: .utf8).split(separator: ",")
+        .compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    let prompt = Array(ids.prefix(tokens))
+    try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    let e = try Qwen38Engine(gguf: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath),
+                             ple: URL(fileURLWithPath: (ple as NSString).expandingTildeInPath),
+                             capacity: prompt.count + 2, prefillChunk: prompt.count, speculative: false)
+    let runner = e.runner
+    runner.splitPreRouter = true
+    runner.llkvSplit = 24
+    runner.llkvDumpDir = dir
+    for il in 24..<runner.nTrunk {
+        for (name, tensor) in [("k", "attn_k_norm.weight"), ("ik", "indexer.k_norm.weight")] {
+            guard let w = try? runner.f32Values("blk.\(il).\(tensor)") else { continue }
+            try w.withUnsafeBufferPointer { try Data(buffer: $0).write(to: URL(fileURLWithPath: dir).appendingPathComponent("norm-L\(il)-\(name).f32")) }
+        }
+    }
+    for (tag, fill) in [("exact", nil), ("mean", Qwen38Runner.LLKVFill.mean), ("hcmix", .hcmix)] {
+        e.reset()
+        runner.llkvDumpTag = tag
+        if let fill { runner.llkvFill = fill }
+        let t = Date()
+        _ = try runner.forward(tokens: prompt, startPos: 0, exactTail: fill == nil ? nil : 0)
+        print(String(format: "  %@: %d tokens, %.1f s", tag as NSString, prompt.count, Date().timeIntervalSince(t)))
+    }
+}
