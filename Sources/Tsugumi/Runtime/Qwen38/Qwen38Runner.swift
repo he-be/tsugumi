@@ -147,6 +147,7 @@ package final class Qwen38Runner {
         package var route = 0.0       // host top-10, expert views and advise, all layers
         package var routed = 0.0      // encode + GPU wait of the routed buffers, all layers
         package var head = 0.0
+        package var llkvFill = 0.0    // the LLKVApprox fill of the rows before the exact tail (all its layers)
         package var total = 0.0
         package var preGPU = 0.0      // gpuEndTime - gpuStartTime of the pre-router buffers
         package var routedGPU = 0.0   // same, routed buffers
@@ -242,6 +243,19 @@ package final class Qwen38Runner {
     private var mtpHiddenOut: MTLBuffer?
     private var mtpCat: MTLBuffer?
     package private(set) var lastMTPProfile = StepProfile()
+
+    // LLKVApprox (`docs/qwen38/28`).
+    /// How a prefill fills what layers `llkvSplit ..< nTrunk` leave behind (GDN conv history and recurrent state,
+    /// attention K / V and indexer keys) for the rows before `forward`'s `exactTail`. `exact` runs those layers on
+    /// them in a pass of their own (the oracle: only the batch cut differs from the whole forward). `mean` feeds
+    /// each layer's input projections the mean of the boundary residual's hc copies; `hcmix` feeds them the layer's
+    /// own `hc_attn` mix of the boundary residual (exact at layer `llkvSplit`).
+    package enum LLKVFill: String { case exact, mean, hcmix }
+    /// 0: off. Otherwise the first layer that the rows before `exactTail` skip.
+    package var llkvSplit = Int(ProcessInfo.processInfo.environment["Q38_LLKV_SPLIT"] ?? "") ?? 0
+    /// The prompt's last tokens that `Qwen38Completion` runs through every layer (`forward`'s `exactTail`).
+    package var llkvSuffix = Int(ProcessInfo.processInfo.environment["Q38_LLKV_SUFFIX"] ?? "") ?? 256
+    package var llkvFill = LLKVFill(rawValue: ProcessInfo.processInfo.environment["Q38_LLKV_FILL"] ?? "") ?? .hcmix
 
     // Speculative rollback (`docs/qwen38/10` §5-4, `14`).
     /// Set (1 or 2) before a verify forward of more than that many and fewer than `gdnMinTokens` tokens: it then
@@ -558,7 +572,9 @@ package final class Qwen38Runner {
     // MARK: - Blocks
 
     /// `section` (checks only) commits the work so far and returns the buffer to continue in.
-    private func linear(_ cb0: MTLCommandBuffer, il: Int, T: Int, section: (String) throws -> MTLCommandBuffer) throws {
+    /// `recurrentOnly` (the LLKVApprox fill): the conv history and recurrent state only, no block output.
+    private func linear(_ cb0: MTLCommandBuffer, il: Int, T: Int, recurrentOnly: Bool = false,
+                        section: (String) throws -> MTLCommandBuffer) throws {
         var cb = cb0
         let pre = "blk.\(il)."
         let C = 2 * Hk * Dl + Hv * Dl
@@ -570,7 +586,7 @@ package final class Qwen38Runner {
             blit.copy(from: qkv, sourceOffset: 0, to: q0, destinationOffset: 0, size: snapshotTaken * C * 4)
             blit.endEncoding()
         }
-        try gemv(cb, pre + "attn_gate.weight", x: mixed, y: z, tokens: T)
+        if !recurrentOnly { try gemv(cb, pre + "attn_gate.weight", x: mixed, y: z, tokens: T) }
         try gemv(cb, pre + "ssm_beta.weight", x: mixed, y: gb, tokens: T)
         try gemv(cb, pre + "ssm_alpha.weight", x: mixed, y: ga, tokens: T)
         cb = try section("gdn_in")
@@ -635,6 +651,7 @@ package final class Qwen38Runner {
             }
         }
         cb = try section("gdn_step")
+        if recurrentOnly { return }
         let nw = try view(pre + "ssm_norm.weight")
         run(cb, psoNormGate, size(Hv, T)) { enc in
             enc.setBuffer(lo6144, offset: 0, index: 0)
@@ -758,6 +775,55 @@ package final class Qwen38Runner {
             try attentionHost(&cb, il: il, pos0: pos0, T: T, kc: kc, vc: vc, bk: bk, kBlocks: kBlocks)
         }
         try gemv(cb, pre + "attn_output.weight", x: ao, y: blk, tokens: T)
+    }
+
+    /// The LLKVApprox fill of an attention layer: the batch's K / V cache rows and indexer raw and block keys from
+    /// `mixed`, the same path as `attention` without the queries (`attnPrep` also preps `qg`, whose rows are
+    /// stale here and whose output nothing reads).
+    private func attentionFill(_ cb: MTLCommandBuffer, il: Int, pos0: Int, T: Int) throws {
+        let pre = "blk.\(il)."
+        let kc = kCache[il] ?? device.makeBuffer(length: capacity * kvRowBytes, options: .storageModeShared)!
+        let vc = vCache[il] ?? device.makeBuffer(length: capacity * kvRowBytes, options: .storageModeShared)!
+        let ik = idxRawKeys[il] ?? device.makeBuffer(length: capacity * idxKeyBytes, options: .storageModeShared)!
+        let bk = idxBlockKeys[il] ?? device.makeBuffer(length: (capacity / 4 + 1) * idxKeyBytes, options: .storageModeShared)!
+        kCache[il] = kc
+        vCache[il] = vc
+        idxRawKeys[il] = ik
+        idxBlockKeys[il] = bk
+        if kvQ8 {
+            try gemv(cb, pre + "attn_k.weight", x: mixed, y: kTmp!, tokens: T)
+            try gemv(cb, pre + "attn_v.weight", x: mixed, y: vTmp!, tokens: T)
+            var dV = UInt32(D), row0 = UInt32(pos0 * Hkv)
+            run(cb, psoKVQuantize, size(T * Hkv)) { enc in
+                enc.setBuffer(vTmp, offset: 0, index: 0)
+                enc.setBuffer(vc, offset: 0, index: 1)
+                enc.setBytes(&dV, length: 4, index: 2)
+                enc.setBytes(&row0, length: 4, index: 3)
+            }
+            try gemv(cb, pre + "indexer.k_proj.weight", x: mixed, y: iTmp!, tokens: T)
+            run(cb, psoF32ToF16, size(T * idxD)) { enc in
+                enc.setBuffer(iTmp, offset: 0, index: 0)
+                enc.setBuffer(ik, offset: pos0 * idxKeyBytes, index: 1)
+            }
+        } else {
+            try gemv(cb, pre + "attn_k.weight", x: mixed, y: kc, yOffset: pos0 * Hkv * D * 4, tokens: T)
+            try gemv(cb, pre + "attn_v.weight", x: mixed, y: vc, yOffset: pos0 * Hkv * D * 4, tokens: T)
+            try gemv(cb, pre + "indexer.k_proj.weight", x: mixed, y: ik, yOffset: pos0 * idxD * 4, tokens: T)
+        }
+        let gk = try view(pre + "indexer.k_norm.weight")
+        let firstBlock = (max(pos0 - 3, 0) + 3) / 4
+        let endBlock = (pos0 + T) / 4
+        if endBlock > firstBlock {
+            var bp = (UInt32(idxHeads), UInt32(Hkv), UInt32(idxD), UInt32(nRot), UInt32(firstBlock), eps)
+            run(cb, psoIdxBlockKey, size(endBlock - firstBlock)) { enc in
+                enc.setBuffer(ik, offset: 0, index: 0)
+                enc.setBuffer(gk.buffer, offset: gk.offset, index: 1)
+                enc.setBuffer(ropeFreq, offset: 0, index: 2)
+                enc.setBuffer(bk, offset: 0, index: 3)
+                enc.setBytes(&bp, length: MemoryLayout.size(ofValue: bp), index: 4)
+            }
+        }
+        try attnPrep(cb, il: il, pos0: pos0, T: T, kc: kc)
     }
 
     /// The host-selection attention (and `attentionSgemm` for large batches below the budget). Writes `ao`.
@@ -1907,14 +1973,21 @@ package final class Qwen38Runner {
     /// every earlier position). Returns the last token's logits, or with `allLogits` every
     /// token's (`[T][vocab]`). `onLayer(n)` after the host has handed over trunk layer `n - 1` (a prefill chunk
     /// is tens of seconds; the app's progress moves with it).
-    package func forward(tokens: [Int], startPos: Int, allLogits: Bool = false,
+    ///
+    /// `exactTail` (with `llkvSplit`, `docs/qwen38/28`): only the last `exactTail` tokens run layers `llkvSplit...`;
+    /// the rows before them are filled by `llkvFill`. The logits are then the last token's (with `exactTail` 0,
+    /// a prefill chunk that is not the last, they are the boundary row's and mean nothing), and `hidden(row:)`
+    /// holds the boundary residual for the filled rows.
+    package func forward(tokens: [Int], startPos: Int, allLogits: Bool = false, exactTail: Int? = nil,
                          onLayer: ((Int) -> Void)? = nil) throws -> UnsafeBufferPointer<Float> {
         // Command buffers and encoders are autoreleased; without a pool (the CLI) they, and the batch scratch
         // they reference, outlive the forward (+1.2 GB after `allocateBatch` shrank it, docs/qwen38/09).
-        try autoreleasepool { try forwardBody(tokens: tokens, startPos: startPos, allLogits: allLogits, onLayer: onLayer) }
+        try autoreleasepool {
+            try forwardBody(tokens: tokens, startPos: startPos, allLogits: allLogits, exactTail: exactTail, onLayer: onLayer)
+        }
     }
 
-    private func forwardBody(tokens: [Int], startPos: Int, allLogits: Bool,
+    private func forwardBody(tokens: [Int], startPos: Int, allLogits: Bool, exactTail: Int?,
                              onLayer: ((Int) -> Void)?) throws -> UnsafeBufferPointer<Float> {
         let T = tokens.count
         precondition(T >= 1 && T <= maxBatch && startPos + T <= capacity)
@@ -1967,7 +2040,7 @@ package final class Qwen38Runner {
         let preview = pipeline && previewTopN > 0 && T < 32   // decode and verify batches only
         var previewed: Set<Int>?     // layer il's experts named by layer il-1's preview
 
-        for il in 0..<nTrunk {
+        func layer(_ il: Int, rows: Int, pos: Int, report: Bool) throws {
             let t0 = CFAbsoluteTimeGetCurrent()
             let pre = "blk.\(il)."
             var cb = queue.makeCommandBuffer()!
@@ -1983,23 +2056,23 @@ package final class Qwen38Runner {
                 return cb
             }
             if il == pleLayer {
-                try pleBlock(cb, il: il, T: T)
+                try pleBlock(cb, il: il, T: rows)
                 try section("ple")
             }
-            try hcMix(cb, prefix: pre + "hc_attn", inject: true, T: T)
+            try hcMix(cb, prefix: pre + "hc_attn", inject: true, T: rows)
             try section("hc_attn")
-            if isLinear(il) { try linear(cb, il: il, T: T, section: section) } else { try attention(&cb, il: il, pos0: startPos, T: T) }
+            if isLinear(il) { try linear(cb, il: il, T: rows, section: section) } else { try attention(&cb, il: il, pos0: pos, T: rows) }
             try section(isLinear(il) ? "gdn" : "attn")
-            combine(cb, block: blk, T: T)
-            try hcMix(cb, prefix: pre + "hc_ffn", inject: true, T: T)
+            combine(cb, block: blk, T: rows)
+            try hcMix(cb, prefix: pre + "hc_ffn", inject: true, T: rows)
             try section("hc_ffn")
             if late {
-                try gemv(cb, pre + "ffn_gate_inp.weight", x: mixed, y: routerLogits, tokens: T)
+                try gemv(cb, pre + "ffn_gate_inp.weight", x: mixed, y: routerLogits, tokens: rows)
             } else {
-                try sharedAndRouter(cb, pre: pre, T: T)
+                try sharedAndRouter(cb, pre: pre, T: rows)
             }
             if preview && il + 1 < nTrunk {
-                try gemv(cb, "blk.\(il + 1).ffn_gate_inp.weight", x: mixed, y: previewLogits, tokens: T)
+                try gemv(cb, "blk.\(il + 1).ffn_gate_inp.weight", x: mixed, y: previewLogits, tokens: rows)
             }
             cb.commit()
             cb.waitUntilCompleted()
@@ -2010,8 +2083,8 @@ package final class Qwen38Runner {
             prof.preGPU += cb.gpuEndTime - cb.gpuStartTime
             if splitPreRouter { prof.sections["shexp+router", default: 0] += (cb.gpuEndTime - cb.gpuStartTime) * 1000 }
 
-            let cb2 = try moeRouted(il: il, T: T, prof: &prof, sharedCommitted: late, previewed: previewed)
-            combine(cb2, block: blk, T: T)
+            let cb2 = try moeRouted(il: il, T: rows, prof: &prof, sharedCommitted: late, previewed: previewed)
+            combine(cb2, block: blk, T: rows)
             let t2 = CFAbsoluteTimeGetCurrent()
             prof.route += t2 - t1
             pendingRouted = (cb2, CACurrentMediaTime(), lastSharedBuffer)
@@ -2023,12 +2096,70 @@ package final class Qwen38Runner {
             prof.routed += CFAbsoluteTimeGetCurrent() - t2
             if preview && il + 1 < nTrunk {
                 let tp = CFAbsoluteTimeGetCurrent()
-                let named = previewExperts(T: T, n: previewTopN)
+                let named = previewExperts(T: rows, n: previewTopN)
                 if previewAdvise { try advisePreview(il: il + 1, named: named) }
                 previewed = named
                 prof.previewAdvise += CFAbsoluteTimeGetCurrent() - tp
             }
-            onLayer?(il + 1)
+            if report { onLayer?(il + 1) }
+        }
+        let split = llkvSplit > 0 && llkvSplit < nTrunk ? llkvSplit : nTrunk
+        let tail = min(exactTail ?? T, T)
+        let fill = split < nTrunk && tail < T
+        for il in 0..<(fill ? split : nTrunk) { try layer(il, rows: T, pos: startPos, report: true) }
+        if fill {
+            precondition(!allLogits && snapshotTaken == 0, "the LLKVApprox fill keeps only the tail's logits and no snapshot")
+            if let p = pendingRouted {
+                p.cb.waitUntilCompleted()
+                try settleRouted(waited: true)
+            }
+            let tFill = CFAbsoluteTimeGetCurrent()
+            let M = T - tail, rowBytes = hc * e * 4
+            switch llkvFill {
+            case .exact:
+                for il in split..<nTrunk { try layer(il, rows: M, pos: startPos, report: false) }
+                if let p = pendingRouted {
+                    p.cb.waitUntilCompleted()
+                    try settleRouted(waited: true)
+                }
+            case .mean, .hcmix:
+                if llkvFill == .mean {
+                    let r = R.contents().bindMemory(to: Float.self, capacity: M * hc * e)
+                    let m = mixed.contents().bindMemory(to: Float.self, capacity: M * e)
+                    let scale = 1 / Float(hc)
+                    for t in 0..<M {
+                        for j in 0..<e {
+                            var sum: Float = 0
+                            for k in 0..<hc { sum += r[(t * hc + k) * e + j] }
+                            m[t * e + j] = sum * scale
+                        }
+                    }
+                }
+                for il in split..<nTrunk {
+                    let cb = queue.makeCommandBuffer()!
+                    if llkvFill == .hcmix { try hcMix(cb, prefix: "blk.\(il).hc_attn", inject: false, T: M) }
+                    if isLinear(il) {
+                        try linear(cb, il: il, T: M, recurrentOnly: true, section: { _ in cb })
+                    } else {
+                        try attentionFill(cb, il: il, pos0: startPos, T: M)
+                    }
+                    cb.commit()
+                    cb.waitUntilCompleted()
+                    if let error = cb.error { throw error }
+                }
+            }
+            prof.llkvFill = CFAbsoluteTimeGetCurrent() - tFill
+            if exportHidden {
+                // The filled rows' MTP input is the boundary residual (`exact`: their final one).
+                ensureBuffer(&hiddenOut, bytes: T * rowBytes, shared: true)
+                hiddenOut!.contents().copyMemory(from: R.contents(), byteCount: M * rowBytes)
+            }
+            memmove(R.contents(), R.contents() + M * rowBytes, tail * rowBytes)
+            if tail > 0 {
+                for il in split..<nTrunk { try layer(il, rows: tail, pos: startPos + M, report: true) }
+            } else {
+                onLayer?(nTrunk)
+            }
         }
         if let p = pendingRouted {
             // The host reads `R` below.
@@ -2039,12 +2170,19 @@ package final class Qwen38Runner {
         }
 
         let tHead = CFAbsoluteTimeGetCurrent()
+        let finalRows = fill ? tail : T
         if exportHidden {
             ensureBuffer(&hiddenOut, bytes: T * hc * e * 4, shared: true)
-            hiddenOut!.contents().copyMemory(from: R.contents(), byteCount: T * hc * e * 4)
+            hiddenOut!.contents().advanced(by: (T - finalRows) * hc * e * 4)
+                .copyMemory(from: R.contents(), byteCount: finalRows * hc * e * 4)
         }
         var rows = T
-        if !allLogits && T > 1 {
+        if fill {
+            // The tail's last row (with no tail, the boundary row of the chunk's last token).
+            let last = tail > 0 ? tail - 1 : T - 1
+            if last > 0 { memmove(R.contents(), R.contents() + last * hc * e * 4, hc * e * 4) }
+            rows = 1
+        } else if !allLogits && T > 1 {
             // Only the last token's logits: move its residual rows to the front.
             memmove(R.contents(), R.contents() + (T - 1) * hc * e * 4, hc * e * 4)
             rows = 1

@@ -227,7 +227,9 @@ package final class Qwen38Engine {
             let chunkStart = position
             let layers = runner.nTrunk
             // Inside the chunk the count stays below its end: `done == total` is what tells the app decode began.
-            let l = try runner.forward(tokens: chunk, startPos: position, onLayer: onPrefill.map { report in
+            // LLKVApprox (docs/qwen38/28): only the prompt's last `llkvSuffix` tokens run the late layers.
+            let exactTail = runner.llkvSplit > 0 ? (done + T == prompt.count ? runner.llkvSuffix : 0) : nil
+            let l = try runner.forward(tokens: chunk, startPos: position, exactTail: exactTail, onLayer: onPrefill.map { report in
                 { n in report(chunkStart + min(T * n / layers, T - 1), total) }
             })
             if done + T == prompt.count { lastLogits = Array(l) }

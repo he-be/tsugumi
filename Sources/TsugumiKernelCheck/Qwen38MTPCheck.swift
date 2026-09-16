@@ -117,7 +117,9 @@ func runQwen38Generate(tokenFile: String, newTokens: Int, chunk: Int, greedy: Bo
     while start < n {
         let T = min(chunk, n - start)
         let t0 = Date()
-        lastLogits = Array(try runner.forward(tokens: Array(prompt[start..<(start + T)]), startPos: start))
+        // `Q38_LLKV_SPLIT` (docs/qwen38/28): the last chunk keeps `llkvSuffix` exact tokens, the others none.
+        let exactTail = runner.llkvSplit > 0 ? (start + T == n ? runner.llkvSuffix : 0) : nil
+        lastLogits = Array(try runner.forward(tokens: Array(prompt[start..<(start + T)]), startPos: start, exactTail: exactTail))
         let dt = Date().timeIntervalSince(t0)
         trunkPrefill += dt
         var line = String(format: "  prefill [%5d..<%5d] %.2f s", start, start + T, dt)
