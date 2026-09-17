@@ -231,6 +231,7 @@ public final class MetalContext: @unchecked Sendable {
         "moe": "Metal/MoE",
         "moe_ggml": "Metal/MoE",
         "ggml_dense": "Metal/Quant",
+        "ggml_iq": "Metal/Quant",
         "qwen38": "Metal/Qwen",
         "prefill": "Metal/Prefill",
         "rmsnorm": "Metal/Primitives",

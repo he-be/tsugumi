@@ -4,6 +4,8 @@ import MetalPerformanceShaders
 
 /// `ggml_dense.metal`: y = W x over a GGML tensor that stays in its GGUF bytes
 /// (Q8_0, F16 or F32), float32 activations, for T tokens at once.
+/// `ggml_iq.metal` adds the IQ / K types of the Qwen3.8-27B GGUF (docs/qwen38-27b/01 §3-1);
+/// those have no dequant kernel yet and always take the direct kernels.
 ///
 /// Up to `mpsMinTokens` tokens the kernels read the GGUF bytes directly: at one
 /// token the cost is the weight read and those kernels sit at the memory
@@ -22,6 +24,7 @@ package final class GGMLDenseGEMV {
     private let bf16Dequant: MTLComputePipelineState
     private let q8Dequant: MTLComputePipelineState
     private let f16Dequant: MTLComputePipelineState
+    private let iq3s: MTLComputePipelineState
     /// Token count from which the dequant + sgemm path runs (`Q38_MPS_MIN_T`, 0 = never).
     package var mpsMinTokens = Int(ProcessInfo.processInfo.environment["Q38_MPS_MIN_T"] ?? "") ?? 32
     /// Tensors above this many weights stay on the direct kernels (the LM head).
@@ -50,9 +53,21 @@ package final class GGMLDenseGEMV {
         bf16 = try pso("ggml_bf16_gemv")
         bf16Chunk = try pso("ggml_bf16_gemv_chunk")
         bf16Dequant = try pso("ggml_bf16_dequant_f32")
+        let iqLibrary = try MetalContext.moduleLibrary(device: device, module: "ggml_iq")
+        func iqPSO(_ name: String) throws -> MTLComputePipelineState {
+            guard let fn = iqLibrary.makeFunction(name: name) else {
+                throw GGUFFile.Error.format("ggml_iq: \(name) missing")
+            }
+            return try device.makeComputePipelineState(function: fn)
+        }
+        iq3s = try iqPSO("ggml_iq3_s_gemv")
     }
 
     package static func supports(_ type: GGUFFile.GGMLType) -> Bool {
+        type == .q8_0 || type == .f16 || type == .f32 || type == .bf16 || type == .iq3_s
+    }
+
+    private static func hasDequant(_ type: GGUFFile.GGMLType) -> Bool {
         type == .q8_0 || type == .f16 || type == .f32 || type == .bf16
     }
 
@@ -64,7 +79,7 @@ package final class GGMLDenseGEMV {
                         y: MTLBuffer, yOffset: Int = 0,
                         m: Int, n: Int, tokens: Int = 1) {
         precondition(n % 32 == 0, "row width must be a multiple of 32")
-        if mpsMinTokens > 0 && tokens >= mpsMinTokens && m * n <= mpsMaxWeights {
+        if mpsMinTokens > 0 && tokens >= mpsMinTokens && m * n <= mpsMaxWeights && Self.hasDequant(type) {
             encodeSgemm(commandBuffer: commandBuffer, type: type, weights: weights, weightsOffset: weightsOffset,
                         x: x, xOffset: xOffset, y: y, yOffset: yOffset, m: m, n: n, tokens: tokens)
             return
@@ -79,6 +94,9 @@ package final class GGMLDenseGEMV {
         case .f32: pso = n >= 1024 ? f32Chunk : f32
         // BF16 reads back the F32 bits exactly (docs/qwen38/15 §2 W-4), same forms as F32.
         case .bf16: pso = n >= 1024 ? bf16Chunk : bf16
+        case .iq3_s:
+            precondition(n % 256 == 0, "IQ3_S row width must be a multiple of 256")
+            pso = iq3s
         default: preconditionFailure("GGMLDenseGEMV: unsupported type \(type)")
         }
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }

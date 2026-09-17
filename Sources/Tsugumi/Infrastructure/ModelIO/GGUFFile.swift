@@ -8,7 +8,8 @@ import Metal
 /// (`docs/investigations/QWEN38_FLASH_NEXT_VERIFY_PLAN.md`), which runs straight off
 /// the DS4-IQ2 GGUF rather than repacking 41 GiB into a `.moepack`. Only the
 /// GGML types that checkpoint and its PLE / down sidecars use have byte sizes here (the down sidecar keeps
-/// its 212 B Q2_K rows as I8 bytes, docs/qwen38/15 §2 W).
+/// its 212 B Q2_K rows as I8 bytes, docs/qwen38/15 §2 W), plus the mixed K / IQ types of the
+/// Qwen3.8-27B GSQ-RCO GGUF (docs/qwen38-27b/01 §3-1).
 public final class GGUFFile: @unchecked Sendable {
     public enum GGMLType: UInt32, Sendable {
         case f32 = 0
@@ -18,9 +19,16 @@ public final class GGUFFile: @unchecked Sendable {
         case q8_0 = 8
         case q2_K = 10
         case q4_K = 12
+        case q6_K = 14
         case iq2_xxs = 16
+        case iq2_xs = 17
+        case iq3_xxs = 18
+        case iq3_s = 21
+        case iq2_s = 22
+        case iq4_xs = 23
         case i8 = 24
         case i64 = 27
+        case iq1_m = 29
         case bf16 = 30
         case mxfp4 = 39
 
@@ -37,7 +45,14 @@ public final class GGUFFile: @unchecked Sendable {
             case .mxfp4: return (17, 32)
             case .q2_K: return (84, 256)
             case .q4_K: return (144, 256)
+            case .q6_K: return (210, 256)
             case .iq2_xxs: return (66, 256)
+            case .iq2_xs: return (74, 256)
+            case .iq3_xxs: return (98, 256)
+            case .iq3_s: return (110, 256)
+            case .iq2_s: return (82, 256)
+            case .iq4_xs: return (136, 256)
+            case .iq1_m: return (56, 256)
             }
         }
     }

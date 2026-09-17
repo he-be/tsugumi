@@ -1891,6 +1891,10 @@ if let index = arguments.firstIndex(of: "--q38-kv-quant-check") {
 if arguments.contains("--q38-select-check") {
     exit(try runQwen38SelectCheck() ? 0 : 1)
 }
+// `--q27-dense <fixture dir>`: Qwen3.8-27B IQ / K dense GEMV against gguf-py (Q27DenseCheck.swift, docs/qwen38-27b/03).
+if let index = arguments.firstIndex(of: "--q27-dense"), index + 1 < arguments.count {
+    exit(try runQ27DenseCheck(fixtureDir: arguments[index + 1]) ? 0 : 1)
+}
 if let index = arguments.firstIndex(of: "--ggml-dense"), index + 1 < arguments.count {
     exit(try runGGMLDenseCheck(ggufPath: arguments[index + 1]) ? 0 : 1)
 }
