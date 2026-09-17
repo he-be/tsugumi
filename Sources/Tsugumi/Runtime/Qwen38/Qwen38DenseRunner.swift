@@ -61,6 +61,12 @@ package final class Qwen38DenseRunner {
     package var gdnChunk = Int(ProcessInfo.processInfo.environment["Q38_GDN_CHUNK"] ?? "") ?? 32
     package var gdnMinTokens = Int(ProcessInfo.processInfo.environment["Q38_GDN_MIN_T"] ?? "") ?? 16
     private var gdnChunked: Qwen38GDNChunk?
+    /// Keep every weight view in one residency set, requested after each forward that made new views (`Q27_RESIDENT=1`).
+    /// Without it a decode token took 3.9 s for 0.36 s of GPU time, with it 0.11 s, but at the default wired limit the
+    /// 52-token prefill then swapped 574 MB in 2 s (docs/qwen38-27b/04 §3), so it stays opt-in for now.
+    package var denseResident = ProcessInfo.processInfo.environment["Q27_RESIDENT"] == "1"
+    private var denseSet: MTLResidencySet?
+    private var denseSetCount = 0
 
     // Per-layer state.
     private var linHist: [Int: MTLBuffer] = [:]
@@ -593,6 +599,21 @@ package final class Qwen38DenseRunner {
             prof.gpu += b.gpuEndTime - b.gpuStartTime
         }
         prof.head = CFAbsoluteTimeGetCurrent() - tHead
+        if denseResident && views.count != denseSetCount {
+            if denseSet == nil {
+                let d = MTLResidencySetDescriptor()
+                d.label = "q27-dense"
+                denseSet = try device.makeResidencySet(descriptor: d)
+                queue.addResidencySet(denseSet!)
+            }
+            let set = denseSet!
+            set.removeAllAllocations()
+            var seen = Set<ObjectIdentifier>()
+            for v in views.values where seen.insert(ObjectIdentifier(v.buffer)).inserted { set.addAllocation(v.buffer) }
+            set.commit()
+            set.requestResidency()
+            denseSetCount = views.count
+        }
         prof.total = CFAbsoluteTimeGetCurrent() - tStep
         lastProfile = prof
         return UnsafeBufferPointer(start: logits.contents().bindMemory(to: Float.self, capacity: rows * vocab),
