@@ -66,6 +66,16 @@ France、1 トークンずつ、KV q8_0。wired の最大は `guarded.sh` の 2 
 01 §2 の見積もり (32K で 12.18 GiB + 作業域、OS とアプリに約 4 GiB) は、開始前の wired 4.6 GB を置いていない。
 この機体で重みを常駐させたまま使える条件 (wired 上限・他のプロセスの wired・作業域) は、まだ決めていない。
 
+### 3-1. wired 上限を上げた後 (実測、2026-09-17、`iogpu.wired_limit_mb` = 14336)
+
+- `recommendedMaxWorkingSetSize` は 12.0 → 14.0 GiB に追従した。開始前の wired は 4.63〜4.69 GB のまま (常駐メモリの大きいユーザープロセスは無く、最大 0.34 GB)。
+- 注意の sgemm をクエリの小分けにし (`Q27_ATTN_SCORE_MB`、既定 256)、FFN を逆量子化 + sgemm に載せた (`Q27_MPS_MAX_W`、既定 96M) 後も、Fuji 52 トークン一度 (KV f32、常駐あり) は top-1 52/52・最大 4.31e-5。
+  1 行ずつの小分け (`Q27_ATTN_SCORE_MB=0`) でも 52/52・最大 4.29e-5。
+- その 2 回の Swapouts は +9,760 ページ (152 MB、wired 最大 12.75 GB) と +35,024 ページ (547 MB、60 秒の上限を超えて見張りが停止、出力は済んでいた)。
+- **4K の bench** (`--q27-bench prompt-code.tokens --q27-tokens 4096 --q27-chunk 512`、KV q8_0、常駐あり): 最初の 512 トークンは 9.47 s (GPU 6.99 s、54.0 tok/s)。
+  その後 wired が 4 秒目 13.49 GB → 10 秒目 17.05 GB、ファイルキャッシュ 2.88 → 0.20 GB、Swapouts 60 秒で +43,648 ページ (682 MB) で、見張りが停止した。
+  停止後のスワップ使用量は 2.59 GB / 3.07 GB。
+
 ## 4. 再現
 
 ```bash
