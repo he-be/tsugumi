@@ -24,7 +24,7 @@ package final class GGMLDenseGEMV {
     private let bf16Dequant: MTLComputePipelineState
     private let q8Dequant: MTLComputePipelineState
     private let f16Dequant: MTLComputePipelineState
-    private let iq3s: MTLComputePipelineState
+    private let iq: [GGUFFile.GGMLType: MTLComputePipelineState]
     /// Token count from which the dequant + sgemm path runs (`Q38_MPS_MIN_T`, 0 = never).
     package var mpsMinTokens = Int(ProcessInfo.processInfo.environment["Q38_MPS_MIN_T"] ?? "") ?? 32
     /// Tensors above this many weights stay on the direct kernels (the LM head).
@@ -60,11 +60,20 @@ package final class GGMLDenseGEMV {
             }
             return try device.makeComputePipelineState(function: fn)
         }
-        iq3s = try iqPSO("ggml_iq3_s_gemv")
+        var iq: [GGUFFile.GGMLType: MTLComputePipelineState] = [:]
+        for (type, name) in Self.iqKernels { iq[type] = try iqPSO(name) }
+        self.iq = iq
     }
 
+    private static let iqKernels: [GGUFFile.GGMLType: String] = [
+        .q2_K: "ggml_q2_K_gemv", .q4_K: "ggml_q4_K_gemv", .q6_K: "ggml_q6_K_gemv",
+        .iq2_xxs: "ggml_iq2_xxs_gemv", .iq2_xs: "ggml_iq2_xs_gemv", .iq2_s: "ggml_iq2_s_gemv",
+        .iq3_xxs: "ggml_iq3_xxs_gemv", .iq3_s: "ggml_iq3_s_gemv",
+        .iq1_m: "ggml_iq1_m_gemv", .iq4_xs: "ggml_iq4_xs_gemv",
+    ]
+
     package static func supports(_ type: GGUFFile.GGMLType) -> Bool {
-        type == .q8_0 || type == .f16 || type == .f32 || type == .bf16 || type == .iq3_s
+        hasDequant(type) || iqKernels[type] != nil
     }
 
     private static func hasDequant(_ type: GGUFFile.GGMLType) -> Bool {
@@ -94,10 +103,10 @@ package final class GGMLDenseGEMV {
         case .f32: pso = n >= 1024 ? f32Chunk : f32
         // BF16 reads back the F32 bits exactly (docs/qwen38/15 §2 W-4), same forms as F32.
         case .bf16: pso = n >= 1024 ? bf16Chunk : bf16
-        case .iq3_s:
-            precondition(n % 256 == 0, "IQ3_S row width must be a multiple of 256")
-            pso = iq3s
-        default: preconditionFailure("GGMLDenseGEMV: unsupported type \(type)")
+        default:
+            guard let kernel = iq[type] else { preconditionFailure("GGMLDenseGEMV: unsupported type \(type)") }
+            precondition(n % 256 == 0, "\(type) row width must be a multiple of 256")
+            pso = kernel
         }
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
         enc.setComputePipelineState(pso)
