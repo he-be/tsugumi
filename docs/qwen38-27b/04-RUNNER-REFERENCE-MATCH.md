@@ -19,7 +19,7 @@
 
 - GDN と注意は `qwen38.metal` のカーネルをそのまま使う (注意の各カーネルは KV ヘッド数を引数で受けるので 4 でも同じ)。
   **GDN の出力ノルムのゲートは function constant 1 で SiLU に切り替える** (`q38_gdn_norm_gate`、既定は sigmoid のまま。02 §2)。
-- dense の行列積は 03 の `ggml_iq.metal`。FFN (89M 重み) は `mpsMaxWeights` (64M) を超えるので、prefill でも直接カーネルを通る (**未決**、03 §1)。
+- dense の行列積は 03 の `ggml_iq.metal`。FFN (89M 重み) は、最初は `mpsMaxWeights` (64M) を超えて prefill でも直接カーネルを通っていた。§3-1 から上限を 96M にして、逆量子化 + sgemm に載せた。
 - 注意は全位置が prefix 全体を見る (indexer が無い)。T < 32 はレーンの 5 パス、T ≥ 32 は KV グループごとの sgemm。
 - `token_embd` (IQ2_S、0.38 GiB) は丸ごと載せない。トークンごとに、その行のページだけを no-copy で見て GPU で逆量子化する (`GGMLDenseGEMV.encodeDequant`)。
 - 残差の加算は `q38_hc_combine` をストリーム 1 本・係数 1 で使う。
