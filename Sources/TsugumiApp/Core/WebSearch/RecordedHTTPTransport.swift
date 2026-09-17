@@ -81,6 +81,15 @@ public final class RecordedHTTPTransport: HTTPTransport, @unchecked Sendable {
         return try outcome.get()
     }
 
+    /// Whether `request` would be answered from the directory, without going live.
+    public func hasRecording(for request: URLRequest) -> Bool {
+        let key = Self.key(for: request)
+        let file = directory.appendingPathComponent(Self.fileName(for: key))
+        guard let data = try? Data(contentsOf: file),
+              let entry = try? JSONDecoder().decode(Entry.self, from: data) else { return false }
+        return entry.key == key
+    }
+
     private func count(_ change: (inout Counts) -> Void) {
         lock.lock(); defer { lock.unlock() }
         change(&counts)

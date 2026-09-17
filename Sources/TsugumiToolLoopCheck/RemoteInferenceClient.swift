@@ -47,6 +47,10 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
     private let session: URLSession
     private let lock = NSLock()
     private var running: Task<Void, Never>?
+    /// `--sample-forced`: a forced round of one of these tools first draws this many completions from the same
+    /// prompt with seeds 1…N and hands their calls to `onForcedSamples`; the round itself goes on unseeded.
+    var forcedSamples: [String: Int] = [:]
+    var onForcedSamples: (@Sendable (_ tool: String, _ calls: [String]) -> Void)?
 
     var loadedRuntimeOwnBytes: UInt64? { nil }
 
@@ -218,37 +222,62 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
         ]
         if let topK = request.topK { body["top_k"] = topK }
         if let topP = request.topP { body["top_p"] = topP }
+        if let name, let count = forcedSamples[name], count > 0 {
+            var drawn: [String] = []
+            for seed in 1...count {
+                var seeded = body
+                seeded["seed"] = seed
+                let result = try await postJSON("v1/completions", seeded)
+                try Task.checkCancellation()
+                let choice = (result["choices"] as? [[String: Any]])?.first ?? [:]
+                let text = choice["text"] as? String ?? ""
+                do {
+                    let call = try parseForced(text, finish: choice["finish_reason"] as? String ?? "",
+                                               prefix: prefix, request: request, name: name)
+                    drawn.append("\(call.name) \(call.argumentsJSON)")
+                } catch {
+                    drawn.append("malformed \(String((prefix.parsed + text).prefix(200)))")
+                }
+            }
+            onForcedSamples?(name, drawn)
+        }
         let result = try await postJSON("v1/completions", body)
         try Task.checkCancellation()
         let timings = result["timings"] as? [String: Any] ?? [:]
         let choice = (result["choices"] as? [[String: Any]])?.first ?? [:]
         let text = choice["text"] as? String ?? ""
         let finish = choice["finish_reason"] as? String ?? ""
-
-        let id = Self.callID()
-        let allowed = request.tools.map(\.name)
         do {
-            guard finish == "stop" else { throw GemmaToolCallParserError.malformed }
-            let call: ParsedToolCall
-            switch dialect {
-            case .gemma:
-                call = try GemmaToolCallParser().parse(prefix.parsed + text, allowedTools: Set(allowed), id: id)
-            case .qwen:
-                let definitions = try request.tools.map { tool in
-                    GFTokenizer.FunctionDefinition(
-                        name: tool.name, description: tool.description,
-                        parameters: try JSONDecoder().decode(JSONValue.self, from: Data(tool.parametersJSON.utf8)),
-                        parametersSource: tool.parametersJSON)
-                }
-                call = try QwenToolCallParser(tools: definitions).parse(prefix.parsed + text, id: id)
-            }
-            if let name, call.name != name { throw GemmaToolCallParserError.unknownTool(call.name) }
+            let call = try parseForced(text, finish: finish, prefix: prefix, request: request, name: name)
             continuation.yield(.toolCall(AppToolCall(id: call.id, name: call.name, argumentsJSON: call.argumentsJSON)))
             continuation.yield(.finished(Self.diagnostics(request, timings: timings, stop: .toolCalls)))
         } catch {
             let snippet = String((prefix.parsed + text).prefix(300))
             throw AppInferenceError.unknown("structured_output_failure: forced \(name ?? "call") (\(finish)): \(error) — \(snippet)")
         }
+    }
+
+    /// The call a forced round wrote after `prefix`, read with the app's parser.
+    private func parseForced(_ text: String, finish: String, prefix: (appended: String, parsed: String),
+                             request: AppGenerationRequest, name: String?) throws -> ParsedToolCall {
+        guard finish == "stop" else { throw GemmaToolCallParserError.malformed }
+        let id = Self.callID()
+        let call: ParsedToolCall
+        switch dialect {
+        case .gemma:
+            call = try GemmaToolCallParser().parse(prefix.parsed + text, allowedTools: Set(request.tools.map(\.name)),
+                                                   id: id)
+        case .qwen:
+            let definitions = try request.tools.map { tool in
+                GFTokenizer.FunctionDefinition(
+                    name: tool.name, description: tool.description,
+                    parameters: try JSONDecoder().decode(JSONValue.self, from: Data(tool.parametersJSON.utf8)),
+                    parametersSource: tool.parametersJSON)
+            }
+            call = try QwenToolCallParser(tools: definitions).parse(prefix.parsed + text, id: id)
+        }
+        if let name, call.name != name { throw GemmaToolCallParserError.unknownTool(call.name) }
+        return call
     }
 
     // MARK: Request shape

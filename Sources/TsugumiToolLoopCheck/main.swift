@@ -13,6 +13,8 @@ import TsugumiAppCore
 //                                         [--network online|offline|model] [--context N] [--page-chars N]
 //                                         [--web-store DIR] [--max-rounds N] [--thinking on|off]
 //                                         [--endpoint URL --remote-model ID] [--replay RUN_DIR]
+//                                         [--search-budget N] [--pin-search] [--sample-forced TOOL:N]
+//                                         [--stop-after-round K]
 //
 // `--web-store DIR` answers the web tools' HTTP requests from DIR and records the ones it does not have
 // (`RecordedHTTPTransport`), so a second run reads the same search results and pages (`docs/qwen38/21` §4 E-1).
@@ -25,6 +27,15 @@ import TsugumiAppCore
 // `--replay RUN_DIR` plays a recorded run back without the model (`ReplayInferenceClient`): each round returns the
 // recorded calls, the app runs them, and each round's prompt is written to `--out`/prompts/ (docs/qwen38/32). Only the
 // first repeat's first turn of each conversation is replayed.
+//
+// Metered searches (docs/qwen38/32 §5), with `--web-store`:
+//   `--search-budget N`   at most N searches reach Serper / Brave in this run; a recorded one is not counted.
+//   `--pin-search`        every search of a conversation gets the first result it got (`PinnedSearchTransport`),
+//                         whatever the query. A conversation's `pin` shares another's result, and `searchOrder`
+//                         (1-based) re-ranks it.
+// `--sample-forced TOOL:N` (with `--endpoint`) draws N seeded calls at each forced TOOL round into `samples.jsonl`.
+// `--stop-after-round K` ends a turn after K rounds: round K+1 answers empty without the model, and the turn's checks
+// are skipped.
 //
 // Writes `rounds.jsonl` (one line per round), `turns.jsonl` (one line per turn: answer, trace, checks) and prints a
 // summary. Exit status 1 when a check failed. Checks per turn:
@@ -54,10 +65,18 @@ struct Options {
     var endpoint: URL?
     var remoteModel: String?
     var replay: String?
+    var searchBudget: Int?
+    var pinSearch = false
+    var sampleForced: [String: Int] = [:]
+    var stopAfterRound: Int?
 
     init(_ arguments: [String]) {
         var iterator = arguments.dropFirst().makeIterator()
         while let flag = iterator.next() {
+            if flag == "--pin-search" {
+                pinSearch = true
+                continue
+            }
             let value = iterator.next() ?? ""
             switch flag {
             case "--model": model = NSString(string: value).expandingTildeInPath
@@ -74,6 +93,11 @@ struct Options {
             case "--endpoint": endpoint = URL(string: value)
             case "--remote-model": remoteModel = value
             case "--replay": replay = value
+            case "--search-budget": searchBudget = Int(value)
+            case "--sample-forced":
+                let parts = value.split(separator: ":")
+                if parts.count == 2, let count = Int(parts[1]) { sampleForced[String(parts[0])] = count }
+            case "--stop-after-round": stopAfterRound = Int(value)
             default:
                 FileHandle.standardError.write(Data("unknown flag \(flag)\n".utf8))
                 exit(2)
@@ -93,6 +117,10 @@ struct Options {
 struct Conversation: Decodable {
     let name: String
     let turns: [String]
+    /// `--pin-search`: the pin whose search this conversation reads (default: its name).
+    var pin: String?
+    /// `--pin-search`: the pinned results re-ranked, 1-based.
+    var searchOrder: [Int]?
 }
 
 /// One round as it left and came back.
@@ -113,6 +141,8 @@ final class RecordingClient: AppModelLifecycleClient, AppInferenceRuntimeReporti
     private let inner: any AppModelLifecycleClient & AppInferenceRuntimeReporting
     private let lock = NSLock()
     private var records: [RoundRecord] = []
+    /// `--stop-after-round`: rounds past this many end the turn without the model.
+    var stopAfterRound: Int?
 
     init(inner: any AppModelLifecycleClient & AppInferenceRuntimeReporting) {
         self.inner = inner
@@ -135,6 +165,12 @@ final class RecordingClient: AppModelLifecycleClient, AppInferenceRuntimeReporti
         change(&records[index])
     }
 
+    /// Rounds started in the current turn (the 1-based number of the running one).
+    var roundCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return records.count
+    }
+
     func take() -> [RoundRecord] {
         lock.lock(); defer { lock.unlock() }
         defer { records = [] }
@@ -146,6 +182,18 @@ final class RecordingClient: AppModelLifecycleClient, AppInferenceRuntimeReporti
         let index = records.count
         records.append(RoundRecord(request: request))
         lock.unlock()
+        if let stopAfterRound, index >= stopAfterRound {
+            // `--stop-after-round`: the round past the cut ends the turn at once with an empty answer, without the
+            // model, so the turn finishes on the app's own path (a cancel races the tools between rounds).
+            update(index) { $0.outcome = "stopped"; $0.ended = Date() }
+            return AsyncThrowingStream { continuation in
+                continuation.yield(.finished(AppDiagnostics(
+                    generatedTokens: 0, stopReason: .endOfTurn, promptTokenCount: nil, cachedPromptTokens: nil,
+                    speculative: nil, prefillSeconds: nil, timeToFirstTokenSeconds: nil, decodeSeconds: 0,
+                    tokensPerSecond: 0, peakMemoryBytes: nil, runtimeOptions: request.runtimeOptions)))
+                continuation.finish()
+            }
+        }
         let stream = inner.generate(request)
         logLine("round \(index + 1) start: history=\(request.history.count) continuation=\(request.continuation.count) "
             + "tools=\(request.tools.count) choice=\(request.toolChoice.rawValue)")
@@ -182,6 +230,28 @@ final class RecordingClient: AppModelLifecycleClient, AppInferenceRuntimeReporti
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+}
+
+/// `samples.jsonl` for `--sample-forced`: each forced round's draws, tagged with the turn being run.
+final class SampleLog: @unchecked Sendable {
+    private let handle: FileHandle?
+    private let lock = NSLock()
+    private var current: [String: Any] = [:]
+
+    init(handle: FileHandle?) {
+        self.handle = handle
+    }
+
+    var context: [String: Any] {
+        get { lock.lock(); defer { lock.unlock() }; return current }
+        set { lock.lock(); defer { lock.unlock() }; current = newValue }
+    }
+
+    func write(_ fields: [String: Any]) {
+        guard let handle else { return }
+        lock.lock(); defer { lock.unlock() }
+        jsonLine(current.merging(fields) { $1 }, to: handle)
     }
 }
 
@@ -233,6 +303,9 @@ func runCheck() async -> Int32 {
             return 2
         }
         remote = RemoteInferenceClient(endpoint: endpoint, modelID: remoteModel, dialect: .init(kind: kind))
+    } else if !options.sampleForced.isEmpty {
+        logLine("--sample-forced needs --endpoint")
+        return 2
     }
     var replay: ReplayInferenceClient?
     if let run = options.replay {
@@ -246,17 +319,37 @@ func runCheck() async -> Int32 {
     let inner: any AppModelLifecycleClient & AppInferenceRuntimeReporting
     if let replay { inner = replay } else if let remote { inner = remote } else { inner = RealInferenceClient() }
     let client = RecordingClient(inner: inner)
+    client.stopAfterRound = options.stopAfterRound
     var webStore: RecordedHTTPTransport?
+    var budget: SearchBudgetTransport?
+    var pinned: PinnedSearchTransport?
+    var webTransport: (any HTTPTransport)?
     if let path = options.webStore {
         do {
-            webStore = try RecordedHTTPTransport(directory: URL(fileURLWithPath: path, isDirectory: true))
+            let directory = URL(fileURLWithPath: path, isDirectory: true)
+            let store = try RecordedHTTPTransport(directory: directory)
+            webStore = store
+            webTransport = store
+            if let limit = options.searchBudget {
+                budget = SearchBudgetTransport(budget: limit, store: store)
+                webTransport = budget
+            }
+            if options.pinSearch {
+                pinned = try PinnedSearchTransport(directory: directory, inner: webTransport!)
+                webTransport = pinned
+            }
         } catch {
             logLine("cannot use --web-store \(path): \(error)")
             return 2
         }
+    } else if options.searchBudget != nil || options.pinSearch {
+        logLine("--search-budget and --pin-search need --web-store")
+        return 2
     }
     let toolExecutorProvider: ((WebSearchConfiguration, AppNetworkMode) throws -> (any AppToolExecutor)?)? =
-        webStore.map { store in { try AppModel.makeToolExecutor(configuration: $0, mode: $1, transport: store) } }
+        webTransport.map { transport in
+            { try AppModel.makeToolExecutor(configuration: $0, mode: $1, transport: transport) }
+        }
     let model = AppModel(modelDirectory: URL(fileURLWithPath: options.model), client: client,
                          turnMetricsLog: AppTurnMetricsLog(fileURL: outDirectory.appendingPathComponent("turn-metrics.jsonl")),
                          webSearchConfigurationURL: WebSearchConfigurationStore.defaultFileURL,
@@ -297,6 +390,14 @@ func runCheck() async -> Int32 {
 
     let rounds = appendHandle(outDirectory.appendingPathComponent("rounds.jsonl"))
     let turns = appendHandle(outDirectory.appendingPathComponent("turns.jsonl"))
+    let sampleLog = SampleLog(handle: options.sampleForced.isEmpty
+        ? nil : appendHandle(outDirectory.appendingPathComponent("samples.jsonl")))
+    if let remote {
+        remote.forcedSamples = options.sampleForced
+        remote.onForcedSamples = { tool, calls in
+            sampleLog.write(["tool": tool, "round": client.roundCount, "calls": calls])
+        }
+    }
     var failures: [String] = []
     var summary: [String] = []
 
@@ -304,18 +405,22 @@ func runCheck() async -> Int32 {
         for conversation in conversations {
             model.newChat()
             replay?.start(conversation: conversation.name)
+            pinned?.start(pin: conversation.pin ?? conversation.name, order: conversation.searchOrder)
             // Live position the previous round left: prompt + generated − 1 (the stop token is sampled, not fed).
             var livePosition: Int?
             for (turnIndex, question) in conversation.turns.enumerated() {
                 let label = "\(conversation.name)#\(repeatIndex) turn \(turnIndex + 1)"
                 logLine("\(label) ask: \(question)")
                 model.promptText = question
+                sampleLog.context = ["conversation": conversation.name, "repeat": repeatIndex, "turn": turnIndex + 1]
                 let started = Date()
                 model.run()
                 _ = await waitUntil(timeout: 3_600) { !model.isRunning }
                 let wall = Date().timeIntervalSince(started)
                 let records = client.take()
+                let stopped = records.contains { $0.outcome == "stopped" }
                 let web = webStore?.takeCounts()
+                let pins = pinned?.takeCounts()
 
                 var checks: [String: Bool] = [:]
                 var liveNotes: [String] = []
@@ -377,18 +482,22 @@ func runCheck() async -> Int32 {
                     // A round that did not finish leaves nothing to continue from.
                     livePosition = record.outcome == "finished" && prompt > 0 ? prompt + generated - 1 : nil
                 }
-                if remote == nil && replay == nil {
+                if stopped {
+                    // Cut on purpose (`--stop-after-round`): there is no answer to check.
+                } else if remote == nil && replay == nil {
                     checks["live"] = liveNotes.isEmpty
                     checks["progress"] = progressNotes.isEmpty
                 }
-                checks["error"] = model.error == nil
                 let answer = model.outputText
-                checks["answer"] = !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    && !answer.contains("<tool_call>") && !answer.contains("<function=")
-                    && !answer.contains("<|tool_call>")
+                if !stopped {
+                    checks["error"] = model.error == nil
+                    checks["answer"] = !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        && !answer.contains("<tool_call>") && !answer.contains("<function=")
+                        && !answer.contains("<|tool_call>")
+                }
                 let trace = model.outputToolTrace
                 let grounding = AppAnswerGrounding.of(trace)
-                if model.effectiveNetworkMode == .online {
+                if model.effectiveNetworkMode == .online, !stopped {
                     let fetchTried = trace.contains { $0.name == "fetch_page" }
                     checks["online"] = grounding.webSearches > 0 && fetchTried
                         && AppAnswerGrounding.citesSources(answer)
@@ -411,16 +520,22 @@ func runCheck() async -> Int32 {
                     "japanese_ratio": answer.isEmpty ? 0 : Double(japanese) / Double(answer.count),
                     "checks": checks, "error": model.error?.userMessage ?? NSNull(),
                     "web_replayed": web.map { $0.replayed } ?? NSNull(), "web_recorded": web.map { $0.recorded } ?? NSNull(),
+                    "search_pinned": pins.map { $0.pinned } ?? NSNull(),
+                    "search_fetched": pins.map { $0.fetched } ?? NSNull(),
+                    "search_budget_used": budget.map { $0.used } ?? NSNull(),
+                    "stopped": stopped,
                     "continuation": model.outputContinuationTurns.map { turn -> [String: Any] in
                         ["role": turn.role.rawValue, "text": turn.text, "name": turn.toolName ?? "",
                          "calls": turn.toolCalls.map { "\($0.name) \($0.argumentsJSON)" }]
                     },
                 ], to: turns)
                 summary.append(String(format: "%@: %d rounds, %.0f s, %@", label, records.count, wall,
-                                      failed.isEmpty ? "ok" : "FAIL " + failed.joined(separator: ","))
-                    + (web.map { ", web replayed \($0.replayed) recorded \($0.recorded)" } ?? ""))
+                                      stopped ? "stopped" : failed.isEmpty ? "ok" : "FAIL " + failed.joined(separator: ","))
+                    + (web.map { ", web replayed \($0.replayed) recorded \($0.recorded)" } ?? "")
+                    + (pins.map { ", search pinned \($0.pinned) fetched \($0.fetched)" } ?? "")
+                    + (budget.map { ", search budget \($0.used)/\($0.budget)" } ?? ""))
                 logLine(summary.last!)
-                if model.error != nil { break }
+                if model.error != nil || stopped { break }
             }
         }
     }
