@@ -154,3 +154,58 @@ func runQ27DecodeCheck(refLog: String, refLogits: String?, gguf: String, chunk: 
     print("  \(pass ? "PASS" : "FAIL")")
     return pass
 }
+
+// MARK: - Qwen3.8-27B prefill + decode speed (`--q27-bench <token file> [--q27-tokens N] [--q27-chunk C] [--q27-decode-steps D]`)
+//
+// N token ids (comma-separated file) through `forward` C at a time (last logits only), the prefill scratch dropped,
+// then D greedy decode steps. Prints each chunk and each step (docs/qwen38-27b/05). Run it under
+// `Scripts/qwen38/guarded.sh` with `GUARD_LOG` for wired / Swapouts.
+func runQ27Bench(tokenFile: String, tokens: Int, chunk: Int, decodeSteps: Int, gguf: String) throws -> Bool {
+    let text = try String(contentsOfFile: (tokenFile as NSString).expandingTildeInPath, encoding: .utf8)
+    let ids = text.split(separator: ",").compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    let n = min(tokens, ids.count)
+    setvbuf(stdout, nil, _IOLBF, 0)
+    let runner = try Qwen38DenseRunner(gguf: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath),
+                                       capacity: n + decodeSteps + 1, maxBatch: chunk)
+    print("Qwen3.8-27B bench: \(n) tokens in chunks of \(chunk), \(decodeSteps) decode steps, KV \(runner.kvQ8 ? "q8_0" : "f32"), resident \(runner.denseResident)")
+    let tAll = Date()
+    var start = 0
+    var last = 0
+    while start < n {
+        let T = min(chunk, n - start)
+        let t0 = Date()
+        let logits = try runner.forward(tokens: Array(ids[start..<(start + T)]), startPos: start)
+        var best = 0
+        for i in 1..<logits.count where logits[i] > logits[best] { best = i }
+        last = best
+        let pr = runner.lastProfile
+        print(String(format: "  prefill [%5d..<%5d] %.2fs (gpu %.2fs) %.1f tok/s", start, start + T,
+                     Date().timeIntervalSince(t0), pr.gpu, Double(T) / Date().timeIntervalSince(t0)))
+        start += T
+    }
+    let prefill = Date().timeIntervalSince(tAll)
+    print(String(format: "  prefill total %.1fs, %.1f tok/s", prefill, Double(n) / prefill))
+    runner.dropScratch()
+    var times: [Double] = []
+    var token = last
+    var generated: [Int] = []
+    for i in 0..<decodeSteps {
+        let t0 = Date()
+        let logits = try runner.step(token: token, pos: n + i)
+        let dt = Date().timeIntervalSince(t0)
+        times.append(dt)
+        generated.append(token)
+        var best = 0
+        for j in 1..<logits.count where logits[j] > logits[best] { best = j }
+        token = best
+        let pr = runner.lastProfile
+        print(String(format: "  decode [%5d] %.3fs (gpu %.3fs)", n + i, dt, pr.gpu))
+    }
+    if times.count > 1 {
+        let steady = times.dropFirst().sorted()
+        let median = steady[steady.count / 2]
+        print(String(format: "  decode median (steps 2..) %.3fs = %.2f tok/s, first %.3fs", median, 1 / median, times[0]))
+    }
+    print("  generated ids: \(generated.map(String.init).joined(separator: ","))")
+    return true
+}

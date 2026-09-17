@@ -57,6 +57,9 @@ package final class Qwen38DenseRunner {
 
     /// Batches of at least this many tokens take the sgemm attention (`Q38_ATTN_MPS_MIN_T`, 0 = never).
     package var attnMpsMinTokens = Int(ProcessInfo.processInfo.environment["Q38_ATTN_MPS_MIN_T"] ?? "") ?? 32
+    /// Largest score matrix (floats) one sgemm attention pass may hold: queries go in sub-batches of
+    /// `attnScoreFloats / (6 n)` rows (at 32K and T = 512 the whole batch would be 3.7 GB; `Q27_ATTN_SCORE_MB`, default 256).
+    package var attnScoreFloats = (Int(ProcessInfo.processInfo.environment["Q27_ATTN_SCORE_MB"] ?? "") ?? 256) << 18
     /// Batches of at least `gdnMinTokens` run the GDN step in chunks of `gdnChunk` (WY form, `Qwen38GDNChunk`).
     package var gdnChunk = Int(ProcessInfo.processInfo.environment["Q38_GDN_CHUNK"] ?? "") ?? 32
     package var gdnMinTokens = Int(ProcessInfo.processInfo.environment["Q38_GDN_MIN_T"] ?? "") ?? 16
@@ -121,6 +124,9 @@ package final class Qwen38DenseRunner {
         self.device = device
         self.queue = queue
         dense = try GGMLDenseGEMV(device: device)
+        // The FFN rows (17,408 x 5,120 = 89M weights, 356 MB of float32) take the dequant + sgemm prefill path
+        // (`Q27_MPS_MAX_W` in millions, default 96); the LM head stays direct.
+        dense.mpsMaxWeights = (Int(ProcessInfo.processInfo.environment["Q27_MPS_MAX_W"] ?? "") ?? 96) * 1_000_000
 
         let lib = try MetalContext.moduleLibrary(device: device, module: "qwen38")
         qwen38Lib = lib
@@ -429,81 +435,98 @@ package final class Qwen38DenseRunner {
         try gemv(cb, pre + "attn_output.weight", x: ao, y: blk, tokens: T)
     }
 
-    /// `Qwen38Runner.attentionSgemm`: one KV group at a time as two sgemms over the first `n` cache rows; writes `ao`.
+    /// `Qwen38Runner.attentionSgemm`: one KV group at a time as two sgemms over the first `n` cache rows, the T
+    /// queries in sub-batches whose score matrix fits `attnScoreFloats`; writes `ao`.
     private func attentionSgemm(_ cb: MTLCommandBuffer, kc: MTLBuffer, vc: MTLBuffer, n: Int, T: Int) {
         let G = H / Hkv
+        let sub = max(1, min(T, attnScoreFloats / (G * n)))
         func ensure(_ b: inout MTLBuffer?, _ floats: Int) {
             if (b?.length ?? 0) < floats * 4 { b = device.makeBuffer(length: floats * 4, options: .storageModePrivate) }
         }
-        ensure(&attnQG, maxBatch * G * D)
-        ensure(&attnOG, maxBatch * G * D)
+        ensure(&attnQG, sub * G * D)
+        ensure(&attnOG, sub * G * D)
         ensure(&attnKG, n * D)
         ensure(&attnVG, n * D)
-        if attnScores.length < T * G * n * 4 {
-            attnScores = device.makeBuffer(length: T * G * n * 4, options: .storageModeShared)!
+        if attnScores.length < sub * G * n * 4 {
+            attnScores = device.makeBuffer(length: sub * G * n * 4, options: .storageModeShared)!
         }
-        var ap = (UInt32(G), UInt32(1), UInt32(D), UInt32(n), UInt32(T))   // stat / weight: G rows per token
-        var gp = (UInt32(H), UInt32(Hkv), UInt32(D), UInt32(n), UInt32(T)) // gather / scatter
-        let len = MemoryLayout.size(ofValue: ap)
-        let scoresDesc = MPSMatrixDescriptor(rows: T * G, columns: n, rowBytes: n * 4, dataType: .float32)
-        let qDesc = MPSMatrixDescriptor(rows: T * G, columns: D, rowBytes: D * 4, dataType: .float32)
+        var gpKV = (UInt32(H), UInt32(Hkv), UInt32(D), UInt32(n), UInt32(T))
+        let len = MemoryLayout.size(ofValue: gpKV)
         let kvDesc = MPSMatrixDescriptor(rows: n, columns: D, rowBytes: D * 4, dataType: .float32)
-        let mulQK = attnMuls[[0, T, n]] ?? MPSMatrixMultiplication(
-            device: device, transposeLeft: false, transposeRight: true,
-            resultRows: T * G, resultColumns: n, interiorColumns: D, alpha: 1 / Double(D).squareRoot(), beta: 0)
-        let mulWV = attnMuls[[1, T, n]] ?? MPSMatrixMultiplication(
-            device: device, transposeLeft: false, transposeRight: false,
-            resultRows: T * G, resultColumns: D, interiorColumns: n, alpha: 1, beta: 0)
-        attnMuls[[0, T, n]] = mulQK
-        attnMuls[[1, T, n]] = mulWV
         for g in 0..<Hkv {
             var gV = UInt32(g)
-            run(cb, psoAttnGatherQ, size(T * G * D)) { enc in
-                enc.setBuffer(q, offset: 0, index: 0)
-                enc.setBuffer(attnQG, offset: 0, index: 1)
-                enc.setBytes(&gp, length: len, index: 2)
-                enc.setBytes(&gV, length: 4, index: 3)
-            }
             for (cache, out) in [(kc, attnKG), (vc, attnVG)] {
                 run(cb, psoAttnGatherKV, size(n * D)) { enc in
                     enc.setBuffer(cache, offset: 0, index: 0)
                     enc.setBuffer(out, offset: 0, index: 1)
-                    enc.setBytes(&gp, length: len, index: 2)
+                    enc.setBytes(&gpKV, length: len, index: 2)
                     enc.setBytes(&gV, length: 4, index: 3)
                 }
             }
-            mulQK.encode(commandBuffer: cb, leftMatrix: MPSMatrix(buffer: attnQG!, descriptor: qDesc),
-                         rightMatrix: MPSMatrix(buffer: attnKG!, descriptor: kvDesc),
-                         resultMatrix: MPSMatrix(buffer: attnScores, descriptor: scoresDesc))
-            for op in [UInt32(0), 1] {
-                lanes(cb, psoAttnStat, size(G, T)) { enc in
+            var t0 = 0
+            while t0 < T {
+                let Ts = min(sub, T - t0)
+                var ap = (UInt32(G), UInt32(1), UInt32(D), UInt32(n), UInt32(Ts))   // stat / weight: G rows per token
+                var gp = (UInt32(H), UInt32(Hkv), UInt32(D), UInt32(n), UInt32(Ts)) // gather / scatter
+                let scoresDesc = MPSMatrixDescriptor(rows: Ts * G, columns: n, rowBytes: n * 4, dataType: .float32)
+                let qDesc = MPSMatrixDescriptor(rows: Ts * G, columns: D, rowBytes: D * 4, dataType: .float32)
+                let mulQK = attnMuls[[0, Ts, n]] ?? MPSMatrixMultiplication(
+                    device: device, transposeLeft: false, transposeRight: true,
+                    resultRows: Ts * G, resultColumns: n, interiorColumns: D, alpha: 1 / Double(D).squareRoot(), beta: 0)
+                let mulWV = attnMuls[[1, Ts, n]] ?? MPSMatrixMultiplication(
+                    device: device, transposeLeft: false, transposeRight: false,
+                    resultRows: Ts * G, resultColumns: D, interiorColumns: n, alpha: 1, beta: 0)
+                attnMuls[[0, Ts, n]] = mulQK
+                attnMuls[[1, Ts, n]] = mulWV
+                let rowOff = t0 * H * D * 4
+                run(cb, psoAttnGatherQ, size(Ts * G * D)) { enc in
+                    enc.setBuffer(q, offset: rowOff, index: 0)
+                    enc.setBuffer(attnQG, offset: 0, index: 1)
+                    enc.setBytes(&gp, length: len, index: 2)
+                    enc.setBytes(&gV, length: 4, index: 3)
+                }
+                mulQK.encode(commandBuffer: cb, leftMatrix: MPSMatrix(buffer: attnQG!, descriptor: qDesc),
+                             rightMatrix: MPSMatrix(buffer: attnKG!, descriptor: kvDesc),
+                             resultMatrix: MPSMatrix(buffer: attnScores, descriptor: scoresDesc))
+                for op in [UInt32(0), 1] {
+                    lanes(cb, psoAttnStat, size(G, Ts)) { enc in
+                        enc.setBuffer(attnScores, offset: 0, index: 0)
+                        enc.setBuffer(attnMax, offset: 0, index: 1)
+                        enc.setBuffer(attnSum, offset: 0, index: 2)
+                        enc.setBytes(&ap, length: len, index: 3)
+                        var o = op
+                        enc.setBytes(&o, length: 4, index: 4)
+                        enc.setBuffer(nq, offset: t0 * 4, index: 5)
+                    }
+                }
+                run(cb, psoAttnWeight, size(n, Ts * G)) { enc in
                     enc.setBuffer(attnScores, offset: 0, index: 0)
                     enc.setBuffer(attnMax, offset: 0, index: 1)
                     enc.setBuffer(attnSum, offset: 0, index: 2)
                     enc.setBytes(&ap, length: len, index: 3)
-                    var o = op
-                    enc.setBytes(&o, length: 4, index: 4)
-                    enc.setBuffer(nq, offset: 0, index: 5)
+                    enc.setBuffer(nq, offset: t0 * 4, index: 4)
                 }
-            }
-            run(cb, psoAttnWeight, size(n, T * G)) { enc in
-                enc.setBuffer(attnScores, offset: 0, index: 0)
-                enc.setBuffer(attnMax, offset: 0, index: 1)
-                enc.setBuffer(attnSum, offset: 0, index: 2)
-                enc.setBytes(&ap, length: len, index: 3)
-                enc.setBuffer(nq, offset: 0, index: 4)
-            }
-            mulWV.encode(commandBuffer: cb, leftMatrix: MPSMatrix(buffer: attnScores, descriptor: scoresDesc),
-                         rightMatrix: MPSMatrix(buffer: attnVG!, descriptor: kvDesc),
-                         resultMatrix: MPSMatrix(buffer: attnOG!, descriptor: qDesc))
-            run(cb, psoAttnScatter, size(T * G * D)) { enc in
-                enc.setBuffer(attnOG, offset: 0, index: 0)
-                enc.setBuffer(qgate, offset: 0, index: 1)
-                enc.setBuffer(ao, offset: 0, index: 2)
-                enc.setBytes(&gp, length: len, index: 3)
-                enc.setBytes(&gV, length: 4, index: 4)
+                mulWV.encode(commandBuffer: cb, leftMatrix: MPSMatrix(buffer: attnScores, descriptor: scoresDesc),
+                             rightMatrix: MPSMatrix(buffer: attnVG!, descriptor: kvDesc),
+                             resultMatrix: MPSMatrix(buffer: attnOG!, descriptor: qDesc))
+                run(cb, psoAttnScatter, size(Ts * G * D)) { enc in
+                    enc.setBuffer(attnOG, offset: 0, index: 0)
+                    enc.setBuffer(qgate, offset: rowOff, index: 1)
+                    enc.setBuffer(ao, offset: rowOff, index: 2)
+                    enc.setBytes(&gp, length: len, index: 3)
+                    enc.setBytes(&gV, length: 4, index: 4)
+                }
+                t0 += Ts
             }
         }
+    }
+
+    /// Drops the grown prefill scratch (dequantized rows, attention scores) before decode.
+    package func dropScratch() {
+        dense.dropScratch()
+        attnQG = nil; attnOG = nil; attnKG = nil; attnVG = nil
+        attnScores = device.makeBuffer(length: 4, options: .storageModeShared)!
+        attnMuls.removeAll()
     }
 
     /// Dense SwiGLU on `xn`; result in `blk`.

@@ -1903,6 +1903,19 @@ if let index = arguments.firstIndex(of: "--q27-decode"), index + 1 < arguments.c
         chunk: opt("--q27-chunk").flatMap { Int($0) } ?? 1)
     exit(passed ? 0 : 1)
 }
+// `--q27-bench <token file> [--q27-tokens N] [--q27-chunk C] [--q27-decode-steps D]`: Qwen38DenseRunner prefill and
+// decode speed (Q27DenseCheck.swift, docs/qwen38-27b/05).
+if let index = arguments.firstIndex(of: "--q27-bench"), index + 1 < arguments.count {
+    func opt(_ name: String) -> String? {
+        arguments.firstIndex(of: name).flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+    }
+    _ = try runQ27Bench(
+        tokenFile: arguments[index + 1], tokens: opt("--q27-tokens").flatMap { Int($0) } ?? 4096,
+        chunk: opt("--q27-chunk").flatMap { Int($0) } ?? 512,
+        decodeSteps: opt("--q27-decode-steps").flatMap { Int($0) } ?? 16,
+        gguf: opt("--q27-gguf") ?? "~/LLM/Qwen3.8-27B-GSQ-RCO-GGUF/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf")
+    exit(0)
+}
 // `--q27-dense <fixture dir>`: Qwen3.8-27B IQ / K dense GEMV against gguf-py (Q27DenseCheck.swift, docs/qwen38-27b/03).
 if let index = arguments.firstIndex(of: "--q27-dense"), index + 1 < arguments.count {
     exit(try runQ27DenseCheck(fixtureDir: arguments[index + 1]) ? 0 : 1)
