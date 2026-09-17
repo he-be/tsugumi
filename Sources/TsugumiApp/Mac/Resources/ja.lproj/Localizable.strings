@@ -83,6 +83,7 @@
 "Most of the model streams from the SSD." = "モデルの大半は SSD から読みます。";
 "MTP acceptance" = "MTP 採択率";
 "MTP speculative decoding" = "MTP 投機的デコード";
+"PLE table" = "PLE 表";
 "New chat" = "新しいチャット";
 "Next answer" = "次の回答";
 "No runs yet" = "まだ実行していません";

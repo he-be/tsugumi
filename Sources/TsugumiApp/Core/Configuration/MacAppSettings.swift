@@ -13,6 +13,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
     var topP: Double = 0.95
     var prefillEnabled: Bool = true
     var mtpEnabled: Bool = true
+    var qwen38PLETable: AppQwen38PLETable?
     var thinkingEnabled: Bool = false
     var newlineShortcut: AppNewlineShortcut = .return
     var sentPromptBehavior: AppSentPromptBehavior = .keep
@@ -29,6 +30,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         case topP
         case prefillEnabled
         case mtpEnabled
+        case qwen38PLETable
         case thinkingEnabled
         case newlineShortcut
         case sentPromptBehavior
@@ -50,6 +52,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
          topP: Double = 0.95,
          prefillEnabled: Bool = true,
          mtpEnabled: Bool = true,
+         qwen38PLETable: AppQwen38PLETable? = nil,
          thinkingEnabled: Bool = false,
          newlineShortcut: AppNewlineShortcut = .return,
          sentPromptBehavior: AppSentPromptBehavior = .keep,
@@ -64,6 +67,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         self.topP = topP
         self.prefillEnabled = prefillEnabled
         self.mtpEnabled = mtpEnabled
+        self.qwen38PLETable = qwen38PLETable
         self.thinkingEnabled = thinkingEnabled
         self.newlineShortcut = newlineShortcut
         self.sentPromptBehavior = sentPromptBehavior
@@ -94,6 +98,7 @@ struct MacAppSettings: Codable, Equatable, Sendable {
         topP = try container.decode(Double.self, forKey: .topP)
         prefillEnabled = try container.decode(Bool.self, forKey: .prefillEnabled)
         mtpEnabled = try container.decodeIfPresent(Bool.self, forKey: .mtpEnabled) ?? true
+        qwen38PLETable = try container.decodeIfPresent(AppQwen38PLETable.self, forKey: .qwen38PLETable)
         thinkingEnabled = try container.decodeIfPresent(
             Bool.self, forKey: .thinkingEnabled) ?? false
         newlineShortcut = try container.decodeIfPresent(

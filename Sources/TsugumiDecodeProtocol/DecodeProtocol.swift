@@ -8,6 +8,8 @@ public struct DecodeRuntimeOptions: Codable, Sendable, Equatable {
     public var rdadvisePolicy: String
     public var modelVerification: String
     public var mtpEnabled: Bool
+    /// `AppQwen38PLETable`'s raw value; nil reads the table the manifest names.
+    public var qwen38PLETable: String?
 
     public init(expertCacheSlots: Int = 16,
                 expertCachePolicy: String = "lfu",
@@ -15,7 +17,8 @@ public struct DecodeRuntimeOptions: Codable, Sendable, Equatable {
                 prefillChunkTokens: Int = 2048,
                 rdadvisePolicy: String = "off",
                 modelVerification: String = "full-sha256",
-                mtpEnabled: Bool = true) {
+                mtpEnabled: Bool = true,
+                qwen38PLETable: String? = nil) {
         self.expertCacheSlots = expertCacheSlots
         self.expertCachePolicy = expertCachePolicy
         self.prefillEnabled = prefillEnabled
@@ -23,11 +26,12 @@ public struct DecodeRuntimeOptions: Codable, Sendable, Equatable {
         self.rdadvisePolicy = rdadvisePolicy
         self.modelVerification = modelVerification
         self.mtpEnabled = mtpEnabled
+        self.qwen38PLETable = qwen38PLETable
     }
 
     private enum CodingKeys: String, CodingKey {
         case expertCacheSlots, expertCachePolicy, prefillEnabled
-        case prefillChunkTokens, rdadvisePolicy, modelVerification, mtpEnabled
+        case prefillChunkTokens, rdadvisePolicy, modelVerification, mtpEnabled, qwen38PLETable
     }
 
     public init(from decoder: Decoder) throws {
@@ -39,6 +43,7 @@ public struct DecodeRuntimeOptions: Codable, Sendable, Equatable {
         rdadvisePolicy = try container.decode(String.self, forKey: .rdadvisePolicy)
         modelVerification = try container.decode(String.self, forKey: .modelVerification)
         mtpEnabled = try container.decodeIfPresent(Bool.self, forKey: .mtpEnabled) ?? true
+        qwen38PLETable = try container.decodeIfPresent(String.self, forKey: .qwen38PLETable)
     }
 }
 

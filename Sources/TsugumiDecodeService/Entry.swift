@@ -210,6 +210,13 @@ import TsugumiDecodeProtocol
             throw AppInferenceError.invalidRequest(
                 "unknown model verification \(options.modelVerification)")
         }
+        var pleTable: AppQwen38PLETable?
+        if let raw = options.qwen38PLETable {
+            guard let table = AppQwen38PLETable(rawValue: raw) else {
+                throw AppInferenceError.invalidRequest("unknown Qwen3.8 PLE table \(raw)")
+            }
+            pleTable = table
+        }
         let resolved = AppRuntimeOptions(
             expertCacheSlots: options.expertCacheSlots,
             expertCachePolicy: cachePolicy,
@@ -217,7 +224,8 @@ import TsugumiDecodeProtocol
             prefillChunkTokens: options.prefillChunkTokens,
             rdadvisePolicy: rdadvisePolicy,
             modelVerification: modelVerification,
-            mtpEnabled: options.mtpEnabled)
+            mtpEnabled: options.mtpEnabled,
+            qwen38PLETable: pleTable)
         try resolved.validate()
         return resolved
     }

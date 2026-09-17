@@ -8,7 +8,9 @@ import Tsugumi
 // official sampler.
 //
 // manifest: {"trunk": "<token file>", "samples": 4, "sampleTokens": 16, "capacity": 16384, "cuts": [2018, …],
-//            "forbid": [248058], "speculative": true, "variants": [{"label": "…", "tokens": "<token file>"}, …]}
+//            "forbid": [248058], "speculative": true, "top": 5,
+//            "variants": [{"label": "…", "tokens": "<token file>", "samples": 16, "forbid": [248058]}, …]}
+// A variant's own `samples` / `forbid` replace the manifest's for that variant (docs/qwen38/32: a `none` round).
 // Token files are comma-separated ids. Prints one JSON line per variant.
 //
 // `forbid` draws under `ForbiddenTokensConstraint` (what `tool_choice: none` is, docs/qwen38/26 §2); `p_tool_call`
@@ -16,7 +18,7 @@ import Tsugumi
 // `speculative` builds the engine with the MTP head, so the draws take the speculative loop.
 
 private struct BranchManifest: Decodable {
-    struct Variant: Decodable { let label: String; let tokens: String }
+    struct Variant: Decodable { let label: String; let tokens: String; let samples: Int?; let forbid: [Int32]? }
     let trunk: String
     let samples: Int?
     let sampleTokens: Int?
@@ -27,6 +29,8 @@ private struct BranchManifest: Decodable {
     /// Token ids the draws may never produce.
     let forbid: [Int32]?
     let speculative: Bool?
+    /// How many of the most likely first tokens to print (default 5).
+    let top: Int?
     let variants: [Variant]
 }
 
@@ -41,7 +45,10 @@ func runQwen38BranchProbe(manifest path: String, chunk: Int, gguf: String, ple: 
     let manifest = try JSONDecoder().decode(BranchManifest.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
     let trunk = try load(manifest.trunk)
     let variants = try manifest.variants.map { ($0.label, try load($0.tokens)) }
-    let samples = manifest.samples ?? 4, sampleTokens = manifest.sampleTokens ?? 16
+    let settings = Dictionary(uniqueKeysWithValues: manifest.variants.map {
+        ($0.label, (samples: $0.samples ?? manifest.samples ?? 4, forbid: $0.forbid ?? manifest.forbid))
+    })
+    let sampleTokens = manifest.sampleTokens ?? 16
     let toolCall = 248_058
     let stops: Set<Int32> = [248_046, 248_044]
 
@@ -84,20 +91,21 @@ func runQwen38BranchProbe(manifest path: String, chunk: Int, gguf: String, ple: 
         let top = scaled.max()!
         let z = scaled.reduce(0) { $0 + exp($1 - top) }
         let probability = { (id: Int) in exp(scaled[id] - top) / z }
-        let ranked = (0..<V).sorted { scaled[$0] > scaled[$1] }.prefix(5)
+        let ranked = (0..<V).sorted { scaled[$0] > scaled[$1] }.prefix(manifest.top ?? 5)
+        let (samples, forbid) = settings[label]!
         var draws: [[Int32]] = []
         for seed in 1...max(samples, 1) where samples > 0 {
             try engine.restore(checkpoint)
             let run = try engine.runCompletion(promptTokens: tail, cachedPromptTokens: cut, maxNewTokens: sampleTokens,
                                                stopTokens: stops,
-                                               constraint: manifest.forbid.map { ForbiddenTokensConstraint(forbiddenTokenIDs: Set($0)) },
+                                               constraint: forbid.map { ForbiddenTokensConstraint(forbiddenTokenIDs: Set($0)) },
                                                greedy: false, seed: UInt64(seed))
             draws.append(run.tokens)
         }
         let topText = ranked.map { String(format: "[%d, %.4f]", $0, probability($0)) }.joined(separator: ", ")
         let drawText = draws.map { "[" + $0.map(String.init).joined(separator: ",") + "]" }.joined(separator: ", ")
         let withCall = draws.filter { $0.contains(Int32(toolCall)) }.count
-        let forbidText = (manifest.forbid ?? []).map(String.init).joined(separator: ",")
+        let forbidText = (forbid ?? []).map(String.init).joined(separator: ",")
         print(String(format: "{\"label\": \"%@\", \"tokens\": %d, \"from\": %d, \"forbid\": [%@], \"speculative\": %@, \"p_tool_call\": %.4f, \"top\": [%@], \"draws_tool_call\": %d, \"draws\": [%@], \"s\": %.1f}",
                      label as NSString, tokens.count, cut, forbidText as NSString,
                      (manifest.speculative ?? false) ? "true" : "false", probability(toolCall), topText as NSString,

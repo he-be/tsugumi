@@ -19,6 +19,8 @@ public struct AppTurnMetricsRecord: Codable, Equatable, Sendable {
     public var thinking: Bool
     public var network: String
     public var directive: String?
+    /// Qwen3.8's PLE table (`AppQwen38PLETable`); nil for the other families.
+    public var ple: String?
 
     // The machine at the round's start.
     public var headroomLevel: Double?

@@ -51,6 +51,42 @@ public enum AppModelVerification: String, CaseIterable, Sendable, Identifiable {
     }
 }
 
+/// Which PLE table the Qwen3.8 session reads (`docs/qwen38/31`), when an install keeps both side by side. A load-time
+/// choice; the other families ignore it. Unset, the session reads the table `manifest.json` names.
+public enum AppQwen38PLETable: String, CaseIterable, Codable, Sendable, Identifiable {
+    case q41 = "q4_1"
+    case bf16
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .q41: return "Q4_1"
+        case .bf16: return "BF16"
+        }
+    }
+
+    /// The table's file relative to the model directory.
+    public var relativePath: String {
+        switch self {
+        case .q41: return "ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf"
+        case .bf16: return "ple-bf16/Qwen3.8-Flash-Next-PLE-BF16.gguf"
+        }
+    }
+
+    /// The table `manifest.json` in `modelDirectory` names, when it is one of these.
+    public static func named(inManifestOf modelDirectory: URL) -> AppQwen38PLETable? {
+        struct Peek: Decodable {
+            struct Files: Decodable { let ple: String }
+            let qwen38: Files
+        }
+        guard let data = try? Data(contentsOf: modelDirectory.appendingPathComponent("manifest.json")),
+              let peek = try? JSONDecoder().decode(Peek.self, from: data) else { return nil }
+        let path = (peek.qwen38.ple as NSString).standardizingPath
+        return allCases.first { path.hasSuffix($0.relativePath) }
+    }
+}
+
 public struct AppRuntimeOptions: Equatable, Sendable {
     public static let allowedSlotCounts = RuntimeConfiguration.allowedExpertCacheSlots
     public static let allowedPrefillChunkTokens = RuntimeConfiguration.allowedPrefillChunkTokens
@@ -68,6 +104,8 @@ public struct AppRuntimeOptions: Equatable, Sendable {
     /// path goes through chunked prefill, so `prefillEnabled == false` turns
     /// this off at load.
     public var mtpEnabled: Bool
+    /// Qwen3.8 only: the PLE table to load; nil reads the one `manifest.json` names.
+    public var qwen38PLETable: AppQwen38PLETable?
 
     public init(expertCacheSlots: Int = 32,
                 expertCachePolicy: AppExpertCachePolicy = .lfu,
@@ -75,7 +113,8 @@ public struct AppRuntimeOptions: Equatable, Sendable {
                 prefillChunkTokens: Int = 2048,
                 rdadvisePolicy: AppRDAdvicePolicy = .off,
                 modelVerification: AppModelVerification = .fullSha256,
-                mtpEnabled: Bool = true) {
+                mtpEnabled: Bool = true,
+                qwen38PLETable: AppQwen38PLETable? = nil) {
         self.expertCacheSlots = expertCacheSlots
         self.expertCachePolicy = expertCachePolicy
         self.prefillEnabled = prefillEnabled
@@ -83,6 +122,7 @@ public struct AppRuntimeOptions: Equatable, Sendable {
         self.rdadvisePolicy = rdadvisePolicy
         self.modelVerification = modelVerification
         self.mtpEnabled = mtpEnabled
+        self.qwen38PLETable = qwen38PLETable
     }
 
     public func validate() throws {
@@ -156,6 +196,7 @@ public struct AppLoadedRuntimeKey: Equatable, Sendable {
     /// configuration at load, so these became load-time choices too.
     public var prefillEnabled: Bool
     public var prefillChunkTokens: Int
+    public var qwen38PLETable: AppQwen38PLETable?
 
     public init(modelDirectory: URL,
                 maxContextTokens: Int,
@@ -171,5 +212,6 @@ public struct AppLoadedRuntimeKey: Equatable, Sendable {
         self.mtpEnabled = options.effectiveMTPEnabled
         self.prefillEnabled = options.prefillEnabled
         self.prefillChunkTokens = options.prefillChunkTokens
+        self.qwen38PLETable = options.qwen38PLETable
     }
 }

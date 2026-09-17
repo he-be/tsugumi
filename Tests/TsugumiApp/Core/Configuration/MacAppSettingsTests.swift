@@ -285,3 +285,46 @@ import Testing
         #expect(alone.networkMode == .modelOnly)
     }
 }
+
+@Suite struct Qwen38PLETableTests {
+    @Test func settingsKeepTheChosenTableAndOlderFilesHaveNone() throws {
+        let legacy = """
+        {"version":2,"contextTokens":32768,"expertCacheSlots":32,"temperature":1,
+         "topKEnabled":true,"topK":64,"topPEnabled":true,"topP":0.95,"prefillEnabled":true}
+        """
+        #expect(try JSONDecoder().decode(MacAppSettings.self, from: Data(legacy.utf8)).qwen38PLETable == nil)
+        for table in AppQwen38PLETable.allCases {
+            var settings = MacAppSettings()
+            settings.qwen38PLETable = table
+            let roundTrip = try JSONDecoder().decode(
+                MacAppSettings.self, from: try JSONEncoder().encode(settings))
+            #expect(roundTrip.qwen38PLETable == table)
+        }
+    }
+
+    @Test func manifestNamesTheTableItPointsAt() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ple-table-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        func manifest(_ ple: String) throws -> AppQwen38PLETable? {
+            let json = #"{"arch": {"family": "qwen4exp"}, "qwen38": {"gguf": "m.gguf", "ple": "\#(ple)"}}"#
+            try Data(json.utf8).write(to: root.appendingPathComponent("manifest.json"))
+            return AppQwen38PLETable.named(inManifestOf: root)
+        }
+        #expect(try manifest("ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf") == .q41)
+        #expect(try manifest("ple-bf16/Qwen3.8-Flash-Next-PLE-BF16.gguf") == .bf16)
+        #expect(try manifest("./ple-bf16/Qwen3.8-Flash-Next-PLE-BF16.gguf") == .bf16)
+        #expect(try manifest("other/table.gguf") == nil)
+        try FileManager.default.removeItem(at: root.appendingPathComponent("manifest.json"))
+        #expect(AppQwen38PLETable.named(inManifestOf: root) == nil)
+    }
+
+    @Test func aChangedTableAsksForAReload() {
+        let model = URL(fileURLWithPath: "/tmp/qwen38", isDirectory: true)
+        var options = AppRuntimeOptions()
+        let before = AppLoadedRuntimeKey(modelDirectory: model, maxContextTokens: 32768, options: options)
+        options.qwen38PLETable = .q41
+        #expect(AppLoadedRuntimeKey(modelDirectory: model, maxContextTokens: 32768, options: options) != before)
+    }
+}

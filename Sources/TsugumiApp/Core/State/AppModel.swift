@@ -181,7 +181,8 @@ public final class AppModel {
         self.runtimeOptions = AppRuntimeOptions(
             expertCacheSlots: settings.expertCacheSlots,
             prefillEnabled: settings.prefillEnabled,
-            mtpEnabled: settings.mtpEnabled)
+            mtpEnabled: settings.mtpEnabled,
+            qwen38PLETable: settings.qwen38PLETable)
         self.maxContextTokens = settings.contextTokens
         self.temperature = settings.temperature
         self.topKEnabled = settings.topKEnabled
@@ -383,6 +384,12 @@ public final class AppModel {
     }
 
     public var isModelAvailable: Bool { loadState.isReady }
+
+    /// The PLE table the Qwen3.8 session reads: the one chosen, else the one `manifest.json` names.
+    public var effectiveQwen38PLETable: AppQwen38PLETable? {
+        runtimeOptions.qwen38PLETable
+            ?? AppQwen38PLETable.named(inManifestOf: URL(fileURLWithPath: modelPathText, isDirectory: true))
+    }
 
     public var hasStaleLoadedRuntime: Bool {
         guard loadState.isReady, let loadedRuntimeKey else { return false }
@@ -977,7 +984,8 @@ public final class AppModel {
         runtimeOptions = AppRuntimeOptions(
             expertCacheSlots: settings.expertCacheSlots,
             prefillEnabled: settings.prefillEnabled,
-            mtpEnabled: settings.mtpEnabled)
+            mtpEnabled: settings.mtpEnabled,
+            qwen38PLETable: settings.qwen38PLETable)
         maxContextTokens = settings.contextTokens
         temperature = settings.temperature
         topKEnabled = settings.topKEnabled
@@ -1002,6 +1010,7 @@ public final class AppModel {
             topP: topP,
             prefillEnabled: runtimeOptions.prefillEnabled,
             mtpEnabled: runtimeOptions.mtpEnabled,
+            qwen38PLETable: runtimeOptions.qwen38PLETable,
             thinkingEnabled: thinkingEnabled,
             newlineShortcut: newlineShortcut,
             sentPromptBehavior: sentPromptBehavior,
@@ -1785,6 +1794,9 @@ public final class AppModel {
             weightsResidentFraction: nil,
             diagnostics: diagnostics,
             toolCalls: toolCalls)
+        if selectedModelKind == .qwen38 {
+            record.ple = effectiveQwen38PLETable?.rawValue
+        }
         let residency = roundResidencyTask
         roundResidencyTask = nil
         roundHeadroom = nil

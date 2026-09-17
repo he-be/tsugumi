@@ -12,7 +12,7 @@ import TsugumiAppCore
 //     .build/release/TsugumiToolLoopCheck --out DIR [--model DIR] [--conversations FILE] [--only a,b] [--repeats N]
 //                                         [--network online|offline|model] [--context N] [--page-chars N]
 //                                         [--web-store DIR] [--max-rounds N] [--thinking on|off]
-//                                         [--endpoint URL --remote-model ID]
+//                                         [--endpoint URL --remote-model ID] [--replay RUN_DIR]
 //
 // `--web-store DIR` answers the web tools' HTTP requests from DIR and records the ones it does not have
 // (`RecordedHTTPTransport`), so a second run reads the same search results and pages (`docs/qwen38/21` §4 E-1).
@@ -21,6 +21,10 @@ import TsugumiAppCore
 // (`RemoteInferenceClient`). `--model` then only picks the kind — the prompts, sampler and call syntax — and is not
 // loaded; the context defaults to the server's slot. The `live` and `progress` checks are about this Mac's session
 // and are skipped. `--max-rounds` overrides the saved tool round budget for this run only.
+//
+// `--replay RUN_DIR` plays a recorded run back without the model (`ReplayInferenceClient`): each round returns the
+// recorded calls, the app runs them, and each round's prompt is written to `--out`/prompts/ (docs/qwen38/32). Only the
+// first repeat's first turn of each conversation is replayed.
 //
 // Writes `rounds.jsonl` (one line per round), `turns.jsonl` (one line per turn: answer, trace, checks) and prints a
 // summary. Exit status 1 when a check failed. Checks per turn:
@@ -49,6 +53,7 @@ struct Options {
     var thinking: Bool?
     var endpoint: URL?
     var remoteModel: String?
+    var replay: String?
 
     init(_ arguments: [String]) {
         var iterator = arguments.dropFirst().makeIterator()
@@ -68,6 +73,7 @@ struct Options {
             case "--thinking": thinking = value == "on"
             case "--endpoint": endpoint = URL(string: value)
             case "--remote-model": remoteModel = value
+            case "--replay": replay = value
             default:
                 FileHandle.standardError.write(Data("unknown flag \(flag)\n".utf8))
                 exit(2)
@@ -228,7 +234,18 @@ func runCheck() async -> Int32 {
         }
         remote = RemoteInferenceClient(endpoint: endpoint, modelID: remoteModel, dialect: .init(kind: kind))
     }
-    let client = RecordingClient(inner: remote ?? RealInferenceClient())
+    var replay: ReplayInferenceClient?
+    if let run = options.replay {
+        do {
+            replay = try ReplayInferenceClient(run: URL(fileURLWithPath: run, isDirectory: true), out: outDirectory)
+        } catch {
+            logLine("cannot replay \(run): \(error)")
+            return 2
+        }
+    }
+    let inner: any AppModelLifecycleClient & AppInferenceRuntimeReporting
+    if let replay { inner = replay } else if let remote { inner = remote } else { inner = RealInferenceClient() }
+    let client = RecordingClient(inner: inner)
     var webStore: RecordedHTTPTransport?
     if let path = options.webStore {
         do {
@@ -286,6 +303,7 @@ func runCheck() async -> Int32 {
     for repeatIndex in 1...max(options.repeats, 1) {
         for conversation in conversations {
             model.newChat()
+            replay?.start(conversation: conversation.name)
             // Live position the previous round left: prompt + generated − 1 (the stop token is sampled, not fed).
             var livePosition: Int?
             for (turnIndex, question) in conversation.turns.enumerated() {
@@ -359,7 +377,7 @@ func runCheck() async -> Int32 {
                     // A round that did not finish leaves nothing to continue from.
                     livePosition = record.outcome == "finished" && prompt > 0 ? prompt + generated - 1 : nil
                 }
-                if remote == nil {
+                if remote == nil && replay == nil {
                     checks["live"] = liveNotes.isEmpty
                     checks["progress"] = progressNotes.isEmpty
                 }

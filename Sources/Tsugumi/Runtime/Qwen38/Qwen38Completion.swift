@@ -348,7 +348,8 @@ package struct Qwen38ModelDirectory: Sendable {
     package let gguf: URL
     package let ple: URL
 
-    package init(directory: URL) throws {
+    /// `pleOverride` replaces the manifest's PLE file (relative to the directory), e.g. the app's table switch.
+    package init(directory: URL, pleOverride: String? = nil) throws {
         struct Manifest: Decodable {
             struct Arch: Decodable { let family: String? }
             struct Files: Decodable { let gguf: String; let ple: String }
@@ -370,6 +371,6 @@ package struct Qwen38ModelDirectory: Sendable {
             return file.standardizedFileURL
         }
         gguf = try resolve(manifest.qwen38.gguf)
-        ple = try resolve(manifest.qwen38.ple)
+        ple = try resolve(pleOverride ?? manifest.qwen38.ple)
     }
 }

@@ -141,6 +141,17 @@ struct SessionLoadKey: Equatable, Sendable {
     }
 }
 
+extension RealInferenceClient {
+    /// The prompt `Qwen38ServerSession` renders for `request`, before its prompt cache realigns the history to the
+    /// generated split. For checks that rebuild a recorded round's prompt (`TsugumiToolLoopCheck --replay`).
+    package static func qwen38PromptTokens(for request: AppGenerationRequest,
+                                           tokenizer: QwenTokenizer) throws -> [Int32] {
+        let validated = try RealInferenceSession.validatedChatRequest(for: request, kind: .qwen38)
+        return try tokenizer.applyChatTemplate(validated.messages, tools: validated.tools,
+                                               enableThinking: validated.enableThinking)
+    }
+}
+
 /// Owns the loaded family session and serializes load / unload / generate.
 /// All Metal command-buffer waits happen inside this actor, off the main
 /// actor; one cooperative-pool thread is occupied for the duration of a
@@ -222,7 +233,8 @@ actor RealInferenceSession {
                 let session = try await Qwen38ServerSession.load(
                     modelDirectory: key.directory,
                     maxContext: key.maxContext,
-                    draftBlockSize: draftBlockSize)
+                    draftBlockSize: draftBlockSize,
+                    pleOverride: key.options.qwen38PLETable?.relativePath)
                 backend = .qwen38(session)
                 loadedRuntimeOwnBytes = nil
             }

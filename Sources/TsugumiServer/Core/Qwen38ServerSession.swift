@@ -45,9 +45,10 @@ public actor Qwen38ServerSession: ServerInferenceBackend {
                             draftBlockSize: Int = 0,
                             reasoningBudget: Int = -1,
                             reasoningFormat: ReasoningFormat = .auto,
-                            prefillChunk: Int = defaultPrefillChunk) async throws -> Qwen38ServerSession {
+                            prefillChunk: Int = defaultPrefillChunk,
+                            pleOverride: String? = nil) async throws -> Qwen38ServerSession {
         try validateFlags(draftBlockSize: draftBlockSize)
-        let files = try Qwen38ModelDirectory(directory: modelDirectory)
+        let files = try Qwen38ModelDirectory(directory: modelDirectory, pleOverride: pleOverride)
         let tokenizer = try await QwenTokenizer.load(forModelDirectory: modelDirectory)
         let engine = try Qwen38Engine(gguf: files.gguf, ple: files.ple, capacity: maxContext,
                                       prefillChunk: min(prefillChunk, maxContext), speculative: draftBlockSize != 0)

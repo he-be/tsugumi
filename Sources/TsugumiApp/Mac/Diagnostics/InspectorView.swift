@@ -268,6 +268,20 @@ struct InspectorView: View {
             Toggle(L("Prefill"), isOn: $model.runtimeOptions.prefillEnabled)
             Toggle(L("MTP speculative decoding"), isOn: $model.runtimeOptions.mtpEnabled)
                 .disabled(!model.runtimeOptions.prefillEnabled)
+            if model.selectedModelKind == .qwen38 {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(L("PLE table"))
+                    Picker(L("PLE table"), selection: Binding(
+                        get: { model.effectiveQwen38PLETable },
+                        set: { model.runtimeOptions.qwen38PLETable = $0 })) {
+                        ForEach(AppQwen38PLETable.allCases) { table in
+                            Text(table.label).tag(Optional(table))
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                }
+            }
             VStack(alignment: .leading, spacing: 8) {
                 Text("RDADVISE")
                 Picker("RDADVISE", selection: $model.runtimeOptions.rdadvisePolicy) {

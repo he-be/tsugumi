@@ -10,7 +10,8 @@ import TsugumiDecodeProtocol
             prefillEnabled: false,
             prefillChunkTokens: 64,
             rdadvisePolicy: "adaptive",
-            modelVerification: "trusted-install")
+            modelVerification: "trusted-install",
+            qwen38PLETable: "q4_1")
         let request = DecodeLoadRequest(
             modelPath: "/tmp/model.moepack",
             maxContextTokens: 8192,
