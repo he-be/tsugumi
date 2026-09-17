@@ -11,10 +11,16 @@ import TsugumiAppCore
 //
 //     .build/release/TsugumiToolLoopCheck --out DIR [--model DIR] [--conversations FILE] [--only a,b] [--repeats N]
 //                                         [--network online|offline|model] [--context N] [--page-chars N]
-//                                         [--web-store DIR]
+//                                         [--web-store DIR] [--max-rounds N] [--thinking on|off]
+//                                         [--endpoint URL --remote-model ID]
 //
 // `--web-store DIR` answers the web tools' HTTP requests from DIR and records the ones it does not have
 // (`RecordedHTTPTransport`), so a second run reads the same search results and pages (`docs/qwen38/21` §4 E-1).
+//
+// `--endpoint URL --remote-model ID` runs the model on a llama-server behind llama-swap instead of this Mac
+// (`RemoteInferenceClient`). `--model` then only picks the kind — the prompts, sampler and call syntax — and is not
+// loaded; the context defaults to the server's slot. The `live` and `progress` checks are about this Mac's session
+// and are skipped. `--max-rounds` overrides the saved tool round budget for this run only.
 //
 // Writes `rounds.jsonl` (one line per round), `turns.jsonl` (one line per turn: answer, trace, checks) and prints a
 // summary. Exit status 1 when a check failed. Checks per turn:
@@ -39,6 +45,10 @@ struct Options {
     /// Overrides the saved page text limit for this run only (the settings file is not written).
     var pageCharacters: Int?
     var webStore: String?
+    var maxRounds: Int?
+    var thinking: Bool?
+    var endpoint: URL?
+    var remoteModel: String?
 
     init(_ arguments: [String]) {
         var iterator = arguments.dropFirst().makeIterator()
@@ -54,6 +64,10 @@ struct Options {
             case "--context": context = Int(value)
             case "--page-chars": pageCharacters = Int(value)
             case "--web-store": webStore = value
+            case "--max-rounds": maxRounds = Int(value)
+            case "--thinking": thinking = value == "on"
+            case "--endpoint": endpoint = URL(string: value)
+            case "--remote-model": remoteModel = value
             default:
                 FileHandle.standardError.write(Data("unknown flag \(flag)\n".utf8))
                 exit(2)
@@ -61,6 +75,10 @@ struct Options {
         }
         if out.isEmpty {
             FileHandle.standardError.write(Data("--out DIR is required\n".utf8))
+            exit(2)
+        }
+        if (endpoint == nil) != (remoteModel == nil) {
+            FileHandle.standardError.write(Data("--endpoint and --remote-model go together\n".utf8))
             exit(2)
         }
     }
@@ -84,11 +102,15 @@ struct RoundRecord: Sendable {
     var prefill: [(seconds: Double, done: Int, total: Int)] = []
 }
 
-/// `RealInferenceClient`, recording each generation.
+/// The session's client (`RealInferenceClient`, or `RemoteInferenceClient` with `--endpoint`), recording each generation.
 final class RecordingClient: AppModelLifecycleClient, AppInferenceRuntimeReporting, @unchecked Sendable {
-    private let inner = RealInferenceClient()
+    private let inner: any AppModelLifecycleClient & AppInferenceRuntimeReporting
     private let lock = NSLock()
     private var records: [RoundRecord] = []
+
+    init(inner: any AppModelLifecycleClient & AppInferenceRuntimeReporting) {
+        self.inner = inner
+    }
 
     var loadedRuntimeOwnBytes: UInt64? { inner.loadedRuntimeOwnBytes }
 
@@ -198,7 +220,15 @@ func runCheck() async -> Int32 {
         return 2
     }
 
-    let client = RecordingClient()
+    var remote: RemoteInferenceClient?
+    if let endpoint = options.endpoint, let remoteModel = options.remoteModel {
+        guard let kind = AppModelKind.probe(modelDirectory: URL(fileURLWithPath: options.model)) else {
+            logLine("--model \(options.model) names no model kind (it picks the prompts and call syntax for --endpoint)")
+            return 2
+        }
+        remote = RemoteInferenceClient(endpoint: endpoint, modelID: remoteModel, dialect: .init(kind: kind))
+    }
+    let client = RecordingClient(inner: remote ?? RealInferenceClient())
     var webStore: RecordedHTTPTransport?
     if let path = options.webStore {
         do {
@@ -219,10 +249,28 @@ func runCheck() async -> Int32 {
     if let pageCharacters = options.pageCharacters {
         model.webSearchConfiguration.pageCharacterLimit = pageCharacters
     }
+    if let maxRounds = options.maxRounds { model.webSearchConfiguration.maxToolRounds = maxRounds }
+    if let thinking = options.thinking { model.thinkingEnabled = thinking }
     model.networkMode = options.network
     logLine("model \(model.selectedModelKind.rawValue) context=\(model.maxContextTokens) mtp=\(model.runtimeOptions.mtpEnabled) "
         + "thinking=\(model.thinkingEnabled) network=\(model.effectiveNetworkMode.rawValue) "
         + "rounds=\(model.webSearchConfiguration.resolved().maxToolRounds) page=\(model.webSearchConfiguration.resolved().pageCharacterLimit)")
+    if let remote {
+        do {
+            try await remote.prepare()
+        } catch {
+            logLine("remote \(remote.modelID) at \(remote.endpoint.absoluteString) is not usable: \(error)")
+            return 2
+        }
+        let slot = remote.serverContext ?? 0
+        if options.context == nil, slot > 0 {
+            model.maxContextTokens = slot
+        } else if slot > 0, model.maxContextTokens > slot {
+            logLine("warning: --context \(model.maxContextTokens) is over the server slot's \(slot)")
+        }
+        logLine("remote \(remote.modelID) at \(remote.endpoint.absoluteString) dialect=\(remote.dialect.rawValue) "
+            + "slot=\(slot) context=\(model.maxContextTokens)")
+    }
     model.loadModel()
     guard await waitUntil(timeout: 600, { model.loadState.isReady || model.error != nil }),
           model.loadState.isReady else {
@@ -311,12 +359,15 @@ func runCheck() async -> Int32 {
                     // A round that did not finish leaves nothing to continue from.
                     livePosition = record.outcome == "finished" && prompt > 0 ? prompt + generated - 1 : nil
                 }
-                checks["live"] = liveNotes.isEmpty
-                checks["progress"] = progressNotes.isEmpty
+                if remote == nil {
+                    checks["live"] = liveNotes.isEmpty
+                    checks["progress"] = progressNotes.isEmpty
+                }
                 checks["error"] = model.error == nil
                 let answer = model.outputText
                 checks["answer"] = !answer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     && !answer.contains("<tool_call>") && !answer.contains("<function=")
+                    && !answer.contains("<|tool_call>")
                 let trace = model.outputToolTrace
                 let grounding = AppAnswerGrounding.of(trace)
                 if model.effectiveNetworkMode == .online {

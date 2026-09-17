@@ -140,7 +140,7 @@ let package = Package(
         // The Mac app's tool loop without the window, for checks against the real model (docs/qwen38/20).
         .executableTarget(
             name: "TsugumiToolLoopCheck",
-            dependencies: ["TsugumiAppCore"],
+            dependencies: ["TsugumiAppCore", "Tsugumi"],
             path: "Sources/TsugumiToolLoopCheck"
         ),
         .executableTarget(

@@ -1,0 +1,25 @@
+[2026-09-17 09:46:47] start q41/bare/rep1  swapouts 33372671.
+[2026-09-17 09:55:18] end   q41/bare/rep1  exit 0  10 turns  GUARD: exit 0, Swapouts delta peak 3904 pages, window peak 1920 pages, Swapins +600 pages
+[2026-09-17 09:55:38] start bf16/bare/rep1  swapouts 33376575.
+[2026-09-17 10:02:50] end   bf16/bare/rep1  exit 0  10 turns  GUARD: exit 0, Swapouts delta peak 12292 pages, window peak 8604 pages, Swapins +276 pages
+[2026-09-17 10:03:10] start bf16/offline/rep1  swapouts 33388867.
+[2026-09-17 10:17:02] end   bf16/offline/rep1  exit 0  5 turns  GUARD: exit 0, Swapouts delta peak 228 pages, window peak 212 pages, Swapins +887 pages
+[2026-09-17 10:17:23] start q41/offline/rep1  swapouts 33389095.
+[2026-09-17 10:32:40] end   q41/offline/rep1  exit 0  5 turns  GUARD: exit 0, Swapouts delta peak 8848 pages, window peak 8740 pages, Swapins +3683 pages
+[2026-09-17 10:33:00] start bf16/bare/rep2  swapouts 33397943.
+[2026-09-17 10:39:22] end   bf16/bare/rep2  exit 0  10 turns  GUARD: exit 0, Swapouts delta peak 1268 pages, window peak 692 pages, Swapins +423 pages
+[2026-09-17 10:39:42] start q41/bare/rep2  swapouts 33399211.
+[2026-09-17 10:47:59] end   q41/bare/rep2  exit 0  10 turns  GUARD: exit 0, Swapouts delta peak 56 pages, window peak 24 pages, Swapins +2142 pages
+[2026-09-17 10:48:19] start q41/offline/rep2  swapouts 33399267.
+[2026-09-17 11:00:36] end   q41/offline/rep2  exit 0  5 turns  GUARD: exit 1, Swapouts delta peak 160 pages, window peak 44 pages, Swapins +2421 pages
+[2026-09-17 11:00:56] start bf16/offline/rep2  swapouts 33399427.
+[2026-09-17 11:14:59] end   bf16/offline/rep2  exit 0  5 turns  GUARD: exit 0, Swapouts delta peak 2092 pages, window peak 1988 pages, Swapins +1756 pages
+[2026-09-17 11:15:19] start q41/bare/rep3  swapouts 33401519.
+[2026-09-17 11:24:28] end   q41/bare/rep3  exit 0  10 turns  GUARD: exit 0, Swapouts delta peak 13364 pages, window peak 5720 pages, Swapins +2788 pages
+[2026-09-17 11:24:48] start bf16/bare/rep3  swapouts 33414883.
+[2026-09-17 11:33:09] end   bf16/bare/rep3  exit 0  10 turns  GUARD: exit 0, Swapouts delta peak 12716 pages, window peak 5796 pages, Swapins +3428 pages
+[2026-09-17 11:33:29] start bf16/offline/rep3  swapouts 33427599.
+[2026-09-17 11:48:11] end   bf16/offline/rep3  exit 0  5 turns  GUARD: exit 0, Swapouts delta peak 88 pages, window peak 32 pages, Swapins +2159 pages
+[2026-09-17 11:48:31] start q41/offline/rep3  swapouts 33427687.
+[2026-09-17 12:03:33] end   q41/offline/rep3  exit 0  5 turns  GUARD: exit 1, Swapouts delta peak 96 pages, window peak 40 pages, Swapins +3272 pages
+[2026-09-17 12:03:53] all done

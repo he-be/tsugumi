@@ -138,6 +138,13 @@ public struct AppTokenEvent: Equatable, Sendable {
     /// Thought-channel text this event carries. Kept apart from `textDelta`
     /// so the UI can render reasoning as reasoning instead of answer text.
     public var reasoningDelta: String = ""
+
+    public init(index: Int, textDelta: String, elapsedDecodeSeconds: Double, reasoningDelta: String = "") {
+        self.index = index
+        self.textDelta = textDelta
+        self.elapsedDecodeSeconds = elapsedDecodeSeconds
+        self.reasoningDelta = reasoningDelta
+    }
 }
 
 public enum AppInferenceEvent: Equatable, Sendable {

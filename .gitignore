@@ -43,6 +43,8 @@ dist/
 
 # Logs / scratch
 *.log
+# 実験の記録 (docs/experiments/*/ の driver.log など) は残す
+!docs/experiments/**/*.log
 benchmark-results/
 scratch/
 tmp/
