@@ -13,7 +13,7 @@ import Tsugumi
 //     .build/release/TsugumiKernelCheck --qwen38-decode scratch/qwen38/ref-france.log \
 //         [--q38-ref-logits scratch/qwen38/ref-france.logits] [--q38-gguf ...] [--q38-ple ...]
 
-private func parseQwen38RefLog(_ path: String) throws -> (prompt: [Int], top1: [Int]) {
+func parseQwen38RefLog(_ path: String) throws -> (prompt: [Int], top1: [Int]) {
     let text = try String(contentsOfFile: path, encoding: .utf8)
     var prompt: [Int] = []
     var top1: [Int: Int] = [:]

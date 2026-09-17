@@ -123,6 +123,23 @@ package final class GGMLDenseGEMV {
         enc.endEncoding()
     }
 
+    /// Rows `[m, n]` of a Q8_0 / F16 / BF16 / K / IQ tensor -> float32 `[m][n]` at `out` (the token embedding rows
+    /// of the Qwen3.8-27B runner).
+    package func encodeDequant(commandBuffer: MTLCommandBuffer, type: GGUFFile.GGMLType,
+                               weights: MTLBuffer, weightsOffset: Int,
+                               out: MTLBuffer, outOffset: Int = 0, m: Int, n: Int) {
+        precondition(n % 32 == 0 && type != .f32)
+        let enc = commandBuffer.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(iqDequant[type] ?? (type == .q8_0 ? q8Dequant : type == .bf16 ? bf16Dequant : f16Dequant))
+        enc.setBuffer(weights, offset: weightsOffset, index: 0)
+        enc.setBuffer(out, offset: outOffset, index: 1)
+        var nv = UInt32(n)
+        enc.setBytes(&nv, length: 4, index: 2)
+        enc.dispatchThreads(MTLSize(width: n / 32, height: m, depth: 1),
+                            threadsPerThreadgroup: MTLSize(width: min(32, n / 32), height: min(16, m), depth: 1))
+        enc.endEncoding()
+    }
+
     private func encodeSgemm(commandBuffer: MTLCommandBuffer, type: GGUFFile.GGMLType,
                              weights: MTLBuffer, weightsOffset: Int,
                              x: MTLBuffer, xOffset: Int, y: MTLBuffer, yOffset: Int,

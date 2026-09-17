@@ -29,6 +29,11 @@ constant bool q38_kv_q8_c [[function_constant(0)]];
 constant bool Q38_KV_Q8 = is_function_constant_defined(q38_kv_q8_c) && q38_kv_q8_c;
 #define Q38_Q8_BLOCK 34u
 
+// GDN output-norm gate (`q38_gdn_norm_gate`). Function constant 1 set: SiLU, the Qwen3.5 / Qwen3.8-27B (`qwen35`)
+// form (llama.cpp `build_norm_gated`, docs/qwen38-27b/02 §2). Unset (or false): sigmoid, the qwen4exp form.
+constant bool q38_gdn_gate_silu_c [[function_constant(1)]];
+constant bool Q38_GDN_GATE_SILU = is_function_constant_defined(q38_gdn_gate_silu_c) && q38_gdn_gate_silu_c;
+
 /// Element j of the Q8_0 row at `row`.
 static inline float q38_q8_at(device const uchar* row, uint j) {
     device const uchar* b = row + (j / 32) * Q38_Q8_BLOCK;
@@ -339,7 +344,7 @@ kernel void q38_gdn_step(
     }
 }
 
-/// o[t][h] = rms(o[t][h]) * nw * sigmoid(z[t][h]), per value head. Thread (h, t).
+/// o[t][h] = rms(o[t][h]) * nw * sigmoid(z[t][h]) (`Q38_GDN_GATE_SILU`: silu), per value head. Thread (h, t).
 kernel void q38_gdn_norm_gate(
     device float* o [[buffer(0)]],
     device const float* z [[buffer(1)]],
@@ -353,7 +358,10 @@ kernel void q38_gdn_norm_gate(
     float ss = 0.0f;
     for (uint i = 0; i < D; ++i) ss += o[base + i] * o[base + i];
     const float scale = 1.0f / sqrt(ss / float(D) + eps);
-    for (uint i = 0; i < D; ++i) o[base + i] = o[base + i] * scale * nw[i] * q38_sigmoid(z[base + i]);
+    for (uint i = 0; i < D; ++i) {
+        const float g = Q38_GDN_GATE_SILU ? q38_silu(z[base + i]) : q38_sigmoid(z[base + i]);
+        o[base + i] = o[base + i] * scale * nw[i] * g;
+    }
 }
 
 // ---------------------------------------------------------------------------

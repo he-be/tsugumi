@@ -93,3 +93,64 @@ func runQ27DenseCheck(fixtureDir: String) throws -> Bool {
     print("  \(allPass ? "PASS" : "FAIL")")
     return allPass
 }
+
+// MARK: - Qwen3.8-27B runner against the CPU reference (`--q27-decode <ref log> [--q27-ref-logits F] [--q27-chunk N]`)
+//
+// `Qwen38DenseRunner` runs the reference's prompt plus its greedy continuation (`Scripts/qwen38_27b/reference_forward.py`
+// log) `chunk` tokens at a time with every position's logits kept (chunk 1: the decode step), and compares each
+// position's top-1 and, with the reference's `--dump-logits` file, the relative logit error (docs/qwen38-27b/04).
+
+func runQ27DecodeCheck(refLog: String, refLogits: String?, gguf: String, chunk: Int) throws -> Bool {
+    let ref = try parseQwen38RefLog(refLog)
+    let n = ref.top1.count
+    precondition(!ref.prompt.isEmpty && n > 0, "reference log has no prompt or positions")
+    var seq = ref.prompt
+    while seq.count < n { seq.append(ref.top1[seq.count - 1]) }
+    setvbuf(stdout, nil, _IOLBF, 0)
+    let runner = try Qwen38DenseRunner(gguf: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath),
+                                       capacity: n + 1, maxBatch: chunk)
+    var refLogitsData: Data?
+    if let refLogits { refLogitsData = try Data(contentsOf: URL(fileURLWithPath: refLogits)) }
+    print("Qwen3.8-27B check: \(n) positions in chunks of \(chunk), KV \(runner.kvQ8 ? "q8_0" : "f32") (\(refLog))")
+    var mismatches = 0
+    var worstLogit = 0.0
+    var start = 0
+    while start < n {
+        let T = min(chunk, n - start)
+        let all = try runner.forward(tokens: Array(seq[start..<(start + T)]), startPos: start, allLogits: true)
+        let pr = runner.lastProfile
+        for t in 0..<T {
+            let pos = start + t
+            let logits = UnsafeBufferPointer(rebasing: all[(t * runner.vocab)..<((t + 1) * runner.vocab)])
+            var best = 0
+            for i in 1..<logits.count where logits[i] > logits[best] { best = i }
+            let ok = best == ref.top1[pos]
+            if !ok { mismatches += 1 }
+            var note = ""
+            if let data = refLogitsData {
+                data.withUnsafeBytes { raw in
+                    let r = raw.bindMemory(to: Float.self)
+                    let v = runner.vocab
+                    var maxDiff = 0.0, refMax = 0.0
+                    for i in 0..<v {
+                        refMax = max(refMax, abs(Double(r[pos * v + i])))
+                        maxDiff = max(maxDiff, abs(Double(logits[i]) - Double(r[pos * v + i])))
+                    }
+                    worstLogit = max(worstLogit, maxDiff / refMax)
+                    note = String(format: "  logit rel err %.2e", maxDiff / refMax)
+                }
+            }
+            let timing = t == T - 1
+                ? String(format: "  %.2fs (embed %.0f layers %.0f head %.0f ms, gpu %.0f ms)", pr.total, pr.embed * 1000,
+                         pr.layers * 1000, pr.head * 1000, pr.gpu * 1000)
+                : ""
+            print(String(format: "  [%3d] input %7d  top1 %7d  ref %7d  %@%@%@", pos, seq[pos], best, ref.top1[pos],
+                         ok ? "ok  " : "DIFF", note, timing))
+        }
+        start += T
+    }
+    let pass = mismatches == 0 && (refLogitsData == nil || worstLogit < qwen38LogitTolerance())
+    print("  top-1 mismatches: \(mismatches)" + (refLogitsData != nil ? String(format: ", worst logit rel err %.2e", worstLogit) : ""))
+    print("  \(pass ? "PASS" : "FAIL")")
+    return pass
+}

@@ -1891,6 +1891,18 @@ if let index = arguments.firstIndex(of: "--q38-kv-quant-check") {
 if arguments.contains("--q38-select-check") {
     exit(try runQwen38SelectCheck() ? 0 : 1)
 }
+// `--q27-decode <ref log> [--q27-ref-logits F] [--q27-chunk N] [--q27-gguf G]`: Qwen38DenseRunner against the CPU
+// reference (Q27DenseCheck.swift, docs/qwen38-27b/04).
+if let index = arguments.firstIndex(of: "--q27-decode"), index + 1 < arguments.count {
+    func opt(_ name: String) -> String? {
+        arguments.firstIndex(of: name).flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+    }
+    let passed = try runQ27DecodeCheck(
+        refLog: arguments[index + 1], refLogits: opt("--q27-ref-logits"),
+        gguf: opt("--q27-gguf") ?? "~/LLM/Qwen3.8-27B-GSQ-RCO-GGUF/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf",
+        chunk: opt("--q27-chunk").flatMap { Int($0) } ?? 1)
+    exit(passed ? 0 : 1)
+}
 // `--q27-dense <fixture dir>`: Qwen3.8-27B IQ / K dense GEMV against gguf-py (Q27DenseCheck.swift, docs/qwen38-27b/03).
 if let index = arguments.firstIndex(of: "--q27-dense"), index + 1 < arguments.count {
     exit(try runQ27DenseCheck(fixtureDir: arguments[index + 1]) ? 0 : 1)
