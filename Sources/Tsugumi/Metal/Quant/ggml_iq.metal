@@ -17,9 +17,14 @@ using namespace metal;
 // Lane geometry (2 SIMD groups x 32 lanes per threadgroup, 4 rows per group):
 // every format is 256-weight blocks, each cut into 8 sub-blocks of 32 weights,
 // and lane l walks sub-blocks l, l+32, l+64, ... of the row, so the 32 lanes
-// cover the row's `N / 32` sub-blocks. A type is one `ggml_dot_*` function:
-// sub-block `ib` (0..7) of block `b` against the 32 activations at `x`.
-// `simd_sum` over the group's lanes assembles each row; lane 0 writes it.
+// cover the row's `N / 32` sub-blocks. A type is one `ggml_deq_*` function
+// (the 32 weights of sub-block `ib` (0..7) of block `b`), shared by the GEMV
+// and the dequant kernel. `simd_sum` over the group's lanes assembles each
+// row; lane 0 writes it.
+//
+// Dequant kernels (`ggml_*_dequant_f32`): rows [M, N] -> float32 [M][N] for the
+// dequant + MPS sgemm path of `GGMLDenseGEMV`, same dispatch as
+// `ggml_q8_0_dequant_f32` (thread (sub-block c, row r) writes 32 weights).
 
 constant constexpr uint kGgmlIqGroupsPerTG = 2;
 constant constexpr uint kGgmlIqRowsPerGroup = 4;
@@ -1134,20 +1139,15 @@ struct block_q2_K {
     half dmin;
 };
 
-static inline float ggml_dot_q2_K(device const block_q2_K* b, uint ib, device const float* x) {
+static inline void ggml_deq_q2_K(device const block_q2_K* b, uint ib, thread float* w) {
     const uint shift = 2 * (ib % 4);
     device const uchar* q = b->qs + 32 * (ib / 4);
-    float acc = 0.f;
     for (uint h = 0; h < 2; ++h) {
         const uchar sc = b->scales[2 * ib + h];
-        float qx = 0.f, sx = 0.f;
-        for (uint l = 16 * h; l < 16 * h + 16; ++l) {
-            qx += x[l] * float((q[l] >> shift) & 3);
-            sx += x[l];
-        }
-        acc += float(b->d) * float(sc & 0xF) * qx - float(b->dmin) * float(sc >> 4) * sx;
+        const float dl = float(b->d) * float(sc & 0xF);
+        const float ml = float(b->dmin) * float(sc >> 4);
+        for (uint l = 16 * h; l < 16 * h + 16; ++l) w[l] = dl * float((q[l] >> shift) & 3) - ml;
     }
-    return acc;
 }
 
 struct block_q4_K {
@@ -1157,7 +1157,7 @@ struct block_q4_K {
     uchar qs[128];      // 4-bit quants
 };
 
-static inline float ggml_dot_q4_K(device const block_q4_K* b, uint ib, device const float* x) {
+static inline void ggml_deq_q4_K(device const block_q4_K* b, uint ib, thread float* w) {
     device const uchar* s = b->scales;
     uint sc, m;
     if (ib < 4) {
@@ -1167,14 +1167,11 @@ static inline float ggml_dot_q4_K(device const block_q4_K* b, uint ib, device co
         sc = (s[ib + 4] & 0xF) | ((s[ib - 4] >> 6) << 4);
         m = (s[ib + 4] >> 4) | ((s[ib] >> 6) << 4);
     }
+    const float dl = float(b->d) * float(sc);
+    const float ml = float(b->dmin) * float(m);
     const uint shift = 4 * (ib % 2);
     device const uchar* q = b->qs + 32 * (ib / 2);
-    float qx = 0.f, sx = 0.f;
-    for (uint l = 0; l < 32; ++l) {
-        qx += x[l] * float((q[l] >> shift) & 0xF);
-        sx += x[l];
-    }
-    return float(b->d) * float(sc) * qx - float(b->dmin) * float(m) * sx;
+    for (uint l = 0; l < 32; ++l) w[l] = dl * float((q[l] >> shift) & 0xF) - ml;
 }
 
 struct block_q6_K {
@@ -1184,23 +1181,20 @@ struct block_q6_K {
     half d;
 };
 
-static inline float ggml_dot_q6_K(device const block_q6_K* b, uint ib, device const float* x) {
+static inline void ggml_deq_q6_K(device const block_q6_K* b, uint ib, thread float* w) {
     const uint r = ib % 4;
     device const uchar* ql = b->ql + 64 * (ib / 4) + 32 * (r % 2);
     device const uchar* qh = b->qh + 32 * (ib / 4);
     device const char* sc = b->scales + 8 * (ib / 4) + 2 * r;
     const uint lshift = r >= 2 ? 4 : 0;
     const uint hshift = 2 * r;
-    float acc = 0.f;
     for (uint h = 0; h < 2; ++h) {
-        float qx = 0.f;
+        const float dl = float(b->d) * float(sc[h]);
         for (uint l = 16 * h; l < 16 * h + 16; ++l) {
             const int q = int(((ql[l] >> lshift) & 0xF) | (((qh[l] >> hshift) & 3) << 4)) - 32;
-            qx += x[l] * float(q);
+            w[l] = dl * float(q);
         }
-        acc += float(sc[h]) * qx;
     }
-    return float(b->d) * acc;
 }
 
 // --- IQ2 -----------------------------------------------------------------------
@@ -1210,18 +1204,15 @@ struct block_iq2_xxs {
     uchar qs[64];       // per sub-block: 4 grid indices | u32 (7-bit sign index x 4, 4-bit scale)
 };
 
-static inline float ggml_dot_iq2_xxs(device const block_iq2_xxs* b, uint ib, device const float* x) {
+static inline void ggml_deq_iq2_xxs(device const block_iq2_xxs* b, uint ib, thread float* w) {
     device const uchar* q = b->qs + 8 * ib;
     const uint aux = ggml_iq_u32(q + 4);
-    float acc = 0.f;
+    const float db = float(b->d) * (0.5f + float(aux >> 28)) * 0.25f;
     for (uint l = 0; l < 4; ++l) {
         const ulong g = ggml_iq2xxs_grid[q[l]];
         const uchar signs = ggml_ksigns_iq2xs[(aux >> (7 * l)) & 127];
-        for (uint j = 0; j < 8; ++j) {
-            acc += x[8 * l + j] * ggml_iq_signed(float((g >> (8 * j)) & 0xff), signs, j);
-        }
+        for (uint j = 0; j < 8; ++j) w[8 * l + j] = db * ggml_iq_signed(float((g >> (8 * j)) & 0xff), signs, j);
     }
-    return float(b->d) * (0.5f + float(aux >> 28)) * 0.25f * acc;
 }
 
 struct block_iq2_xs {
@@ -1230,22 +1221,16 @@ struct block_iq2_xs {
     uchar scales[8];    // 4-bit scale per 16 weights
 };
 
-static inline float ggml_dot_iq2_xs(device const block_iq2_xs* b, uint ib, device const float* x) {
+static inline void ggml_deq_iq2_xs(device const block_iq2_xs* b, uint ib, thread float* w) {
     const uchar sc = b->scales[ib];
     const float db[2] = {float(b->d) * (0.5f + float(sc & 0xf)) * 0.25f,
                          float(b->d) * (0.5f + float(sc >> 4)) * 0.25f};
-    float acc = 0.f;
     for (uint l = 0; l < 4; ++l) {
         const ushort q = b->qs[4 * ib + l];
         const ulong g = ggml_iq2xs_grid[q & 511];
         const uchar signs = ggml_ksigns_iq2xs[q >> 9];
-        float part = 0.f;
-        for (uint j = 0; j < 8; ++j) {
-            part += x[8 * l + j] * ggml_iq_signed(float((g >> (8 * j)) & 0xff), signs, j);
-        }
-        acc += db[l / 2] * part;
+        for (uint j = 0; j < 8; ++j) w[8 * l + j] = db[l / 2] * ggml_iq_signed(float((g >> (8 * j)) & 0xff), signs, j);
     }
-    return acc;
 }
 
 struct block_iq2_s {
@@ -1255,23 +1240,16 @@ struct block_iq2_s {
     uchar scales[8];
 };
 
-static inline float ggml_dot_iq2_s(device const block_iq2_s* b, uint ib, device const float* x) {
+static inline void ggml_deq_iq2_s(device const block_iq2_s* b, uint ib, thread float* w) {
     const uchar sc = b->scales[ib];
     const float db[2] = {float(b->d) * (0.5f + float(sc & 0xf)) * 0.25f,
                          float(b->d) * (0.5f + float(sc >> 4)) * 0.25f};
     const uint qh = b->qh[ib];
-    float acc = 0.f;
     for (uint l = 0; l < 4; ++l) {
-        const uint idx = uint(b->qs[4 * ib + l]) | ((qh << (8 - 2 * l)) & 0x300);
-        const ulong g = ggml_iq2s_grid[idx];
+        const ulong g = ggml_iq2s_grid[uint(b->qs[4 * ib + l]) | ((qh << (8 - 2 * l)) & 0x300)];
         const uchar signs = b->qs[32 + 4 * ib + l];
-        float part = 0.f;
-        for (uint j = 0; j < 8; ++j) {
-            part += x[8 * l + j] * ggml_iq_signed(float((g >> (8 * j)) & 0xff), signs, j);
-        }
-        acc += db[l / 2] * part;
+        for (uint j = 0; j < 8; ++j) w[8 * l + j] = db[l / 2] * ggml_iq_signed(float((g >> (8 * j)) & 0xff), signs, j);
     }
-    return acc;
 }
 
 // --- IQ3 -----------------------------------------------------------------------
@@ -1281,20 +1259,19 @@ struct block_iq3_xxs {
     uchar qs[96];       // 64 grid indices | u32 per sub-block (7-bit sign index x 4, 4-bit scale)
 };
 
-static inline float ggml_dot_iq3_xxs(device const block_iq3_xxs* b, uint ib, device const float* x) {
+static inline void ggml_deq_iq3_xxs(device const block_iq3_xxs* b, uint ib, thread float* w) {
     device const uchar* q = b->qs + 8 * ib;
     const uint aux = ggml_iq_u32(b->qs + 64 + 4 * ib);
-    float acc = 0.f;
+    const float db = float(b->d) * (0.5f + float(aux >> 28)) * 0.5f;
     for (uint l = 0; l < 4; ++l) {
         const uchar signs = ggml_ksigns_iq2xs[(aux >> (7 * l)) & 127];
         const uint g1 = ggml_iq3xxs_grid[q[2 * l]];
         const uint g2 = ggml_iq3xxs_grid[q[2 * l + 1]];
         for (uint j = 0; j < 4; ++j) {
-            acc += x[8 * l + j] * ggml_iq_signed(float((g1 >> (8 * j)) & 0xff), signs, j);
-            acc += x[8 * l + j + 4] * ggml_iq_signed(float((g2 >> (8 * j)) & 0xff), signs, j + 4);
+            w[8 * l + j] = db * ggml_iq_signed(float((g1 >> (8 * j)) & 0xff), signs, j);
+            w[8 * l + j + 4] = db * ggml_iq_signed(float((g2 >> (8 * j)) & 0xff), signs, j + 4);
         }
     }
-    return float(b->d) * (0.5f + float(aux >> 28)) * 0.5f * acc;
 }
 
 // 3.4375 bpw: 9-bit grid indices (qs + one qh bit) naming 4 weights each,
@@ -1307,19 +1284,18 @@ struct block_iq3_s {
     uchar scales[4];
 };
 
-static inline float ggml_dot_iq3_s(device const block_iq3_s* b, uint ib, device const float* x) {
+static inline void ggml_deq_iq3_s(device const block_iq3_s* b, uint ib, thread float* w) {
+    const float db = float(b->d) * float(1 + 2 * ((b->scales[ib / 2] >> (4 * (ib % 2))) & 0xf));
     const uint qh = b->qh[ib];
-    float acc = 0.f;
     for (uint l = 0; l < 4; ++l) {
         const uint g1 = ggml_iq3s_grid[uint(b->qs[8 * ib + 2 * l]) | ((qh & ggml_kmask_iq2xs[2 * l]) ? 256u : 0u)];
         const uint g2 = ggml_iq3s_grid[uint(b->qs[8 * ib + 2 * l + 1]) | ((qh & ggml_kmask_iq2xs[2 * l + 1]) ? 256u : 0u)];
         const uchar signs = b->signs[4 * ib + l];
         for (uint j = 0; j < 4; ++j) {
-            acc += x[8 * l + j] * ggml_iq_signed(float((g1 >> (8 * j)) & 0xff), signs, j);
-            acc += x[8 * l + j + 4] * ggml_iq_signed(float((g2 >> (8 * j)) & 0xff), signs, j + 4);
+            w[8 * l + j] = db * ggml_iq_signed(float((g1 >> (8 * j)) & 0xff), signs, j);
+            w[8 * l + j + 4] = db * ggml_iq_signed(float((g2 >> (8 * j)) & 0xff), signs, j + 4);
         }
     }
-    return float(b->d) * float(1 + 2 * ((b->scales[ib / 2] >> (4 * (ib % 2))) & 0xf)) * acc;
 }
 
 // --- IQ1 / IQ4 -----------------------------------------------------------------
@@ -1334,7 +1310,7 @@ static inline float ggml_half_bits(ushort bits) {
     return float(*(thread const half*)(&bits));
 }
 
-static inline float ggml_dot_iq1_m(device const block_iq1_m* b, uint ib, device const float* x) {
+static inline void ggml_deq_iq1_m(device const block_iq1_m* b, uint ib, thread float* w) {
     device const uchar* s8 = b->scales;
     const uint sc0 = uint(s8[0]) | (uint(s8[1]) << 8);
     const uint sc1 = uint(s8[2]) | (uint(s8[3]) << 8);
@@ -1351,16 +1327,10 @@ static inline float ggml_dot_iq1_m(device const block_iq1_m* b, uint ib, device 
                          uint(qs[2]) | ((qh1 << 8) & 0x700), uint(qs[3]) | ((qh1 << 4) & 0x700)};
     const float delta[4] = {(qh0 & 0x08) ? -0.125f : 0.125f, (qh0 & 0x80) ? -0.125f : 0.125f,
                             (qh1 & 0x08) ? -0.125f : 0.125f, (qh1 & 0x80) ? -0.125f : 0.125f};
-    float acc = 0.f;
     for (uint l = 0; l < 4; ++l) {
         const ulong g = ggml_iq1s_grid[idx[l]];
-        float part = 0.f;
-        for (uint j = 0; j < 8; ++j) {
-            part += x[8 * l + j] * (float(char((g >> (8 * j)) & 0xff)) + delta[l]);
-        }
-        acc += dl[l / 2] * part;
+        for (uint j = 0; j < 8; ++j) w[8 * l + j] = dl[l / 2] * (float(char((g >> (8 * j)) & 0xff)) + delta[l]);
     }
-    return acc;
 }
 
 struct block_iq4_xs {
@@ -1370,20 +1340,19 @@ struct block_iq4_xs {
     uchar qs[128];      // 4-bit indices into kvalues_iq4nl
 };
 
-static inline float ggml_dot_iq4_xs(device const block_iq4_xs* b, uint ib, device const float* x) {
+static inline void ggml_deq_iq4_xs(device const block_iq4_xs* b, uint ib, thread float* w) {
     const int ls = int(((b->scales_l[ib / 2] >> (4 * (ib % 2))) & 0xf) | (((b->scales_h >> (2 * ib)) & 3) << 4));
+    const float dl = float(b->d) * float(ls - 32);
     device const uchar* q = b->qs + 16 * ib;
-    float acc = 0.f;
     for (uint j = 0; j < 16; ++j) {
-        acc += x[j] * float(ggml_kvalues_iq4nl[q[j] & 0xf]);
-        acc += x[j + 16] * float(ggml_kvalues_iq4nl[q[j] >> 4]);
+        w[j] = dl * float(ggml_kvalues_iq4nl[q[j] & 0xf]);
+        w[j + 16] = dl * float(ggml_kvalues_iq4nl[q[j] >> 4]);
     }
-    return float(b->d) * float(ls - 32) * acc;
 }
 
 // --- kernels -------------------------------------------------------------------
 
-#define GGML_IQ_GEMV(NAME, BLOCK, DOT)                                                   \
+#define GGML_IQ_GEMV(NAME, BLOCK, DEQ)                                                   \
 kernel void NAME(                                                                        \
     device const BLOCK* W [[buffer(0)]],                                                 \
     device const float* xs [[buffer(1)]],                                                \
@@ -1403,9 +1372,14 @@ kernel void NAME(                                                               
     float sum[kGgmlIqRowsPerGroup] = {0.f};                                              \
     if (row0 < M) {                                                                      \
         const uint rows = min(kGgmlIqRowsPerGroup, M - row0);                            \
+        float w[32];                                                                     \
         for (uint ib32 = tiisg; ib32 < nb32; ib32 += 32) {                               \
+            device const float* xl = x + ib32 * 32;                                      \
             for (uint row = 0; row < rows; ++row) {                                      \
-                sum[row] += DOT(W + (row0 + row) * nb + ib32 / 8, ib32 % 8, x + ib32 * 32); \
+                DEQ(W + (row0 + row) * nb + ib32 / 8, ib32 % 8, w);                      \
+                float acc = 0.f;                                                         \
+                for (uint l = 0; l < 32; ++l) acc += w[l] * xl[l];                       \
+                sum[row] += acc;                                                         \
             }                                                                            \
         }                                                                                \
     }                                                                                    \
@@ -1418,13 +1392,30 @@ kernel void NAME(                                                               
     }                                                                                    \
 }
 
-GGML_IQ_GEMV(ggml_q2_K_gemv, block_q2_K, ggml_dot_q2_K)
-GGML_IQ_GEMV(ggml_q4_K_gemv, block_q4_K, ggml_dot_q4_K)
-GGML_IQ_GEMV(ggml_q6_K_gemv, block_q6_K, ggml_dot_q6_K)
-GGML_IQ_GEMV(ggml_iq2_xxs_gemv, block_iq2_xxs, ggml_dot_iq2_xxs)
-GGML_IQ_GEMV(ggml_iq2_xs_gemv, block_iq2_xs, ggml_dot_iq2_xs)
-GGML_IQ_GEMV(ggml_iq2_s_gemv, block_iq2_s, ggml_dot_iq2_s)
-GGML_IQ_GEMV(ggml_iq3_xxs_gemv, block_iq3_xxs, ggml_dot_iq3_xxs)
-GGML_IQ_GEMV(ggml_iq3_s_gemv, block_iq3_s, ggml_dot_iq3_s)
-GGML_IQ_GEMV(ggml_iq1_m_gemv, block_iq1_m, ggml_dot_iq1_m)
-GGML_IQ_GEMV(ggml_iq4_xs_gemv, block_iq4_xs, ggml_dot_iq4_xs)
+#define GGML_IQ_DEQUANT(NAME, BLOCK, DEQ)                                                \
+kernel void NAME(                                                                        \
+    device const BLOCK* W [[buffer(0)]],                                                 \
+    device float* out [[buffer(1)]],                                                     \
+    constant uint& N [[buffer(2)]],                                                      \
+    uint2 pos [[thread_position_in_grid]]                                                \
+) {                                                                                      \
+    float w[32];                                                                         \
+    DEQ(W + pos.y * (N / 256) + pos.x / 8, pos.x % 8, w);                                \
+    device float* o = out + pos.y * N + pos.x * 32;                                      \
+    for (uint l = 0; l < 32; ++l) o[l] = w[l];                                           \
+}
+
+#define GGML_IQ_KERNELS(T)                                                               \
+GGML_IQ_GEMV(ggml_##T##_gemv, block_##T, ggml_deq_##T)                                   \
+GGML_IQ_DEQUANT(ggml_##T##_dequant_f32, block_##T, ggml_deq_##T)
+
+GGML_IQ_KERNELS(q2_K)
+GGML_IQ_KERNELS(q4_K)
+GGML_IQ_KERNELS(q6_K)
+GGML_IQ_KERNELS(iq2_xxs)
+GGML_IQ_KERNELS(iq2_xs)
+GGML_IQ_KERNELS(iq2_s)
+GGML_IQ_KERNELS(iq3_xxs)
+GGML_IQ_KERNELS(iq3_s)
+GGML_IQ_KERNELS(iq1_m)
+GGML_IQ_KERNELS(iq4_xs)

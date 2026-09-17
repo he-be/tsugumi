@@ -4,8 +4,8 @@ import MetalPerformanceShaders
 
 /// `ggml_dense.metal`: y = W x over a GGML tensor that stays in its GGUF bytes
 /// (Q8_0, F16 or F32), float32 activations, for T tokens at once.
-/// `ggml_iq.metal` adds the IQ / K types of the Qwen3.8-27B GGUF (docs/qwen38-27b/01 §3-1);
-/// those have no dequant kernel yet and always take the direct kernels.
+/// `ggml_iq.metal` adds the K / IQ types of the Qwen3.8-27B GGUF (docs/qwen38-27b/01 §3-1, 03),
+/// with both the direct and the dequant kernels.
 ///
 /// Up to `mpsMinTokens` tokens the kernels read the GGUF bytes directly: at one
 /// token the cost is the weight read and those kernels sit at the memory
@@ -25,6 +25,7 @@ package final class GGMLDenseGEMV {
     private let q8Dequant: MTLComputePipelineState
     private let f16Dequant: MTLComputePipelineState
     private let iq: [GGUFFile.GGMLType: MTLComputePipelineState]
+    private let iqDequant: [GGUFFile.GGMLType: MTLComputePipelineState]
     /// Token count from which the dequant + sgemm path runs (`Q38_MPS_MIN_T`, 0 = never).
     package var mpsMinTokens = Int(ProcessInfo.processInfo.environment["Q38_MPS_MIN_T"] ?? "") ?? 32
     /// Tensors above this many weights stay on the direct kernels (the LM head).
@@ -61,23 +62,24 @@ package final class GGMLDenseGEMV {
             return try device.makeComputePipelineState(function: fn)
         }
         var iq: [GGUFFile.GGMLType: MTLComputePipelineState] = [:]
-        for (type, name) in Self.iqKernels { iq[type] = try iqPSO(name) }
+        var iqDequant: [GGUFFile.GGMLType: MTLComputePipelineState] = [:]
+        for (type, name) in Self.iqKernels {
+            iq[type] = try iqPSO("ggml_\(name)_gemv")
+            iqDequant[type] = try iqPSO("ggml_\(name)_dequant_f32")
+        }
         self.iq = iq
+        self.iqDequant = iqDequant
     }
 
+    /// Kernel name stem in `ggml_iq.metal` (`ggml_<stem>_gemv`, `ggml_<stem>_dequant_f32`).
     private static let iqKernels: [GGUFFile.GGMLType: String] = [
-        .q2_K: "ggml_q2_K_gemv", .q4_K: "ggml_q4_K_gemv", .q6_K: "ggml_q6_K_gemv",
-        .iq2_xxs: "ggml_iq2_xxs_gemv", .iq2_xs: "ggml_iq2_xs_gemv", .iq2_s: "ggml_iq2_s_gemv",
-        .iq3_xxs: "ggml_iq3_xxs_gemv", .iq3_s: "ggml_iq3_s_gemv",
-        .iq1_m: "ggml_iq1_m_gemv", .iq4_xs: "ggml_iq4_xs_gemv",
+        .q2_K: "q2_K", .q4_K: "q4_K", .q6_K: "q6_K",
+        .iq2_xxs: "iq2_xxs", .iq2_xs: "iq2_xs", .iq2_s: "iq2_s",
+        .iq3_xxs: "iq3_xxs", .iq3_s: "iq3_s", .iq1_m: "iq1_m", .iq4_xs: "iq4_xs",
     ]
 
     package static func supports(_ type: GGUFFile.GGMLType) -> Bool {
-        hasDequant(type) || iqKernels[type] != nil
-    }
-
-    private static func hasDequant(_ type: GGUFFile.GGMLType) -> Bool {
-        type == .q8_0 || type == .f16 || type == .f32 || type == .bf16
+        type == .q8_0 || type == .f16 || type == .f32 || type == .bf16 || iqKernels[type] != nil
     }
 
     /// `y[t] = W x[t]` for `t < tokens`: `x` holds `tokens * n` floats, `y` `tokens * m`.
@@ -88,7 +90,7 @@ package final class GGMLDenseGEMV {
                         y: MTLBuffer, yOffset: Int = 0,
                         m: Int, n: Int, tokens: Int = 1) {
         precondition(n % 32 == 0, "row width must be a multiple of 32")
-        if mpsMinTokens > 0 && tokens >= mpsMinTokens && m * n <= mpsMaxWeights && Self.hasDequant(type) {
+        if mpsMinTokens > 0 && tokens >= mpsMinTokens && m * n <= mpsMaxWeights {
             encodeSgemm(commandBuffer: commandBuffer, type: type, weights: weights, weightsOffset: weightsOffset,
                         x: x, xOffset: xOffset, y: y, yOffset: yOffset, m: m, n: n, tokens: tokens)
             return
@@ -131,7 +133,7 @@ package final class GGMLDenseGEMV {
                 scratch = device.makeBuffer(length: m * n * 4, options: .storageModePrivate)
             }
             let enc = commandBuffer.makeComputeCommandEncoder()!
-            enc.setComputePipelineState(type == .q8_0 ? q8Dequant : type == .bf16 ? bf16Dequant : f16Dequant)
+            enc.setComputePipelineState(iqDequant[type] ?? (type == .q8_0 ? q8Dequant : type == .bf16 ? bf16Dequant : f16Dequant))
             enc.setBuffer(weights, offset: weightsOffset, index: 0)
             enc.setBuffer(scratch, offset: 0, index: 1)
             var nv = UInt32(n)
