@@ -1723,6 +1723,22 @@ if let index = arguments.firstIndex(of: "--qwen38-llkv-check"), index + 1 < argu
     exit(0)
 }
 
+// `--qwen38-ple-check <token file>`: the Q4_1 PLE table against the original BF16 rows (Qwen38PLECheck.swift).
+if let index = arguments.firstIndex(of: "--qwen38-ple-check"), index + 1 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    try runQwen38PLECheck(
+        tokenFile: arguments[index + 1], tokens: opt("--q38-tokens").flatMap { Int($0) } ?? Int.max,
+        chunk: opt("--q38-chunk").flatMap { Int($0) } ?? 2048,
+        newTokens: opt("--q38-new").flatMap { Int($0) } ?? 32,
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple/Qwen3.8-Flash-Next-PLE-Q4_1.gguf",
+        pleRef: opt("--q38-ple-ref") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple-bf16-sparse/Qwen3.8-Flash-Next-PLE-BF16-sparse.gguf")
+    exit(0)
+}
+
 // `--qwen38-llkv-dump <token file> <dir>`: the LLKVApprox fill targets for the HF projector (Qwen38LLKVCheck.swift).
 if let index = arguments.firstIndex(of: "--qwen38-llkv-dump"), index + 2 < arguments.count {
     func opt(_ flag: String) -> String? {

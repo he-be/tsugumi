@@ -47,7 +47,7 @@ package final class Qwen38Runner {
     /// Largest T one `forward` takes.
     package let maxBatch: Int
     private let file: GGUFFile
-    private let pleFile: GGUFFile
+    private var pleFile: GGUFFile
     /// `Q38_DOWN_SIDECAR` (default: `down/Qwen3.8-Flash-Next-Q2KDown640.gguf` next to the GGUF when it exists; `0` = off,
     /// or a path): the trunk's Q2_K down rows with the pad of their last block dropped, 252 -> 212 B a row,
     /// 1,489,920 -> 1,387,520 B an expert (`Scripts/qwen38/down_sidecar.py`, docs/qwen38/15 §2 W). The kernels read
@@ -251,6 +251,10 @@ package final class Qwen38Runner {
     /// each layer's input projections the mean of the boundary residual's hc copies; `hcmix` feeds them the layer's
     /// own `hc_attn` mix of the boundary residual (exact at layer `llkvSplit`).
     package enum LLKVFill: String { case exact, mean, hcmix }
+    /// Quality checks of the PLE table (docs/qwen38/31): skip the PLE block (its history stays as it was), and swap the
+    /// table file between runs (`reset` the state first; the rows are read per forward, nothing is cached).
+    package var ablatePLE = false
+    package func replacePLE(_ url: URL) throws { pleFile = try GGUFFile(url: url) }
     /// 0: off. Otherwise the first layer that the rows before `exactTail` skip.
     package var llkvSplit = Int(ProcessInfo.processInfo.environment["Q38_LLKV_SPLIT"] ?? "") ?? 0
     /// The prompt's last tokens that `Qwen38Completion` runs through every layer (`forward`'s `exactTail`).
@@ -1646,9 +1650,11 @@ package final class Qwen38Runner {
     // MARK: - PLE
 
     /// Host half: hashed n-gram rows (ds4 `qwen4_ple_step`), 16 Q4_1 rows of 160 into `pleEmb[t]`.
+    /// A BF16 `ple.weight` (the original table, `--q38-ple` pointing at a sparse copy that only holds the rows a
+    /// prompt hits) is read as is; an all-zero row there is a row that was never fetched, and stops the run.
     private func pleRows(tokens: [Int]) throws {
         let pt = try pleFile.tensor("ple.weight")
-        precondition(pt.type == .q4_1 && pt.rowWidth == 160)
+        precondition((pt.type == .q4_1 || pt.type == .bf16) && pt.rowWidth == 160)
         let emb = pleEmb.contents().bindMemory(to: Float.self, capacity: tokens.count * e)
         for (ti, token) in tokens.enumerated() {
             var ctx = [token]
@@ -1671,6 +1677,16 @@ package final class Qwen38Runner {
             let out = emb + ti * e
             for (h, r) in rows.enumerated() {
                 let p = pleFile.base + pt.offset + r * pt.bytesPerRow
+                if pt.type == .bf16 {
+                    var any: UInt16 = 0
+                    for j in 0..<160 {
+                        let bits = p.loadUnaligned(fromByteOffset: j * 2, as: UInt16.self)
+                        any |= bits
+                        out[h * 160 + j] = Float(bitPattern: UInt32(bits) << 16)
+                    }
+                    precondition(any != 0, "PLE row \(r) is all zero (not fetched into the sparse BF16 table)")
+                    continue
+                }
                 for b in 0..<5 {
                     let d = Float(p.loadUnaligned(fromByteOffset: b * 20, as: Float16.self))
                     let m = Float(p.loadUnaligned(fromByteOffset: b * 20 + 2, as: Float16.self))
@@ -2094,7 +2110,7 @@ package final class Qwen38Runner {
                 cb = queue.makeCommandBuffer()!
                 return cb
             }
-            if il == pleLayer {
+            if il == pleLayer && !ablatePLE {
                 try pleBlock(cb, il: il, T: rows)
                 try section("ple")
             }
