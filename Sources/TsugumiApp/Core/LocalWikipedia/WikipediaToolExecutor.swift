@@ -10,12 +10,6 @@ import Foundation
 public struct WikipediaToolExecutor: AppToolExecutor {
     public static let searchToolName = "wikipedia_search"
     public static let pageToolName = "wikipedia_page"
-    /// The round the app runs itself before the model's first: not
-    /// declared, so the model cannot call it, only read it.
-    public static let lookupToolName = "wikipedia_lookup"
-    /// How many articles a lookup shows, and how much of each opening.
-    public static let lookupLimit = 3
-    public static let lookupOpeningLimit = 400
 
     let index: LocalWikipediaIndex
     let maxResults: Int
@@ -73,36 +67,6 @@ public struct WikipediaToolExecutor: AppToolExecutor {
         case Self.pageToolName: call.stringArgument("title") ?? call.argumentsJSON
         default: call.argumentsJSON
         }
-    }
-
-    /// The openings of the articles the prompt names — a small, dated
-    /// reference the model gets for free, so that what a 4B model half
-    /// remembers about 淀城 or えきねっと is corrected before it decides
-    /// whether to search. The prompt's own words pick the articles
-    /// (`LocalWikipediaIndex.mentions`); nothing is guessed.
-    public func lookups(prompt: String, callIDPrefix: String) async -> [AppToolLookup] {
-        let mentions = index.mentions(in: prompt, limit: Self.lookupLimit)
-        guard !mentions.isEmpty else { return [] }
-        let titles = mentions.map(\.title)
-        var lines = ["参考: 質問に含まれる語を Wikipedia (\(dateStamp)の複製) で引いた記事の導入部です。質問に関係なければ無視してください。本文は wikipedia_page で読めます。"]
-        for mention in mentions {
-            lines.append("")
-            let alias = mention.mention == mention.title ? "" : " (質問中の「\(mention.mention)」)"
-            lines.append("■ \(mention.title)\(alias)")
-            lines.append(Self.clip(mention.opening, to: Self.lookupOpeningLimit))
-        }
-        let arguments = try? JSONSerialization.data(withJSONObject: ["titles": titles], options: [.withoutEscapingSlashes])
-        let call = AppToolCall(id: callIDPrefix + "1", name: Self.lookupToolName,
-                               argumentsJSON: arguments.flatMap { String(data: $0, encoding: .utf8) } ?? "{}")
-        return [AppToolLookup(call: call,
-                              result: AppToolResult(content: lines.joined(separator: "\n"),
-                                                    summary: "Wikipedia · \(titles.count) 件"),
-                              subject: titles.joined(separator: " / "))]
-    }
-
-    static func clip(_ text: String, to limit: Int) -> String {
-        guard text.count > limit else { return text }
-        return String(text.prefix(limit)) + "…"
     }
 
     /// What every result says about the copy it comes from, so the model

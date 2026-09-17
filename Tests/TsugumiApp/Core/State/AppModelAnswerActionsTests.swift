@@ -254,7 +254,7 @@ import Testing
 
     @Test func groundingCountsFinishedStepsByFamily() {
         let trace = [
-            AppToolTraceEntry(id: "1", name: "wikipedia_lookup", subject: "淀城", status: .done),
+            AppToolTraceEntry(id: "1", name: "wikipedia_search", subject: "淀城", status: .done),
             AppToolTraceEntry(id: "2", name: "web_search", subject: "q", status: .done),
             AppToolTraceEntry(id: "3", name: "fetch_page", subject: "u", status: .failed),
             AppToolTraceEntry(id: "4", name: "wikipedia_page", subject: "淀城", status: .done),

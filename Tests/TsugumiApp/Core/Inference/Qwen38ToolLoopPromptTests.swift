@@ -67,7 +67,7 @@ struct Qwen38ToolLoopPromptTests {
         return (executor.definitions, system)
     }
 
-    /// Two Online turns: the app's own lookup, a forced search, prose and a forced fetch, the answer; then a follow-up
+    /// Two Online turns: a forced search, prose and a forced fetch, the answer; then a follow-up
     /// that reads two sections of a Wikipedia page and answers; then a third question.
     static func steps() throws -> [Step] {
         let (tools, system) = try declarations()
@@ -82,15 +82,12 @@ struct Qwen38ToolLoopPromptTests {
         }
 
         let q1 = "ツグミの渡りの時期と、2026年の観察情報を調べて"
-        let lookup = call("lookup-1a2b3c4d-1", "wikipedia_lookup", #"{"titles":["ツグミ"]}"#)
         let search = call("call_1", "web_search", #"{"query":"ツグミ 2026 観察"}"#)
         let fetch = call("call_2", "fetch_page", #"{"url":"https://example.jp/birds/tsugumi?year=2026"}"#)
-        let lookupResult = "参考: 質問に含まれる語を Wikipedia (2026年8月30日 時点の複製) で引いた記事の導入部です。\n\n■ ツグミ\nツグミ（鶫、学名: Turdus eunomus）は、スズメ目ツグミ科に分類される鳥類の一種。"
         let searchResult = "検索: ツグミ 2026 観察 (Serper, 2 件、取得日 2026年9月14日)\n[1] ツグミの観察記録 2026\n    https://example.jp/birds/tsugumi?year=2026\n    10月下旬から飛来…\n[2] 冬鳥カレンダー\n    https://example.org/calendar\n    ツグミ・シロハラ…\n"
         let pageResult = "URL: https://example.jp/birds/tsugumi?year=2026\n取得日 2026年9月14日\n\n# ツグミの観察記録 2026\n\n  10 月下旬にシベリアから渡来し、4 月まで滞在する。\n\n| 月 | 記録数 |\n| --- | ---: |\n| 11 | 42 |\n\n"
         let answer1 = "ツグミは冬鳥で、**10 月下旬**に渡来し 4 月ごろまで滞在します。2026 年の記録では 11 月に 42 件の観察がありました。\n\n参照:\n- https://example.jp/birds/tsugumi?year=2026"
-        let t1r1Continuation = [AppChatTurn(role: .assistant, text: "", toolCalls: [lookup]),
-                                .toolResult(callID: lookup.id, name: lookup.name, content: lookupResult)]
+        let t1r1Continuation: [AppChatTurn] = []
         let t1r2Continuation = t1r1Continuation
             + [AppChatTurn(role: .assistant, text: "", toolCalls: [search]),
                .toolResult(callID: search.id, name: search.name, content: searchResult)]

@@ -42,46 +42,6 @@ private func fixtureIndex() throws -> LocalWikipediaIndex {
     }
 }
 
-@Suite struct WikipediaMentionFinderTests {
-    @Test func cutsWordsAndDropsURLs() {
-        let words = WikipediaMentionFinder.words(in: "淀城の遺構が https://example.jp/a/b?c=淀城 見つかった")
-        #expect(words.contains("遺構"))
-        #expect(!words.contains { $0.contains("example") || $0.contains("http") })
-        #expect(WikipediaMentionFinder.words(in: "").isEmpty)
-        #expect(WikipediaMentionFinder.candidates(in: []).isEmpty)
-    }
-
-    @Test func candidatesAreEveryWindowLongestFirst() {
-        let candidates = WikipediaMentionFinder.candidates(in: ["城崎", "シー", "ワールド", "に", "つい", "て"])
-        #expect(candidates.first?.text == "城崎シーワールドに")
-        #expect(candidates.first?.words == 0..<4)
-        #expect(candidates.contains { $0.text == "城崎シーワールド" && $0.wordCount == 3 })
-        #expect(candidates.contains { $0.text == "シーワールド" && $0.words == 1..<3 })
-        // One-character windows are not names; "に" and "て" are skipped.
-        #expect(!candidates.contains { $0.text == "に" })
-        #expect(candidates.last?.text == "つい")
-        // Latin words keep their space, CJK neighbours do not.
-        let latin = WikipediaMentionFinder.candidates(in: ["M6", "Mac", "mini", "について"])
-        #expect(latin.contains { $0.text == "Mac mini" && $0.isLatin })
-        #expect(latin.contains { $0.text == "Mac miniについて" })
-        // Numbers alone are not looked up.
-        #expect(!WikipediaMentionFinder.candidates(in: ["2026", "年"]).contains { $0.text == "2026" })
-    }
-
-    @Test func keepsNamesByLinkProbabilityAndShape() {
-        // The numbers of the chat history (docs/LOCAL_WIKIPEDIA.md §5).
-        #expect(WikipediaMentionFinder.keeps(linkProbability: 5.5, wordCount: 1, isLatin: false))   // 米国
-        #expect(WikipediaMentionFinder.keeps(linkProbability: 1.28, wordCount: 2, isLatin: false))  // 淀城
-        #expect(WikipediaMentionFinder.keeps(linkProbability: 0.17, wordCount: 2, isLatin: false))  // 熊本地震
-        #expect(WikipediaMentionFinder.keeps(linkProbability: 0.99, wordCount: 1, isLatin: true))   // IBM
-        #expect(!WikipediaMentionFinder.keeps(linkProbability: 0.33, wordCount: 1, isLatin: false)) // 遺構
-        #expect(!WikipediaMentionFinder.keeps(linkProbability: 0.57, wordCount: 1, isLatin: false)) // クーデター
-        #expect(!WikipediaMentionFinder.keeps(linkProbability: 0.04, wordCount: 1, isLatin: false)) // ニュース
-        #expect(!WikipediaMentionFinder.keeps(linkProbability: 0.06, wordCount: 2, isLatin: false)) // もう少し
-        #expect(!WikipediaMentionFinder.keeps(linkProbability: 0.12, wordCount: 1, isLatin: true))  // granite
-    }
-}
-
 @Suite struct LocalWikipediaIndexTests {
     @Test func opensAndReadsTheSummary() throws {
         let index = try fixtureIndex()
@@ -123,24 +83,6 @@ private func fixtureIndex() throws -> LocalWikipediaIndex {
         #expect(Set(hits.map(\.title)) == ["東京タワー", "アメリカ合衆国"])
         // No article has the phrase; its bigrams still find the station.
         #expect(index.search("東京の駅", limit: 5).first?.title == "東京駅")
-    }
-
-    @Test func mentionsNameTheArticlesInAPrompt() throws {
-        let index = try fixtureIndex()
-        let found = index.mentions(in: "東京タワーと米国の話をして", limit: 3)
-        #expect(found.map(\.title) == ["アメリカ合衆国", "東京タワー"])
-        #expect(found[0].mention == "米国")
-        #expect(found[0].incomingLinks == 90000 && found[0].documentFrequency == 1)
-        #expect(found[1].mention == "東京タワー")
-        #expect(found[1].opening.hasPrefix("東京タワー（とうきょうタワー）"))
-        // The longer span claims its words: 東京 alone is not tried after 東京タワー.
-        #expect(!found.contains { $0.title == "東京駅" })
-        // Latin titles join with a space; the limit trims the tail.
-        #expect(index.mentions(in: "iPhone 16 が欲しい", limit: 3).map(\.title) == ["iPhone 16"])
-        #expect(index.mentions(in: "東京タワーと米国", limit: 1).count == 1)
-        #expect(index.mentions(in: "存在しない語ばかり", limit: 3).isEmpty)
-        #expect(WikipediaTokenizer.phraseExpression("Mac mini") == "\"mac mini\"")
-        #expect(WikipediaTokenizer.phraseExpression("・") == nil)
     }
 
     @Test func pageLookupFollowsRedirectsAndInflatesTheBody() throws {
@@ -227,20 +169,6 @@ private func fixtureIndex() throws -> LocalWikipediaIndex {
         #expect(!short.content.contains("目次:"))
     }
 
-    @Test func lookupRendersTheOpeningsAsAReference() async throws {
-        let executor = try executor()
-        let lookup = try #require(await executor.lookups(prompt: "東京タワーと米国の話", callIDPrefix: "lookup-").first)
-        #expect(lookup.call == AppToolCall(id: "lookup-1", name: "wikipedia_lookup",
-                                          argumentsJSON: #"{"titles":["アメリカ合衆国","東京タワー"]}"#))
-        #expect(lookup.subject == "アメリカ合衆国 / 東京タワー")
-        #expect(lookup.result.summary == "Wikipedia · 2 件")
-        #expect(lookup.result.content.hasPrefix("参考: 質問に含まれる語を Wikipedia (2026年8月30日 時点の複製) で引いた記事の導入部です。"))
-        #expect(lookup.result.content.contains("\n■ アメリカ合衆国 (質問中の「米国」)\nアメリカ合衆国（"))
-        #expect(lookup.result.content.contains("\n■ 東京タワー\n東京タワー（"))
-        #expect(await executor.lookups(prompt: "なにもない", callIDPrefix: "lookup-").isEmpty)
-        #expect(WikipediaToolExecutor.clip("abcdef", to: 3) == "abc…")
-    }
-
     @Test func missingPageSuggestsNearTitles() async throws {
         let executor = try executor()
         let result = await executor.execute(AppToolCall(id: "1", name: "wikipedia_page",
@@ -304,7 +232,7 @@ private func fixtureIndex() throws -> LocalWikipediaIndex {
         #expect(text.contains("インターネットには接続しません"))
         #expect(!text.contains("web_search"))
         #expect(text.contains("刻々と変わることは Wikipedia にはありません"))
-        #expect(text.contains("wikipedia_lookup"))
+        #expect(!text.contains("wikipedia_lookup"))
         #expect(!text.contains("{"))
     }
 
@@ -378,13 +306,5 @@ private func fixtureIndex() throws -> LocalWikipediaIndex {
                                                        argumentsJSON: #"{"query":"熊本地震"}"#))
         #expect(exact.content.contains("[1] 熊本地震 の本文:"))
         #expect(exact.content.contains("時点の複製"))
-        // The lookup on three prompts of the history: the name, not the nouns
-        // around it; two names in one prompt; nothing out of a URL.
-        #expect(index.mentions(in: "淀城の遺構が桂川の工事中に見つかったって本当？", limit: 3).map(\.title) == ["淀城"])
-        let rail = index.mentions(in: "えきねっと、e5489、ex予約など、鉄道のWEBは利用者を苦しめるのが要件に入ってるのか？", limit: 3)
-        #expect(Set(rail.map(\.title)).isSuperset(of: ["えきねっと", "エクスプレス予約"]))
-        #expect(!rail.contains { $0.title == "鉄道" })
-        let commit = index.mentions(in: "https://github.com/torvalds/linux/commit/a5148bc2fa27092862ac4b9e7b5c8340d60cff34 を解説して", limit: 3)
-        #expect(commit.isEmpty)
     }
 }

@@ -115,7 +115,13 @@ FTS5 の標準の字句解析は日本語を切れず、内蔵の trigram は 2 
 書き、読む側は開くときに自分で切った結果と突き合わせる。違えば
 `tokenizerMismatch` で開かない。規則を変えるときは両方を変えて版を上げる。
 
-## 5. 質問の固有名詞を先に引く (`wikipedia_lookup`)
+## 5. 質問の固有名詞を先に引く (`wikipedia_lookup`、2026-09-17 に削除)
+
+**削除した。** Qwen3.8 は prefill が遅く (Mac で数十 tok/s)、1 ラウンド目の前に毎回積まれる導入部 (最大 3 記事 × 400 字) の
+読み込みが、最初の応答までの待ちを伸ばしていた。ユーザー判断で、Gemma を含めて機能ごと外した
+(`WikipediaToolExecutor.lookups`、`LocalWikipediaIndex.mentions`、`WikipediaMentionFinder`、system prompt の案内文)。
+1 ラウンド目の前に結果を積む口 (`AppToolExecutor.lookups` → `startFirstRound(seeding:)`) は、Web 側の URL 事前フェッチが
+使うので残っている。以下は削除前の記録。
 
 モデルの 1 ラウンド目の前に、アプリが質問文そのものを索引で引き、名指しされた
 記事の導入部を「参考」として渡す。モデルは呼べない (宣言しない) が、継続ターン
@@ -228,9 +234,8 @@ Wikipedia のツールは「この Mac に保存された {日付} 時点の複�
 | `Scripts/wiki/build_jawiki_index.py` | download / build / search / page / tokenize |
 | `Sources/TsugumiApp/Core/LocalWikipedia/WikipediaTokenizer.swift` | 字句規則、MATCH 式、題名の正規化 |
 | `Sources/TsugumiApp/Core/LocalWikipedia/LocalWikipediaIndex.swift` | SQLite の読み (検索・記事・meta の検査・deflate 展開) |
-| `Sources/TsugumiApp/Core/LocalWikipedia/WikipediaToolExecutor.swift` | 2 つのツールの宣言と結果の文面、Go の畳み込み、`wikipedia_lookup` の文面 |
-| `Sources/TsugumiApp/Core/LocalWikipedia/WikipediaMentionFinder.swift` | 質問文から候補の窓を切る (NLTokenizer)、link probability の閾値 |
-| `AppModel.run` → `startFirstRound(seeding:)` | 1 ラウンド目の前に `executor.lookup` を走らせ、当たりを継続ターンに積む |
+| `Sources/TsugumiApp/Core/LocalWikipedia/WikipediaToolExecutor.swift` | 2 つのツールの宣言と結果の文面、Go の畳み込み |
+| `AppModel.run` → `startFirstRound(seeding:)` | 1 ラウンド目の前に `executor.lookups` を走らせ、当たり (いまは Web の URL 事前フェッチだけ) を継続ターンに積む |
 | `Sources/TsugumiApp/Core/LocalWikipedia/CompositeToolExecutor.swift` | Web と Wikipedia を 1 つの宣言にまとめる |
 | `Sources/TsugumiApp/Core/Resources/search-tool-prompts.json` | system prompt の穴埋め (web / wikipedia / both) |
 | `AppModel.makeToolExecutor` | キーと索引から実行器を組む。どちらも無ければエラー |

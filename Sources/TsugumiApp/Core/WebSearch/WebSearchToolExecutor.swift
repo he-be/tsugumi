@@ -374,7 +374,7 @@ public enum WebSearchPrompt {
             "names": "wikipedia_search と wikipedia_page (この Mac に保存された日本語版 Wikipedia、{wiki_date} 時点)",
             "access": "wikipedia_search と wikipedia_page は、この Mac に保存された日本語版 Wikipedia の複製 ({wiki_date} 時点) を読みます。インターネットには接続しません。",
             "choice_alone": "刻々と変わることは Wikipedia にはないので、検索せずにその旨を答えます。",
-            "reading": "wikipedia_search の結果から記事を選び、wikipedia_page で本文を読んでから答えます。最初に wikipedia_lookup として添えられた導入部は参考で、関係なければ無視して構いません。",
+            "reading": "wikipedia_search の結果から記事を選び、wikipedia_page で本文を読んでから答えます。",
             "reference": "Wikipedia の記事名",
         ],
         "both": [

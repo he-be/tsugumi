@@ -50,7 +50,7 @@ system prompt の日付と同じ暦・同じ書き方 (`WebSearchPrompt.japanese
   読むかどうかをモデルに決めさせる限り直らないので、アプリが先に読む。読めなかった
   ときもエラーの結果を積む (届かない、という事実も答えの材料)。system prompt には
   「添えられた本文を読んで答える」の一文がある。
-- **質問中の固有名詞を Wikipedia で引く** (`wikipedia_lookup`、docs/LOCAL_WIKIPEDIA.md §5)。
+- ~~質問中の固有名詞を Wikipedia で引く~~ (`wikipedia_lookup`)。2026-09-17 に削除した。Qwen3.8 の遅い prefill で最初の応答が遅れるため (docs/LOCAL_WIKIPEDIA.md §5)。
 
 Composite のときは宣言順 (Wikipedia → Web) にまとめ、呼び出し id は
 `lookup-<8桁>-<実行器番号>-<連番>`。

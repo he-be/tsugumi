@@ -160,9 +160,9 @@ import Testing
                 result: AppToolResult(content: "URL: https://example.jp/yodo\n\n淀城の遺構が…", summary: "Jina Reader · 9 chars"),
                 subject: "https://example.jp/yodo"),
             AppToolLookup(
-                call: AppToolCall(id: "y", name: "wikipedia_lookup", argumentsJSON: #"{"titles":["淀城"]}"#),
-                result: AppToolResult(content: "参考: …\n\n■ 淀城\n淀城は…", summary: "Wikipedia · 1 件"),
-                subject: "淀城"),
+                call: AppToolCall(id: "y", name: "fetch_page", argumentsJSON: #"{"url":"https://example.jp/castle"}"#),
+                result: AppToolResult(content: "URL: https://example.jp/castle\n\n■ 淀城\n淀城は…", summary: "direct · 9 chars"),
+                subject: "https://example.jp/castle"),
         ]
         let client = ScriptedToolClient([.answer("本当です。\n参照: 淀城"), .answer("はい")])
         let executor = ScriptedToolExecutor(results: [:], seeds: seeds)
@@ -181,7 +181,7 @@ import Testing
         // One assistant turn carrying both calls, then a result per call.
         try #require(first.continuation.count == 3)
         #expect(first.continuation[0].role == .assistant)
-        #expect(first.continuation[0].toolCalls.map(\.name) == ["fetch_page", "wikipedia_lookup"])
+        #expect(first.continuation[0].toolCalls.map(\.name) == ["fetch_page", "fetch_page"])
         let ids = first.continuation[0].toolCalls.map(\.id)
         #expect(ids.allSatisfy { $0.hasPrefix("lookup-") } && ids[0] != ids[1])
         #expect(first.continuation[1].role == .tool && first.continuation[1].toolCallID == ids[0])
@@ -190,9 +190,9 @@ import Testing
         #expect(first.continuation[2].text.contains("■ 淀城"))
         // The seed is not a round: the model's first call is still its own choice.
         #expect(first.toolChoice == .auto)
-        #expect(model.outputToolTrace.map(\.subject) == ["https://example.jp/yodo", "淀城"])
+        #expect(model.outputToolTrace.map(\.subject) == ["https://example.jp/yodo", "https://example.jp/castle"])
         #expect(model.outputToolTrace.allSatisfy { $0.status == .done })
-        #expect(model.outputToolTrace.map(\.summary) == ["Jina Reader · 9 chars", "Wikipedia · 1 件"])
+        #expect(model.outputToolTrace.map(\.summary) == ["Jina Reader · 9 chars", "direct · 9 chars"])
         #expect(model.outputResponsePlainText.contains("本当です"))
 
         // The lookup folds into history with the rest of the turn.
@@ -202,7 +202,7 @@ import Testing
         try #require(client.requests.count == 2)
         let history = client.requests[1].history
         #expect(history.map(\.role) == [.user, .assistant, .tool, .tool, .assistant])
-        #expect(history.dropFirst().first?.toolCalls.map(\.name) == ["fetch_page", "wikipedia_lookup"])
+        #expect(history.dropFirst().first?.toolCalls.map(\.name) == ["fetch_page", "fetch_page"])
     }
 
     @MainActor
