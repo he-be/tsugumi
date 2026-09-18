@@ -356,3 +356,57 @@ private func fixtureIndex() throws -> LocalWikipediaIndex {
         #expect(exact.content.contains("時点の複製"))
     }
 }
+
+@Suite struct WikipediaGathererTests {
+    /// Keyword vectors whose remainder sits on a different axis for queries and documents, so a term without a
+    /// keyword is near nothing (the executor's `TwoWordEmbedder` would make it equally near every plain chunk).
+    final class Embedder: SectionEmbedding, @unchecked Sendable {
+        var queries: [String] = []
+        func vector(_ text: String, rest: Int) -> [Float] {
+            var raw: [Float] = [text.contains("333") ? 1 : 0, text.contains("ワシントン") ? 1 : 0, 0, 0]
+            raw[rest] = 0.1
+            let norm = raw.reduce(0) { $0 + $1 * $1 }.squareRoot()
+            return raw.map { $0 / norm }
+        }
+        func embed(query: String) throws -> [Float] { queries.append(query); return vector(query, rest: 2) }
+        func embed(documents: [String]) throws -> [[Float]] { documents.map { vector($0, rest: 3) } }
+    }
+
+    @Test func chunksPackLinesAndCutLongOnesAfterSentences() {
+        #expect(WikipediaGatherer.chunks(of: "あい\nうえ\n\nおか", size: 5) == ["あい\nうえ", "おか"])
+        #expect(WikipediaGatherer.chunks(of: "一二三。四五六。七", size: 4) == ["一二三。", "四五六。", "七"])
+        // A sentence still over the size is cut hard; the pieces are then packed like lines.
+        #expect(WikipediaGatherer.chunks(of: "あいうえおかき。", size: 3) == ["あいう", "えおか", "き。"])
+        #expect(WikipediaGatherer.chunks(of: "", size: 3).isEmpty)
+    }
+
+    @Test func articlesTakeEachTermsHitsInTurn() throws {
+        let gatherer = WikipediaGatherer(index: try fixtureIndex(), embedder: Embedder(), question: "q", maxArticles: 2)
+        #expect(gatherer.articles(for: ["東京", "米国"]).map(\.title) == ["東京駅", "アメリカ合衆国"])
+        #expect(gatherer.articles(for: ["東京", "東京"]).map(\.title) == ["東京駅", "東京タワー"])
+    }
+
+    @Test func gatherPicksClosestFirstWithinTheBudgetAndNeverRepeats() throws {
+        let embedder = Embedder()
+        let gatherer = WikipediaGatherer(index: try fixtureIndex(), embedder: embedder,
+                                         question: "東京タワーの高さは333メートル？", characterBudget: 60)
+        let first = try gatherer.gather(terms: ["東京"], dateStamp: "2026年8月30日 時点")
+        #expect(embedder.queries == ["東京タワーの高さは333メートル？", "東京"])
+        #expect(first.text.hasPrefix("Wikipedia (2026年8月30日 時点) を「東京」で検索し、"))
+        // The chunk with "333" is closest and goes in although it is over the budget; nothing fits beside it.
+        let tower = try #require(first.text.range(of: "\n[東京タワー · 節 1/1] "))
+        #expect(first.text[tower.upperBound...].contains("高さは333メートル"))
+        #expect(first.chunksPicked == 1 && first.characters > 60)
+        #expect(first.text.hasSuffix("見つかった記事: 東京駅 / 東京タワー"))
+        let second = try gatherer.gather(terms: ["東京"], dateStamp: "d")
+        #expect(second.chunksScored == first.chunksScored - 1)
+        #expect(!second.text.contains("高さは333メートル"))
+    }
+
+    @Test func gatherWithNothingFoundSaysSo() throws {
+        let gatherer = WikipediaGatherer(index: try fixtureIndex(), embedder: Embedder(), question: "q")
+        let result = try gatherer.gather(terms: ["存在しない語ぬぬぬ"], dateStamp: "d")
+        #expect(result.text.contains("(新しい段落はありません)"))
+        #expect(result.text.hasSuffix("見つかった記事: なし"))
+    }
+}

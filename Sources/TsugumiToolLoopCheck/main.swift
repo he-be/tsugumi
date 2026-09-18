@@ -14,7 +14,7 @@ import TsugumiAppCore
 //                                         [--web-store DIR] [--max-rounds N] [--thinking on|off]
 //                                         [--endpoint URL --remote-model ID] [--replay RUN_DIR]
 //                                         [--search-budget N] [--pin-search] [--sample-forced TOOL:N]
-//                                         [--stop-after-round K] [--section-embed DIR]
+//                                         [--stop-after-round K] [--section-embed DIR] [--gather DIR]
 //
 // `--web-store DIR` answers the web tools' HTTP requests from DIR and records the ones it does not have
 // (`RecordedHTTPTransport`), so a second run reads the same search results and pages (`docs/qwen38/21` §4 E-1).
@@ -36,6 +36,9 @@ import TsugumiAppCore
 // `--sample-forced TOOL:N` (with `--endpoint`) draws N seeded calls at each forced TOOL round into `samples.jsonl`.
 // `--section-embed DIR` (a Ruri v3 Core ML directory) makes each Wikipedia search carry the sections of the found
 // articles closest to the question (R1-d, docs/qwen38/39); the settings file is not written.
+// `--gather DIR` (a Ruri v3 Core ML directory, with `--endpoint`, Offline) runs the turns without tools: the model
+// writes search terms or an answer under a grammar, and the app hands over the closest chunks of the found articles
+// (`GatherLoop.swift`, docs/qwen38/40). The app's own tool loop is not used.
 // `--stop-after-round K` ends a turn after K rounds: round K+1 answers empty without the model, and the turn's checks
 // are skipped.
 //
@@ -63,6 +66,10 @@ struct Options {
     var pageCharacters: Int?
     /// A Ruri v3 Core ML directory for this run only: Wikipedia searches carry the near sections (R1-d, docs/qwen38/39).
     var sectionEmbed: String?
+    /// A Ruri v3 Core ML directory: run the turns in the gather mode (docs/qwen38/40) instead of the app's tool loop.
+    var gather: String?
+    /// With `--gather`: score the cases of this file without the model (`runGatherProbe`).
+    var gatherProbe: String?
     var webStore: String?
     var maxRounds: Int?
     var thinking: Bool?
@@ -92,6 +99,8 @@ struct Options {
             case "--context": context = Int(value)
             case "--page-chars": pageCharacters = Int(value)
             case "--section-embed": sectionEmbed = NSString(string: value).expandingTildeInPath
+            case "--gather": gather = NSString(string: value).expandingTildeInPath
+            case "--gather-probe": gatherProbe = value
             case "--web-store": webStore = value
             case "--max-rounds": maxRounds = Int(value)
             case "--thinking": thinking = value == "on"
@@ -110,6 +119,10 @@ struct Options {
         }
         if out.isEmpty {
             FileHandle.standardError.write(Data("--out DIR is required\n".utf8))
+            exit(2)
+        }
+        if gather != nil, gatherProbe == nil, endpoint == nil || network != .offline || sectionEmbed != nil {
+            FileHandle.standardError.write(Data("--gather needs --endpoint and --network offline, without --section-embed\n".utf8))
             exit(2)
         }
         if (endpoint == nil) != (remoteModel == nil) {
@@ -370,6 +383,9 @@ func runCheck() async -> Int32 {
     if let maxRounds = options.maxRounds { model.webSearchConfiguration.maxToolRounds = maxRounds }
     if let thinking = options.thinking { model.thinkingEnabled = thinking }
     model.networkMode = options.network
+    if let probe = options.gatherProbe, let gather = options.gather {
+        return runGatherProbe(file: probe, gatherDirectory: gather, model: model)
+    }
     logLine("model \(model.selectedModelKind.rawValue) context=\(model.maxContextTokens) mtp=\(model.runtimeOptions.mtpEnabled) "
         + "thinking=\(model.thinkingEnabled) network=\(model.effectiveNetworkMode.rawValue) "
         + "rounds=\(model.webSearchConfiguration.resolved().maxToolRounds) page=\(model.webSearchConfiguration.resolved().pageCharacterLimit)")
@@ -396,6 +412,10 @@ func runCheck() async -> Int32 {
         return 2
     }
 
+    if let gather = options.gather, let remote {
+        return await runGather(options: options, gatherDirectory: gather, model: model, remote: remote,
+                               conversations: conversations, outDirectory: outDirectory)
+    }
     let rounds = appendHandle(outDirectory.appendingPathComponent("rounds.jsonl"))
     let turns = appendHandle(outDirectory.appendingPathComponent("turns.jsonl"))
     let sampleLog = SampleLog(handle: options.sampleForced.isEmpty

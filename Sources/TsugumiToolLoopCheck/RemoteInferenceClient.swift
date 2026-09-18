@@ -379,6 +379,33 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
         return request
     }
 
+    /// One round of `--gather` (docs/qwen38/40): `messages` rendered by the model's own template, continued with
+    /// `/v1/completions` under `grammar` (GBNF), with the request's sampler. No tools are declared.
+    func constrained(messages: [[String: Any]], grammar: String, sampling request: AppGenerationRequest,
+                     maxTokens: Int) async throws -> (text: String, finish: String, timings: [String: Any]) {
+        let rendered = try await postJSON("upstream/\(modelID)/apply-template", [
+            "model": modelID, "messages": messages,
+            "chat_template_kwargs": ["enable_thinking": request.enableThinking],
+        ])
+        guard let prompt = rendered["prompt"] as? String else {
+            throw AppInferenceError.unknown("apply-template returned no prompt")
+        }
+        var body: [String: Any] = [
+            "model": modelID,
+            "prompt": prompt,
+            "grammar": grammar,
+            "max_tokens": maxTokens,
+            "temperature": request.temperature,
+            "cache_prompt": true,
+        ]
+        if let topK = request.topK { body["top_k"] = topK }
+        if let topP = request.topP { body["top_p"] = topP }
+        let result = try await postJSON("v1/completions", body)
+        let choice = (result["choices"] as? [[String: Any]])?.first ?? [:]
+        return (choice["text"] as? String ?? "", choice["finish_reason"] as? String ?? "",
+                result["timings"] as? [String: Any] ?? [:])
+    }
+
     private func postJSON(_ path: String, _ body: [String: Any]) async throws -> [String: Any] {
         let (data, response) = try await session.data(for: urlRequest(path, body))
         return try Self.decode(data, response)
