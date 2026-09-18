@@ -70,6 +70,11 @@ struct Options {
     var gather: String?
     /// With `--gather`: score the cases of this file without the model (`runGatherProbe`).
     var gatherProbe: String?
+    /// With `--gather-probe`: write each case's gathered text (what the loop would hand over) to this JSONL file
+    /// instead of printing the ranking (docs/qwen38/41).
+    var gatherProbeOut: String?
+    /// With `--gather`: how the gatherer finds articles, `question,qfirst=K,titles,articles=N` (docs/qwen38/41). Empty is 40's.
+    var gatherSearch = ""
     var webStore: String?
     var maxRounds: Int?
     var thinking: Bool?
@@ -101,6 +106,8 @@ struct Options {
             case "--section-embed": sectionEmbed = NSString(string: value).expandingTildeInPath
             case "--gather": gather = NSString(string: value).expandingTildeInPath
             case "--gather-probe": gatherProbe = value
+            case "--gather-probe-out": gatherProbeOut = value
+            case "--gather-search": gatherSearch = value
             case "--web-store": webStore = value
             case "--max-rounds": maxRounds = Int(value)
             case "--thinking": thinking = value == "on"
@@ -384,7 +391,8 @@ func runCheck() async -> Int32 {
     if let thinking = options.thinking { model.thinkingEnabled = thinking }
     model.networkMode = options.network
     if let probe = options.gatherProbe, let gather = options.gather {
-        return runGatherProbe(file: probe, gatherDirectory: gather, model: model)
+        return runGatherProbe(file: probe, gatherDirectory: gather, model: model, out: options.gatherProbeOut,
+                              searchSpec: options.gatherSearch)
     }
     logLine("model \(model.selectedModelKind.rawValue) context=\(model.maxContextTokens) mtp=\(model.runtimeOptions.mtpEnabled) "
         + "thinking=\(model.thinkingEnabled) network=\(model.effectiveNetworkMode.rawValue) "

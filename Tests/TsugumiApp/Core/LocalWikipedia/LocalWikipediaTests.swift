@@ -386,6 +386,29 @@ private func fixtureIndex() throws -> LocalWikipediaIndex {
         #expect(gatherer.articles(for: ["東京", "東京"]).map(\.title) == ["東京駅", "東京タワー"])
     }
 
+    @Test func questionHitsComeFirstInEachTurn() throws {
+        let gatherer = WikipediaGatherer(index: try fixtureIndex(), embedder: Embedder(), question: "米国",
+                                         maxArticles: 2, search: .init(question: true))
+        #expect(gatherer.articles(for: ["東京"]).map(\.title) == ["アメリカ合衆国", "東京駅"])
+        // questionFirst takes that many of the question's hits before the turns start.
+        let turns = WikipediaGatherer(index: try fixtureIndex(), embedder: Embedder(), question: "東京",
+                                      maxArticles: 2, search: .init(question: true))
+        let first = WikipediaGatherer(index: try fixtureIndex(), embedder: Embedder(), question: "東京",
+                                      maxArticles: 2, search: .init(question: true, questionFirst: 2))
+        #expect(turns.articles(for: ["米国"]).map(\.title) == ["東京駅", "アメリカ合衆国"])
+        #expect(first.articles(for: ["米国"]).map(\.title) == ["東京駅", "東京タワー"])
+    }
+
+    @Test func aWordThatIsATitleLeadsItsTermsHits() throws {
+        let plain = WikipediaGatherer(index: try fixtureIndex(), embedder: Embedder(), question: "q", maxArticles: 1)
+        let titles = WikipediaGatherer(index: try fixtureIndex(), embedder: Embedder(), question: "q", maxArticles: 1,
+                                       search: .init(titleWords: true))
+        // "米国" is a redirect name of アメリカ合衆国; alone it is already the exact-title hit, so nothing changes.
+        #expect(titles.articles(for: ["米国"]).map(\.title) == plain.articles(for: ["米国"]).map(\.title))
+        #expect(titles.articles(for: ["東京 米国"]).map(\.title) == ["アメリカ合衆国"])
+        #expect(titles.articles(for: ["東京 米国"]).first?.isExactTitle == true)
+    }
+
     @Test func gatherPicksClosestFirstWithinTheBudgetAndNeverRepeats() throws {
         let embedder = Embedder()
         let gatherer = WikipediaGatherer(index: try fixtureIndex(), embedder: embedder,

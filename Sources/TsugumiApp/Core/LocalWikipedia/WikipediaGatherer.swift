@@ -26,8 +26,26 @@ public final class WikipediaGatherer: @unchecked Sendable {
         public var embedSeconds: Double
     }
 
+    /// How the articles are found (docs/qwen38/41). The defaults are the gather mode as 40 measured it.
+    public struct Search: Equatable, Sendable {
+        /// Also run the user's question itself as a search, taken before the terms.
+        public var question = false
+        /// When a term has several words, an article whose title (or redirect name) is one of the words is taken
+        /// first for that term ("ガソリン税 暫定税率廃止" finds ガソリン税 even when the phrase is not in it).
+        public var titleWords = false
+        /// With `question`: this many of the question's hits are taken before the terms' turns start.
+        public var questionFirst = 0
+
+        public init(question: Bool = false, titleWords: Bool = false, questionFirst: Int = 0) {
+            self.question = question
+            self.titleWords = titleWords
+            self.questionFirst = questionFirst
+        }
+    }
+
     let index: LocalWikipediaIndex
     let embedder: any SectionEmbedding
+    let search: Search
     let maxArticles: Int
     let characterBudget: Int
     let chunkCharacters: Int
@@ -38,9 +56,10 @@ public final class WikipediaGatherer: @unchecked Sendable {
 
     public init(index: LocalWikipediaIndex, embedder: any SectionEmbedding, question: String,
                 maxArticles: Int = 8, characterBudget: Int = 3_000, chunkCharacters: Int = 300,
-                pageCharacterLimit: Int = 6_000) {
+                pageCharacterLimit: Int = 6_000, search: Search = Search()) {
         self.index = index
         self.embedder = embedder
+        self.search = search
         self.question = question.trimmingCharacters(in: .whitespacesAndNewlines)
         self.maxArticles = max(1, maxArticles)
         self.characterBudget = max(1, characterBudget)
@@ -49,11 +68,31 @@ public final class WikipediaGatherer: @unchecked Sendable {
     }
 
     /// The articles the terms find, taken in turn from each term's hits (1st of each, then 2nd of each, …) until
-    /// `maxArticles`, without repeats.
+    /// `maxArticles`, without repeats. With `search.question` the question's own hits come first in each turn;
+    /// with `search.titleWords` a term's words that are article titles lead that term's hits.
     func articles(for terms: [String]) -> [LocalWikipediaIndex.Hit] {
-        let lists = terms.map { index.search($0, limit: maxArticles) }
+        var lists = terms.map { term -> [LocalWikipediaIndex.Hit] in
+            var hits = index.search(term, limit: maxArticles)
+            guard search.titleWords else { return hits }
+            let words = term.split(whereSeparator: \.isWhitespace).map(String.init)
+            guard words.count > 1 else { return hits }
+            for word in words.reversed() {
+                guard let page = index.page(title: word) else { continue }
+                hits.removeAll { $0.pageID == page.pageID }
+                hits.insert(LocalWikipediaIndex.Hit(pageID: page.pageID, title: page.title, snippet: "",
+                                                    incomingLinks: 0, isExactTitle: true), at: 0)
+            }
+            return hits
+        }
         var seen: Set<Int> = []
         var picked: [LocalWikipediaIndex.Hit] = []
+        if search.question, !question.isEmpty {
+            let hits = index.search(question, limit: maxArticles)
+            for hit in hits.prefix(search.questionFirst) where picked.count < maxArticles {
+                if seen.insert(hit.pageID).inserted { picked.append(hit) }
+            }
+            lists.insert(Array(hits.dropFirst(search.questionFirst)), at: 0)
+        }
         for rank in 0..<(lists.map(\.count).max() ?? 0) {
             for list in lists where rank < list.count {
                 let hit = list[rank]

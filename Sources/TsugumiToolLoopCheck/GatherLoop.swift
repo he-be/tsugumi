@@ -70,6 +70,8 @@ func runGather(options: Options, gatherDirectory: String, model: AppModel, remot
                conversations: [Conversation], outDirectory: URL) async -> Int32 {
     let resolved = model.webSearchConfiguration.resolved()
     let maxRounds = max(2, resolved.maxToolRounds)
+    guard let setup = GatherSetup(options.gatherSearch, maxArticles: resolved.maxSearchResults) else { return 2 }
+    logLine("gather search: question=\(setup.search.question) qfirst=\(setup.search.questionFirst) titles=\(setup.search.titleWords) articles=\(setup.maxArticles)")
     let base: AppGenerationRequest
     let index: LocalWikipediaIndex
     let embedder: RuriSectionEmbedder
@@ -110,8 +112,8 @@ func runGather(options: Options, gatherDirectory: String, model: AppModel, remot
                 logLine("\(label) ask: \(question)")
                 let started = Date()
                 let gatherer = WikipediaGatherer(index: index, embedder: embedder, question: question,
-                                                 maxArticles: resolved.maxSearchResults,
-                                                 pageCharacterLimit: resolved.pageCharacterLimit)
+                                                 maxArticles: setup.maxArticles,
+                                                 pageCharacterLimit: resolved.pageCharacterLimit, search: setup.search)
                 var messages: [[String: Any]] = [["role": "system", "content": system]] + history
                     + [["role": "user", "content": question]]
                 var continuation: [[String: Any]] = []
@@ -218,6 +220,30 @@ func runGather(options: Options, gatherDirectory: String, model: AppModel, remot
     return failures.isEmpty ? 0 : 1
 }
 
+/// `--gather-search question,qfirst=K,titles,articles=N` (docs/qwen38/41): how the gatherer finds articles. Empty is 40's.
+struct GatherSetup {
+    var search = WikipediaGatherer.Search()
+    var maxArticles: Int
+
+    init?(_ spec: String, maxArticles: Int) {
+        self.maxArticles = maxArticles
+        for item in spec.split(separator: ",").map({ $0.trimmingCharacters(in: .whitespaces) }) where !item.isEmpty {
+            if item == "question" {
+                search.question = true
+            } else if item == "titles" {
+                search.titleWords = true
+            } else if item.hasPrefix("qfirst="), let count = Int(item.dropFirst(7)), count >= 0 {
+                search.questionFirst = count
+            } else if item.hasPrefix("articles="), let count = Int(item.dropFirst(9)), count > 0 {
+                self.maxArticles = count
+            } else {
+                logLine("--gather-search: unknown item \(item)")
+                return nil
+            }
+        }
+    }
+}
+
 // `--gather DIR --gather-probe FILE`: no model. For each case of FILE
 // (`[{"name", "question", "terms": [...], "needles": [...], "titles": [...]}]`), prints each term's search hits, the
 // articles the gatherer takes, the top of the ranking and where the budget cuts it, and for each needle the best rank
@@ -231,13 +257,34 @@ struct GatherProbeCase: Decodable {
 }
 
 @MainActor
-func runGatherProbe(file: String, gatherDirectory: String, model: AppModel) -> Int32 {
+func runGatherProbe(file: String, gatherDirectory: String, model: AppModel, out: String? = nil,
+                    searchSpec: String = "") -> Int32 {
     let resolved = model.webSearchConfiguration.resolved()
+    guard let setup = GatherSetup(searchSpec, maxArticles: resolved.maxSearchResults) else { return 2 }
     do {
         guard let url = resolved.wikipediaIndexURL else { logLine("no local Wikipedia index"); return 2 }
         let index = try LocalWikipediaIndex(path: url.path)
         let embedder = try RuriSectionEmbedder.shared(directory: URL(fileURLWithPath: gatherDirectory, isDirectory: true))
         let cases = try JSONDecoder().decode([GatherProbeCase].self, from: Data(contentsOf: URL(fileURLWithPath: file)))
+        if let out {
+            // The first gather of each case, exactly as `runGather` hands it over (docs/qwen38/41).
+            let dateStamp = index.summary.dumpDateJapanese.map { "\($0) 時点の複製" } ?? "日付不明の複製"
+            FileManager.default.createFile(atPath: out, contents: nil)
+            let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: out))
+            defer { try? handle.close() }
+            for probe in cases {
+                let gatherer = WikipediaGatherer(index: index, embedder: embedder, question: probe.question,
+                                                 maxArticles: setup.maxArticles,
+                                                 pageCharacterLimit: resolved.pageCharacterLimit, search: setup.search)
+                let gathered = try gatherer.gather(terms: probe.terms, dateStamp: dateStamp)
+                let row: [String: Any] = ["name": probe.name, "question": probe.question, "terms": probe.terms,
+                                          "material": gathered.text, "articles": gathered.articles,
+                                          "embed_s": gathered.embedSeconds]
+                handle.write(try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]) + Data("\n".utf8))
+                logLine("\(probe.name): \(gathered.chunksPicked) chunks, \(String(format: "%.2f", gathered.embedSeconds)) s")
+            }
+            return 0
+        }
         for probe in cases {
             print("===== \(probe.name): \(probe.question)")
             for term in probe.terms {
@@ -247,8 +294,8 @@ func runGatherProbe(file: String, gatherDirectory: String, model: AppModel) -> I
             }
             let extra = probe.titles.compactMap { index.page(title: $0)?.pageID }
             let gatherer = WikipediaGatherer(index: index, embedder: embedder, question: probe.question,
-                                             maxArticles: resolved.maxSearchResults,
-                                             pageCharacterLimit: resolved.pageCharacterLimit)
+                                             maxArticles: setup.maxArticles,
+                                             pageCharacterLimit: resolved.pageCharacterLimit, search: setup.search)
             let found = try gatherer.ranked(terms: probe.terms)
             print("taken: " + found.articles.map(\.title).joined(separator: " / "))
             var size = 0
@@ -268,8 +315,8 @@ func runGatherProbe(file: String, gatherDirectory: String, model: AppModel) -> I
             }
             for (rank, item) in found.chunks.prefix(cut + 3).enumerated() { print(line(rank, item)) }
             let all = extra.isEmpty ? found : try WikipediaGatherer(
-                index: index, embedder: embedder, question: probe.question, maxArticles: resolved.maxSearchResults,
-                pageCharacterLimit: resolved.pageCharacterLimit).ranked(terms: probe.terms, extraPages: extra)
+                index: index, embedder: embedder, question: probe.question, maxArticles: setup.maxArticles,
+                pageCharacterLimit: resolved.pageCharacterLimit, search: setup.search).ranked(terms: probe.terms, extraPages: extra)
             for needle in probe.needles {
                 if let rank = all.chunks.firstIndex(where: { $0.chunk.text.contains(needle) }) {
                     print("needle 「\(needle)」" + (extra.isEmpty ? "" : " (with titles)") + ": " + line(rank, all.chunks[rank]))
