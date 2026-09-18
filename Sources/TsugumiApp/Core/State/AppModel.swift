@@ -1548,11 +1548,20 @@ public final class AppModel {
         }
         var executors: [any AppToolExecutor] = []
         if let url = resolved.wikipediaIndexURL {
+            var embedder: RuriSectionEmbedder?
+            if let directory = resolved.sectionEmbeddingURL {
+                do {
+                    embedder = try RuriSectionEmbedder.shared(directory: directory)
+                } catch {
+                    throw AppInferenceError.invalidRequest(
+                        "The section embedding model at \(directory.path) cannot be used: \(String(describing: error)).")
+                }
+            }
             do {
                 let index = try LocalWikipediaIndex(path: url.path)
                 executors.append(WikipediaToolExecutor(
                     index: index, maxResults: resolved.maxSearchResults,
-                    pageCharacterLimit: resolved.pageCharacterLimit))
+                    pageCharacterLimit: resolved.pageCharacterLimit, sectionEmbedder: embedder))
             } catch {
                 throw AppInferenceError.invalidRequest(
                     AppLocalization.string("The local Wikipedia index at \(url.path) cannot be used: \(String(describing: error)). Fix the path in the Inspector, or clear it."))

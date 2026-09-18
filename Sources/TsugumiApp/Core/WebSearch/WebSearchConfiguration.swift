@@ -34,6 +34,10 @@ public struct WebSearchConfiguration: Codable, Equatable, Sendable {
     /// (`Scripts/wiki/build_jawiki_index.py`). Empty declares no Wikipedia
     /// tools. With a Wikipedia index the tools work without any API key.
     public var wikipediaIndexPath: String = ""
+    /// Directory of a Ruri v3 Core ML model (one `.mlmodelc` and `tokenizer.json`). When set, each Wikipedia
+    /// search result carries the sections of the found articles closest to the user's question (R1-d,
+    /// docs/qwen38/39). Empty: off.
+    public var sectionEmbeddingPath: String = ""
     public var country: String = "jp"
     public var language: String = "ja"
 
@@ -42,7 +46,7 @@ public struct WebSearchConfiguration: Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case version, serperAPIKey, braveAPIKey, jinaAPIKey, preferJinaReader
         case maxSearchResults, pageCharacterLimit, maxToolRounds, preSearchThinkingBudget
-        case wikipediaIndexPath, country, language
+        case wikipediaIndexPath, sectionEmbeddingPath, country, language
     }
 
     public init(from decoder: Decoder) throws {
@@ -58,6 +62,7 @@ public struct WebSearchConfiguration: Codable, Equatable, Sendable {
         preSearchThinkingBudget = try container.decodeIfPresent(
             Int.self, forKey: .preSearchThinkingBudget) ?? 512
         wikipediaIndexPath = try container.decodeIfPresent(String.self, forKey: .wikipediaIndexPath) ?? ""
+        sectionEmbeddingPath = try container.decodeIfPresent(String.self, forKey: .sectionEmbeddingPath) ?? ""
         country = try container.decodeIfPresent(String.self, forKey: .country) ?? "jp"
         language = try container.decodeIfPresent(String.self, forKey: .language) ?? "ja"
     }
@@ -104,6 +109,13 @@ public struct WebSearchConfiguration: Codable, Equatable, Sendable {
         let trimmed = wikipediaIndexPath.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty else { return nil }
         return URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath)
+    }
+
+    /// The section embedding directory with `~` expanded, or nil when none is set.
+    public var sectionEmbeddingURL: URL? {
+        let trimmed = sectionEmbeddingPath.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        return URL(fileURLWithPath: (trimmed as NSString).expandingTildeInPath, isDirectory: true)
     }
 }
 

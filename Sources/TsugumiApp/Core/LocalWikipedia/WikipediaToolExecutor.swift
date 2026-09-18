@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// The two tools the chat declares when a local Wikipedia index is
 /// configured. `wikipedia_search` runs the full-text search and hands back
@@ -14,11 +15,32 @@ public struct WikipediaToolExecutor: AppToolExecutor {
     let index: LocalWikipediaIndex
     let maxResults: Int
     let pageCharacterLimit: Int
+    /// With one, every search result carries the parts of the found articles closest to the user's question
+    /// instead of the top article's opening (R1-d, docs/qwen38/39).
+    let sectionEmbedder: (any SectionEmbedding)?
+    let nearState = NearSectionState()
 
-    public init(index: LocalWikipediaIndex, maxResults: Int, pageCharacterLimit: Int) {
+    public init(index: LocalWikipediaIndex, maxResults: Int, pageCharacterLimit: Int,
+                sectionEmbedder: (any SectionEmbedding)? = nil) {
         self.index = index
         self.maxResults = max(1, maxResults)
         self.pageCharacterLimit = max(500, pageCharacterLimit)
+        self.sectionEmbedder = sectionEmbedder
+    }
+
+    /// The question the near sections are picked for, and the vectors of the articles already cut this turn.
+    final class NearSectionState: Sendable {
+        let question = Mutex("")
+        let vectors = Mutex<[Int: [[Float]]]>([:])
+    }
+
+    /// Nothing to add before the first round; the user's question is kept for the near sections.
+    public func lookups(prompt: String, callIDPrefix: String) async -> [AppToolLookup] {
+        if sectionEmbedder != nil {
+            nearState.question.withLock { $0 = prompt }
+            nearState.vectors.withLock { $0 = [:] }
+        }
+        return []
     }
 
     public var promptFacts: AppToolPromptFacts {
@@ -102,7 +124,12 @@ public struct WikipediaToolExecutor: AppToolExecutor {
         }
         lines.append("")
         var summary = "Wikipedia · \(hits.count) hits"
-        if Self.shouldGo(hits, query: query), let page = index.page(id: hits[0].pageID) {
+        if let near = nearSections(hits, query: query) {
+            lines.append(contentsOf: near.lines)
+            lines.append("")
+            lines.append("同じ記事の他の節は、wikipedia_page に題名と sections (節の番号) を渡すと読めます。")
+            summary += near.summary
+        } else if Self.shouldGo(hits, query: query), let page = index.page(id: hits[0].pageID) {
             let body = Self.body(of: page, sections: nil, limit: pageCharacterLimit)
             lines.append("[1] \(page.title) の本文:")
             lines.append(contentsOf: body.lines)
@@ -113,6 +140,63 @@ public struct WikipediaToolExecutor: AppToolExecutor {
             lines.append("本文を読むには wikipedia_page に題名を渡します。")
         }
         return AppToolResult(content: lines.joined(separator: "\n"), summary: summary)
+    }
+
+    /// The sections of the found articles closest to the user's question (the search query when there is none),
+    /// closest first, as many as fit in one read's limit (at least one, clipped). Nil without an embedder.
+    func nearSections(_ hits: [LocalWikipediaIndex.Hit], query: String) -> (lines: [String], summary: String)? {
+        guard let embedder = sectionEmbedder else { return nil }
+        let started = Date()
+        let kept = nearState.question.withLock { $0 }.trimmingCharacters(in: .whitespacesAndNewlines)
+        let question = kept.isEmpty ? query : kept
+        struct Candidate { let order: Int; let title: String; let outline: PageOutline; let section: Int; let score: Float }
+        var candidates: [Candidate] = []
+        do {
+            let target = try embedder.embed(query: question)
+            for hit in hits {
+                guard let page = index.page(id: hit.pageID) else { continue }
+                let outline = PageOutline(text: page.text, pageLimit: pageCharacterLimit)
+                let vectors: [[Float]]
+                if let cached = nearState.vectors.withLock({ $0[page.pageID] }) {
+                    vectors = cached
+                } else {
+                    vectors = try embedder.embed(documents: outline.sections.map {
+                        $0.heading.isEmpty ? $0.text : $0.heading + "\n" + $0.text
+                    })
+                    nearState.vectors.withLock { $0[page.pageID] = vectors }
+                }
+                for (section, vector) in vectors.enumerated() {
+                    let score = zip(target, vector).reduce(Float(0)) { $0 + $1.0 * $1.1 }
+                    candidates.append(Candidate(order: candidates.count, title: page.title, outline: outline,
+                                                section: section, score: score))
+                }
+            }
+        } catch {
+            return (["(質問に近い節は選べませんでした)"], " + near failed: \(error)")
+        }
+        guard !candidates.isEmpty else { return nil }
+        // Ties keep search order, then page order.
+        candidates.sort { $0.score != $1.score ? $0.score > $1.score : $0.order < $1.order }
+        var picked: [Candidate] = []
+        var size = 0
+        for candidate in candidates {
+            let length = candidate.outline.sections[candidate.section].text.count
+            if !picked.isEmpty, size + length > pageCharacterLimit { break }
+            picked.append(candidate)
+            size += length
+        }
+        var lines = ["質問に近い節 (検索結果の記事から、アプリが質問との近さで選んだもの。近い順):"]
+        for candidate in picked {
+            let outline = candidate.outline
+            let (text, clipped) = HTMLTextExtractor.clip(outline.sections[candidate.section].text, to: pageCharacterLimit)
+            lines.append("")
+            lines.append("[\(candidate.title) · 節 \(candidate.section + 1)/\(outline.sections.count)] "
+                         + outline.label(candidate.section))
+            lines.append(text)
+            if clipped { lines.append("…(節 \(candidate.section + 1) はここで打ち切り)") }
+        }
+        let seconds = String(format: "%.2f", Date().timeIntervalSince(started))
+        return (lines, " + near \(picked.count) of \(candidates.count) sections (\(seconds) s)")
     }
 
     func page(_ title: String, sections: [Int]?) -> AppToolResult {

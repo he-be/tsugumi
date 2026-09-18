@@ -169,6 +169,54 @@ private func fixtureIndex() throws -> LocalWikipediaIndex {
         #expect(!short.content.contains("目次:"))
     }
 
+    /// Vectors from two words, so which section is nearest is known: the query and the texts that share a word.
+    final class TwoWordEmbedder: SectionEmbedding, @unchecked Sendable {
+        var queries: [String] = []
+        func vector(_ text: String) -> [Float] {
+            let raw: [Float] = [text.contains("333") ? 1 : 0, text.contains("ワシントン") ? 1 : 0, 0.1]
+            let norm = raw.reduce(0) { $0 + $1 * $1 }.squareRoot()
+            return raw.map { $0 / norm }
+        }
+        func embed(query: String) throws -> [Float] { queries.append(query); return vector(query) }
+        func embed(documents: [String]) throws -> [[Float]] { documents.map(vector) }
+    }
+
+    @Test func nearSectionsReplaceTheGoFoldClosestFirst() async throws {
+        let embedder = TwoWordEmbedder()
+        let executor = WikipediaToolExecutor(index: try fixtureIndex(), maxResults: 5, pageCharacterLimit: 500,
+                                             sectionEmbedder: embedder)
+        _ = await executor.lookups(prompt: "東京タワーの高さは333メートル？", callIDPrefix: "l-")
+        let result = await executor.execute(AppToolCall(id: "1", name: "wikipedia_search",
+                                                        argumentsJSON: #"{"query":"東京"}"#))
+        #expect(embedder.queries == ["東京タワーの高さは333メートル？"])
+        #expect(result.content.hasPrefix("Wikipedia 検索: 東京 (2 件、2026年8月30日 時点の複製)\n[1] 東京駅"))
+        #expect(!result.content.contains("の本文:"))
+        let tower = try #require(result.content.range(of: "\n[東京タワー · 節 1/1] 東京タワー（とうきょうタワー）"))
+        let station = try #require(result.content.range(of: "\n[東京駅 · 節 1/1] 東京駅（とうきょうえき）"))
+        #expect(tower.lowerBound < station.lowerBound)
+        #expect(result.content.contains("質問に近い節 (検索結果の記事から、アプリが質問との近さで選んだもの。近い順):"))
+        #expect(result.content.hasSuffix("同じ記事の他の節は、wikipedia_page に題名と sections (節の番号) を渡すと読めます。"))
+        #expect(result.summary.hasPrefix("Wikipedia · 2 hits + near 2 of 2 sections ("))
+        // The next turn's question replaces this one.
+        _ = await executor.lookups(prompt: "", callIDPrefix: "l-")
+        _ = await executor.execute(AppToolCall(id: "2", name: "wikipedia_search", argumentsJSON: #"{"query":"米国"}"#))
+        #expect(embedder.queries.last == "米国")
+    }
+
+    @Test func nearSectionsStopAtTheReadLimit() async throws {
+        let executor = WikipediaToolExecutor(index: try fixtureIndex(), maxResults: 5, pageCharacterLimit: 500,
+                                             sectionEmbedder: TwoWordEmbedder())
+        let result = await executor.execute(AppToolCall(id: "1", name: "wikipedia_search",
+                                                        argumentsJSON: #"{"query":"長い記事"}"#))
+        let article = try #require(try fixtureIndex().page(title: "長い記事"))
+        let sections = PageOutline(text: article.text, pageLimit: 500).sections
+        #expect(sections.count == 2 && sections[0].text.count + sections[1].text.count > 500)
+        // Equal scores keep page order; the second does not fit beside the first.
+        #expect(result.content.contains("\n[長い記事 · 節 1/2] "))
+        #expect(!result.content.contains("[長い記事 · 節 2/2]"))
+        #expect(result.summary.contains("+ near 1 of 2 sections"))
+    }
+
     @Test func missingPageSuggestsNearTitles() async throws {
         let executor = try executor()
         let result = await executor.execute(AppToolCall(id: "1", name: "wikipedia_page",

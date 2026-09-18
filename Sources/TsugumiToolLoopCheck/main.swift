@@ -14,7 +14,7 @@ import TsugumiAppCore
 //                                         [--web-store DIR] [--max-rounds N] [--thinking on|off]
 //                                         [--endpoint URL --remote-model ID] [--replay RUN_DIR]
 //                                         [--search-budget N] [--pin-search] [--sample-forced TOOL:N]
-//                                         [--stop-after-round K]
+//                                         [--stop-after-round K] [--section-embed DIR]
 //
 // `--web-store DIR` answers the web tools' HTTP requests from DIR and records the ones it does not have
 // (`RecordedHTTPTransport`), so a second run reads the same search results and pages (`docs/qwen38/21` §4 E-1).
@@ -34,6 +34,8 @@ import TsugumiAppCore
 //                         whatever the query. A conversation's `pin` shares another's result, and `searchOrder`
 //                         (1-based) re-ranks it.
 // `--sample-forced TOOL:N` (with `--endpoint`) draws N seeded calls at each forced TOOL round into `samples.jsonl`.
+// `--section-embed DIR` (a Ruri v3 Core ML directory) makes each Wikipedia search carry the sections of the found
+// articles closest to the question (R1-d, docs/qwen38/39); the settings file is not written.
 // `--stop-after-round K` ends a turn after K rounds: round K+1 answers empty without the model, and the turn's checks
 // are skipped.
 //
@@ -59,6 +61,8 @@ struct Options {
     var context: Int?
     /// Overrides the saved page text limit for this run only (the settings file is not written).
     var pageCharacters: Int?
+    /// A Ruri v3 Core ML directory for this run only: Wikipedia searches carry the near sections (R1-d, docs/qwen38/39).
+    var sectionEmbed: String?
     var webStore: String?
     var maxRounds: Int?
     var thinking: Bool?
@@ -87,6 +91,7 @@ struct Options {
             case "--network": network = AppNetworkMode(rawValue: value) ?? .online
             case "--context": context = Int(value)
             case "--page-chars": pageCharacters = Int(value)
+            case "--section-embed": sectionEmbed = NSString(string: value).expandingTildeInPath
             case "--web-store": webStore = value
             case "--max-rounds": maxRounds = Int(value)
             case "--thinking": thinking = value == "on"
@@ -356,6 +361,9 @@ func runCheck() async -> Int32 {
                          personaURL: AppPersonaStore.defaultFileURL,
                          toolExecutorProvider: toolExecutorProvider)
     if let context = options.context { model.maxContextTokens = context }
+    if let sectionEmbed = options.sectionEmbed {
+        model.webSearchConfiguration.sectionEmbeddingPath = sectionEmbed
+    }
     if let pageCharacters = options.pageCharacters {
         model.webSearchConfiguration.pageCharacterLimit = pageCharacters
     }
