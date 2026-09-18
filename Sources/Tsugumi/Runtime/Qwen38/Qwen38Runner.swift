@@ -380,7 +380,8 @@ package final class Qwen38Runner {
         psoQKNorm = try pso(lib, "q38_gdn_qk_norm")
         psoGates = try pso(lib, "q38_gdn_gates")
         psoStep = try pso(lib, "q38_gdn_step")
-        psoNormGate = try pso(lib, "q38_gdn_norm_gate")
+        // Has function constant 1 (SiLU for the 27B); left unset here, which is the sigmoid gate of qwen4exp.
+        psoNormGate = try psoKV("q38_gdn_norm_gate")
         psoAttnPrep = try psoKV("q38_attn_prep")
         psoAttnScore = try psoKV("q38_attn_score")
         psoAttnStat = try pso(lib, "q38_attn_stat")
