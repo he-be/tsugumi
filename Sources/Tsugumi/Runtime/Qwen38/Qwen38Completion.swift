@@ -164,6 +164,9 @@ package final class Qwen38Engine {
     /// Back to where `checkpoint` was taken. The caller vouches that the tokens before its position are the ones the
     /// next prompt starts with.
     package func restore(_ checkpoint: Qwen38Checkpoint) throws {
+        let t = Date()
+        defer { Qwen38RoundLog.write(["event": "restore", "position": checkpoint.position,
+                                      "s": Date().timeIntervalSince(t)]) }
         try checkpoint.read(into: runner)
         position = checkpoint.position
         pendingH = checkpoint.pendingH
@@ -227,12 +230,18 @@ package final class Qwen38Engine {
             let chunkStart = position
             let layers = runner.nTrunk
             // Inside the chunk the count stays below its end: `done == total` is what tells the app decode began.
-            // LLKVApprox (docs/qwen38/28): only the prompt's last `llkvSuffix` tokens run the late layers.
-            let exactTail = runner.llkvSplit > 0 ? (done + T == prompt.count ? runner.llkvSuffix : 0) : nil
+            // LLKVApprox (docs/qwen38/28): only the prompt's last `llkvSuffix` tokens run the late layers. A checkpoint
+            // cut can end a chunk inside them, so the tail is counted from the prompt's end (docs/qwen38/42 §5).
+            let exactTail = runner.llkvSplit > 0
+                ? max(0, min(T, done + T - (prompt.count - runner.llkvSuffix))) : nil
+            let tChunk = Date()
             let l = try runner.forward(tokens: chunk, startPos: position, exactTail: exactTail, onLayer: onPrefill.map { report in
                 { n in report(chunkStart + min(T * n / layers, T - 1), total) }
             })
             if done + T == prompt.count { lastLogits = Array(l) }
+            let forwardSeconds = Date().timeIntervalSince(tChunk)
+            let forwardProfile = runner.lastProfile
+            let tMTP = Date()
             if speculative {
                 var s = 0
                 while s < T {
@@ -252,9 +261,21 @@ package final class Qwen38Engine {
                 }
                 pendingH = Array(UnsafeBufferPointer(start: runner.hidden(row: T - 1), count: W))
             }
+            let mtpSeconds = speculative ? Date().timeIntervalSince(tMTP) : 0
             position += T
             done += T
-            if cuts.contains(position), let onCheckpoint { onCheckpoint(try captureCheckpoint()) }
+            var captureSeconds = 0.0
+            if cuts.contains(position), let onCheckpoint {
+                let checkpoint = try captureCheckpoint()
+                captureSeconds = checkpoint.captureSeconds
+                onCheckpoint(checkpoint)
+            }
+            if Qwen38RoundLog.enabled {
+                Qwen38RoundLog.write(["event": "chunk", "start": chunkStart, "T": T, "exact_tail": exactTail ?? T,
+                                      "wall_s": Date().timeIntervalSince(tChunk), "forward_s": forwardSeconds,
+                                      "mtp_s": mtpSeconds, "checkpoint_s": captureSeconds,
+                                      "profile": Qwen38RoundLog.fields(forwardProfile)])
+            }
             onPrefill?(position, total)
         }
         let prefillSeconds = Date().timeIntervalSince(started)
@@ -282,7 +303,12 @@ package final class Qwen38Engine {
                 let V = runner.vocab
                 loop: while true {
                     try Task.checkCancellation()
-                    if checkpointBefore.contains(Int32(y)), let onCheckpoint { onCheckpoint(try captureCheckpoint()) }
+                    if checkpointBefore.contains(Int32(y)), let onCheckpoint {
+                        let checkpoint = try captureCheckpoint()
+                        Qwen38RoundLog.write(["event": "capture", "position": checkpoint.position,
+                                              "s": checkpoint.captureSeconds])
+                        onCheckpoint(checkpoint)
+                    }
                     let draft = Qwen38Sampler.argmax(try (mtpRows + pendingH).withUnsafeBufferPointer {
                         try runner.mtpForward(tokens: mtpTokens + [y], startPos: position - mtpTokens.count,
                                               hidden: $0.baseAddress!)
@@ -326,6 +352,10 @@ package final class Qwen38Engine {
                 }
             }
         }
+        Qwen38RoundLog.write(["event": "run", "prompt": prompt.count, "cached": cachedPromptTokens,
+                              "generated": produced.count, "prefill_s": prefillSeconds,
+                              "decode_s": Date().timeIntervalSince(decodeStart), "passes": passes,
+                              "accepted": accepted])
         return Qwen38Run(tokens: produced,
                          promptTokens: prompt.count,
                          cachedPromptTokens: cachedPromptTokens,
@@ -372,5 +402,55 @@ package struct Qwen38ModelDirectory: Sendable {
         }
         gguf = try resolve(manifest.qwen38.gguf)
         ple = try resolve(pleOverride ?? manifest.qwen38.ple)
+    }
+}
+
+/// `Q38_ROUND_LOG=FILE`: one JSON line per prefill chunk (its forward's `StepProfile`, the MTP head's rows, the checkpoint
+/// taken at its end), per checkpoint restored or taken in decode, and per run (docs/qwen38/42 §3-2). Off by default.
+package enum Qwen38RoundLog {
+    private static let handle: FileHandle? = {
+        guard let path = ProcessInfo.processInfo.environment["Q38_ROUND_LOG"], !path.isEmpty else { return nil }
+        if !FileManager.default.fileExists(atPath: path) { FileManager.default.createFile(atPath: path, contents: nil) }
+        let handle = FileHandle(forWritingAtPath: path)
+        handle?.seekToEndOfFile()
+        return handle
+    }()
+    private static let lock = NSLock()
+
+    package static var enabled: Bool { handle != nil }
+
+    package static func write(_ fields: [String: Any]) {
+        guard let handle else { return }
+        var row = fields
+        row["t"] = Date().timeIntervalSince1970
+        row["disk_read"] = diskRead()
+        guard let data = try? JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]) else { return }
+        lock.lock(); defer { lock.unlock() }
+        handle.write(data + Data("\n".utf8))
+    }
+
+    /// This process's `ri_diskio_bytesread` so far (`AppDiskReadSampler`'s counter): differences between rows are what
+    /// the SSD really gave, page-cache hits excluded.
+    private static func diskRead() -> UInt64 {
+        var info = rusage_info_v4()
+        let rc = withUnsafeMutablePointer(to: &info) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) {
+                proc_pid_rusage(getpid(), RUSAGE_INFO_V4, $0)
+            }
+        }
+        return rc == 0 ? info.ri_diskio_bytesread : 0
+    }
+
+    package static func fields(_ p: Qwen38Runner.StepProfile) -> [String: Any] {
+        var row: [String: Any] = [
+            "ple": p.ple, "pre": p.preRouter, "route": p.route, "route_advise": p.routeAdvise, "routed": p.routed,
+            "head": p.head, "fill": p.llkvFill, "total": p.total, "pre_gpu": p.preGPU, "routed_gpu": p.routedGPU,
+            "pread_bytes": p.preadBytes, "new_view_bytes": p.newViewBytes,
+        ]
+        if let e = p.early {
+            row["early"] = ["pre": e.preRouter, "route": e.route, "route_advise": e.routeAdvise, "routed": e.routed,
+                            "pre_gpu": e.preGPU, "routed_gpu": e.routedGPU, "pread_bytes": e.preadBytes]
+        }
+        return row
     }
 }

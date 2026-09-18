@@ -295,6 +295,9 @@ public struct ValidatedChatRequest: Sendable {
     public let reasoningBudgetTokens: Int
     public let reasoningFormat: ReasoningFormat
     public let timingsPerToken: Bool
+    /// A GBNF grammar for the whole answer, set in process only (the gather mode's checks, `docs/qwen38/42`): no
+    /// request body field reaches it. The Qwen sessions take it in place of the tools' and `response_format`'s.
+    public var grammar: String?
 
     public init(messages: [GFTokenizer.Message],
                 tools: [GFTokenizer.FunctionDefinition],

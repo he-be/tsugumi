@@ -96,6 +96,19 @@ public final class RealInferenceClient: AppModelLifecycleClient, AppInferenceRun
         runtimeOwn.withLock { $0 = nil }
     }
 
+    /// The gather mode's round on the loaded Qwen3.8 session (checks only, `docs/qwen38/42`): `messages` as
+    /// `(role, text)` with roles `system` / `user` / `assistant`, no tools, the answer held by the GBNF `grammar`. The
+    /// sampler and thinking switch are `sampling`'s, as `validatedChatRequest` sends them. Returns what
+    /// `RemoteInferenceClient.constrained` does: the text, the finish reason and the RSP-3 timings.
+    package func constrained(messages: [(role: String, text: String)], grammar: String,
+                             sampling: AppGenerationRequest, maxTokens: Int) async throws
+        -> (text: String, finish: String, timings: [String: Any]) {
+        let out = try await session.constrained(messages: messages, grammar: grammar, sampling: sampling,
+                                                maxTokens: maxTokens)
+        let timings = (try? JSONSerialization.jsonObject(with: out.timings)) as? [String: Any] ?? [:]
+        return (out.text, out.finish, timings)
+    }
+
     public func generate(_ request: AppGenerationRequest) -> AsyncThrowingStream<AppInferenceEvent, Error> {
         AsyncThrowingStream { continuation in
             let generationID = UUID()
@@ -305,6 +318,44 @@ actor RealInferenceSession {
         loadedRuntimeOwnBytes = nil
         loadedKind = nil
         loadedMTPEnabled = false
+    }
+
+    /// `RealInferenceClient.constrained`, the timings as JSON (the actor hands back only `Sendable` values).
+    func constrained(messages: [(role: String, text: String)], grammar: String,
+                     sampling: AppGenerationRequest, maxTokens: Int) async throws
+        -> (text: String, finish: String, timings: Data) {
+        guard case .qwen38(let session)? = backend else { throw AppInferenceError.modelNotLoaded }
+        let turns = try messages.map { message -> GFTokenizer.Message in
+            let role: GFTokenizer.Role
+            switch message.role {
+            case "system": role = .system
+            case "user": role = .user
+            case "assistant": role = .assistant
+            default: throw AppInferenceError.invalidRequest("role \(message.role)")
+            }
+            return GFTokenizer.Message(role: role, content: message.text, contentIsGenerated: role == .assistant)
+        }
+        var request = ValidatedChatRequest(
+            messages: turns,
+            tools: [],
+            stream: false,
+            includeUsage: false,
+            generationConfig: GenerationConfig(maxNewTokens: max(maxTokens, 1),
+                                               temperature: sampling.temperature,
+                                               topK: sampling.topK,
+                                               topP: sampling.topP,
+                                               repetitionPenalty: sampling.repetitionPenalty),
+            maximumCompletionTokens: maxTokens,
+            enableThinking: sampling.enableThinking)
+        request.grammar = grammar
+        let prepared = try await session.prepare(request)
+        let completion = try await session.generate(prepared, monitor: nil, onPrefill: nil, onEvent: { _ in })
+        var timings = completion.timings?.jsonObject ?? [:]
+        if let spec = completion.speculative {
+            timings["draft_n"] = spec.proposed
+            timings["draft_n_accepted"] = spec.accepted
+        }
+        return (completion.content, completion.finishReason, try JSONSerialization.data(withJSONObject: timings))
     }
 
     static func forceLogitsHead(for request: AppGenerationRequest) -> Bool {

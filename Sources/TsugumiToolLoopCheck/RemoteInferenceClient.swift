@@ -381,10 +381,10 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
 
     /// One round of `--gather` (docs/qwen38/40): `messages` rendered by the model's own template, continued with
     /// `/v1/completions` under `grammar` (GBNF), with the request's sampler. No tools are declared.
-    func constrained(messages: [[String: Any]], grammar: String, sampling request: AppGenerationRequest,
+    func constrained(messages: [(role: String, text: String)], grammar: String, sampling request: AppGenerationRequest,
                      maxTokens: Int) async throws -> (text: String, finish: String, timings: [String: Any]) {
         let rendered = try await postJSON("upstream/\(modelID)/apply-template", [
-            "model": modelID, "messages": messages,
+            "model": modelID, "messages": messages.map { ["role": $0.role, "content": $0.text] },
             "chat_template_kwargs": ["enable_thinking": request.enableThinking],
         ])
         guard let prompt = rendered["prompt"] as? String else {

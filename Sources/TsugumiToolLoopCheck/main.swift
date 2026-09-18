@@ -36,9 +36,13 @@ import TsugumiAppCore
 // `--sample-forced TOOL:N` (with `--endpoint`) draws N seeded calls at each forced TOOL round into `samples.jsonl`.
 // `--section-embed DIR` (a Ruri v3 Core ML directory) makes each Wikipedia search carry the sections of the found
 // articles closest to the question (R1-d, docs/qwen38/39); the settings file is not written.
-// `--gather DIR` (a Ruri v3 Core ML directory, with `--endpoint`, Offline) runs the turns without tools: the model
-// writes search terms or an answer under a grammar, and the app hands over the closest chunks of the found articles
-// (`GatherLoop.swift`, docs/qwen38/40). The app's own tool loop is not used.
+// `--gather DIR` (a Ruri v3 Core ML directory, Offline) runs the turns without tools: the model writes search terms or
+// an answer under a grammar, and the app hands over the closest chunks of the found articles (`GatherLoop.swift`,
+// docs/qwen38/40). The app's own tool loop is not used. With `--endpoint` the model is the llama-server; without, the
+// app's Qwen3.8 session in this process (docs/qwen38/42), each round's disk reads and swap-outs in `rounds.jsonl` and,
+// with `Q38_ROUND_LOG=FILE`, the runner's per-chunk breakdown in FILE.
+// `--gather-force FILE` (with `--gather`) makes round 1 of each listed conversation's first turn write the recorded
+// text: `{"<conversation>": "調査\n- ...\n"}` (docs/qwen38/42 §3-1).
 // `--stop-after-round K` ends a turn after K rounds: round K+1 answers empty without the model, and the turn's checks
 // are skipped.
 //
@@ -75,6 +79,8 @@ struct Options {
     var gatherProbeOut: String?
     /// With `--gather`: how the gatherer finds articles, `question,qfirst=K,titles,articles=N` (docs/qwen38/41). Empty is 40's.
     var gatherSearch = ""
+    /// With `--gather`: round 1's text by conversation (docs/qwen38/42 §3-1).
+    var gatherForce: String?
     var webStore: String?
     var maxRounds: Int?
     var thinking: Bool?
@@ -108,6 +114,7 @@ struct Options {
             case "--gather-probe": gatherProbe = value
             case "--gather-probe-out": gatherProbeOut = value
             case "--gather-search": gatherSearch = value
+            case "--gather-force": gatherForce = value
             case "--web-store": webStore = value
             case "--max-rounds": maxRounds = Int(value)
             case "--thinking": thinking = value == "on"
@@ -128,8 +135,12 @@ struct Options {
             FileHandle.standardError.write(Data("--out DIR is required\n".utf8))
             exit(2)
         }
-        if gather != nil, gatherProbe == nil, endpoint == nil || network != .offline || sectionEmbed != nil {
-            FileHandle.standardError.write(Data("--gather needs --endpoint and --network offline, without --section-embed\n".utf8))
+        if gather != nil, gatherProbe == nil, network != .offline || sectionEmbed != nil || replay != nil {
+            FileHandle.standardError.write(Data("--gather needs --network offline, without --section-embed or --replay\n".utf8))
+            exit(2)
+        }
+        if gatherForce != nil, gather == nil {
+            FileHandle.standardError.write(Data("--gather-force goes with --gather\n".utf8))
             exit(2)
         }
         if (endpoint == nil) != (remoteModel == nil) {
@@ -342,7 +353,11 @@ func runCheck() async -> Int32 {
         }
     }
     let inner: any AppModelLifecycleClient & AppInferenceRuntimeReporting
-    if let replay { inner = replay } else if let remote { inner = remote } else { inner = RealInferenceClient() }
+    var real: RealInferenceClient?
+    if let replay { inner = replay } else if let remote { inner = remote } else {
+        real = RealInferenceClient()
+        inner = real!
+    }
     let client = RecordingClient(inner: inner)
     client.stopAfterRound = options.stopAfterRound
     var webStore: RecordedHTTPTransport?
@@ -420,9 +435,18 @@ func runCheck() async -> Int32 {
         return 2
     }
 
-    if let gather = options.gather, let remote {
-        return await runGather(options: options, gatherDirectory: gather, model: model, remote: remote,
-                               conversations: conversations, outDirectory: outDirectory)
+    if let gather = options.gather {
+        let generate: GatherGenerate
+        if let remote {
+            generate = { try await remote.constrained(messages: $0, grammar: $1, sampling: $2, maxTokens: $3) }
+        } else if let real {
+            generate = { try await real.constrained(messages: $0, grammar: $1, sampling: $2, maxTokens: $3) }
+        } else {
+            logLine("--gather needs --endpoint or this Mac's session")
+            return 2
+        }
+        return await runGather(options: options, gatherDirectory: gather, model: model, generate: generate,
+                               local: remote == nil, conversations: conversations, outDirectory: outDirectory)
     }
     let rounds = appendHandle(outDirectory.appendingPathComponent("rounds.jsonl"))
     let turns = appendHandle(outDirectory.appendingPathComponent("turns.jsonl"))

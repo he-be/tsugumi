@@ -128,10 +128,18 @@ struct QwenGenerationPlan: Equatable, Sendable {
             parallelToolCalls: request.parallelToolCalls,
             responseFormat: Self.responseFormat(request.responseFormat),
             markers: markers)
-        self.grammar = constraint?.grammar?.grammar
-        self.forbiddenTokenIDs = constraint?.forbiddenTokenIDs ?? []
-        self.isLazy = constraint?.grammar?.isLazy ?? false
-        self.trigger = constraint?.grammar?.trigger
+        if let grammar = request.grammar {
+            precondition(request.tools.isEmpty, "an in-process grammar goes with no tools")
+            self.grammar = grammar
+            self.forbiddenTokenIDs = []
+            self.isLazy = false
+            self.trigger = nil
+        } else {
+            self.grammar = constraint?.grammar?.grammar
+            self.forbiddenTokenIDs = constraint?.forbiddenTokenIDs ?? []
+            self.isLazy = constraint?.grammar?.isLazy ?? false
+            self.trigger = constraint?.grammar?.trigger
+        }
         let sampling = Self.officialSampling(request.generationConfig, official: official)
         self.sampling = sampling.config
         self.approximations =

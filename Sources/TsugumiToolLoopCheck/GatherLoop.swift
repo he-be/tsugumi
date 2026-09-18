@@ -1,4 +1,5 @@
 import Foundation
+import Tsugumi
 import TsugumiAppCore
 
 // `--gather DIR` (with `--endpoint`, Offline): the model never reads Wikipedia itself (docs/qwen38/40). Each turn:
@@ -65,9 +66,33 @@ enum GatherPrompt {
     }
 }
 
+/// One gather round: the messages as `(role, text)`, the grammar, the sampler, the token limit → the text, the finish
+/// reason and the RSP-3 timings. `RemoteInferenceClient.constrained` (llama-server) or
+/// `RealInferenceClient.constrained` (this Mac's session, docs/qwen38/42).
+typealias GatherGenerate = @MainActor (_ messages: [(role: String, text: String)], _ grammar: String,
+                            _ sampling: AppGenerationRequest, _ maxTokens: Int) async throws
+    -> (text: String, finish: String, timings: [String: Any])
+
+/// `--gather-force FILE` (docs/qwen38/42 §3-1): `{"<conversation>": "<round 1 text>"}`. Round 1 of a listed conversation's
+/// first turn writes exactly that text (a grammar of the one string, through the same sampler and decode loop).
+func gatherForcedGrammar(_ text: String) -> String {
+    var literal = ""
+    for scalar in text.unicodeScalars {
+        switch scalar {
+        case "\\": literal += "\\\\"
+        case "\"": literal += "\\\""
+        case "\n": literal += "\\n"
+        case "\r": literal += "\\r"
+        case "\t": literal += "\\t"
+        default: literal.unicodeScalars.append(scalar)
+        }
+    }
+    return "root ::= \"\(literal)\"\n"
+}
+
 @MainActor
-func runGather(options: Options, gatherDirectory: String, model: AppModel, remote: RemoteInferenceClient,
-               conversations: [Conversation], outDirectory: URL) async -> Int32 {
+func runGather(options: Options, gatherDirectory: String, model: AppModel, generate: GatherGenerate,
+               local: Bool, conversations: [Conversation], outDirectory: URL) async -> Int32 {
     let resolved = model.webSearchConfiguration.resolved()
     let maxRounds = max(2, resolved.maxToolRounds)
     guard let setup = GatherSetup(options.gatherSearch, maxArticles: resolved.maxSearchResults) else { return 2 }
@@ -99,6 +124,15 @@ func runGather(options: Options, gatherDirectory: String, model: AppModel, remot
         + "top_k=\(base.topK.map(String.init) ?? "-") top_p=\(base.topP.map { String($0) } ?? "-") "
         + "thinking=\(base.enableThinking) embed=\(gatherDirectory)")
 
+    var forced: [String: String] = [:]
+    if let path = options.gatherForce {
+        do {
+            forced = try JSONDecoder().decode([String: String].self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+        } catch {
+            logLine("--gather-force \(path): \(error)")
+            return 2
+        }
+    }
     let rounds = appendHandle(outDirectory.appendingPathComponent("rounds.jsonl"))
     let turns = appendHandle(outDirectory.appendingPathComponent("turns.jsonl"))
     var failures: [String] = []
@@ -123,14 +157,20 @@ func runGather(options: Options, gatherDirectory: String, model: AppModel, remot
                 var roundCount = 0
                 while roundCount < maxRounds {
                     roundCount += 1
-                    let grammar = roundCount == 1 ? GatherPrompt.listOnly
-                        : roundCount == maxRounds ? GatherPrompt.answerOnly : GatherPrompt.either
-                    let choice = roundCount == 1 ? "list" : roundCount == maxRounds ? "answer" : "decide"
+                    let force = roundCount == 1 && turnIndex == 0 ? forced[conversation.name] : nil
+                    let grammar = force.map(gatherForcedGrammar) ?? (roundCount == 1 ? GatherPrompt.listOnly
+                        : roundCount == maxRounds ? GatherPrompt.answerOnly : GatherPrompt.either)
+                    let choice = force != nil ? "forced" : roundCount == 1 ? "list" : roundCount == maxRounds ? "answer" : "decide"
+                    if local {
+                        Qwen38RoundLog.write(["event": "round", "conversation": conversation.name, "repeat": repeatIndex,
+                                              "turn": turnIndex + 1, "round": roundCount, "choice": choice])
+                    }
+                    let meter = local ? GatherRoundMeter() : nil
                     let roundStarted = Date()
                     let output: (text: String, finish: String, timings: [String: Any])
                     do {
-                        output = try await remote.constrained(messages: messages, grammar: grammar, sampling: base,
-                                                              maxTokens: min(base.maxNewTokens, 8_192))
+                        output = try await generate(messages.map { ($0["role"] as! String, $0["content"] as! String) },
+                                                    grammar, base, min(base.maxNewTokens, 8_192))
                     } catch let failure {
                         error = "\(failure)"
                         jsonLine(["conversation": conversation.name, "repeat": repeatIndex, "turn": turnIndex + 1,
@@ -160,6 +200,7 @@ func runGather(options: Options, gatherDirectory: String, model: AppModel, remot
                     if let proposed = t["draft_n"] as? Int, proposed > 0 {
                         row["draft"] = "\(t["draft_n_accepted"] as? Int ?? 0)/\(proposed)"
                     }
+                    if let meter { row.merge(meter.finish()) { $1 } }
                     jsonLine(row, to: rounds)
                     logLine("\(label) round \(roundCount) (\(choice)): prompt=\(cached + evaluated) cached=\(cached) "
                         + "generated=\(generated) stop=\(output.finish) terms=\(terms ?? [])")
@@ -208,6 +249,11 @@ func runGather(options: Options, gatherDirectory: String, model: AppModel, remot
                                       failed.isEmpty ? "ok" : "FAIL " + failed.joined(separator: ",")))
                 logLine(summary.last!)
                 if error != nil { break }
+                if local {
+                    // Between turns only (a turn's rounds run back to back, as in the app): `COOL_S`, default 20.
+                    let cool = Double(ProcessInfo.processInfo.environment["COOL_S"] ?? "") ?? 20
+                    try? await Task.sleep(nanoseconds: UInt64(cool * 1e9))
+                }
                 history.append(["role": "user", "content": question])
                 history.append(["role": "assistant", "content": trimmed])
             }

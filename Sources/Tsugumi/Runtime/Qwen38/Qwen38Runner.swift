@@ -170,6 +170,16 @@ package final class Qwen38Runner {
         /// all of them, and the preview's distinct experts.
         package var previewHit = 0, previewActual = 0, previewNamed = 0
         package var previewAdvise = 0.0
+        /// Bytes of the expert ranges `pread` asked for (batches of `preadMinTokens` and up), page-cache hits included.
+        package var preadBytes = 0
+        /// The counters as they stood when layer `nTrunk / 2 - 1` of the rows that run every layer finished
+        /// (docs/qwen38/42 §3-2). The late half is the rest, the LLKVApprox fill apart. With `pipeline` a layer's routed
+        /// wait lands in the next layer's `preRouter`, so layer 23's lands in the late half.
+        package var early: HalfProfile?
+    }
+    package struct HalfProfile {
+        package var preRouter = 0.0, route = 0.0, routeAdvise = 0.0, routed = 0.0, preGPU = 0.0, routedGPU = 0.0
+        package var preadBytes = 0
     }
     package private(set) var lastProfile = StepProfile()
     /// Checks only: commit the pre-router work in several buffers so `sections` can
@@ -1381,7 +1391,10 @@ package final class Qwen38Runner {
                 i = j + 1
             }
         }
-        if preadThisBatch { GGUFFile.preadRanges(runs, threads: readThreads) }
+        if preadThisBatch {
+            GGUFFile.preadRanges(runs, threads: readThreads)
+            prof.preadBytes += runs.reduce(0) { $0 + $1.byteCount }
+        }
         }
         let tAdvise = CFAbsoluteTimeGetCurrent()
         prof.routeViews += tViews - tTopK
@@ -2169,7 +2182,14 @@ package final class Qwen38Runner {
         let split = llkvSplit > 0 && llkvSplit < nTrunk ? llkvSplit : nTrunk
         let tail = min(exactTail ?? T, T)
         let fill = split < nTrunk && tail < T
-        for il in 0..<(fill ? split : nTrunk) { try layer(il, rows: T, pos: startPos, report: true) }
+        for il in 0..<(fill ? split : nTrunk) {
+            try layer(il, rows: T, pos: startPos, report: true)
+            if il + 1 == nTrunk / 2 {
+                prof.early = HalfProfile(preRouter: prof.preRouter, route: prof.route, routeAdvise: prof.routeAdvise,
+                                         routed: prof.routed, preGPU: prof.preGPU, routedGPU: prof.routedGPU,
+                                         preadBytes: prof.preadBytes)
+            }
+        }
         if fill {
             precondition(!allLogits && snapshotTaken == 0, "the LLKVApprox fill keeps only the tail's logits and no snapshot")
             if let p = pendingRouted {
