@@ -17,7 +17,9 @@ public struct CompositeToolExecutor: AppToolExecutor {
     public var promptFacts: AppToolPromptFacts {
         executors.map(\.promptFacts).reduce(AppToolPromptFacts(web: false, wikipediaDate: nil)) { merged, facts in
             AppToolPromptFacts(web: merged.web || facts.web,
-                               wikipediaDate: merged.wikipediaDate ?? facts.wikipediaDate)
+                               wikipediaDate: merged.wikipediaDate ?? facts.wikipediaDate,
+                               webReading: merged.webReading ?? facts.webReading,
+                               searchReadsPages: merged.searchReadsPages || facts.searchReadsPages)
         }
     }
 

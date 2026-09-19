@@ -58,7 +58,7 @@ public struct WebSearchToolExecutor: AppToolExecutor {
     }
 
     /// "取得日 2026年9月2日" — the same calendar the system prompt uses.
-    var dateStamp: String { "取得日 " + WebSearchPrompt.japaneseDate(today) }
+    public var dateStamp: String { "取得日 " + WebSearchPrompt.japaneseDate(today) }
 
     /// How many of the prompt's URLs are read before the first round.
     public static let lookupURLLimit = 2
@@ -81,6 +81,9 @@ public struct WebSearchToolExecutor: AppToolExecutor {
         }
         return lookups
     }
+
+    /// `urls(in:)` for an executor outside the module (the extraction experiment's lookups).
+    public static func urlsInPrompt(_ text: String) -> [String] { urls(in: text) }
 
     /// The http(s) URLs written in `text`, in order, once each, trailing
     /// punctuation a sentence puts after a link removed.
@@ -142,24 +145,38 @@ public struct WebSearchToolExecutor: AppToolExecutor {
     }
 
     func search(_ query: String) async -> AppToolResult {
+        switch await searchResponse(query) {
+        case .success(let response):
+            return AppToolResult(content: Self.render(response, query: query, dateStamp: dateStamp),
+                                 summary: "\(response.provider) · \(response.hits.count) hits")
+        case .failure(let failure):
+            return failure.result
+        }
+    }
+
+    /// Why a search or a page read gave nothing: the error result the model reads.
+    public struct Failure: Error {
+        public var result: AppToolResult
+    }
+
+    /// The search itself, before it is rendered for the model.
+    public func searchResponse(_ query: String) async -> Result<WebSearchResponse, Failure> {
         guard !searchProviders.isEmpty else {
-            return AppToolResult(
+            return .failure(Failure(result: AppToolResult(
                 content: "error: no search provider is configured (Serper or Brave API key).",
-                isError: true, summary: "no API key")
+                isError: true, summary: "no API key")))
         }
         var failures: [String] = []
         for provider in searchProviders {
             do {
-                let response = try await provider.search(query, count: configuration.maxSearchResults)
-                return AppToolResult(content: Self.render(response, query: query, dateStamp: dateStamp),
-                                     summary: "\(response.provider) · \(response.hits.count) hits")
+                return .success(try await provider.search(query, count: configuration.maxSearchResults))
             } catch {
                 failures.append("\(provider.name): \(error)")
             }
         }
-        return AppToolResult(content: "error: every search provider failed — "
-                                + failures.joined(separator: "; "),
-                             isError: true, summary: failures.joined(separator: "; "))
+        return .failure(Failure(result: AppToolResult(content: "error: every search provider failed — "
+                                                        + failures.joined(separator: "; "),
+                                                      isError: true, summary: failures.joined(separator: "; "))))
     }
 
     static func render(_ response: WebSearchResponse, query: String, dateStamp: String) -> String {
@@ -184,13 +201,25 @@ public struct WebSearchToolExecutor: AppToolExecutor {
     }
 
     func fetch(_ text: String, sections: [Int]? = nil) async -> AppToolResult {
-        guard let url = URL(string: text), url.isPublicWebAddress else {
-            return AppToolResult(content: "error: \(WebToolError.unsafeURL(text)). Only public http(s) URLs can be read.",
-                                 isError: true, summary: "refused URL")
-        }
-        if let page = pages[url] {
+        switch await page(text) {
+        case .success(let (url, page)):
             return Self.result(for: page, url: url, sections: sections, limit: configuration.pageCharacterLimit,
                                dateStamp: dateStamp)
+        case .failure(let failure):
+            return failure.result
+        }
+    }
+
+    /// One page's whole text, read from the network once a turn (the readers in order; a nearly empty page is
+    /// left for the next reader).
+    public func page(_ text: String) async -> Result<(URL, WebPageText), Failure> {
+        guard let url = URL(string: text), url.isPublicWebAddress else {
+            return .failure(Failure(result: AppToolResult(
+                content: "error: \(WebToolError.unsafeURL(text)). Only public http(s) URLs can be read.",
+                isError: true, summary: "refused URL")))
+        }
+        if let page = pages[url] {
+            return .success((url, page))
         }
         var failures: [String] = []
         var thin: WebPageText?
@@ -205,20 +234,18 @@ public struct WebSearchToolExecutor: AppToolExecutor {
                     continue
                 }
                 pages[url] = page
-                return Self.result(for: page, url: url, sections: sections, limit: configuration.pageCharacterLimit,
-                                   dateStamp: dateStamp)
+                return .success((url, page))
             } catch {
                 failures.append("\(reader.name): \(error)")
             }
         }
         if let thin {
             pages[url] = thin
-            return Self.result(for: thin, url: url, sections: sections, limit: configuration.pageCharacterLimit,
-                               dateStamp: dateStamp)
+            return .success((url, thin))
         }
-        return AppToolResult(content: "error: could not read \(url.absoluteString) — "
-                                + failures.joined(separator: "; "),
-                             isError: true, summary: failures.joined(separator: "; "))
+        return .failure(Failure(result: AppToolResult(content: "error: could not read \(url.absoluteString) — "
+                                                        + failures.joined(separator: "; "),
+                                                      isError: true, summary: failures.joined(separator: "; "))))
     }
 
     /// What a read of `page` hands the model. A page no longer than a read (and short enough that an outline
@@ -312,7 +339,7 @@ public enum WebSearchPrompt {
         if web {
             names.append(snippet("web", "names"))
             access.append(snippet("web", "access"))
-            reading.append(snippet("web", "reading"))
+            reading.append(tools.webReading ?? snippet("web", "reading"))
             reference.append(snippet("web", "reference"))
         }
         let choice = wikipedia && web ? snippet("both", "choice")

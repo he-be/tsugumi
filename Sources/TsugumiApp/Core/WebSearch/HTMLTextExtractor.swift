@@ -193,7 +193,7 @@ public enum HTMLTextExtractor {
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: template)
     }
 
-    static func collapseWhitespace(_ text: String) -> String {
+    public static func collapseWhitespace(_ text: String) -> String {
         text.split(whereSeparator: { $0.isWhitespace || $0 == "\u{00A0}" })
             .joined(separator: " ")
     }

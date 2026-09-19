@@ -96,6 +96,17 @@ struct Options {
     var pinSearch = false
     var sampleForced: [String: Int] = [:]
     var stopAfterRound: Int?
+    /// `--extract-endpoint URL --extract-model ID` (Online): the web tools answer with a light model's extract of
+    /// the pages (`ExtractLoop.swift`, docs/qwen38/48).
+    var extractEndpoint: URL?
+    var extractModel: String?
+    var extractPages = 3
+    var extractPageCharacters = 8000
+    var extractMaxTokens = 1024
+    /// `--extract-launch SCRIPT`: start the light model's server for each tool call and stop it after
+    /// (`ExtractorLauncher`); `--extract-prefetch A,B` are the weight files read into the page cache first.
+    var extractLaunch: String?
+    var extractPrefetch: [String] = []
 
     init(_ arguments: [String]) {
         var iterator = arguments.dropFirst().makeIterator()
@@ -137,6 +148,14 @@ struct Options {
                 let parts = value.split(separator: ":")
                 if parts.count == 2, let count = Int(parts[1]) { sampleForced[String(parts[0])] = count }
             case "--stop-after-round": stopAfterRound = Int(value)
+            case "--extract-endpoint": extractEndpoint = URL(string: value)
+            case "--extract-model": extractModel = value
+            case "--extract-pages": extractPages = Int(value) ?? 3
+            case "--extract-page-chars": extractPageCharacters = Int(value) ?? 8000
+            case "--extract-max-tokens": extractMaxTokens = Int(value) ?? 1024
+            case "--extract-launch": extractLaunch = NSString(string: value).expandingTildeInPath
+            case "--extract-prefetch":
+                extractPrefetch = value.split(separator: ",").map { NSString(string: String($0)).expandingTildeInPath }
             default:
                 FileHandle.standardError.write(Data("unknown flag \(flag)\n".utf8))
                 exit(2)
@@ -156,6 +175,10 @@ struct Options {
         }
         if gatherForce != nil, gather == nil {
             FileHandle.standardError.write(Data("--gather-force goes with --gather\n".utf8))
+            exit(2)
+        }
+        if (extractEndpoint == nil) != (extractModel == nil) {
+            FileHandle.standardError.write(Data("--extract-endpoint and --extract-model go together\n".utf8))
             exit(2)
         }
         if (endpoint == nil) != (remoteModel == nil) {
@@ -401,10 +424,36 @@ func runCheck() async -> Int32 {
         logLine("--search-budget and --pin-search need --web-store")
         return 2
     }
-    let toolExecutorProvider: ((WebSearchConfiguration, AppNetworkMode) throws -> (any AppToolExecutor)?)? =
+    var toolExecutorProvider: ((WebSearchConfiguration, AppNetworkMode) throws -> (any AppToolExecutor)?)? =
         webTransport.map { transport in
             { try AppModel.makeToolExecutor(configuration: $0, mode: $1, transport: transport) }
         }
+    if let extractEndpoint = options.extractEndpoint, let extractModel = options.extractModel {
+        let extractor = PageExtractor(endpoint: extractEndpoint, modelID: extractModel,
+                                      pageCharacters: options.extractPageCharacters, maxTokens: options.extractMaxTokens,
+                                      log: outDirectory.appendingPathComponent("extract.jsonl"))
+        if let script = options.extractLaunch {
+            extractor.launcher = ExtractorLauncher(script: script, prefetch: options.extractPrefetch, endpoint: extractEndpoint)
+        }
+        let transport: any HTTPTransport = webTransport ?? URLSessionTransport()
+        let pages = options.extractPages
+        toolExecutorProvider = { configuration, mode in
+            guard mode == .online else {
+                return try AppModel.makeToolExecutor(configuration: configuration, mode: mode, transport: transport)
+            }
+            let resolved = configuration.resolved()
+            guard resolved.canSearch else {
+                throw AppInferenceError.invalidRequest("Online needs a Serper or Brave API key.")
+            }
+            // Wikipedia などの他のツールは Offline と同じ形で作り、Web の 2 つだけを差し替える
+            let base = try AppModel.makeToolExecutor(configuration: configuration, mode: .offline, transport: transport)
+            return ExtractingWebExecutor(base: base,
+                                         web: WebSearchToolExecutor(configuration: resolved, transport: transport),
+                                         extractor: extractor, pagesPerSearch: pages)
+        }
+        logLine("extract: \(extractModel) at \(extractEndpoint.absoluteString) pages=\(pages) "
+            + "page_chars=\(options.extractPageCharacters) max_tokens=\(options.extractMaxTokens)")
+    }
     let model = AppModel(modelDirectory: URL(fileURLWithPath: options.model), client: client,
                          turnMetricsLog: AppTurnMetricsLog(fileURL: outDirectory.appendingPathComponent("turn-metrics.jsonl")),
                          webSearchConfigurationURL: WebSearchConfigurationStore.defaultFileURL,

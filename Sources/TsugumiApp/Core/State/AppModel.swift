@@ -1647,7 +1647,8 @@ public final class AppModel {
         let searched = trace.contains { $0.name == WebSearchToolExecutor.searchToolName && $0.status == .done }
         if fetchTried { return (.auto, tools) }
         if searched {
-            guard tools.contains(where: { $0.name == WebSearchToolExecutor.fetchToolName }) else {
+            guard tools.contains(where: { $0.name == WebSearchToolExecutor.fetchToolName }),
+                  activeToolExecutor?.promptFacts.searchReadsPages != true else {
                 return (.auto, tools)
             }
             return (.function(name: WebSearchToolExecutor.fetchToolName), tools)

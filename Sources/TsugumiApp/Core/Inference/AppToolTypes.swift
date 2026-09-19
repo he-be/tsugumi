@@ -154,10 +154,17 @@ public struct AppToolTraceEntry: Equatable, Sendable, Codable, Identifiable {
 public struct AppToolPromptFacts: Equatable, Sendable {
     public var web: Bool
     public var wikipediaDate: String?
+    /// Replaces the prompt's sentences on how to read the web tools' results, for an executor whose tools return
+    /// something other than the pages themselves (the extraction experiment, docs/qwen38/48).
+    public var webReading: String?
+    /// The search reads the top pages itself, so the Online policy does not force a `fetch_page` after it.
+    public var searchReadsPages: Bool
 
-    public init(web: Bool, wikipediaDate: String?) {
+    public init(web: Bool, wikipediaDate: String?, webReading: String? = nil, searchReadsPages: Bool = false) {
         self.web = web
         self.wikipediaDate = wikipediaDate
+        self.webReading = webReading
+        self.searchReadsPages = searchReadsPages
     }
 }
 
