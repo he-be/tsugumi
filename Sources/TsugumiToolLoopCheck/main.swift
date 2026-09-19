@@ -43,6 +43,8 @@ import TsugumiAppCore
 // with `Q38_ROUND_LOG=FILE`, the runner's per-chunk breakdown in FILE.
 // `--gather-force FILE` (with `--gather`) makes round 1 of each listed conversation's first turn write the recorded
 // text: `{"<conversation>": "調査\n- ...\n"}` (docs/qwen38/42 §3-1).
+// `--gather-answer quotes` (with `--gather`): the model writes one sentence and sentence numbers, and the loop copies
+// those sentences into the answer (docs/qwen38/47). `written` (the default) has the model write the whole answer.
 // `--stop-after-round K` ends a turn after K rounds: round K+1 answers empty without the model, and the turn's checks
 // are skipped.
 //
@@ -81,6 +83,9 @@ struct Options {
     var gatherSearch = ""
     /// With `--gather`: round 1's text by conversation (docs/qwen38/42 §3-1).
     var gatherForce: String?
+    /// With `--gather`: `--gather-answer quotes` has the model write one sentence and sentence numbers, and the loop
+    /// copies the numbered sentences into the answer (docs/qwen38/47). Default: the model writes the whole answer.
+    var gatherQuotes = false
     var webStore: String?
     var maxRounds: Int?
     var thinking: Bool?
@@ -115,6 +120,12 @@ struct Options {
             case "--gather-probe-out": gatherProbeOut = value
             case "--gather-search": gatherSearch = value
             case "--gather-force": gatherForce = value
+            case "--gather-answer":
+                guard value == "quotes" || value == "written" else {
+                    FileHandle.standardError.write(Data("--gather-answer is quotes or written\n".utf8))
+                    exit(2)
+                }
+                gatherQuotes = value == "quotes"
             case "--web-store": webStore = value
             case "--max-rounds": maxRounds = Int(value)
             case "--thinking": thinking = value == "on"
@@ -137,6 +148,10 @@ struct Options {
         }
         if gather != nil, gatherProbe == nil, network != .offline || sectionEmbed != nil || replay != nil {
             FileHandle.standardError.write(Data("--gather needs --network offline, without --section-embed or --replay\n".utf8))
+            exit(2)
+        }
+        if gatherQuotes, gather == nil {
+            FileHandle.standardError.write(Data("--gather-answer goes with --gather\n".utf8))
             exit(2)
         }
         if gatherForce != nil, gather == nil {
