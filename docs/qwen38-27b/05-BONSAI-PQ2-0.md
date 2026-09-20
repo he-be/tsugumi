@@ -13,6 +13,8 @@ Qwen3.8-27B (GGUF の `qwen35`) だが、量子化と重みの基底が違う。
    `blk.64` (`nextn.eh_proj`・`enorm`・`hnorm`・`shared_head_norm`) も無い。01 §1 で数えた MTP の 15 本が落ちている (§1)。
    Prism 側の投機は MTP ではなく別ファイルの drafter (dspark) で、公開されているのは前世代向け。
    彼らの記載では Apple Silicon は非推奨 (M5 Max で code / math だけ約 1.2 倍、chat / reasoning は遅くなる)。
+   **ただしこれは prism-ml の 3 本についての記述**で、有志が Qwen3.8-27B のヘッドを足した一本が別にある
+   ([06](06-BONSAI-MTP-ON-MAC.md))。Mac では受理率は同じで速度は 0.74 倍だった。
 2. **PQ2_0 は 128 重みごとに fp16 の scale 1 個 + 2 bit の三値。逆量子化は `(q - 1) * d` の 1 行**で、03 の混在 10 型より簡単 (§2)。
    自前の復号は、同じリポジトリの F16 (折り込み済みの原本) と **相対誤差 0 で一致**した (§2-1)。
 3. **重みは Hadamard で回った基底に折り込んである。**runtime は行列積ごとに活性を `x' = H · (s ⊙ x)` に変換する必要がある
