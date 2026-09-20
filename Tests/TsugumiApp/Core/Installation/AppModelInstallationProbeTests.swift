@@ -21,6 +21,25 @@ import Testing
         }
     }
 
+    /// A llama-server model is installed when its manifest's server and GGUF are both on this machine
+    /// (`LlamaServerModelDirectory`); there is no receipt or snapshot hash to bind.
+    @Test func aLlamaServerDirectoryIsCompleteWhenItsServerAndGGUFExist() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("tsugumi-llama-server-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: url) }
+        try Data("""
+            { "arch": { "family": "qwen3_8_dense_llamacpp" }, "llama_server": "/bin/ls", "gguf": "model.gguf" }
+            """.utf8).write(to: url.appendingPathComponent("manifest.json"))
+        let descriptor = AppModelInstallDescriptor.descriptor(for: .bonsai27b)
+        guard case .partial = AppModelInstallationProbe.status(at: url, descriptor: descriptor) else {
+            Issue.record("expected partial status while the GGUF is missing")
+            return
+        }
+        try Data().write(to: url.appendingPathComponent("model.gguf"))
+        #expect(AppModelInstallationProbe.status(at: url, descriptor: descriptor) == .complete)
+    }
+
     @Test func validBoundedMetadataIsComplete() throws {
         let url = try makeCompleteModelInstall("probe")
         defer { try? FileManager.default.removeItem(at: url) }

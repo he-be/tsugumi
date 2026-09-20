@@ -18,6 +18,15 @@ public enum AppModelInstallationProbe {
             return .missing
         }
 
+        if descriptor.kind.runsOnLlamaServer {
+            // The manifest names the GGUF and the llama-server that runs it; both have to be on this machine.
+            do {
+                _ = try LlamaServerModelDirectory(modelDirectory: directory)
+                return .complete
+            } catch {
+                return .partial("\(error)")
+            }
+        }
         guard let archConfig = descriptor.kind.archConfig else {
             // Qwen3.8: the manifest names the GGUF files, and the tokenizer sidecar has to be beside them.
             do {

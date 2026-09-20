@@ -19,6 +19,12 @@ private final class ForegroundAppDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
     }
+
+    // A llama-server the app started is its child and would outlive it with 10 GB of weights
+    // (`LlamaServerInferenceClient`); a quit that skips this is caught by the pid file at the next start.
+    func applicationWillTerminate(_ notification: Notification) {
+        TsugumiMacApp.inferenceClient.stopChildServer()
+    }
 }
 
 @main
@@ -26,9 +32,11 @@ struct TsugumiMacApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: ForegroundAppDelegate
     @State private var model: AppModel
 
+    static let inferenceClient = KindRoutingInferenceClient(engine: DecodeServiceInferenceClient())
+
     init() {
         _model = State(initialValue: AppModel(
-            client: DecodeServiceInferenceClient(),
+            client: Self.inferenceClient,
             settingsPersistenceEnabled: true,
             chatStore: .defaultStore))
     }

@@ -14,7 +14,8 @@ import TsugumiAppCore
 //                                         [--web-store DIR] [--max-rounds N] [--thinking on|off]
 //                                         [--endpoint URL --remote-model ID [--remote-direct]] [--replay RUN_DIR]
 //                                         [--search-budget N] [--pin-search] [--sample-forced TOOL:N]
-//                                         [--stop-after-round K] [--section-embed DIR] [--gather DIR]
+//                                         [--stop-after-round K] [--cancel-at-tokens N] [--section-embed DIR]
+//                                         [--gather DIR] [--then-models DIR,DIR]
 //
 // `--web-store DIR` answers the web tools' HTTP requests from DIR and records the ones it does not have
 // (`RecordedHTTPTransport`), so a second run reads the same search results and pages (`docs/qwen38/21` §4 E-1).
@@ -100,6 +101,14 @@ struct Options {
     var pinSearch = false
     var sampleForced: [String: Int] = [:]
     var stopAfterRound: Int?
+    /// `--cancel-at-tokens N`: the first turn of each conversation is cancelled (the app's Stop) once N tokens of text
+    /// have streamed; the turn's check is then `cancel` — the app was idle within 10 s with no error — and the next
+    /// turn has to answer as usual (docs/qwen38-27b/10 §3-1 3).
+    var cancelAtTokens: Int?
+    /// `--then-models DIR,DIR`: after the conversations, select each directory in turn as the app's model menu does,
+    /// load it and ask one question without tools. The check is that each answers and that a llama-server runs only
+    /// while its kind is the selected one (docs/qwen38-27b/10 S5).
+    var thenModels: [String] = []
     /// `--extract-endpoint URL --extract-model ID` (Online): the web tools answer with a light model's extract of
     /// the pages (`ExtractLoop.swift`, docs/qwen38/48).
     var extractEndpoint: URL?
@@ -156,6 +165,9 @@ struct Options {
                 let parts = value.split(separator: ":")
                 if parts.count == 2, let count = Int(parts[1]) { sampleForced[String(parts[0])] = count }
             case "--stop-after-round": stopAfterRound = Int(value)
+            case "--cancel-at-tokens": cancelAtTokens = Int(value)
+            case "--then-models":
+                thenModels = value.split(separator: ",").map { NSString(string: String($0)).expandingTildeInPath }
             case "--extract-endpoint": extractEndpoint = URL(string: value)
             case "--extract-model": extractModel = value
             case "--extract-pages": extractPages = Int(value) ?? 3
@@ -401,9 +413,21 @@ func runCheck() async -> Int32 {
     }
     let inner: any AppModelLifecycleClient & AppInferenceRuntimeReporting
     var real: RealInferenceClient?
+    // A kind that runs in a llama-server goes through the app's own router, which starts and stops the server
+    // (`KindRoutingInferenceClient`, docs/qwen38-27b/10 S4-S5).
+    var childServer: LlamaServerInferenceClient?
     if let replay { inner = replay } else if let remote { inner = remote } else {
         real = RealInferenceClient()
-        inner = real!
+        let directories = [options.model] + options.thenModels
+        if directories.contains(where: {
+            AppModelKind.probe(modelDirectory: URL(fileURLWithPath: $0))?.runsOnLlamaServer == true
+        }) {
+            childServer = LlamaServerInferenceClient(
+                stateDirectory: outDirectory.appendingPathComponent("llama-server", isDirectory: true))
+            inner = KindRoutingInferenceClient(engine: real!, llamaServer: childServer!)
+        } else {
+            inner = real!
+        }
     }
     let client = RecordingClient(inner: inner)
     client.stopAfterRound = options.stopAfterRound
@@ -501,6 +525,10 @@ func runCheck() async -> Int32 {
         logLine("remote \(remote.modelID) at \(remote.endpoint.absoluteString) dialect=\(remote.dialect.rawValue) "
             + "slot=\(slot) context=\(model.maxContextTokens)")
     }
+    guard model.canLoadModel else {
+        logLine("cannot load \(model.modelPathText): installation \(model.installationStatus) state \(model.loadState)")
+        return 2
+    }
     model.loadModel()
     guard await waitUntil(timeout: 600, { model.loadState.isReady || model.error != nil }),
           model.loadState.isReady else {
@@ -548,10 +576,22 @@ func runCheck() async -> Int32 {
                 sampleLog.context = ["conversation": conversation.name, "repeat": repeatIndex, "turn": turnIndex + 1]
                 let started = Date()
                 model.run()
+                var cancelSeconds: Double?
+                if let at = options.cancelAtTokens, turnIndex == 0 {
+                    _ = await waitUntil(timeout: 3_600) { !model.isRunning || model.liveTokenCount >= at }
+                    if model.isRunning {
+                        let issued = Date()
+                        logLine("\(label) cancel at \(model.liveTokenCount) tokens")
+                        model.cancel()
+                        _ = await waitUntil(timeout: 3_600) { !model.isRunning }
+                        cancelSeconds = Date().timeIntervalSince(issued)
+                    }
+                }
                 _ = await waitUntil(timeout: 3_600) { !model.isRunning }
                 let wall = Date().timeIntervalSince(started)
                 let records = client.take()
-                let stopped = records.contains { $0.outcome == "stopped" }
+                // A turn cut on purpose (`--stop-after-round`, `--cancel-at-tokens`) has no answer to check.
+                let stopped = records.contains { $0.outcome == "stopped" } || cancelSeconds != nil
                 let web = webStore?.takeCounts()
                 let pins = pinned?.takeCounts()
 
@@ -615,9 +655,13 @@ func runCheck() async -> Int32 {
                     // A round that did not finish leaves nothing to continue from.
                     livePosition = record.outcome == "finished" && prompt > 0 ? prompt + generated - 1 : nil
                 }
-                if stopped {
+                if let cancelSeconds {
+                    // The app reports a Stop as `.cancelled`; anything else is a failure of the cancel itself.
+                    checks["cancel"] = cancelSeconds < 10 && model.error == .cancelled
+                    logLine("\(label) idle \(String(format: "%.2f", cancelSeconds)) s after cancel")
+                } else if stopped {
                     // Cut on purpose (`--stop-after-round`): there is no answer to check.
-                } else if remote == nil && replay == nil {
+                } else if remote == nil && replay == nil && !model.selectedModelKind.runsOnLlamaServer {
                     checks["live"] = liveNotes.isEmpty
                     checks["progress"] = progressNotes.isEmpty
                 }
@@ -668,12 +712,60 @@ func runCheck() async -> Int32 {
                     + (pins.map { ", search pinned \($0.pinned) fetched \($0.fetched)" } ?? "")
                     + (budget.map { ", search budget \($0.used)/\($0.budget)" } ?? ""))
                 logLine(summary.last!)
-                if model.error != nil || stopped { break }
+                // A cancelled turn is followed by the next one: that the server still answers is the point.
+                if cancelSeconds == nil, model.error != nil || stopped { break }
             }
         }
     }
     try? rounds.close()
     try? turns.close()
+    for path in options.thenModels {
+        let directory = URL(fileURLWithPath: path, isDirectory: true)
+        let before = childServer?.serverProcessIdentifier
+        model.setModelURL(directory)
+        let label = "switch to \(model.selectedModelKind.rawValue)"
+        if let context = options.context,
+           model.selectedModelKind.contextOptions.contains(where: { $0.tokens == context }) {
+            model.maxContextTokens = context
+        }
+        if let thinking = options.thinking { model.thinkingEnabled = thinking }
+        model.networkMode = .modelOnly
+        guard model.canLoadModel else {
+            failures.append("\(label): cannot load \(path): \(model.installationStatus)")
+            break
+        }
+        let started = Date()
+        model.loadModel()
+        guard await waitUntil(timeout: 600, { model.loadState.isReady || model.error != nil }),
+              model.loadState.isReady else {
+            failures.append("\(label): load failed: \(model.loadState)")
+            break
+        }
+        let loadSeconds = Date().timeIntervalSince(started)
+        let server = childServer?.serverProcessIdentifier
+        let wantsServer = model.selectedModelKind.runsOnLlamaServer
+        let previousGone = before.map { $0 == server || kill($0, 0) != 0 } ?? true
+        model.newChat()
+        model.promptText = "What is the capital of France? Answer in one sentence."
+        model.run()
+        _ = await waitUntil(timeout: 3_600) { !model.isRunning }
+        _ = client.take()
+        let answer = model.outputText.trimmingCharacters(in: .whitespacesAndNewlines)
+        logLine("\(label): loaded in \(String(format: "%.1f", loadSeconds)) s, llama-server \(server.map(String.init) ?? "none"), "
+            + "previous server \(before.map(String.init) ?? "none") gone=\(previousGone), answer: \(answer.prefix(120))")
+        if model.error != nil || answer.isEmpty {
+            failures.append("\(label): no answer\(model.error.map { " error: \($0.userMessage)" } ?? "")")
+        }
+        if (server != nil) != wantsServer { failures.append("\(label): llama-server \(server.map(String.init) ?? "none")") }
+        if !previousGone { failures.append("\(label): the previous llama-server \(before!) is still running") }
+        summary.append("\(label): ok=\(model.error == nil && !answer.isEmpty) server=\(server.map(String.init) ?? "none")")
+    }
+    if let childServer, let pid = childServer.serverProcessIdentifier {
+        await inner.unload()
+        let gone = kill(pid, 0) != 0
+        logLine("child llama-server pid \(pid) after unload: \(gone ? "gone" : "STILL RUNNING")")
+        if !gone { failures.append("child llama-server \(pid) outlived unload") }
+    }
     print(summary.joined(separator: "\n"))
     print(failures.isEmpty ? "all checks passed" : "FAILURES:\n" + failures.joined(separator: "\n"))
     return failures.isEmpty ? 0 : 1
