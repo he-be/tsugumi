@@ -1,3 +1,44 @@
+diff --git a/ggml/src/ggml-metal/ggml-metal-device.cpp b/ggml/src/ggml-metal/ggml-metal-device.cpp
+index e0856c9..86a7eb9 100644
+--- a/ggml/src/ggml-metal/ggml-metal-device.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-device.cpp
+@@ -943,8 +943,22 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_mul_mv(ggml_meta
+             } break;
+         case GGML_TYPE_PQ2_0:
+             {
+-                nsg = N_SG_PQ2_0;
++                // simdgroups per threadgroup is a function constant, so it can be swept
++                // at run time; rows per simdgroup is baked into the kernel template.
++                static const int nsg_env = getenv("GGML_METAL_PQ2_0_NSG") ? atoi(getenv("GGML_METAL_PQ2_0_NSG")) : 0;
++
++                nsg = (nsg_env >= 1 && nsg_env <= 8) ? nsg_env : N_SG_PQ2_0;
+                 nr0 = N_R0_PQ2_0;
++
++                // multi-column variants read each PQ2_0 block once for nr1 src1 columns
++                // (spec-decode verify batches). Off by default: measured slower than the
++                // per-column kernel at every height on M3 Pro. GGML_METAL_PQ2_0_NR1=2..4 forces.
++                static const int nr1_env = getenv("GGML_METAL_PQ2_0_NR1") ? atoi(getenv("GGML_METAL_PQ2_0_NR1")) : 0;
++                if (nr1_env >= 2 && nr1_env <= 4 && ne11 >= 2) {
++                    nr1    = nr1_env;
++                    nr0    = N_R0_PQ2_0_NR1;
++                    suffix = nr1 == 2 ? "_nr1_2" : nr1 == 3 ? "_nr1_3" : "_nr1_4";
++                }
+             } break;
+         case GGML_TYPE_PTQ1_0:
+             {
+diff --git a/ggml/src/ggml-metal/ggml-metal-impl.h b/ggml/src/ggml-metal/ggml-metal-impl.h
+index be275d8..ffd6890 100644
+--- a/ggml/src/ggml-metal/ggml-metal-impl.h
++++ b/ggml/src/ggml-metal/ggml-metal-impl.h
+@@ -34,6 +34,8 @@
+ 
+ #define N_R0_PQ2_0 8
+ #define N_SG_PQ2_0 2
++// rows per simdgroup for the multi-column (nr1) PQ2_0 mat-vec variants
++#define N_R0_PQ2_0_NR1 4
+ #define N_R0_PTQ1_0 4
+ #define N_SG_PTQ1_0 1
+ 
 diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
 index de5be24..c56a9c6 100644
 --- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
@@ -31,6 +72,174 @@ index de5be24..c56a9c6 100644
             op->src[0]->type == GGML_TYPE_Q4_0 ||
             op->src[0]->type == GGML_TYPE_Q4_1 ||
             op->src[0]->type == GGML_TYPE_Q5_0 ||
+diff --git a/ggml/src/ggml-metal/kernels/mul_mv.metal b/ggml/src/ggml-metal/kernels/mul_mv.metal
+index de7dbaf..33c7020 100644
+--- a/ggml/src/ggml-metal/kernels/mul_mv.metal
++++ b/ggml/src/ggml-metal/kernels/mul_mv.metal
+@@ -1148,6 +1148,163 @@ kernel void kernel_mul_mv_pq2_0_f32(
+     kernel_mul_mv_pq2_0_f32_impl<N_R0_PQ2_0, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
+ }
+ 
++// PQ2_0 multi-column mat-vec: each PQ2_0 block is read once and dotted against nr1
++// src1 columns (the spec-decode verify batch, ne11 = k+1). Same 8 threads per block
++// and 16 weights per thread as the single-column kernel above, so the staged y grows
++// to nr1*16 floats; the four base-4 fields of a weight byte are also peeled once and
++// reused across the columns, which halves the floor chain as well as the weight read.
++template<int nr0, int nr1, typename args_t>
++void kernel_mul_mv_pq2_0_f32_nc_impl(
++        args_t args,
++        device const char * src0,
++        device const char * src1,
++        device       char * dst,
++        threadgroup  char * shmem,
++        uint3  tgpig,
++        ushort tiisg,
++        ushort sgitg) {
++    const short NSG = FC_mul_mv_nsg;
++
++    const int nb = args.ne00/QK_PQ2_0;
++
++    const int r0 = tgpig.x;
++    const int r1 = tgpig.y;
++    const int im = tgpig.z;
++
++    const int first_row = (r0 * NSG + sgitg) * nr0;
++    const int c0        = r1 * nr1;
++
++    const uint i12 = im%FC_mul_mv_ne12;
++    const uint i13 = im/FC_mul_mv_ne12;
++
++    device const block_pq2_0 * ax[nr0];
++    for (int row = 0; row < nr0; ++row) {
++        const uint64_t offset0 = (first_row + row)*args.nb01 + (i12/FC_mul_mv_r2)*args.nb02 + (i13/FC_mul_mv_r3)*args.nb03;
++        ax[row] = (device const block_pq2_0 *) ((device char *) src0 + offset0);
++    }
++
++    float yl[nr1][16];
++    float sumy[nr1];
++    float sumf[nr0][nr1];
++    FOR_UNROLL (short row = 0; row < nr0; row++) {
++        FOR_UNROLL (short c = 0; c < nr1; c++) {
++            sumf[row][c] = 0.f;
++        }
++    }
++
++    // group 128: 8 sub-blocks of 16 weights per PQ2_0 block
++    const short ix = (tiisg/8);
++    const short il = (tiisg%8)*16;
++
++    device const float * yb[nr1];
++    FOR_UNROLL (short c = 0; c < nr1; c++) {
++        // tail columns are clamped (computed but not stored)
++        const int ic = min(c0 + c, args.ne11 - 1);
++        const uint64_t offset1 = (uint64_t)ic*args.nb11 + (i12)*args.nb12 + (i13)*args.nb13;
++        yb[c] = (device const float *) (src1 + offset1) + ix*QK_PQ2_0 + il;
++    }
++
++    for (int ib = ix; ib < nb; ib += N_SIMDWIDTH/8) {
++        FOR_UNROLL (short c = 0; c < nr1; c++) {
++            float s = 0.f;
++
++            FOR_UNROLL (short j = 0; j < 4; j++) {
++                const float y0 = yb[c][4*j + 0];
++                const float y1 = yb[c][4*j + 1];
++                const float y2 = yb[c][4*j + 2];
++                const float y3 = yb[c][4*j + 3];
++                s += (y0 + y1) + (y2 + y3);
++                yl[c][4*j + 0] = y3 - 4.0f*y2;
++                yl[c][4*j + 1] = y2 - 4.0f*y1;
++                yl[c][4*j + 2] = y1 - 4.0f*y0;
++                yl[c][4*j + 3] = y0;
++            }
++
++            sumy[c] = s;
++        }
++
++        FOR_UNROLL (short row = 0; row < nr0; row++) {
++            device const block_pq2_0 * qb = ax[row] + ib;
++            device const uint8_t     * qs = qb->qs + (il / 4);
++
++            float w[16];
++            FOR_UNROLL (short j = 0; j < 4; j++) {
++                const float b = (float) qs[j];
++                const float u = b * (1.0f/256.0f);
++                w[4*j + 0] = floor( 4.0f*u);
++                w[4*j + 1] = floor(16.0f*u);
++                w[4*j + 2] = floor(64.0f*u);
++                w[4*j + 3] = b;
++            }
++
++            const float d = qb->d;
++
++            FOR_UNROLL (short c = 0; c < nr1; c++) {
++                float acc = 0.f;
++                FOR_UNROLL (short i = 0; i < 16; i++) {
++                    acc += w[i]*yl[c][i];
++                }
++                sumf[row][c] += d*(acc - sumy[c]);
++            }
++        }
++
++        FOR_UNROLL (short c = 0; c < nr1; c++) {
++            yb[c] += QK_PQ2_0 * (N_SIMDWIDTH/8);
++        }
++    }
++
++    device float * dst_f32 = (device float *) dst + (uint64_t)im*args.ne0*args.ne1;
++
++    for (short c = 0; c < nr1; c++) {
++        if (c0 + c >= args.ne11) {
++            break;
++        }
++        for (int row = 0; row < nr0; ++row) {
++            const float tot = simd_sum(sumf[row][c]);
++
++            if (tiisg == 0 && first_row + row < args.ne01) {
++                dst_f32[(uint64_t)(c0 + c)*args.ne0 + first_row + row] = tot;
++            }
++        }
++    }
++}
++
++[[host_name("kernel_mul_mv_pq2_0_f32_nr1_2")]]
++kernel void kernel_mul_mv_pq2_0_f32_nr1_2(
++        constant ggml_metal_kargs_mul_mv & args,
++        device const char * src0,
++        device const char * src1,
++        device       char * dst,
++        uint3  tgpig[[threadgroup_position_in_grid]],
++        ushort tiisg[[thread_index_in_simdgroup]],
++        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
++    kernel_mul_mv_pq2_0_f32_nc_impl<N_R0_PQ2_0_NR1, 2, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
++}
++
++[[host_name("kernel_mul_mv_pq2_0_f32_nr1_3")]]
++kernel void kernel_mul_mv_pq2_0_f32_nr1_3(
++        constant ggml_metal_kargs_mul_mv & args,
++        device const char * src0,
++        device const char * src1,
++        device       char * dst,
++        uint3  tgpig[[threadgroup_position_in_grid]],
++        ushort tiisg[[thread_index_in_simdgroup]],
++        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
++    kernel_mul_mv_pq2_0_f32_nc_impl<N_R0_PQ2_0_NR1, 3, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
++}
++
++[[host_name("kernel_mul_mv_pq2_0_f32_nr1_4")]]
++kernel void kernel_mul_mv_pq2_0_f32_nr1_4(
++        constant ggml_metal_kargs_mul_mv & args,
++        device const char * src0,
++        device const char * src1,
++        device       char * dst,
++        uint3  tgpig[[threadgroup_position_in_grid]],
++        ushort tiisg[[thread_index_in_simdgroup]],
++        ushort sgitg[[simdgroup_index_in_threadgroup]]) {
++    kernel_mul_mv_pq2_0_f32_nc_impl<N_R0_PQ2_0_NR1, 4, constant ggml_metal_kargs_mul_mv &>(args, src0, src1, dst, nullptr, tgpig, tiisg, sgitg);
++}
++
+ kernel void kernel_mul_mv_q4_0_f32(
+         constant ggml_metal_kargs_mul_mv & args,
+         device const char * src0,
 diff --git a/src/models/qwen35.cpp b/src/models/qwen35.cpp
 index c5f816e..b73021d 100644
 --- a/src/models/qwen35.cpp

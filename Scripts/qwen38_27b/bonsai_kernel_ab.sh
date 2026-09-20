@@ -7,7 +7,7 @@ S="${OUT:-$PWD/scratch/bonsai27b/kernel-ab}"
 mkdir -p "$S"
 H="$(cd "$(dirname "$0")" && pwd)"
 BIN=/Users/mh/LLM/prism-llamacpp/src-b10709/build/bin/llama-server
-M=/Users/mh/LLM/Ternary-Bonsai-2-27B-MTP/Ternary-Bonsai-2-27B-PQ2_0-MTP-Q8_0.gguf
+M="${MODEL:-/Users/mh/LLM/Ternary-Bonsai-2-27B-MTP/Ternary-Bonsai-2-27B-PQ2_0-MTP-Q8_0.gguf}"
 PORT=8099
 CTX="${CTX:-8192}"
 
