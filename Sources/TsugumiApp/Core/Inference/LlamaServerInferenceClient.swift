@@ -82,14 +82,17 @@ public final class LlamaServerInferenceClient: AppModelLifecycleClient, AppInfer
     private var running: Running?
     private let stateDirectory: URL
     private let healthTimeoutSeconds: Double
+    private let extraArguments: [String]
 
     public var loadedRuntimeOwnBytes: UInt64? { nil }
 
     /// `stateDirectory` holds the pid file and the server's log (`llama-server.pid`, `llama-server.log`).
+    /// `extraArguments` go after the manifest's, for a check that varies one server flag; the app passes none.
     public init(stateDirectory: URL = LlamaServerInferenceClient.defaultStateDirectory,
-                healthTimeoutSeconds: Double = 300) {
+                healthTimeoutSeconds: Double = 300, extraArguments: [String] = []) {
         self.stateDirectory = stateDirectory
         self.healthTimeoutSeconds = healthTimeoutSeconds
+        self.extraArguments = extraArguments
     }
 
     /// `~/Library/Application Support/Tsugumi/llama-server`.
@@ -130,7 +133,7 @@ public final class LlamaServerInferenceClient: AppModelLifecycleClient, AppInfer
             let port = try Self.freePort()
             let process = Process()
             process.executableURL = model.server
-            process.arguments = model.arguments(contextTokens: maxContextTokens, port: port)
+            process.arguments = model.arguments(contextTokens: maxContextTokens, port: port) + extraArguments
             FileManager.default.createFile(atPath: logURL.path, contents: nil)
             let log = try FileHandle(forWritingTo: logURL)
             process.standardOutput = log

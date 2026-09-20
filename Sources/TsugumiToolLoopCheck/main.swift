@@ -15,7 +15,7 @@ import TsugumiAppCore
 //                                         [--endpoint URL --remote-model ID [--remote-direct]] [--replay RUN_DIR]
 //                                         [--search-budget N] [--pin-search] [--sample-forced TOOL:N]
 //                                         [--stop-after-round K] [--cancel-at-tokens N] [--section-embed DIR]
-//                                         [--gather DIR] [--then-models DIR,DIR]
+//                                         [--gather DIR] [--then-models DIR,DIR] [--server-args "A B"]
 //
 // `--web-store DIR` answers the web tools' HTTP requests from DIR and records the ones it does not have
 // (`RecordedHTTPTransport`), so a second run reads the same search results and pages (`docs/qwen38/21` §4 E-1).
@@ -109,6 +109,8 @@ struct Options {
     /// load it and ask one question without tools. The check is that each answers and that a llama-server runs only
     /// while its kind is the selected one (docs/qwen38-27b/10 S5).
     var thenModels: [String] = []
+    /// `--server-args "A B"`: arguments added to the child llama-server's (`LlamaServerInferenceClient`).
+    var serverArguments: [String] = []
     /// `--extract-endpoint URL --extract-model ID` (Online): the web tools answer with a light model's extract of
     /// the pages (`ExtractLoop.swift`, docs/qwen38/48).
     var extractEndpoint: URL?
@@ -166,6 +168,7 @@ struct Options {
                 if parts.count == 2, let count = Int(parts[1]) { sampleForced[String(parts[0])] = count }
             case "--stop-after-round": stopAfterRound = Int(value)
             case "--cancel-at-tokens": cancelAtTokens = Int(value)
+            case "--server-args": serverArguments = value.split(separator: " ").map(String.init)
             case "--then-models":
                 thenModels = value.split(separator: ",").map { NSString(string: String($0)).expandingTildeInPath }
             case "--extract-endpoint": extractEndpoint = URL(string: value)
@@ -423,7 +426,8 @@ func runCheck() async -> Int32 {
             AppModelKind.probe(modelDirectory: URL(fileURLWithPath: $0))?.runsOnLlamaServer == true
         }) {
             childServer = LlamaServerInferenceClient(
-                stateDirectory: outDirectory.appendingPathComponent("llama-server", isDirectory: true))
+                stateDirectory: outDirectory.appendingPathComponent("llama-server", isDirectory: true),
+                extraArguments: options.serverArguments)
             inner = KindRoutingInferenceClient(engine: real!, llamaServer: childServer!)
         } else {
             inner = real!
