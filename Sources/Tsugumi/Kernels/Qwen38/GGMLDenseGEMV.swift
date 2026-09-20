@@ -26,6 +26,10 @@ package final class GGMLDenseGEMV {
     private let f16Dequant: MTLComputePipelineState
     private let iq: [GGUFFile.GGMLType: MTLComputePipelineState]
     private let iqDequant: [GGUFFile.GGMLType: MTLComputePipelineState]
+    /// PQ2_0 has its own GEMV (x held in registers across the group's rows): one column reads
+    /// 32 weights per lane over 4 rows, more columns 16 weights over 8 rows (docs/qwen38-27b/14 §1).
+    private let pq2Rows4: MTLComputePipelineState
+    private let pq2Rows8W16: MTLComputePipelineState
     /// Token count from which the dequant + sgemm path runs (`Q38_MPS_MIN_T`, 0 = never).
     package var mpsMinTokens = Int(ProcessInfo.processInfo.environment["Q38_MPS_MIN_T"] ?? "") ?? 32
     /// Tensors above this many weights stay on the direct kernels (the LM head).
@@ -69,6 +73,8 @@ package final class GGMLDenseGEMV {
         }
         self.iq = iq
         self.iqDequant = iqDequant
+        pq2Rows4 = try iqPSO("ggml_pq2_0_gemv_r4")
+        pq2Rows8W16 = try iqPSO("ggml_pq2_0_gemv_r8w16")
     }
 
     /// Kernel name stem in `ggml_iq.metal` (`ggml_<stem>_gemv`, `ggml_<stem>_dequant_f32`).
@@ -102,6 +108,7 @@ package final class GGMLDenseGEMV {
             return
         }
         let pso: MTLComputePipelineState
+        var rowsPerThreadgroup = 8
         switch type {
         case .q8_0: pso = q8
         // Float rows of 1024+ read 32-element chunks per lane: 3-9x less GPU time than
@@ -111,6 +118,10 @@ package final class GGMLDenseGEMV {
         case .f32: pso = n >= 1024 ? f32Chunk : f32
         // BF16 reads back the F32 bits exactly (docs/qwen38/15 §2 W-4), same forms as F32.
         case .bf16: pso = n >= 1024 ? bf16Chunk : bf16
+        case .pq2_0:
+            precondition(n % 128 == 0, "pq2_0 row width must be a multiple of 128")
+            pso = tokens == 1 ? pq2Rows4 : pq2Rows8W16
+            rowsPerThreadgroup = tokens == 1 ? 8 : 16
         default:
             guard let kernel = iq[type] else { preconditionFailure("GGMLDenseGEMV: unsupported type \(type)") }
             let epb = Self.elementsPerBlock(type)
@@ -125,7 +136,8 @@ package final class GGMLDenseGEMV {
         var mv = UInt32(m), nv = UInt32(n)
         enc.setBytes(&mv, length: 4, index: 3)
         enc.setBytes(&nv, length: 4, index: 4)
-        enc.dispatchThreadgroups(MTLSize(width: (m + 7) / 8, height: tokens, depth: 1),
+        enc.dispatchThreadgroups(MTLSize(width: (m + rowsPerThreadgroup - 1) / rowsPerThreadgroup,
+                                         height: tokens, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 64, height: 1, depth: 1))
         enc.endEncoding()
     }

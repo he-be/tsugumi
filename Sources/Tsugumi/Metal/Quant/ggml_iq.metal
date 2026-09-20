@@ -1448,3 +1448,73 @@ GGML_IQ_KERNELS(iq4_xs)
 
 GGML_IQ_GEMV_N(ggml_pq2_0_gemv, block_pq2_0, ggml_deq_pq2_0, 128)
 GGML_IQ_DEQUANT_N(ggml_pq2_0_dequant_f32, block_pq2_0, ggml_deq_pq2_0, 128)
+
+// --- PQ2_0 だけの GEMV (docs/qwen38-27b/12 §6-4) -----------------------------------
+//
+// 上の共有の形は、1 つの 32 重みの小ブロックについて活性 x を行ごとに読み直す
+// (1 SIMD グループ 4 行なら 4 回)。ここでは x の WPL 個を先にレジスタに載せ、
+// R 行で使い回す。三値は llama.cpp の `mul_mv.metal` の PQ2_0 と同じ形で、
+// 逆量子化せずに `(q - 1) * x = bit0 * x + 2 * bit1 * x - x` の 3 項に分けて足す
+// (q = 00 → -1 / 01 → 0 / 10 → +1)。行の端は行番号を丸めて読み、書き戻しで落とす。
+// 1 スレッドグループ = 2 SIMD グループ × R 行、ディスパッチは ((M + 2R - 1) / 2R, T)。
+
+template<ushort R, ushort WPL>
+kernel void ggml_pq2_0_gemv_rows(
+    device const block_pq2_0* W [[buffer(0)]],
+    device const float* xs [[buffer(1)]],
+    device float* ys [[buffer(2)]],
+    constant uint& M [[buffer(3)]],
+    constant uint& N [[buffer(4)]],
+    uint2 tgt [[threadgroup_position_in_grid]],
+    ushort tiisg [[thread_index_in_simdgroup]],
+    ushort sgitg [[simdgroup_index_in_threadgroup]]
+) {
+    constexpr ushort BPL = WPL / 4;          // 1 レーンが 1 歩で読む qs のバイト数
+    constexpr ushort SUB = 128 / WPL;        // 1 ブロックの中の歩数
+    device const float* x = xs + tgt.y * N;
+    device float* y = ys + tgt.y * M;
+    const uint row0 = (tgt.x * kGgmlIqGroupsPerTG + sgitg) * R;
+    const uint nb = N / 128;                 // 1 行のブロック数
+    const uint steps = N / WPL;              // 1 行の歩数
+    float sum[R] = {0.f};
+    if (row0 < M) {
+        for (uint c = tiisg; c < steps; c += 32) {
+            device const float* xp = x + c * WPL;
+            float xl[WPL];
+            float sumx = 0.f;
+            for (ushort l = 0; l < WPL; ++l) { xl[l] = xp[l]; sumx += xl[l]; }
+            const uint blk = c / SUB;
+            const ushort sub = c % SUB;
+            for (ushort r = 0; r < R; ++r) {
+                device const block_pq2_0* b = W + min(row0 + r, M - 1) * nb + blk;
+                device const uchar* q = b->qs + BPL * sub;
+                float lo = 0.f, hi = 0.f;
+                for (ushort j = 0; j < BPL; ++j) {
+                    const uchar byte = q[j];
+                    lo += select(0.f, xl[4 * j + 0], bool(byte & 0x01));
+                    hi += select(0.f, xl[4 * j + 0], bool(byte & 0x02));
+                    lo += select(0.f, xl[4 * j + 1], bool(byte & 0x04));
+                    hi += select(0.f, xl[4 * j + 1], bool(byte & 0x08));
+                    lo += select(0.f, xl[4 * j + 2], bool(byte & 0x10));
+                    hi += select(0.f, xl[4 * j + 2], bool(byte & 0x20));
+                    lo += select(0.f, xl[4 * j + 3], bool(byte & 0x40));
+                    hi += select(0.f, xl[4 * j + 3], bool(byte & 0x80));
+                }
+                sum[r] += float(b->d) * (lo + 2.f * hi - sumx);
+            }
+        }
+    }
+    for (ushort r = 0; r < R; ++r) {
+        const float total = simd_sum(sum[r]);
+        if (tiisg == 0 && row0 + r < M) y[row0 + r] = total;
+    }
+}
+
+#define GGML_PQ2_GEMV_ROWS(NAME, R, WPL)                                                 \
+template [[host_name(NAME)]] kernel void ggml_pq2_0_gemv_rows<R, WPL>(                   \
+    device const block_pq2_0*, device const float*, device float*,                       \
+    constant uint&, constant uint&, uint2, ushort, ushort);
+
+// 1 列は 32 重み × 4 行、2 列以上は 16 重み × 8 行が速い (docs/qwen38-27b/14 §1)。
+GGML_PQ2_GEMV_ROWS("ggml_pq2_0_gemv_r4", 4, 32)
+GGML_PQ2_GEMV_ROWS("ggml_pq2_0_gemv_r8w16", 8, 16)

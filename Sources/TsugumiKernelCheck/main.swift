@@ -1916,6 +1916,22 @@ if let index = arguments.firstIndex(of: "--q27-bench"), index + 1 < arguments.co
         gguf: opt("--q27-gguf") ?? "~/LLM/Qwen3.8-27B-GSQ-RCO-GGUF/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf")
     exit(0)
 }
+// `--pq2-gemv-bench`: `ggml_pq2_0_gemv` on synthetic PQ2_0 weights, to put next to llama.cpp's
+// `test-backend-ops perf -o MUL_MAT` (PQ2GemvBench.swift, docs/qwen38-27b/12 §6-4).
+if arguments.contains("--pq2-gemv-bench") {
+    func opt(_ name: String) -> String? {
+        arguments.firstIndex(of: name).flatMap { $0 + 1 < arguments.count ? arguments[$0 + 1] : nil }
+    }
+    let shapes = (opt("--pq2-shapes") ?? "4096x14336").split(separator: ",").map { pair -> (m: Int, n: Int) in
+        let parts = pair.split(separator: "x")
+        precondition(parts.count == 2, "--pq2-shapes wants MxN pairs")
+        return (Int(parts[0])!, Int(parts[1])!)
+    }
+    let cols = (opt("--pq2-cols") ?? "1,2,3,4").split(separator: ",").compactMap { Int($0) }
+    exit(try runPQ2GemvBench(shapes: shapes, cols: cols,
+                             repeats: opt("--pq2-repeats").flatMap { Int($0) } ?? 100,
+                             iterations: opt("--pq2-iterations").flatMap { Int($0) } ?? 9) ? 0 : 1)
+}
 // `--q27-dense <fixture dir>`: Qwen3.8-27B IQ / K dense GEMV against gguf-py (Q27DenseCheck.swift, docs/qwen38-27b/03).
 if let index = arguments.firstIndex(of: "--q27-dense"), index + 1 < arguments.count {
     exit(try runQ27DenseCheck(fixtureDir: arguments[index + 1]) ? 0 : 1)
