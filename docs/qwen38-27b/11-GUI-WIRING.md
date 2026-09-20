@@ -160,6 +160,6 @@ AppModel ── KindRoutingInferenceClient ─┬─ DecodeServiceInferenceClien
    エンジン側は `RealInferenceClient` で、GUI の `DecodeServiceInferenceClient` (launchd のジョブ) との切り替えは未確認。
 2. S1 の PC 向け 1 会話 (§2)。
 3. 強制呼び出しの回の途中での Stop (§2)。
-4. `--cache-ram 0` で、前の会話に戻ったときの prefill (§5)。
+4. ~~`--cache-ram 0` で、前の会話に戻ったときの prefill (§5)。~~ **[13](13-KVQ8-AND-SLOT-SAVE.md) §2・§3 で流した**: 全部読み直し (16K で約 175 s)。スロットの save / restore は厳密な延長のときだけ効き、アプリには入れない (ユーザー決定)。
 5. 表示名は案のまま「Bonsai 2 27B PQ2_0 (MTP)」(10 §6-2)。
 6. 速度計の針を Bonsai で出さない処理 (10 §4) は入れていない。今どう表示されるかは未確認。
