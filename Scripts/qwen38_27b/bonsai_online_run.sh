@@ -3,6 +3,7 @@
 #   OUT=…   出力先 (既定 scratch/bonsai27b/runs/online-mtp-set1)
 #   SPEC=…  投機の引数 (既定 n_max 1。投機なしは SPEC="--spec-type none")
 #   ONLY=…  会話 id をカンマ区切りで絞る
+#   RELAY=1 llama-swap の経路 (/upstream/<id>/) を upstream_relay.py で中継する (09 の流し方)。既定は中継なしの直叩き
 # Swapouts が 60 秒で +512 MiB か合計 +1 GiB になったら、サーバも検査も子孫ごと止める。
 set -u
 R="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -10,7 +11,7 @@ OUT="${OUT:-$R/scratch/bonsai27b/runs/online-mtp-set1}"
 SPEC="${SPEC:---spec-type draft-mtp --spec-draft-n-max 1}"
 BIN=/Users/mh/LLM/prism-llamacpp/src-b10709/build/bin/llama-server
 M=/Users/mh/LLM/Ternary-Bonsai-2-27B-MTP/Ternary-Bonsai-2-27B-PQ2_0-MTP-Q8_0.gguf
-PORT=8080; RELAY=8081
+PORT=8080; RELAYPORT=8081
 mkdir -p "$OUT"
 
 swapouts () { vm_stat | awk '/Swapouts/ {gsub("\\.","",$2); print $2}'; }
@@ -25,17 +26,33 @@ until curl -s -m 2 http://127.0.0.1:$PORT/health | grep -q ok; do
   sleep 3
   kill -0 $SRV 2>/dev/null || { echo "server died"; tail -5 "$OUT/server.log"; exit 1; }
 done
-python3 "$R/Scripts/qwen38_27b/upstream_relay.py" $RELAY $PORT > "$OUT/relay.log" 2>&1 &
-RLY=$!
-sleep 1
+if [ "${RELAY:-0}" = 1 ]; then
+  python3 "$R/Scripts/qwen38_27b/upstream_relay.py" $RELAYPORT $PORT > "$OUT/relay.log" 2>&1 &
+  RLY=$!
+  sleep 1
+  REMOTE="--endpoint http://127.0.0.1:$RELAYPORT --remote-model bonsai"
+else
+  REMOTE="--endpoint http://127.0.0.1:$PORT --remote-model bonsai --remote-direct"
+fi
 S0=$(swapouts); echo "swapouts(start) $S0" | tee "$OUT/watch.log"
 
 "$R/.build/release/TsugumiToolLoopCheck" --out "$OUT" --model ~/LLM/Qwen3.8-Flash-Next-DS4-IQ2 \
   --conversations "$R/Scripts/qwen38/tool_loop_conversations.json" ${ONLY:+--only $ONLY} \
   --network online --max-rounds 6 --thinking off --context 32768 --repeats 1 \
   --web-store "$R/scratch/bonsai27b/web" --pin-search --search-budget 0 \
-  --endpoint http://127.0.0.1:$RELAY --remote-model bonsai > "$OUT/check.log" 2>&1 &
+  $REMOTE > "$OUT/check.log" 2>&1 &
 CHK=$!
+
+# サーバに実際に効いているサンプリング (/slots) を 1 度残す。送っていない項目はサーバの既定が出る
+( for _ in $(seq 60); do
+    sleep 5
+    curl -s -m 2 http://127.0.0.1:$PORT/slots | python3 -c '
+import json,sys
+for s in json.load(sys.stdin):
+    if s.get("is_processing"):
+        p=s["params"]; print({k:p.get(k) for k in ("temperature","top_k","top_p","min_p","presence_penalty")}); sys.exit(0)
+sys.exit(1)' > "$OUT/slot-sampling.txt" 2>/dev/null && break
+  done ) &
 
 PREV=$S0
 while kill -0 $CHK 2>/dev/null; do

@@ -52,6 +52,7 @@ public struct PrebuiltModelSource: Equatable, Sendable {
         case .gemmaQATSym: gemmaQATSym
         case .ornith: ornith
         case .qwen38: qwen38
+        case .bonsai27b: bonsai27b
         }
     }
 
@@ -59,6 +60,15 @@ public struct PrebuiltModelSource: Equatable, Sendable {
     /// has no file to fetch. The probe recognises the directory by its manifest instead of a snapshot hash.
     public static let qwen38 = PrebuiltModelSource(
         kind: .qwen38,
+        repoID: "",
+        revision: "",
+        sourceIndexSHA256: "",
+        files: [])
+
+    /// Nothing is published for Bonsai either: the GGUF and the `llama-server` that runs it are this machine's
+    /// (`docs/qwen38-27b/10` §5).
+    public static let bonsai27b = PrebuiltModelSource(
+        kind: .bonsai27b,
         repoID: "",
         revision: "",
         sourceIndexSHA256: "",

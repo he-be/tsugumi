@@ -250,6 +250,9 @@ actor RealInferenceSession {
                     pleOverride: key.options.qwen38PLETable?.relativePath)
                 backend = .qwen38(session)
                 loadedRuntimeOwnBytes = nil
+            case .bonsai27b:
+                throw AppInferenceError.modelLoadFailed(
+                    "\(kind.displayName) runs in a llama-server (LlamaServerInferenceClient), not in this engine")
             }
             try Task.checkCancellation()
 
@@ -293,7 +296,7 @@ actor RealInferenceSession {
             let index = URL(fileURLWithPath: sidecar).appendingPathComponent("mtp_head.json")
             guard FileManager.default.fileExists(atPath: index.path) else { return 0 }
             return kind.draftBlockSize
-        case .qwen38:
+        case .qwen38, .bonsai27b:
             // The MTP block is part of the GGUF.
             return kind.draftBlockSize
         }

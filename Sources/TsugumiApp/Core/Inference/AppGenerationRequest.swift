@@ -30,6 +30,11 @@ public struct AppGenerationRequest: Equatable, Sendable {
     public var topK: Int?
     public var topP: Float?
     public var repetitionPenalty: Float
+    /// The two sampler values a llama-server has its own defaults for (min_p 0.05, presence_penalty 0.0), which are
+    /// not the official ones of every model (`AppModelKind.officialSampling`). Only `RemoteInferenceClient` sends
+    /// them; nil leaves the server's default. The engines on this Mac carry their own (`Qwen38Sampler`).
+    public var minP: Float?
+    public var presencePenalty: Float?
     public var runtimeOptions: AppRuntimeOptions
     /// Whether the chat template renders the thought channel open. The
     /// default follows the model kind (`AppModelKind.thinkingDefault`); this
@@ -53,6 +58,8 @@ public struct AppGenerationRequest: Equatable, Sendable {
                 topK: Int? = 64,
                 topP: Float? = 0.95,
                 repetitionPenalty: Float = 1.0,
+                minP: Float? = nil,
+                presencePenalty: Float? = nil,
                 runtimeOptions: AppRuntimeOptions = AppRuntimeOptions(),
                 enableThinking: Bool = false,
                 imagePaths: [String] = []) {
@@ -70,6 +77,8 @@ public struct AppGenerationRequest: Equatable, Sendable {
         self.topK = topK
         self.topP = topP
         self.repetitionPenalty = repetitionPenalty
+        self.minP = minP
+        self.presencePenalty = presencePenalty
         self.runtimeOptions = runtimeOptions
         self.enableThinking = enableThinking
         self.imagePaths = imagePaths
@@ -109,6 +118,16 @@ public struct AppGenerationRequest: Equatable, Sendable {
         }
         guard repetitionPenalty >= 1 else {
             throw AppInferenceError.invalidRequest("Repetition penalty must be at least 1.")
+        }
+        if let minP {
+            guard (0...1).contains(minP) else {
+                throw AppInferenceError.invalidRequest("Min-P must be between 0 and 1.")
+            }
+        }
+        if let presencePenalty {
+            guard (-2...2).contains(presencePenalty) else {
+                throw AppInferenceError.invalidRequest("Presence penalty must be between -2 and 2.")
+            }
         }
         guard imagePaths.count <= 4 else {
             throw AppInferenceError.invalidRequest("At most 4 images can be attached.")

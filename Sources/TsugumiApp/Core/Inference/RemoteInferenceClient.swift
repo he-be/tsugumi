@@ -1,9 +1,9 @@
 import Foundation
 import Tsugumi
-import TsugumiAppCore
 
-/// The app's inference client pointed at a llama-server behind llama-swap instead of this Mac's decode service
-/// (`--endpoint`, `docs/experiments/knowledge-sources`). The tool loop around it stays the app's: `AppModel` builds the
+/// The app's inference client pointed at a llama-server instead of this Mac's decode service: one behind llama-swap
+/// (`TsugumiToolLoopCheck --endpoint`, `docs/experiments/knowledge-sources`) or one the app started itself
+/// (`LlamaServerInferenceClient`, `docs/qwen38-27b/10`). The tool loop around it stays the app's: `AppModel` builds the
 /// requests (system prompt, tools, the Online policy, the round budget) and the app's executors run the calls here.
 ///
 /// Three shapes of round, by `toolChoice`:
@@ -15,12 +15,17 @@ import TsugumiAppCore
 ///             rejects fails as `structured_output_failure`, which the app retries once, as it does on the Mac.
 ///   none      chat completions with the call-opening token banned by `logit_bias`; the declarations stay in the
 ///             prompt, as the app's `ForbiddenTokensConstraint` keeps them.
-final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeReporting, @unchecked Sendable {
-    enum Dialect: String {
+public final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeReporting, @unchecked Sendable {
+    public enum Dialect: String, Sendable {
         case gemma
         case qwen
 
-        init(kind: AppModelKind) { self = kind == .qwen38 ? .qwen : .gemma }
+        public init(kind: AppModelKind) {
+            switch kind {
+            case .qwen38, .bonsai27b: self = .qwen
+            case .gemmaQATSym, .ornith: self = .gemma
+            }
+        }
 
         var callOpen: String { self == .gemma ? "<|tool_call>" : "<tool_call>" }
         var callClose: String { self == .gemma ? "<tool_call|>" : "</tool_call>" }
@@ -38,26 +43,36 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
         }
     }
 
-    let endpoint: URL
-    let modelID: String
-    let dialect: Dialect
+    /// Where llama-server's own routes (`props`, `tokenize`, `apply-template`) sit under `endpoint`. llama-swap only
+    /// forwards the OpenAI routes by model name and reaches the rest through `/upstream/<id>/`; a bare llama-server
+    /// has them at the root.
+    public enum Routing: Sendable {
+        case llamaSwap
+        case direct
+    }
+
+    public let endpoint: URL
+    public let modelID: String
+    public let dialect: Dialect
+    public let routing: Routing
     /// The per-slot context llama-server reports (`default_generation_settings.n_ctx`), read at load.
-    private(set) var serverContext: Int?
+    public private(set) var serverContext: Int?
     private var callOpenTokenID: Int?
     private let session: URLSession
     private let lock = NSLock()
     private var running: Task<Void, Never>?
     /// `--sample-forced`: a forced round of one of these tools first draws this many completions from the same
     /// prompt with seeds 1…N and hands their calls to `onForcedSamples`; the round itself goes on unseeded.
-    var forcedSamples: [String: Int] = [:]
-    var onForcedSamples: (@Sendable (_ tool: String, _ calls: [String]) -> Void)?
+    public var forcedSamples: [String: Int] = [:]
+    public var onForcedSamples: (@Sendable (_ tool: String, _ calls: [String]) -> Void)?
 
-    var loadedRuntimeOwnBytes: UInt64? { nil }
+    public var loadedRuntimeOwnBytes: UInt64? { nil }
 
-    init(endpoint: URL, modelID: String, dialect: Dialect) {
+    public init(endpoint: URL, modelID: String, dialect: Dialect, routing: Routing = .llamaSwap) {
         self.endpoint = endpoint
         self.modelID = modelID
         self.dialect = dialect
+        self.routing = routing
         let configuration = URLSessionConfiguration.ephemeral
         // llama-swap starts the model on the first request (about 3 minutes) and a long prefill sends nothing.
         configuration.timeoutIntervalForRequest = 1_800
@@ -67,17 +82,19 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
 
     // MARK: Lifecycle
 
-    /// Brings the model up through llama-swap and reads what the rounds need: the slot's context (which the caller
+    /// Brings the model up (through llama-swap) and reads what the rounds need: the slot's context (which the caller
     /// sets on `AppModel` before loading, since a changed context asks for a reload) and the call-opening token.
-    func prepare() async throws {
-        // One token through the router, so llama-swap has the model up before the first timed round.
-        _ = try await postJSON("v1/chat/completions", [
-            "model": modelID, "max_tokens": 1,
-            "messages": [["role": "user", "content": "hi"]],
-        ])
-        let props = try await getJSON("upstream/\(modelID)/props")
+    public func prepare() async throws {
+        if routing == .llamaSwap {
+            // One token through the router, so llama-swap has the model up before the first timed round.
+            _ = try await postJSON("v1/chat/completions", [
+                "model": modelID, "max_tokens": 1,
+                "messages": [["role": "user", "content": "hi"]],
+            ])
+        }
+        let props = try await getJSON(serverRoute("props"))
         serverContext = (props["default_generation_settings"] as? [String: Any])?["n_ctx"] as? Int
-        let tokens = try await postJSON("upstream/\(modelID)/tokenize",
+        let tokens = try await postJSON(serverRoute("tokenize"),
                                         ["content": dialect.callOpen, "parse_special": true])
         if let list = tokens["tokens"] as? [Any], list.count == 1 {
             callOpenTokenID = (list[0] as? Int) ?? ((list[0] as? [String: Any])?["id"] as? Int)
@@ -87,22 +104,22 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
         }
     }
 
-    func ensureLoaded(modelDirectory: URL, maxContextTokens: Int, options: AppRuntimeOptions, forceLogitsHead: Bool,
+    public func ensureLoaded(modelDirectory: URL, maxContextTokens: Int, options: AppRuntimeOptions, forceLogitsHead: Bool,
                       onState: @escaping @Sendable (AppModelLoadState) -> Void) async throws {
         if callOpenTokenID == nil { try await prepare() }
         onState(.ready(modelDirectory: modelDirectory, loadSeconds: 0))
     }
 
-    func unload() async {}
+    public func unload() async {}
 
-    func cancel() {
+    public func cancel() {
         lock.lock(); defer { lock.unlock() }
         running?.cancel()
     }
 
     // MARK: Generation
 
-    func generate(_ request: AppGenerationRequest) -> AsyncThrowingStream<AppInferenceEvent, Error> {
+    public func generate(_ request: AppGenerationRequest) -> AsyncThrowingStream<AppInferenceEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -207,7 +224,7 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
                              into continuation: AsyncThrowingStream<AppInferenceEvent, Error>.Continuation) async throws {
         var templateBody = requestBody(request)
         templateBody.removeValue(forKey: "max_tokens")
-        let rendered = try await postJSON("upstream/\(modelID)/apply-template", templateBody)
+        let rendered = try await postJSON(serverRoute("apply-template"), templateBody)
         guard let prompt = rendered["prompt"] as? String else {
             throw AppInferenceError.unknown("apply-template returned no prompt")
         }
@@ -217,11 +234,9 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
             "prompt": prompt + prefix.appended,
             "stop": [dialect.callClose],
             "max_tokens": 1_024,
-            "temperature": request.temperature,
             "cache_prompt": true,
         ]
-        if let topK = request.topK { body["top_k"] = topK }
-        if let topP = request.topP { body["top_p"] = topP }
+        Self.setSampling(request, in: &body)
         if let name, let count = forcedSamples[name], count > 0 {
             var drawn: [String] = []
             for seed in 1...count {
@@ -282,7 +297,7 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
 
     // MARK: Request shape
 
-    private func requestBody(_ request: AppGenerationRequest) -> [String: Any] {
+    func requestBody(_ request: AppGenerationRequest) -> [String: Any] {
         var messages: [[String: Any]] = []
         if let system = request.systemPrompt { messages.append(["role": "system", "content": system]) }
         messages.append(contentsOf: request.history.map(Self.message))
@@ -292,14 +307,12 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
         var body: [String: Any] = [
             "model": modelID,
             "messages": messages,
-            "temperature": request.temperature,
             // The app lets a round run to the context; a runaway repetition is cut here instead.
             "max_tokens": min(request.maxNewTokens, 8_192),
             "chat_template_kwargs": ["enable_thinking": request.enableThinking],
             "cache_prompt": true,
         ]
-        if let topK = request.topK { body["top_k"] = topK }
-        if let topP = request.topP { body["top_p"] = topP }
+        Self.setSampling(request, in: &body)
         if !request.tools.isEmpty {
             body["tools"] = request.tools.map { tool -> [String: Any] in
                 let parameters = (try? JSONSerialization.jsonObject(with: Data(tool.parametersJSON.utf8)))
@@ -309,6 +322,16 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
             }
         }
         return body
+    }
+
+    /// The request's sampler, on every route that samples (chat, the forced call, `constrained`). `min_p` and
+    /// `presence_penalty` go out only when the request names them: llama-server's own defaults are 0.05 and 0.0.
+    static func setSampling(_ request: AppGenerationRequest, in body: inout [String: Any]) {
+        body["temperature"] = request.temperature
+        if let topK = request.topK { body["top_k"] = topK }
+        if let topP = request.topP { body["top_p"] = topP }
+        if let minP = request.minP { body["min_p"] = minP }
+        if let presencePenalty = request.presencePenalty { body["presence_penalty"] = presencePenalty }
     }
 
     private static func message(_ turn: AppChatTurn) -> [String: Any] {
@@ -371,6 +394,10 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
 
     // MARK: HTTP
 
+    func serverRoute(_ path: String) -> String {
+        routing == .llamaSwap ? "upstream/\(modelID)/\(path)" : path
+    }
+
     private func urlRequest(_ path: String, _ body: [String: Any]) throws -> URLRequest {
         var request = URLRequest(url: endpoint.appendingPathComponent(path))
         request.httpMethod = "POST"
@@ -381,9 +408,9 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
 
     /// One round of `--gather` (docs/qwen38/40): `messages` rendered by the model's own template, continued with
     /// `/v1/completions` under `grammar` (GBNF), with the request's sampler. No tools are declared.
-    func constrained(messages: [(role: String, text: String)], grammar: String, sampling request: AppGenerationRequest,
+    public func constrained(messages: [(role: String, text: String)], grammar: String, sampling request: AppGenerationRequest,
                      maxTokens: Int) async throws -> (text: String, finish: String, timings: [String: Any]) {
-        let rendered = try await postJSON("upstream/\(modelID)/apply-template", [
+        let rendered = try await postJSON(serverRoute("apply-template"), [
             "model": modelID, "messages": messages.map { ["role": $0.role, "content": $0.text] },
             "chat_template_kwargs": ["enable_thinking": request.enableThinking],
         ])
@@ -395,11 +422,9 @@ final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeR
             "prompt": prompt,
             "grammar": grammar,
             "max_tokens": maxTokens,
-            "temperature": request.temperature,
             "cache_prompt": true,
         ]
-        if let topK = request.topK { body["top_k"] = topK }
-        if let topP = request.topP { body["top_p"] = topP }
+        Self.setSampling(request, in: &body)
         let result = try await postJSON("v1/completions", body)
         let choice = (result["choices"] as? [[String: Any]])?.first ?? [:]
         return (choice["text"] as? String ?? "", choice["finish_reason"] as? String ?? "",

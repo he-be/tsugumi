@@ -28,6 +28,10 @@ import Testing
         // Qwen3.8: MTP n_max 1, thinking off, the non-thinking sampler pinned, 32K at most.
         #expect(!AppModelKind.qwen38.supportsVision)
         #expect(AppModelKind.qwen38.draftBlockSize == 2)
+        // The two values a llama-server has other defaults for; Gemma and Ornith never run on one from the app.
+        #expect(AppModelKind.qwen38.officialSampling(thinking: false).minP == 0.0)
+        #expect(AppModelKind.qwen38.officialSampling(thinking: false).presencePenalty == 1.5)
+        #expect(AppModelKind.gemmaQATSym.officialSampling(thinking: false).presencePenalty == nil)
         #expect(!AppModelKind.qwen38.thinkingDefault)
         #expect(AppModelKind.qwen38.samplingIsLocked)
         #expect(AppModelKind.qwen38.officialTemperature == 0.7)
@@ -35,6 +39,20 @@ import Testing
         #expect(AppModelKind.qwen38.officialTopP == 0.8)
         #expect(AppModelKind.qwen38.contextOptions == [.fourK, .eightK, .twelveK, .sixteenK, .thirtyTwoK])
         #expect(AppModelKind.qwen38.archConfig == nil)
+        // Bonsai 2 27B: a llama-server's model, the card's two sampler rows, 4K to 32K, no vision.
+        #expect(AppModelKind.bonsai27b.runsOnLlamaServer)
+        #expect(AppModelKind.allCases.filter(\.runsOnLlamaServer) == [.bonsai27b])
+        #expect(!AppModelKind.bonsai27b.supportsVision)
+        #expect(AppModelKind.bonsai27b.supportsTools)
+        #expect(!AppModelKind.bonsai27b.thinkingDefault)
+        #expect(AppModelKind.bonsai27b.samplingIsLocked)
+        #expect(AppModelKind.bonsai27b.officialSampling(thinking: false)
+            == AppOfficialSampling(temperature: 0.7, topK: 20, topP: 0.8, minP: 0.0, presencePenalty: 1.5))
+        #expect(AppModelKind.bonsai27b.officialSampling(thinking: true)
+            == AppOfficialSampling(temperature: 1.0, topK: 20, topP: 0.95, minP: 0.0, presencePenalty: 0.0))
+        #expect(AppModelKind.bonsai27b.contextOptions == [.fourK, .eightK, .sixteenK, .thirtyTwoK])
+        #expect(AppModelKind.bonsai27b.archConfig == nil)
+        #expect(PrebuiltModelSource.source(for: .bonsai27b).files.isEmpty)
     }
 
     @Test func settingsDefaultsFollowTheKind() {
@@ -85,6 +103,11 @@ import Testing
             manifest: "{\"arch\": {\"family\": \"qwen4exp\"}}")
         defer { try? FileManager.default.removeItem(at: qwen38) }
         #expect(AppModelKind.probe(modelDirectory: qwen38) == .qwen38)
+
+        let bonsai = try makeDirectory(
+            manifest: "{\"arch\": {\"family\": \"qwen3_8_dense_llamacpp\"}}")
+        defer { try? FileManager.default.removeItem(at: bonsai) }
+        #expect(AppModelKind.probe(modelDirectory: bonsai) == .bonsai27b)
 
         let unknown = try makeDirectory(
             manifest: "{\"arch\": {\"family\": \"someone-else\"}}")

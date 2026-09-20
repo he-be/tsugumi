@@ -1673,10 +1673,12 @@ public final class AppModel {
                              imagePaths: [String]? = nil,
                              history: [AppChatTurn]? = nil) throws -> AppGenerationRequest {
         let kind = selectedModelKind
-        let temperature = kind.samplingIsLocked ? kind.officialTemperature : temperature
-        let topK = kind.samplingIsLocked ? kind.officialTopK : (topKEnabled ? topK : nil)
+        let thinking = enableThinking ?? thinkingEnabled
+        let official = kind.officialSampling(thinking: thinking)
+        let temperature = kind.samplingIsLocked ? official.temperature : temperature
+        let topK = kind.samplingIsLocked ? official.topK : (topKEnabled ? topK : nil)
         let topP = kind.samplingIsLocked
-            ? kind.officialTopP
+            ? official.topP
             : (topKEnabled && topPEnabled ? topP : nil)
         let request = AppGenerationRequest(
             modelDirectory: URL(fileURLWithPath: modelPathText),
@@ -1693,8 +1695,10 @@ public final class AppModel {
             topK: topK,
             topP: topP.map(Float.init),
             repetitionPenalty: 1.0,
+            minP: kind.samplingIsLocked ? official.minP.map(Float.init) : nil,
+            presencePenalty: kind.samplingIsLocked ? official.presencePenalty.map(Float.init) : nil,
             runtimeOptions: runtimeOptions,
-            enableThinking: enableThinking ?? thinkingEnabled,
+            enableThinking: thinking,
             imagePaths: imagePaths ?? (kind.supportsVision ? attachedImagePaths : []))
         try request.validate(requireModelDirectory: true)
         return request

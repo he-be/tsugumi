@@ -12,7 +12,7 @@ import TsugumiAppCore
 //     .build/release/TsugumiToolLoopCheck --out DIR [--model DIR] [--conversations FILE] [--only a,b] [--repeats N]
 //                                         [--network online|offline|model] [--context N] [--page-chars N]
 //                                         [--web-store DIR] [--max-rounds N] [--thinking on|off]
-//                                         [--endpoint URL --remote-model ID] [--replay RUN_DIR]
+//                                         [--endpoint URL --remote-model ID [--remote-direct]] [--replay RUN_DIR]
 //                                         [--search-budget N] [--pin-search] [--sample-forced TOOL:N]
 //                                         [--stop-after-round K] [--section-embed DIR] [--gather DIR]
 //
@@ -22,7 +22,9 @@ import TsugumiAppCore
 // `--endpoint URL --remote-model ID` runs the model on a llama-server behind llama-swap instead of this Mac
 // (`RemoteInferenceClient`). `--model` then only picks the kind — the prompts, sampler and call syntax — and is not
 // loaded; the context defaults to the server's slot. The `live` and `progress` checks are about this Mac's session
-// and are skipped. `--max-rounds` overrides the saved tool round budget for this run only.
+// and are skipped. `--remote-direct` says the endpoint is a bare llama-server, whose `props`, `tokenize` and
+// `apply-template` sit at the root instead of under llama-swap's `/upstream/ID/`. `--max-rounds` overrides the saved
+// tool round budget for this run only.
 //
 // `--replay RUN_DIR` plays a recorded run back without the model (`ReplayInferenceClient`): each round returns the
 // recorded calls, the app runs them, and each round's prompt is written to `--out`/prompts/ (docs/qwen38/32). Only the
@@ -91,6 +93,8 @@ struct Options {
     var thinking: Bool?
     var endpoint: URL?
     var remoteModel: String?
+    /// `--remote-direct`: `--endpoint` is a bare llama-server, not llama-swap (`RemoteInferenceClient.Routing`).
+    var remoteDirect = false
     var replay: String?
     var searchBudget: Int?
     var pinSearch = false
@@ -113,6 +117,10 @@ struct Options {
         while let flag = iterator.next() {
             if flag == "--pin-search" {
                 pinSearch = true
+                continue
+            }
+            if flag == "--remote-direct" {
+                remoteDirect = true
                 continue
             }
             let value = iterator.next() ?? ""
@@ -376,7 +384,8 @@ func runCheck() async -> Int32 {
             logLine("--model \(options.model) names no model kind (it picks the prompts and call syntax for --endpoint)")
             return 2
         }
-        remote = RemoteInferenceClient(endpoint: endpoint, modelID: remoteModel, dialect: .init(kind: kind))
+        remote = RemoteInferenceClient(endpoint: endpoint, modelID: remoteModel, dialect: .init(kind: kind),
+                                       routing: options.remoteDirect ? .direct : .llamaSwap)
     } else if !options.sampleForced.isEmpty {
         logLine("--sample-forced needs --endpoint")
         return 2
