@@ -76,7 +76,13 @@ package final class GGMLDenseGEMV {
         .q2_K: "q2_K", .q4_K: "q4_K", .q6_K: "q6_K",
         .iq2_xxs: "iq2_xxs", .iq2_xs: "iq2_xs", .iq2_s: "iq2_s",
         .iq3_xxs: "iq3_xxs", .iq3_s: "iq3_s", .iq1_m: "iq1_m", .iq4_xs: "iq4_xs",
+        .pq2_0: "pq2_0",
     ]
+
+    /// Weights per block: the IQ / K types are 256, Prism's PQ2_0 is 128.
+    private static func elementsPerBlock(_ type: GGUFFile.GGMLType) -> Int {
+        type == .pq2_0 ? 128 : 256
+    }
 
     package static func supports(_ type: GGUFFile.GGMLType) -> Bool {
         type == .q8_0 || type == .f16 || type == .f32 || type == .bf16 || iqKernels[type] != nil
@@ -107,7 +113,8 @@ package final class GGMLDenseGEMV {
         case .bf16: pso = n >= 1024 ? bf16Chunk : bf16
         default:
             guard let kernel = iq[type] else { preconditionFailure("GGMLDenseGEMV: unsupported type \(type)") }
-            precondition(n % 256 == 0, "\(type) row width must be a multiple of 256")
+            let epb = Self.elementsPerBlock(type)
+            precondition(n % epb == 0, "\(type) row width must be a multiple of \(epb)")
             pso = kernel
         }
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }

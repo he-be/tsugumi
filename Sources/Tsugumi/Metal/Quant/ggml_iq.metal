@@ -1350,9 +1350,34 @@ static inline void ggml_deq_iq4_xs(device const block_iq4_xs* b, uint ib, thread
     }
 }
 
+// PQ2_0 (Prism Bonsai): 128 重みごとに fp16 の d 1 個、重みは 2 bit の三値 {-1, 0, +1}。
+// 出どころは PrismML-Eng/llama.cpp の prism-v7 (読むだけ): `ggml-common.h` の `block_pq2_0` と
+// `ggml-quants.c` の `dequantize_row_pq2_0` (値は `(q - 1) * d`、00 = -1 / 01 = 0 / 10 = +1)。
+// 重みは Hadamard で回った基底に折り込んであるので、活性側に `prism_hadamard.metal` の
+// 変換が要る (docs/qwen38-27b/05)。
+struct block_pq2_0 {
+    half d;
+    uchar qs[32];   // 2 bit x 128
+};
+
+static inline void ggml_deq_pq2_0(device const block_pq2_0* b, uint ib, thread float* w) {
+    const float d = float(b->d);
+    device const uchar* q = b->qs + 8 * ib;   // 小ブロック ib は 32 重み = 8 バイト
+    for (uint j = 0; j < 8; ++j) {
+        const uchar byte = q[j];
+        w[4 * j + 0] = d * (float((byte >> 0) & 3) - 1.f);
+        w[4 * j + 1] = d * (float((byte >> 2) & 3) - 1.f);
+        w[4 * j + 2] = d * (float((byte >> 4) & 3) - 1.f);
+        w[4 * j + 3] = d * (float((byte >> 6) & 3) - 1.f);
+    }
+}
+
 // --- kernels -------------------------------------------------------------------
 
-#define GGML_IQ_GEMV(NAME, BLOCK, DEQ)                                                   \
+#define GGML_IQ_GEMV(NAME, BLOCK, DEQ) GGML_IQ_GEMV_N(NAME, BLOCK, DEQ, 256)
+#define GGML_IQ_DEQUANT(NAME, BLOCK, DEQ) GGML_IQ_DEQUANT_N(NAME, BLOCK, DEQ, 256)
+
+#define GGML_IQ_GEMV_N(NAME, BLOCK, DEQ, EPB)                                                   \
 kernel void NAME(                                                                        \
     device const BLOCK* W [[buffer(0)]],                                                 \
     device const float* xs [[buffer(1)]],                                                \
@@ -1367,8 +1392,9 @@ kernel void NAME(                                                               
     device const float* x = xs + tgt.y * N;                                              \
     device float* y = ys + tgt.y * M;                                                    \
     const uint row0 = (tg * kGgmlIqGroupsPerTG + sgitg) * kGgmlIqRowsPerGroup;           \
-    const uint nb = N / 256;                                                             \
+    const uint nb = N / (EPB);                                                           \
     const uint nb32 = N / 32;                                                            \
+    const uint spb = (EPB) / 32;   /* 1 ブロックあたりの 32 重みの小ブロック数 */                         \
     float sum[kGgmlIqRowsPerGroup] = {0.f};                                              \
     if (row0 < M) {                                                                      \
         const uint rows = min(kGgmlIqRowsPerGroup, M - row0);                            \
@@ -1376,7 +1402,7 @@ kernel void NAME(                                                               
         for (uint ib32 = tiisg; ib32 < nb32; ib32 += 32) {                               \
             device const float* xl = x + ib32 * 32;                                      \
             for (uint row = 0; row < rows; ++row) {                                      \
-                DEQ(W + (row0 + row) * nb + ib32 / 8, ib32 % 8, w);                      \
+                DEQ(W + (row0 + row) * nb + ib32 / spb, ib32 % spb, w);                  \
                 float acc = 0.f;                                                         \
                 for (uint l = 0; l < 32; ++l) acc += w[l] * xl[l];                       \
                 sum[row] += acc;                                                         \
@@ -1392,7 +1418,7 @@ kernel void NAME(                                                               
     }                                                                                    \
 }
 
-#define GGML_IQ_DEQUANT(NAME, BLOCK, DEQ)                                                \
+#define GGML_IQ_DEQUANT_N(NAME, BLOCK, DEQ, EPB)                                                \
 kernel void NAME(                                                                        \
     device const BLOCK* W [[buffer(0)]],                                                 \
     device float* out [[buffer(1)]],                                                     \
@@ -1400,7 +1426,7 @@ kernel void NAME(                                                               
     uint2 pos [[thread_position_in_grid]]                                                \
 ) {                                                                                      \
     float w[32];                                                                         \
-    DEQ(W + pos.y * (N / 256) + pos.x / 8, pos.x % 8, w);                                \
+    DEQ(W + pos.y * (N / (EPB)) + pos.x / ((EPB) / 32), pos.x % ((EPB) / 32), w);        \
     device float* o = out + pos.y * N + pos.x * 32;                                      \
     for (uint l = 0; l < 32; ++l) o[l] = w[l];                                           \
 }
@@ -1419,3 +1445,6 @@ GGML_IQ_KERNELS(iq3_xxs)
 GGML_IQ_KERNELS(iq3_s)
 GGML_IQ_KERNELS(iq1_m)
 GGML_IQ_KERNELS(iq4_xs)
+
+GGML_IQ_GEMV_N(ggml_pq2_0_gemv, block_pq2_0, ggml_deq_pq2_0, 128)
+GGML_IQ_DEQUANT_N(ggml_pq2_0_dequant_f32, block_pq2_0, ggml_deq_pq2_0, 128)

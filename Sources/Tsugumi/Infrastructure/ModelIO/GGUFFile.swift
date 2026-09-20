@@ -31,6 +31,8 @@ public final class GGUFFile: @unchecked Sendable {
         case iq1_m = 29
         case bf16 = 30
         case mxfp4 = 39
+        /// Prism Bonsai の三値 (128 重みごとに fp16 の scale 1 個 + 2 bit)。docs/qwen38-27b/05
+        case pq2_0 = 142
 
         /// (bytes per block, elements per block)
         public var blockLayout: (bytes: Int, elements: Int) {
@@ -53,6 +55,7 @@ public final class GGUFFile: @unchecked Sendable {
             case .iq2_s: return (82, 256)
             case .iq4_xs: return (136, 256)
             case .iq1_m: return (56, 256)
+            case .pq2_0: return (34, 128)
             }
         }
     }

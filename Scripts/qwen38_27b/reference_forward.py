@@ -32,12 +32,11 @@ from pathlib import Path
 
 import numpy as np
 
-GGUF_PY = Path.home() / "LLM/llama.cpp/gguf-py"
-sys.path.insert(0, str(GGUF_PY))
-from gguf import GGUFReader  # noqa: E402
-from gguf.quants import dequantize  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from prism_gguf import Hadamard, Reader, gdn_v_perm  # noqa: E402
 
 DEFAULT_GGUF = Path.home() / "LLM/Qwen3.8-27B-GSQ-RCO-GGUF/Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf"
+BONSAI_GGUF = Path.home() / "LLM/Ternary-Bonsai-2-27B-gguf/Ternary-Bonsai-2-27B-PQ2_0.gguf"
 DEFAULT_TOKENIZER = Path.home() / "LLM/Qwen3.8-27B-GSQ-RCO-GGUF/tokenizer/tokenizer.json"
 
 ARCH = "qwen35"
@@ -94,23 +93,11 @@ _W = None
 def _worker_init(path):
     os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
     global _W
-    r = GGUFReader(path, "r")
-    _W = {t.name: t for t in r.tensors}
+    _W = Reader(path).tensors
 
 
 def _worker_rows(t, r0, r1):
-    data = t.data
-    if data.ndim == 1:
-        data = data.reshape(1, -1)
-    ty = t.tensor_type.name
-    blk = np.ascontiguousarray(data[r0:r1])
-    if ty == "F32":
-        return blk.astype(np.float32)
-    if ty == "F16":
-        return blk.astype(np.float32)
-    if ty == "BF16":
-        return (blk.view(np.uint16).astype(np.uint32) << 16).view(np.float32).reshape(r1 - r0, -1)
-    return dequantize(blk, t.tensor_type).reshape(r1 - r0, -1).astype(np.float32)
+    return t.rows(r0, r1)
 
 
 def _worker_matmul(args):
@@ -148,17 +135,20 @@ class Guard(Exception):
 class Weights:
     def __init__(self, path: Path, workers: int):
         self.path = str(path)
-        self.reader = GGUFReader(path, "r")
-        self.t = {t.name: t for t in self.reader.tensors}
+        self.reader = Reader(path)
+        self.t = self.reader.tensors
         self.fields = self.reader.fields
+        self.h = Hadamard(self.fields)   # Bonsai 以外では空 (`bool(h)` が偽)
+        self.gdn_perm = {}               # 重み名 -> ssm_out の並べ替え
         ctx = mp.get_context("spawn")
         self.pool = ctx.Pool(workers, initializer=_worker_init, initargs=(self.path,))
         self.worker_pids = [p.pid for p in self.pool._pool]
         self.swap0 = swapouts()
         self.peak_gb = 0.0
 
-    def field(self, key):
-        return self.fields[key].contents()
+    def field(self, key, default=None):
+        v = self.fields.get(key, default)
+        return v.item() if isinstance(v, np.ndarray) and v.size == 1 else v
 
     def check(self):
         total = footprint_gb() + sum(footprint_gb(p) for p in self.worker_pids)
@@ -172,8 +162,9 @@ class Weights:
 
     def f32(self, name):
         t = self.t[name]
-        assert t.tensor_type.name == "F32", (name, t.tensor_type.name)
-        return np.asarray(t.data, dtype=np.float32)
+        assert t.ggml_type == 0, (name, t.ggml_type)
+        a = t.rows(0, t.n_rows)
+        return a.reshape(-1) if t.n_rows == 1 else a
 
     def row(self, name, index):
         return _worker_rows(self.t[name], index, index + 1)[0]
@@ -182,9 +173,11 @@ class Weights:
         """X [T, in] → X @ W.T [T, out]。W の行は GGUF の dim[1] (出力) 方向。"""
         t = self.t[name]
         X = np.ascontiguousarray(X, dtype=np.float32)
-        data = t.data
-        rows = 1 if data.ndim == 1 else data.shape[0]
-        if t.tensor_type.name in ("F32", "F16", "BF16"):
+        if name in self.h.forward:
+            # 折り込み済みの重み: 活性を回してから掛ける (llama-graph.cpp `build_lora_mm`)
+            X = self.h.rotate(X, t.n_cols, self.gdn_perm.get(name))
+        rows = t.n_rows
+        if t.ggml_type in (0, 1, 30):
             return X @ _worker_rows(t, 0, rows).T
         cols = X.shape[1]
         step = max(1, CHUNK_ELEMENTS // cols)
@@ -215,7 +208,8 @@ class Model:
         self.w = w
         f = lambda k: w.field(f"{ARCH}.{k}")  # noqa: E731
         self.n_layer = int(f("block_count"))
-        self.n_trunk = self.n_layer - int(f("nextn_predict_layers"))
+        # Bonsai には MTP ヘッド (blk.64) が無く、このキーも無い
+        self.n_trunk = self.n_layer - int(w.field(f"{ARCH}.nextn_predict_layers", 0) or 0)
         self.full_interval = int(f("full_attention_interval"))
         self.E = int(f("embedding_length"))
         self.eps = float(f("attention.layer_norm_rms_epsilon"))
@@ -229,6 +223,9 @@ class Model:
         self.Hk = int(f("ssm.group_count"))
         self.Hv = int(f("ssm.time_step_rank"))
         self.Dv = int(f("ssm.inner_size")) // self.Hv
+        if w.h.gdn_v_grouped:
+            perm = gdn_v_perm(self.Hv * self.Dv, self.Hv, self.Hk)
+            w.gdn_perm = {f"blk.{il}.ssm_out.weight": perm for il in range(self.n_layer)}
         self.kv_q8 = False
         self.variant = "ok"  # 負例: gdn-block (value head j を key head j // 3 と組む)、gate-sigmoid
         self.layers = self.n_trunk  # --layers で短くする (動作確認用)
@@ -330,6 +327,9 @@ class Model:
         """tokens [T] を位置 pos0.. に流し、logits [T, vocab] を返す。"""
         w = self.w
         x = np.stack([w.row("token_embd.weight", t) for t in tokens]).astype(np.float32)
+        if "token_embd.weight" in w.h.inverse:
+            # 回った基底で格納された表。引いた直後に戻す (llama-graph.cpp、h = s ⊙ (H z))
+            x = w.h.unrotate(x, self.E)
         for il in range(self.layers):
             ts = time.time()
             pre = f"blk.{il}."
@@ -347,6 +347,7 @@ class Model:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--gguf", type=Path, default=DEFAULT_GGUF)
+    ap.add_argument("--bonsai", action="store_true", help=f"--gguf {BONSAI_GGUF} の短縮")
     ap.add_argument("--tokenizer", type=Path, default=DEFAULT_TOKENIZER)
     ap.add_argument("--text", default=None)
     ap.add_argument("--tokens", default=None, help="comma-separated ids (--text の代わり)")
@@ -360,6 +361,8 @@ def main() -> int:
     ap.add_argument("--layers", type=int, default=None, help="先頭 N 層だけ通す (動作確認用、参照には使わない)")
     ap.add_argument("--verbose", action="store_true", help="層ごとの時間と footprint を出す")
     args = ap.parse_args()
+    if args.bonsai:
+        args.gguf = BONSAI_GGUF
 
     from tokenizers import Tokenizer
     tok = Tokenizer.from_file(str(args.tokenizer))
