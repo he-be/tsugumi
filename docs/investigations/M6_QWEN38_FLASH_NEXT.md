@@ -125,6 +125,8 @@ llm-server で +23% (50 → 62) 出たのは GPU 側オーバーヘッドの償�
 - DRAM: (3.0 + 0.945 × hit) GB ÷ 実効帯域。実効は公称の 75% (M6 170 → 130 GB/s、M3 Pro 150 → 112、M5 Pro 307 → 230)。
 - SSD: 0.945 × (1 − hit) GB ÷ 5〜8 GB/s。M3 Pro の実測は 3.72 MB ランダム pread で 4.19 GB/s (`F_NOCACHE`、M6 文書 §5-2)。
   M6 mini は「前世代比 2 倍」(公称)。5 は保守、8 は楽観。
+  > **2026-09-22 実測でこの前提は落ちた。M6 256GB の天井は 3.34 GB/s (M3 Pro 1TB の半分)。
+  > §3 の表の引き直しは [M6_SSD_BANDWIDTH.md](M6_SSD_BANDWIDTH.md) §4-1。**
 - ホスト/residency: 10 ms。Tsugumi の M3 Pro 実測は io 15.75 + host 5.73 ms/tok ([27 §2](../qwen35moe/27-PHASE6-THROUGHPUT.md)) で、
   expert タッチが 320 → 480 個/tok に増えるので、そのままなら 20 ms 超。10 は `MTLResidencySet.commit()` を減らした後の値。
 
