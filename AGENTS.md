@@ -15,6 +15,9 @@ contract. `Sources/Tsugumi/` is the runtime; `Sources/TsugumiRepack/`,
 Mac app.
 `Tests/` contains focused public tests; `docs/` contains design, benchmark, and experiment notes.
 
+開発機は MBP と M6 mini の 2 台で、OS もツールチェーンも SSD も違う。役割分担・同期・測定値のホスト札は
+[docs/TWO_MACHINE_DEV.md](docs/TWO_MACHINE_DEV.md) にある。**性能の記録値は M6 でしか取らない。**
+
 ```bash
 swift run -c release TsugumiRepack --output scratch/gemma4.moepack
 swift run -c release TsugumiRepack --output scratch/gemma4.moepack --resume
