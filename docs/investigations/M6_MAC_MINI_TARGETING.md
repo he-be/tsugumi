@@ -373,11 +373,31 @@ M2 mini のベースモデルは 30〜50% 低下、M4 mini は 2×128 GB 構成�
 
 | # | 測るもの | 方法 | 効く判断 |
 | --- | --- | --- | --- |
-| 1 | ~~`supportsFamily(.apple10)` が M6 で true か~~ **済 (2026-09-22): apple10 / apple11 / metal4 すべて true**（M3 Pro は apple9 止まり・metal4 false） | `MTLDevice.supportsFamily` を直接叩いた | §2-3-2。**ゲートは通る。それでも `TsugumiKernelCheck` の prefill-qmm は 70 本すべて `path=simdgroup-matrix` で、tensor 経路が選ばれていない** → M6-0 の的はゲートではなく、その先の黙った失敗 |
+| 1 | ~~`supportsFamily(.apple10)` が M6 で true か~~ **済 (2026-09-22): apple10 / apple11 / metal4 すべて true**（M3 Pro は apple9 止まり・metal4 false） | `MTLDevice.supportsFamily` を直接叩いた | §2-3-2。**ゲートは通る**（§7-1a も見ること） |
 | 2 | ~~`F_NOCACHE` での SSD 帯域（256 GB 構成）~~ **済 (2026-09-22): 3.34 GB/s = M3 Pro 1TB の半分** | [M6_SSD_BANDWIDTH.md](M6_SSD_BANDWIDTH.md) | §5-2 / §6。512 GB を買うべきかの唯一の根拠 → **買う意味はある (同 §3)** |
 | 3 | ~~M6 12 コア GPU の素の fp16 ピーク~~ **済 (2026-09-22): 約 19 TFLOPS** | mflux M9 の天井プローブ（MLX 19.2 / MPS 18.7〜19.0 の 2 系統） | §2-4 の誤差の主因。**MPS（Apple 自身のカーネル、neural accelerator 込み）でも 19 で頭打ちなので、silicon に隠れた性能は無い。**M6-4 の合格条件「実効 2.0 TFLOP/s 以上」はこの天井の 10% という意味になる |
 | 4 | **tensor ops を使わないまま移植したときの pp** | 現行コードを macOS 27 でそのままビルド、2478 トークン | §2-2-1。「12 コアで遅くなる」かどうか。**比の分母** |
 | 5 | macOS 27 で deployment target の引き下げ（`103bfbc`）を戻せるか | ビルドのみ | 上流想定（macOS 26 / Metal 4）に戻れる = 上流ベンチと直接比較できる |
+
+### 7-1a. #1 の続き: M6 で tensor 経路が動かない理由は機械ではなくモデルだった（2026-09-22、**実測**）
+
+`supportsFamily(.apple10)` は true、`metal4` も true。そのうえで M6 の実機で確かめた:
+
+- **`tensorops.metal` は MSL 4.0 でコンパイルが通り、`mpp_prefill_affine_threadgroup_f16` の
+  PSO も生成できる**（maxTotalThreadsPerThreadgroup 1024）。単体プローブで確認。
+- にもかかわらず `MPPPrefillInt4QMM` は本番で nil になる。理由は
+  **`init` の `guard context.affineGroupSize == 64`** で、
+  ベンチで使っている `gemma4-qat-sym.gturbo` の attention は
+  **`groupSize 32 / scheme sym`**（manifest）だからである。MPP が使われるのは
+  `tokenCount >= 32` の Q / KV / O 射影だけ（`RealForwardRunner` 1308 行目）なので、
+  **この QAT モデルでは経路そのものが構造的に閉じている。機械の問題ではない。**
+- つまり **M6 で tensor 経路を開ける鍵は M6-0 ではなく M6-1**（MPP の group 32/64 両対応）である。
+  M6-0（静的ゲートをパイプライン生成の成否に置換）は依然やるべきだが、
+  **これ単独では何も変わらない**。
+
+> 紛らわしい点: `TsugumiKernelCheck` の `prefill-qmm path=simdgroup-matrix` は MPP とは無関係である。
+> `PrefillInt4QMM.Path` は `scalar-block` と `simdgroup-matrix` の 2 つしか持たず、
+> **tensor 経路の枝を最初から持っていない**。あの行を見て「tensor が落ちた」と読んではいけない。
 
 4 が特に重要である。**M6 の利得を「tensor ops 由来」と「世代由来」に分けられる唯一の測定点**であり、
 これを取らずに 231 → N tok/s を比較すると、両者が混ざって後から説明できなくなる。
