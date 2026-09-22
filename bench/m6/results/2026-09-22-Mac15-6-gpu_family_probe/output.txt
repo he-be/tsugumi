@@ -1,0 +1,25 @@
+device: Apple M3 Pro
+os: 15.7.5
+registryID: 4294968387 unifiedMemory: true
+recommendedMaxWorkingSetSize: 15360 MiB
+maxThreadsPerThreadgroup: MTLSize(width: 1024, height: 1024, depth: 1024)
+
+[gpu families]
+  apple7 (1007): true
+  apple8 (1008): true
+  apple9 (1009): true
+  apple10 (1010): false
+  apple11 (1011): false
+  apple12 (1012): false
+  mac2 (2002): true
+  metal3 (5001): true
+  metal4 (5002): false
+
+#available(macOS 26.0): false -> runtime picks MSL 3.2
+
+[compile tensorops.metal as MSL 3.2]
+  makeLibrary: ok, functions = []
+  function mpp_prefill_affine_threadgroup_f16: absent (expected when __HAVE_TENSOR__ is undefined)
+
+[compile tensorops.metal as MSL 4.0]
+  makeLibrary: FAILED Error Domain=MTLLibraryErrorDomain Code=3 "error: invalid value 'metal4.0' in '-std=metal4.0' | note: use 'ios-metal1.0' for 'Metal 1.0 (iOS)' standard | note: use 'ios-metal1.1' for 'Metal 1.1 (iOS)' standard

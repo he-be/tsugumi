@@ -1,0 +1,1 @@
+測定: 2026-09-22 / Mac18,5 Apple M6 16GB / macOS 27.0 (26A428) / Swift 6.4 / SDK 27.0 / CLT / APPLE SSD AP0256Z / commit 03f64b5

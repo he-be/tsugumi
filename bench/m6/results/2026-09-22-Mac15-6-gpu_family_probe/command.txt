@@ -1,0 +1,1 @@
+swift /Users/mh/LLM/turbo-fieldfare/bench/m6/gpu_family_probe.swift 

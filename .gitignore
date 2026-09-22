@@ -45,6 +45,8 @@ dist/
 *.log
 # 実験の記録 (docs/experiments/*/ の driver.log など) は残す
 !docs/experiments/**/*.log
+# M6 prefill の証拠ディレクトリ (docs/m6-prefill/02-EVIDENCE.md) の生ログは残す
+!bench/m6/results/**/*.log
 benchmark-results/
 scratch/
 tmp/

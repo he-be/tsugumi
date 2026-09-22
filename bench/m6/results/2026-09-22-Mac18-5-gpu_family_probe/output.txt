@@ -1,0 +1,26 @@
+device: Apple M6
+os: 27.0.0
+registryID: 4294968388 unifiedMemory: true
+recommendedMaxWorkingSetSize: 12124 MiB
+maxThreadsPerThreadgroup: MTLSize(width: 1024, height: 1024, depth: 1024)
+
+[gpu families]
+  apple7 (1007): true
+  apple8 (1008): true
+  apple9 (1009): true
+  apple10 (1010): true
+  apple11 (1011): true
+  apple12 (1012): false
+  mac2 (2002): true
+  metal3 (5001): true
+  metal4 (5002): true
+
+#available(macOS 26.0): true  -> runtime picks MSL 4.0
+
+[compile tensorops.metal as MSL 3.2]
+  makeLibrary: ok, functions = []
+  function mpp_prefill_affine_threadgroup_f16: absent (expected when __HAVE_TENSOR__ is undefined)
+
+[compile tensorops.metal as MSL 4.0]
+  makeLibrary: ok, functions = ["mpp_prefill_affine_threadgroup_f16"]
+  PSO mpp_prefill_affine_threadgroup_f16: ok, maxTotalThreadsPerThreadgroup = 1024, simdWidth = 32

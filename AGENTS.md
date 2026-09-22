@@ -17,6 +17,8 @@ Mac app.
 
 開発機は MBP と M6 mini の 2 台で、OS もツールチェーンも SSD も違う。役割分担・同期・測定値のホスト札は
 [docs/TWO_MACHINE_DEV.md](docs/TWO_MACHINE_DEV.md) にある。**性能の記録値は M6 でしか取らない。**
+prefill 高速化 (M6) の計画・Gate・証拠の規則は [docs/m6-prefill/README.md](docs/m6-prefill/README.md)。
+**M6 の実測値は `bench/m6/results/` の証拠ディレクトリ無しに書かない。**旧 `docs/investigations/M6_MAC_MINI_TARGETING.md` は凍結 (追記しない)。
 
 ```bash
 swift run -c release TsugumiRepack --output scratch/gemma4.moepack

@@ -19,7 +19,7 @@
 
 | | MBP | M6 |
 | --- | --- | --- |
-| やる | 移植と正しさ（参照器との一致、fixtures、`swift test`）、Instruments / GPU キャプチャ、**macOS 15 の回帰** | **性能の記録値**（[M6 文書](investigations/M6_MAC_MINI_TARGETING.md) §7 の 5 つ、M6-0〜M6-4）、macOS 27 / Metal 4 tensor ops、Swift 6.4 でのビルド確認 |
+| やる | 移植と正しさ（参照器との一致、fixtures、`swift test`）、Instruments / GPU キャプチャ、**macOS 15 の回帰** | **性能の記録値**（[m6-prefill/04-GATES](m6-prefill/04-GATES.md) の G0〜G6。証拠は `bench/m6/results/`、規則は [m6-prefill/02-EVIDENCE](m6-prefill/02-EVIDENCE.md)。旧 [M6 文書](investigations/M6_MAC_MINI_TARGETING.md) は凍結）、macOS 27 / Metal 4 tensor ops、Swift 6.4 でのビルド確認 |
 | やらない | 記録に残す性能値 | GUI が要る作業 |
 
 SSD は MBP が 2 倍速く、RAM は 2 GB 多い。**この 2 機の数字を混ぜた瞬間に比較が死ぬ。**
@@ -45,7 +45,7 @@ M6-0（`supportsFamily(.apple10)` の静的ゲートをパイプライン生成�
 ssh m6 'git init -b main ~/dev/tsugumi && git -C ~/dev/tsugumi config receive.denyCurrentBranch updateInstead'
 git remote add m6 m6:dev/tsugumi
 
-# 1 サイクル
+# 1 サイクル (手で回す形。prefill の計測は bench/m6/cycle.sh が push → build → 計測 → 証拠の引き戻しまでやる)
 git push m6 HEAD
 ssh m6 'cd ~/dev/tsugumi && swift build -c release && .build/release/TsugumiCLI ...'
 ```
@@ -66,7 +66,7 @@ $ bench/hostinfo.sh .build/release/TsugumiCLI
 測定: 2026-09-22 / Mac15,6 Apple M3 Pro 18GB / macOS 15.7.5 (24G624) / Swift 6.3.3 / SDK 26.5 / Xcode 26.6 / APPLE SSD AP1024Z / commit 2903532 / minos 15.0
 ```
 
-`minos` を含めるのが肝である。[M6 文書](investigations/M6_MAC_MINI_TARGETING.md) §7 の #5（deployment target を戻せるか）を
+`minos` を含めるのが肝である。旧 [M6 文書](investigations/M6_MAC_MINI_TARGETING.md) §7 の #5（deployment target を戻せるか）を
 やるとバイナリの性格が変わるので、後から必ず「どっちのビルドの数字か」を問われる。
 
 ## 5. ストレージ — 内蔵は測定対象、外付けは置き場
@@ -92,7 +92,7 @@ $ bench/hostinfo.sh .build/release/TsugumiCLI
 この package はシェーダを実行時にコンパイルする（`MetalContext.swift` の
 「edit a shader, rebuild the Swift target, no Xcode metallib step」）。`.metal` はリソースとして同梱され、
 `device.makeLibrary(source:)` で読む。したがって **CLT の Swift だけで `swift build -c release` が通る**見込みで、
-`metal` コンパイラが CLT に無いことは問題にならない（**未確認**: M6 での初回ビルドはまだ通していない）。
+`metal` コンパイラが CLT に無いことは問題にならない（**実測**: M6 の CLT で `swift build -c release --product TsugumiCLI` は通る。2026-09-22）。
 
 Xcode が要るのは Instruments の Metal System Trace と GPU フレームキャプチャだけで、それは MBP の仕事である（§1）。
 どうしても M6 に入れるなら GUI は不要で、`xcodes` CLI か、MBP の `/Applications/Xcode.app`（3.7 GB）を送ればよい。
