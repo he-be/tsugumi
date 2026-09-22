@@ -90,6 +90,7 @@ NOCACHE=1 RDAHEAD=0 ./io_depth_probe data 30 640
 | 16 KB QD10 | 1.11（67,826 IOPS） | 1.40（85,557 IOPS） |
 | 連続書き込み 66 GB | 1.41 GB/s | 2.36 |
 | 連続書き込み 13 GB | 2.00 GB/s（SLC 内） | — |
+| 外付け TB4 SSD の連続読み（21.5 GB、キャッシュ経由） | 2.10 GB/s | — |
 
 **64 MB シーケンシャルでも 3.34 GB/s。**ここが device の天井である。
 
