@@ -1,0 +1,11 @@
+[prefill gpu attn=3.533s(49%) shared=0.864s(12%) moe=2.722s(38%) tail=0.043s(1%) head=0.003s(0%) total=7.164s]
+[prefill gpu proj kv:simdgroup-matrix=120 o:simdgroup-matrix=60 q:simdgroup-matrix=60]
+チャンク化したPrefill（Chunked Prefill）が、Time to First Token (TTFT) の短縮とメモリ使用量の抑制を同時に実現できる理由は、以下の3つの要点に整理されます。
+
+### 1. KVキャッシュの「逐次的な確保」によるメモリピークの抑制
+
+[stop=maxTokens prefill=2478tok new=64tok decode=2.30s tok/s=27.850]
+[load=0.521s layerVerify=4.628s/30layers prefill=9.745s ttft=9.745s peak=1.21GB rss=0.34GB]
+[expert prefill hit=0.0% 0/5771 io=1.915s | decode hit=83.1% 12568/15120 io=0.571s]
+[expert mmap layers=30 mapped=12.90GB sync=1995(+8323/-7363) noop=643 residency=2.242s /tok=35.02ms]
+[decode/tok io=8.95ms cb1=0.40ms cb2=0.23ms head=3.00ms]

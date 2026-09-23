@@ -27,6 +27,8 @@ TF_PREFILL_GPU_PROFILE=1 bench/m6/cycle.sh prefill_bench.sh <label>-profile 3   
 bench/m6/cycle.sh run_probe.sh gpu_family_probe        # 単発プローブ
 
 # 3. 引き戻した bench/m6/results/<date>-Mac18-5-<label>/ を結果文書と一緒に commit
+#    M6 側には同じディレクトリが未追跡で残っているので、次の push は updateInstead に拒否される。
+#    M6 側を退避 → push → diff -r で一致を確かめてから退避分を消す
 ```
 
 MBP 側の対照は同じスクリプトを直接叩く (`bench/m6/prefill_bench.sh <label> 6`)。
