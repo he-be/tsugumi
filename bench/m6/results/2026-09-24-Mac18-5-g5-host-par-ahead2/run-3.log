@@ -1,0 +1,10 @@
+[prefill shared qmm kernel=mpp-tile64]
+[prefill moe tiled kernel=mpp]
+[prefill host enc.front=0.004s(0%) wait.front=2.913s(63%) drain=0.000s(0%) route=0.036s(1%) wait.shared=0.138s(3%) meta=0.000s(0%) fetch=0.664s(14%) enc.moe=0.009s(0%) wait.tile=0.826s(18%) tail=0.053s(1%) head=0.003s(0%) other=0.004s(0%) call=4.651s | tiles=749 ahead=0 experts=0 miss=0 io=0.000s 0.0GB/s]
+[prefill gpuq busy=4.100s(90%) idle=0.445s(10%) span=4.545s buffers=930]
+ご
+[stop=maxTokens prefill=2478tok new=1tok decode=0.00s tok/s=831.956]
+[load=0.537s layerVerify=5.760s/30layers prefill=4.654s ttft=4.655s peak=1.22GB rss=0.34GB]
+[expert prefill hit=0.0% 0/5763 io=0.616s | decode hit=0.0% 0/0 io=0.000s]
+[expert mmap layers=30 mapped=12.90GB sync=749(+5763/-4803) noop=0 residency=0.500s /tok=500.12ms]
+[decode/tok io=0.00ms cb1=0.00ms cb2=0.00ms head=0.00ms]
