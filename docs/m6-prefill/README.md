@@ -16,11 +16,11 @@
 | G1 tensor 経路を開ける | group 32 のモデルで MPP 経路が本当にディスパッチされるか | 経路は開いた ([16](16-G1-MPP-GROUP32.md))。greedy の不一致は記録したまま追わない ([17](17-NAX-NOT-USED.md)) |
 | G2 `matmul2d` の素の実効値 | 自前カーネルから tensor ops で何 TFLOP/s 出るか | **関門から外した** ([17 §3](17-NAX-NOT-USED.md))。単体の数字で線を閉じない |
 | G3 routed MoE GEMM の tensor 化 | 本番ループで GPU 時間と壁時計が縮むか | **縮んだ** ([12](12-G3-MOE-MATMUL2D.md))。routed MoE 2.58 → 1.10 s、壁時計 9.01 → 7.38 s。greedy は G1 と同じ行で分かれ、既定は未変更 (`TF_PREFILL_MOE=mpp`) |
-| G4 attention / 射影の tensor 化 | 同上 | 未着手 (G3 の後) |
+| G4 attention / 射影の tensor 化 | 同上 | 射影と shared は GPU 合計 5.59 → 4.73 s、壁時計は 7.30 → 7.23 s でほぼ動かず ([13](13-PROJ-SHARED-MATMUL2D.md))。縮んだ分はホストの `fetch` 待ちに移った。attention 本体は未着手 |
 | G5 チャンク境界の io 直列の解消 | io を GPU の陰に隠せるか | 未着手 (G0 の後、G1〜G4 と独立) |
 | G6 Qwen 経路への波及 | Qwen prefill は M6 で io と gpu のどちらが重いか | 未着手 (モデルを M6 へ運ぶところから) |
 
-**次の一手**: 射影と shared を `matmul2d` で書き直す ([17 §3](17-NAX-NOT-USED.md) の 2)。G3 の後の GPU 合計 5.54 s のうち `attn` が 3.54 s ([12](12-G3-MOE-MATMUL2D.md))。その後は attention 本体。
+**次の一手**: `fetch` の待ちの正体を確かめる (候補は層ファイルの SHA-256 検証、[13 §2](13-PROJ-SHARED-MATMUL2D.md))。GPU を縮めても壁時計が動かない状態なので、attention 本体より先。
 
 ## 読む順
 
