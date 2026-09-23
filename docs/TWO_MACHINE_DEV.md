@@ -19,7 +19,7 @@
 
 | | MBP | M6 |
 | --- | --- | --- |
-| やる | 移植と正しさ（参照器との一致、fixtures、`swift test`）、Instruments / GPU キャプチャ、**macOS 15 の回帰** | **性能の記録値**（[m6-prefill/04-GATES](m6-prefill/04-GATES.md) の G0〜G6。証拠は `bench/m6/results/`、規則は [m6-prefill/02-EVIDENCE](m6-prefill/02-EVIDENCE.md)。旧 [M6 文書](investigations/M6_MAC_MINI_TARGETING.md) は凍結）、macOS 27 / Metal 4 tensor ops、Swift 6.4 でのビルド確認 |
+| やる | 移植と正しさ（参照器との一致、fixtures、`swift test`）、Instruments / GPU キャプチャ、**macOS 15 の回帰** | **性能の記録値**（[m6-prefill/04-GATES](m6-prefill/04-GATES.md) の B0〜B2。段ごとの下限の何倍かで書く。証拠は `bench/m6/results/`、規則は [m6-prefill/02-EVIDENCE](m6-prefill/02-EVIDENCE.md)。旧 [M6 文書](investigations/M6_MAC_MINI_TARGETING.md) は凍結）、macOS 27 / Metal 4 tensor ops、Swift 6.4 でのビルド確認 |
 | やらない | 記録に残す性能値 | GUI が要る作業 |
 
 SSD は MBP が 2 倍速く、RAM は 2 GB 多い。**この 2 機の数字を混ぜた瞬間に比較が死ぬ。**

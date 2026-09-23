@@ -1,5 +1,7 @@
 # 12. G3 routed MoE の expert GEMM を `matmul2d` 化 — routed MoE の GPU 秒 2.58 → 1.10 s、prefill 壁時計 9.01 → 7.38 s (実測、2026-09-24)
 
+> 読み替え ([18 §3](18-RESET-ABSOLUTE-FLOOR.md)): 壁時計は新しいプロセスの 1 回目 (c) で、起動時の SHA-256 検証を含む。routed MoE の GPU 秒の縮みは有効。下限の何倍かは [04 B1](04-GATES.md) で出す。
+
 証拠 (すべて M6、同じ commit・同じバイナリで腕は `TF_PREFILL_MOE` だけ):
 
 - 壁時計: [`g3-simdgroup-a`](../../bench/m6/results/2026-09-24-Mac18-5-g3-simdgroup-a/summary.tsv) → [`g3-mpp-a`](../../bench/m6/results/2026-09-24-Mac18-5-g3-mpp-a/summary.tsv) → [`g3-simdgroup-b`](../../bench/m6/results/2026-09-24-Mac18-5-g3-simdgroup-b/summary.tsv) → [`g3-mpp-b`](../../bench/m6/results/2026-09-24-Mac18-5-g3-mpp-b/summary.tsv) (この順に各 3 本、腕あたり n = 6)

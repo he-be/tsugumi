@@ -10,17 +10,17 @@
 
 ## 現在地
 
+**2026-09-24 に方向を取り直した** ([18](18-RESET-ABSOLUTE-FLOOR.md))。進捗は「段ごとの下限の何倍か」で測る。G0 からの比や、tensor ops に載せたかどうかでは測らない。
+
 | Gate | 問い | 状態 |
 | --- | --- | --- |
-| **G0** 基準線 | M6 は何を返し、素の pp はいくつか | **済** (2026-09-23、[10](10-G0-BASELINE.md))。GPU 側の最大は routed MoE ではなく attention の束だった |
-| G1 tensor 経路を開ける | group 32 のモデルで MPP 経路が本当にディスパッチされるか | 経路は開いた ([16](16-G1-MPP-GROUP32.md))。greedy の不一致は記録したまま追わない ([17](17-NAX-NOT-USED.md)) |
-| G2 `matmul2d` の素の実効値 | 自前カーネルから tensor ops で何 TFLOP/s 出るか | **関門から外した** ([17 §3](17-NAX-NOT-USED.md))。単体の数字で線を閉じない |
-| G3 routed MoE GEMM の tensor 化 | 本番ループで GPU 時間と壁時計が縮むか | **縮んだ** ([12](12-G3-MOE-MATMUL2D.md))。routed MoE 2.58 → 1.10 s、壁時計 9.01 → 7.38 s。greedy は G1 と同じ行で分かれ、既定は未変更 (`TF_PREFILL_MOE=mpp`) |
-| G4 attention / 射影の tensor 化 | 同上 | 射影と shared は GPU 合計 5.59 → 4.73 s、壁時計は 7.30 → 7.23 s でほぼ動かず ([13](13-PROJ-SHARED-MATMUL2D.md))。縮んだ分はホストの `fetch` 待ちに移った。attention 本体は未着手 |
-| G5 チャンク境界の io 直列の解消 | io を GPU の陰に隠せるか | 露出していたのは io ではなく層ファイルの SHA-256 検証だった。別キューで先に並行検証すると 6.98 → 4.43 s ([14](14-G5-VERIFY-AHEAD.md))。既定は未変更 |
-| G6 Qwen 経路への波及 | Qwen prefill は M6 で io と gpu のどちらが重いか | 未着手 (モデルを M6 へ運ぶところから) |
+| **B0** 測る量を分ける | 起動と初回検証 (a) / 同じプロセスでの 2 回目以降の prefill (b) / 新しいプロセスでの 1 回目 (c) | 未着手。(b) を測る口が無い。10〜14 の値はすべて (c) |
+| **B1** 段ごとの下限表 | 各段の下限 (演算量と帯域から) に対して、実測は何倍か | 未着手。概算では 10〜40 倍離れた段がある ([18 §1](18-RESET-ABSOLUTE-FLOOR.md)) |
+| **B2** 下限から遠い段から直す | 1 段ずつ、下限の何倍になったか | B1 の後 |
 
-**次の一手**: attention 本体 ([17 §3](17-NAX-NOT-USED.md) の手順 3)。検証の先読みで GPU キューの稼働率が 91% に戻った ([14](14-G5-VERIFY-AHEAD.md))。既定にするかどうか (mpp / mpp64 / 検証の先読み) は判断待ち。
+以前の Gate (G0〜G5) の結果と読み替えは [04 の末尾](04-GATES.md) の索引にある。
+
+**次の一手**: B0 — 同じプロセスで prefill を繰り返して測る口を作る。並行して B1 の下限表の導出。改善の目標を (a)(b)(c) のどれに置くかは判断待ち。
 
 ## 読む順
 
@@ -31,7 +31,7 @@
 | [03-FACTS.md](03-FACTS.md) | M6 の実測台帳 (値 / 日付 / 証拠のパス)。証拠が無い行は無いと書いてある |
 | [04-GATES.md](04-GATES.md) | G0〜G6。問い・測り方・合否・不合格なら何をやめるか |
 | [05-RISKS.md](05-RISKS.md) | 罠。16 GB のページキャッシュ、単体ベンチの符号反転、Xcode 無し、ほか |
-| 10 番台〜 | 結果文書。Gate ごとに 1 本、[00-TEMPLATE-RESULT.md](00-TEMPLATE-RESULT.md) の形 |
+| 10 番台〜 | 結果文書。Gate ごとに 1 本、[00-TEMPLATE-RESULT.md](00-TEMPLATE-RESULT.md) の形。[18](18-RESET-ABSOLUTE-FLOOR.md) は方向の取り直し |
 | `bench/m6/` | プローブと計測スクリプト。[results/README.md](../../bench/m6/results/README.md) が証拠の置き方 |
 
 ## 運用ルール — この文書群を長大化させないために

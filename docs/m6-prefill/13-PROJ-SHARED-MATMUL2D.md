@@ -1,5 +1,7 @@
 # 13. 射影と shared MLP を `matmul2d` 化 — GPU 合計は 5.59 → 4.73 s に縮んだが、prefill 壁時計は 7.30 → 7.23 s でほぼ動かない (実測、2026-09-24)
 
+> 読み替え ([18 §3](18-RESET-ABSOLUTE-FLOOR.md)): 壁時計は (c) で、起動時の SHA-256 検証を含む。§3 の「attention 本体より先に `fetch` を」という順序は [04](04-GATES.md) の B0〜B2 に置き換えた。
+
 [17 §3](17-NAX-NOT-USED.md) の手順 2。04 の G4 のうち射影の部分と、shared MLP。どちらの腕も routed MoE は [12](12-G3-MOE-MATMUL2D.md) の mpp (`TF_PREFILL_MOE=mpp`) にそろえ、違いは `TF_PREFILL_QMM=simdgroup` と `mpp64` だけ。
 
 証拠 (すべて M6、commit 29948fd、同じバイナリ):

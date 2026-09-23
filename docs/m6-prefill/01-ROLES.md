@@ -13,7 +13,7 @@
 | tensor ops (MSL 4.0) | **コンパイルすら通らない** ([証拠](../../bench/m6/results/2026-09-22-Mac15-6-gpu_family_probe/output.txt)) | 通り、PSO も作れる ([証拠](../../bench/m6/results/2026-09-22-Mac18-5-gpu_family_probe/output.txt)) |
 
 **MBP で tensor 経路の正しさは一切検証できない。**`swift test` が緑でも tensor カーネルは 1 行も走っていない。
-G1 以降の正しさは M6 で `TsugumiKernelCheck` と greedy 一致を取る ([04 G1](04-GATES.md))。
+tensor 経路の正しさは M6 で `TsugumiKernelCheck` (`bench/m6/kernel_check.sh`) を取り、greedy を記録する ([04 原則 4](04-GATES.md))。
 
 ## 2. 1 サイクル (MBP から)
 
@@ -43,12 +43,12 @@ MBP 側の対照は同じスクリプトを直接叩く (`bench/m6/prefill_bench
 - `sudo purge` が使えないので**ページキャッシュを冷やせない**。`prefill_bench.sh` が各 run の前に `vm_stat` と `memory_pressure -Q` を `run-N.pre.txt` に残す。外れ値はそれで説明する。
 - M6 に Xcode は無い。Metal System Trace も GPU フレームキャプチャも M6 では取れない ([05 §5](05-RISKS.md))。
 - 別のモデルプロセスが動いていると `prefill_bench.sh` は測らずに止まる (`pgrep`)。
-- 2026-09-22 時点で M6 内蔵の空きは 129 GB。Qwen (G6) の 21.9 GB は入るが、**測り終えたら消す**。
+- 2026-09-22 時点で M6 内蔵の空きは 129 GB。Qwen (保留中、[04](04-GATES.md)) の 21.9 GB は入るが、**測り終えたら消す**。
 
 ## 4. MBP で並行できること
 
 M6 が計測している間、MBP でできるのは tensor に依らない仕事だけ:
 
-- G5 (チャンク境界の io 直列) の実装と正しさ。数字は M6 で取る。
-- G1 の Swift 側の書き換え (`swift build` と既存テストは通る。経路が死んでいるだけ)。
+- 下限表 ([04 B1](04-GATES.md)) の導出と、段を分ける profile の実装。
+- 同じプロセスで prefill を繰り返す口 ([04 B0](04-GATES.md)) の実装と正しさ。数字は M6 で取る。
 - 結果文書と台帳の更新。
