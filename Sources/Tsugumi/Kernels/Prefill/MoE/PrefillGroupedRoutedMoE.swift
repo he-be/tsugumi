@@ -456,8 +456,21 @@ final class PrefillGroupedRoutedMoE {
     /// paths can be measured against each other without a rebuild. It is also
     /// the way back to FP32 weight arithmetic: the tiled path stages its
     /// dequantized weights as FP16, one rounding per weight (see
-    /// `PrefillInt4QMM`). Anything else, including unset, takes the tiled path.
+    /// `PrefillInt4QMM`). `TF_PREFILL_MOE=mpp` takes the tiled path with its
+    /// tile product on `matmul2d` (`prefill_moe_gemm_int4_mpp`,
+    /// docs/m6-prefill/04-GATES.md G3) where the device builds it. Anything
+    /// else, including unset, takes the simdgroup tiled path.
     private static let forcedPath = ProcessInfo.processInfo.environment["TF_PREFILL_MOE"]
+
+    /// The kernel behind the tiled path's two GEMMs.
+    package enum TiledKernel: String, Sendable {
+        /// `prefill_moe_gemm_int4`, `simdgroup_multiply_accumulate` (default).
+        case simdgroup
+        /// `prefill_moe_gemm_int4_mpp`, MSL 4.0 `matmul2d`; its K step is 64.
+        case mpp
+    }
+
+    static let mppTileK = 64
 
     /// Reused staging, indexed the way a chunk uses it: one sorted-pair buffer
     /// per layer and one argument buffer per tile position. A layer's routed
@@ -471,6 +484,11 @@ final class PrefillGroupedRoutedMoE {
     private let batchedPhase1PSO: MTLComputePipelineState
     private let batchedDownPSO: MTLComputePipelineState
     private let gemmPSO: MTLComputePipelineState?
+    /// Set only when `mpp` was asked for and the device built it; nil on
+    /// hardware without tensor ops, which then keeps the simdgroup kernel.
+    private let gemmMPPPSO: MTLComputePipelineState?
+    /// The kernel `encodeStreamedTiled` hands aligned shapes to.
+    package var tiledKernel: TiledKernel { gemmMPPPSO != nil ? .mpp : .simdgroup }
     private let geluMulPSO: MTLComputePipelineState?
     private let rowsGateUpPSO: MTLComputePipelineState?
     private let rowsDownPSO: MTLComputePipelineState?
@@ -500,7 +518,8 @@ final class PrefillGroupedRoutedMoE {
     }
 
     init(context: MetalContext,
-         gateActivation: MoE.GateActivation = .geluPytorchTanh) throws {
+         gateActivation: MoE.GateActivation = .geluPytorchTanh,
+         tiledKernel requestedTiledKernel: TiledKernel? = nil) throws {
         self.affineGroupSize = context.affineGroupSize
         // The one line that differs between the two families in the routed
         // experts, on the prefill side (`docs/qwen35moe/03-DESIGN.md` §4-1;
@@ -510,8 +529,10 @@ final class PrefillGroupedRoutedMoE {
         self.batchedPhase1PSO = try context.pipeline("prefill_grouped_routed_moe_batched_phase1",
                                                      constants: activation)
         self.batchedDownPSO = try context.pipeline("prefill_grouped_routed_moe_batched_down")
+        let wantsMPP = (requestedTiledKernel ?? (Self.forcedPath == "mpp" ? .mpp : .simdgroup)) == .mpp
         if Self.forcedPath == "scalar" {
             self.gemmPSO = nil
+            self.gemmMPPPSO = nil
             self.geluMulPSO = nil
         } else {
             // The tile shape fixes the threadgroup at 128 threads; a build
@@ -522,7 +543,13 @@ final class PrefillGroupedRoutedMoE {
             self.geluMulPSO = usable
                 ? try? context.pipeline("prefill_moe_gate_up_gelu_mul", constants: activation)
                 : nil
+            // The function exists only in an MSL 4.0 build (`__HAVE_TENSOR__`),
+            // so a failed lookup is the "no tensor ops here" answer, not an error.
+            let mpp = (wantsMPP && usable) ? try? context.pipeline("prefill_moe_gemm_int4_mpp") : nil
+            self.gemmMPPPSO = (mpp?.maxTotalThreadsPerThreadgroup ?? 0) >= Self.gemmThreadsPerGroup
+                ? mpp : nil
         }
+
         // The rows path is a GEMV, so it stands on its own: `TF_PREFILL_MOE=scalar`
         // turns off the tiled kernel's FP16 weight staging, which this path
         // never had.
@@ -553,6 +580,13 @@ final class PrefillGroupedRoutedMoE {
         }
         self.streamedArgEncoder = streamedFn.makeArgumentEncoder(
             bufferIndex: PrefillGroupedRoutedMoEBufferIndex.expertArgumentState)
+        // One line per instance when `mpp` was asked for, so a run's log says
+        // whether the A/B arm actually got the kernel (docs/m6-prefill/04-GATES.md G3).
+        if wantsMPP {
+            let note = gemmMPPPSO == nil ? " (mpp unavailable)" : ""
+            FileHandle.standardError.write(Data(
+                "[prefill moe tiled kernel=\(tiledKernel.rawValue)\(note)]\n".utf8))
+        }
     }
 
     /// The tiled kernel walks K in 32-element steps and reads one scale/bias
@@ -868,7 +902,7 @@ final class PrefillGroupedRoutedMoE {
                              groups: [PrefillMoEGroup],
                              params: PrefillGroupedRoutedMoEStreamedParams,
                              maxRowsPerBatch: Int) -> Int {
-        guard let gemmPSO, let geluMulPSO,
+        guard let simdgroupGEMMPSO = gemmPSO, let geluMulPSO,
               params.liveExpertCount == UInt32(binding.views.count),
               groups.count == binding.views.count,
               maxRowsPerBatch > 0 else { return 0 }
@@ -879,6 +913,13 @@ final class PrefillGroupedRoutedMoE {
         let nTilesGateUp = (Int(params.routedIntermediate) + Self.gemmTileN - 1) / Self.gemmTileN
         let nTilesDown = (Int(params.d) + Self.gemmTileN - 1) / Self.gemmTileN
         let threadgroup = MTLSize(width: Self.gemmThreadsPerGroup, height: 1, depth: 1)
+        // The MPP kernel steps K by 64 and loads activation rows as half4.
+        let mppFits = Int(params.d) % Self.mppTileK == 0
+            && Int(params.routedIntermediate) % Self.mppTileK == 0
+            && params.hiddenStrideElements % 4 == 0
+            && hiddenOffset % 8 == 0
+            && gateUpActScratchOffset % 8 == 0
+        let gemmPSO = mppFits ? (gemmMPPPSO ?? simdgroupGEMMPSO) : simdgroupGEMMPSO
 
         for batch in batches {
             var p = params

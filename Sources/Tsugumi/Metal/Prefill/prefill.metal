@@ -1003,6 +1003,173 @@ kernel void prefill_moe_gate_up_gelu_mul(
     act[2u * total + gid] = half(prefill_moe_gate_activation(gate) * up);
 }
 
+#if defined(__HAVE_TENSOR__)
+/// `prefill_moe_gemm_int4` with the tile product handed to `matmul2d`
+/// (docs/m6-prefill/17-NAX-NOT-USED.md §3, G3). Everything around the product
+/// is the simdgroup kernel's: the same blocks, the same gather/scatter, the
+/// same FP16 weight staging (one rounding per weight, identical values), FP32
+/// accumulation. Only the K step (64 instead of 32) and the order of the
+/// reduction inside a step differ.
+///
+/// A and B are staged in threadgroup memory as K-contiguous rows — A as
+/// [m][k], B as [n][k] (so the right operand is transposed) — and the product
+/// accumulates into one cooperative destination across the whole K loop.
+/// The A tile is loaded as half4, so the hidden rows, the act scratch rows
+/// and every K step must be 4-element aligned; the Swift side checks the
+/// hidden stride before it picks this kernel.
+constant constexpr int kPrefillMoEMPPTileM = 64;
+constant constexpr int kPrefillMoEMPPTileN = 64;
+constant constexpr int kPrefillMoEMPPTileK = 64;
+constant constexpr uint kPrefillMoEMPPThreads = 128;
+
+kernel void prefill_moe_gemm_int4_mpp(
+    device const half*                                   hidden         [[buffer(0)]],
+    device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
+    device const PrefillRoutedGEMMBlockMSL*              blocks         [[buffer(2)]],
+    device half*                                         route_partials [[buffer(5)]],
+    device half*                                         act            [[buffer(7)]],
+    device const PrefillStreamedRoutedBlobsMSL&          routed         [[buffer(9)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p              [[buffer(10)]],
+    constant uint&                                       mode           [[buffer(11)]],
+    uint3                                                lid3           [[thread_position_in_threadgroup]],
+    uint3                                                tgid3          [[threadgroup_position_in_grid]]
+) {
+    constexpr auto descriptor = matmul2d_descriptor(
+        kPrefillMoEMPPTileM, kPrefillMoEMPPTileN, kPrefillMoEMPPTileK,
+        false, true, false,
+        matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<descriptor, execution_simdgroups<4>> operation;
+    using threadgroup_half_tensor =
+        tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>;
+
+    const uint lid = lid3.x;
+    const PrefillRoutedGEMMBlockMSL blk = blocks[tgid3.y];
+    const uint nBase = tgid3.x * uint(kPrefillMoEMPPTileN);
+    const bool gate_up = (mode == kPrefillMoEGEMMModeGateUp);
+    const bool is_up = gate_up && (tgid3.z == 1u);
+
+    const uint N = gate_up ? p.F : p.D;
+    const uint K = gate_up ? p.D : p.F;
+    const uint act_rows = p.pair_count;
+
+    threadgroup half As[kPrefillMoEMPPTileM * kPrefillMoEMPPTileK];
+    threadgroup half Bs[kPrefillMoEMPPTileN * kPrefillMoEMPPTileK];
+    threadgroup uint src_off[kPrefillMoEMPPTileM];
+    threadgroup uint dst_off[kPrefillMoEMPPTileM];
+
+    device const uint8_t* blob = routed.blob[blk.local_slot];
+    uint w_off = p.down_W_off;
+    uint s_off = p.down_s_off;
+    uint b_off = p.down_b_off;
+    if (gate_up) {
+        w_off = is_up ? p.up_W_off : p.gate_W_off;
+        s_off = is_up ? p.up_s_off : p.gate_s_off;
+        b_off = is_up ? p.up_b_off : p.gate_b_off;
+    }
+    device const uint8_t* W = blob + w_off;
+    device const bfloat* S = reinterpret_cast<device const bfloat*>(blob + s_off);
+    device const bfloat* B = reinterpret_cast<device const bfloat*>(blob + b_off);
+
+    device const half* X = gate_up ? hidden
+                                   : (device const half*)(act + 2u * act_rows * p.F);
+    device half* Y = gate_up ? (act + (is_up ? act_rows * p.F : 0u)) : route_partials;
+
+    if (lid < uint(kPrefillMoEMPPTileM)) {
+        uint so = 0u;
+        uint dof = 0u;
+        if (lid < blk.row_count) {
+            const PrefillTokenExpertPairMSL pr = sorted_pairs[blk.pair_start + lid];
+            if (gate_up) {
+                so = pr.token * p.hidden_stride_elements;
+                dof = (blk.local_row + lid) * p.F;
+            } else {
+                so = (blk.local_row + lid) * p.F;
+                dof = (pr.token * p.top_k + pr.rank) * p.D;
+            }
+        }
+        src_off[lid] = so;
+        dst_off[lid] = dof;
+    }
+
+    threadgroup_half_tensor tileA(
+        As,
+        dextents<int32_t, 2>(kPrefillMoEMPPTileK, kPrefillMoEMPPTileM),
+        array<int32_t, 2>({1, kPrefillMoEMPPTileK}));
+    threadgroup_half_tensor tileB(
+        Bs,
+        dextents<int32_t, 2>(kPrefillMoEMPPTileK, kPrefillMoEMPPTileN),
+        array<int32_t, 2>({1, kPrefillMoEMPPTileK}));
+    auto accumulator = operation.get_destination_cooperative_tensor<
+        decltype(tileA), decltype(tileB), float>();
+    for (int element = 0; element < accumulator.get_capacity(); ++element) {
+        accumulator[element] = 0.0f;
+    }
+
+    // Weights: each thread owns one output column n and one 32-wide half of
+    // the K step — 16 packed bytes, inside a single affine group at either
+    // group size (32 or 64), so one scale/bias pair per step.
+    const uint groups = K / kPrefillGroupSize;
+    const uint row_bytes = K / 2u;
+    const uint w_n_local = lid & uint(kPrefillMoEMPPTileN - 1);
+    const uint w_k_half = (lid / uint(kPrefillMoEMPPTileN)) * 32u;
+    const uint w_n = nBase + w_n_local;
+    device const uint8_t* w_row = W + w_n * row_bytes;
+    device const bfloat* s_row = S + w_n * groups;
+    device const bfloat* b_row = B + w_n * groups;
+    threadgroup half* b_dst = Bs + w_n_local * uint(kPrefillMoEMPPTileK) + w_k_half;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint k0 = 0; k0 < K; k0 += uint(kPrefillMoEMPPTileK)) {
+        // Activations: 64x64 halves as 1024 half4, 8 per thread.
+        for (uint i = 0; i < 8u; ++i) {
+            const uint unit = i * kPrefillMoEMPPThreads + lid;
+            const uint m = unit / 16u;
+            const uint kk = (unit % 16u) * 4u;
+            const half4 v = (m < blk.row_count)
+                ? *((device const half4*)(X + src_off[m] + k0 + kk))
+                : half4(0.0h);
+            *((threadgroup half4*)(As + m * uint(kPrefillMoEMPPTileK) + kk)) = v;
+        }
+
+        if (w_n < N) {
+            const uint kb = k0 + w_k_half;
+            const uint g = kb / kPrefillGroupSize;
+            const float scale = float(s_row[g]);
+            const float bias = prefill_int4_bias(b_row, g, scale);
+            // Packed sub-tensor offsets are only 2-byte aligned.
+            device const ushort* w_ptr = (device const ushort*)(w_row + (kb >> 1));
+            for (uint q = 0; q < 8u; ++q) {
+                const uint packed = uint(w_ptr[q]);
+                half4 v;
+                v.x = half(fma(float(packed & 0x0Fu), scale, bias));
+                v.y = half(fma(float((packed >> 4) & 0x0Fu), scale, bias));
+                v.z = half(fma(float((packed >> 8) & 0x0Fu), scale, bias));
+                v.w = half(fma(float((packed >> 12) & 0x0Fu), scale, bias));
+                *((threadgroup half4*)(b_dst + q * 4u)) = v;
+            }
+        } else {
+            for (uint q = 0; q < 8u; ++q) {
+                *((threadgroup half4*)(b_dst + q * 4u)) = half4(0.0h);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        operation.run(tileA, tileB, accumulator);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (int element = 0; element < accumulator.get_capacity(); ++element) {
+        if (!accumulator.is_valid_element(element)) continue;
+        const auto position = accumulator.get_multidimensional_index(element);
+        const uint n = nBase + uint(position[0]);
+        const uint m = uint(position[1]);
+        if (m < blk.row_count && n < N) {
+            Y[dst_off[m] + n] = half(accumulator[element]);
+        }
+    }
+}
+#endif
+
 // ---------------------------------------------------------------------------
 // Routed MoE for a block of at most eight rows — the speculative verify width.
 //

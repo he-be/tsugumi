@@ -2227,6 +2227,8 @@ for groupSize in groupSizes {
                                                        groupSize: groupSize, seed: 0xF5))
     pass.append(contentsOf: try checkMPPPrefillInt4QMM(t: 37, n: 100, k: 128,
                                                        groupSize: groupSize, seed: 0xF6))
+    // The prompt-chunk routed MoE GEMMs, simdgroup and (where built) MPP.
+    pass.append(contentsOf: try checkPrefillRoutedMoEGEMM(groupSize: groupSize, seed: 0xF7))
 
     printCases(pass)
     results.append(contentsOf: pass)
