@@ -1,8 +1,8 @@
 # 04. Gate — 問い・測り方・合否
 
 各 Gate は **証拠ディレクトリと結果文書が揃って初めて閉じる**。合否の閾値はここに先に置き、計測後に動かさない。
-順序: G0 → G1 → G2 → G3 → G4。G5 と G6 は G0 の後なら G1〜G4 と独立に進められる。
-**G2 が不合格なら G3 / G4 はやらない。**tensor ops の線を閉じ、G5 と G6 に資源を回す。
+順序: G0 → G1 → **G3 → 射影と shared → G4**。G5 と G6 は G0 の後なら G1〜G4 と独立に進められる。
+**2026-09-24 に変更: G2 は関門にしない** ([17 §3](17-NAX-NOT-USED.md))。単体プローブの数字で tensor ops の線を閉じず、本番カーネルを書いて本番ループで判断する。
 
 対象はまず Gemma 経路 (`RealForwardRunner` / `Metal/Prefill/prefill.metal`)。tensor 経路の既存物 2 本
 (`Kernels/TensorCore/MPPPrefillInt4QMM.swift`、`Kernels/Attention/PrefillAttention.swift` の `.fullTensorOps2DValidityV2`) が
@@ -52,8 +52,7 @@ Gemma からしか呼ばれていないため。Qwen 経路は G6 で判定し�
 形状は G0-4 の内訳で最大の的 (routed MoE、expert 1 個あたり平均 128 行 × 実寸の N / K) と、射影の (2048 × N × K)。
 int4 デクォンタイズは**入れない** (純粋な GEMM の差を先に見る)。次に int4 → fp16 の展開を挟んだ腕を足す。
 
-**合格**: 実運用の形状で **B ≥ 1.5 × A** かつ **B ≥ 0.5 × C**。両方満たせば G3 へ。
-**不合格**: 片方でも満たさなければ「tensor ops は自前経路では取れない」と結論し、G3 / G4 を**閉じる**。
+**合否は置かない** ([17 §3](17-NAX-NOT-USED.md))。プローブを作るなら、本番カーネルの設計の参考として使う。
 書く先: `11-G2-MATMUL2D-PROBE.md`。
 
 ## G3. routed MoE の expert GEMM を `matmul2d` 化 (旧 M6-2)
