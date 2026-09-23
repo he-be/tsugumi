@@ -14,8 +14,8 @@ Gemma からしか呼ばれていないため。Qwen 経路は G6 で判定し�
 | --- | --- | --- | --- |
 | G0-1 | `MTLGPUFamily`、MSL 4.0 のコンパイル、MPP カーネルの PSO | `bench/m6/run_probe.sh gpu_family_probe` | **済** (両機、[03 §1](03-FACTS.md)) |
 | G0-2 | Apple 製カーネルの GEMM 天井 (fp16 / fp32) | `bench/m6/run_probe.sh gpu_peak_probe` | **済** (両機、[03 §1](03-FACTS.md)) |
-| G0-3 | tensor を使わない現行コードの prefill (pp、io、GPU 側) | `bench/m6/prefill_bench.sh g0-baseline 6` (両機) | **未** |
-| G0-4 | G0-3 の GPU 内訳 (routed MoE / attention / 射影 / 共有 MLP) | `TF_PREFILL_GPU_PROFILE=1 … g0-profile 3` (M6) | **未** |
+| G0-3 | tensor を使わない現行コードの prefill (pp、io、GPU 側) | `bench/m6/prefill_bench.sh g0-baseline 6` (両機) | **済** ([10](10-G0-BASELINE.md)) |
+| G0-4 | G0-3 の GPU 内訳 (routed MoE / attention / 射影 / 共有 MLP) | `TF_PREFILL_GPU_PROFILE=1 … g0-profile 3`、attention と射影の分離は `=2 … g0-profile-detail 3` (M6) | **済** ([10](10-G0-BASELINE.md)) |
 
 **合格**: 両機 6 本ずつの `summary.tsv`。M6 の中央値が `10-G0-BASELINE.md` に載り、
 **以降の「N 倍」の分母は G0-4 の routed MoE の秒数と G0-3 の prefill 壁時計**と決まる。
@@ -32,7 +32,7 @@ Gemma からしか呼ばれていないため。Qwen 経路は G6 で判定し�
 
 **合格**: (a) M6 で `TsugumiKernelCheck` の QMM 検査が MPP 経路で CPU 参照と一致、(b) greedy 出力が G0-3 と同一、
 (c) `bench/m6/prefill_bench.sh g1-mpp 6` の `env.txt` に腕が記録され、ログに MPP のディスパッチが残る。
-**速くなることは合格条件ではない** (q/k/v/o 射影は GPU 時間の 1 割強しかない)。数字は記録する。
+**速くなることは合格条件ではない** (q/k/v/o 射影は M6 の GPU 合計の 17%、導出は [10 §3](10-G0-BASELINE.md))。数字は記録する。
 **MBP では**: `swift build` と既存テストが通ること (経路が死んだまま挙動不変)。
 
 ## G2. `matmul2d` の素の実効値 — 自前カーネルから何 TFLOP/s 出るか

@@ -1,0 +1,1 @@
+/Users/mh/LLM/turbo-fieldfare/.build/release/TsugumiCLI --model /Users/mh/LLM/turbo-fieldfare/scratch/gemma4-qat-sym.gturbo --messages-file /Users/mh/LLM/turbo-fieldfare/bench/l.json --expert-cache-slots 32 --prefill-chunk-tokens 2048 --max-new 1 --max-context 4096 --verification full-sha256

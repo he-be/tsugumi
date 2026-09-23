@@ -12,7 +12,7 @@
 
 | Gate | 問い | 状態 |
 | --- | --- | --- |
-| **G0** 基準線 | M6 は何を返し、素の pp はいくつか | **G0-1 / G0-2 は両機で証拠あり** ([03](03-FACTS.md))。**G0-3 (pp) は証拠ディレクトリ無し** — 旧文書の数字しかないので取り直す |
+| **G0** 基準線 | M6 は何を返し、素の pp はいくつか | **済** (2026-09-23、[10](10-G0-BASELINE.md))。GPU 側の最大は routed MoE ではなく attention の束だった |
 | G1 tensor 経路を開ける | group 32 のモデルで MPP 経路が本当にディスパッチされるか | 未着手 |
 | G2 `matmul2d` の素の実効値 | 自前カーネルから tensor ops で何 TFLOP/s 出るか | 未着手。プローブは未作成 |
 | G3 routed MoE GEMM の tensor 化 | 本番ループで GPU 時間と壁時計が縮むか | 未着手 (G2 合格が条件) |
@@ -20,8 +20,7 @@
 | G5 チャンク境界の io 直列の解消 | io を GPU の陰に隠せるか | 未着手 (G0 の後、G1〜G4 と独立) |
 | G6 Qwen 経路への波及 | Qwen prefill は M6 で io と gpu のどちらが重いか | 未着手 (モデルを M6 へ運ぶところから) |
 
-**次の一手**: G0-3 を両機で取る。MBP は `bench/m6/prefill_bench.sh g0-baseline 6`、
-M6 は `bench/m6/cycle.sh prefill_bench.sh g0-baseline 6`。結果は `10-G0-BASELINE.md` に書く (まだ無い)。
+**次の一手**: G1 (MPP 経路を group 32 で開ける)。G2 の形状を routed MoE だけで選ぶかは [10 §3](10-G0-BASELINE.md) の提案を見てユーザーが決める。
 
 ## 読む順
 

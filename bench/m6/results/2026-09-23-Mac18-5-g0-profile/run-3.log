@@ -1,0 +1,7 @@
+[prefill gpu attn=3.535s(49%) shared=0.866s(12%) moe=2.722s(38%) tail=0.043s(1%) head=0.003s(0%) total=7.168s]
+チャン
+[stop=maxTokens prefill=2478tok new=1tok decode=0.00s tok/s=1166.867]
+[load=0.517s layerVerify=4.596s/30layers prefill=9.630s ttft=9.631s peak=1.22GB rss=0.34GB]
+[expert prefill hit=0.0% 0/5771 io=1.835s | decode hit=0.0% 0/0 io=0.000s]
+[expert mmap layers=30 mapped=12.90GB sync=748(+5771/-4811) noop=0 residency=1.669s /tok=1669.20ms]
+[decode/tok io=0.00ms cb1=0.00ms cb2=0.00ms head=0.00ms]

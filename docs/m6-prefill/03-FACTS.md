@@ -25,8 +25,8 @@ fp32 は M6 のほうが 5% 遅い。fp32 累積を残す設計は M6 で得を�
 
 | 項目 | 旧文書の値 | 置き場 | 状態 |
 | --- | --- | --- | --- |
-| tensor 無しの prefill、`bench/l.json` 2478 tok、32 スロット、chunk 2048 | M6 pp 288 / GPU 側 7.63 s、MBP pp 235 / 9.26 s (各 6 本) | [旧 §7-4a](../investigations/M6_MAC_MINI_TARGETING.md) の表のみ | **証拠なし → G0-3** |
-| M6 の io が GPU と重ならない (io が 0.85 → 3.33 s でも GPU 側不変) | 同上 | 同上 | **証拠なし → G0-3 の `summary.tsv` で再確認** |
+| tensor 無しの prefill、`bench/l.json` 2478 tok、32 スロット、chunk 2048 | M6 pp 288 / GPU 側 7.63 s、MBP pp 235 / 9.26 s (各 6 本) | [旧 §7-4a](../investigations/M6_MAC_MINI_TARGETING.md) の表のみ | **取り直し済** → [10](10-G0-BASELINE.md)。M6 の pp 288 は再現せず |
+| M6 の io が GPU と重ならない (io が 0.85 → 3.33 s でも GPU 側不変) | 同上 | 同上 | **方向のみ再現** (io の振れ 0.35 s)。[10 §2](10-G0-BASELINE.md) |
 | `MPPPrefillInt4QMM` が group 32 で nil | 単体プローブで確認とある | 旧 §7-1a、プローブ未保存 | **証拠なし → G1 で経路ログを残す** |
 | SSD `F_NOCACHE` 3.34 GB/s | 表は詳細 | [M6_SSD_BANDWIDTH](../investigations/M6_SSD_BANDWIDTH.md) | 表のみ、生ログ無し。**値は信用してよい** (プローブは `bench/rec_probe.c` / `io_depth_probe.c` で再現可) |
 | `.macOS(.v26)` でビルドが通る (minos 26.0) | エラー 0、74.9 s | 旧 §7-5a | 証拠なし。**やらないと決めた項目なので取り直さない** |
