@@ -13,12 +13,25 @@ final class PrefillSharedExpert {
     /// is 16x the arithmetic for the same answer. This path keeps the bytes and
     /// drops the waste (docs/mtp/16-M4.5-PLAN.md §4 c).
     private let rowsGEMV: DequantInt4GEMV?
+    /// INT4 only, and only under `TF_PREFILL_QMM=mpp64`: the batched path's
+    /// three GEMMs on `matmul2d` (docs/m6-prefill/17-NAX-NOT-USED.md §3, step 2).
+    /// Nil where the device cannot build it; `qmm` then serves as before.
+    private let mpp: MPPPrefillInt4QMM?
     private let geluMulPSO: MTLComputePipelineState
 
     init(context: MetalContext, weightBits: Int = 8) throws {
         self.shared = try SharedExpertRuntime(context: context, weightBits: weightBits)
         self.qmm = weightBits == 4 ? try PrefillInt4QMM(context: context) : nil
         self.rowsGEMV = weightBits == 4 ? try DequantInt4GEMV(context: context) : nil
+        if weightBits == 4, MPPPrefillInt4QMM.isSharedSelected {
+            let candidate = MPPPrefillInt4QMM(context: context, kernel: .tile64)
+            self.mpp = candidate.isAvailable ? candidate : nil
+            let note = candidate.isAvailable ? "" : " (mpp unavailable)"
+            FileHandle.standardError.write(Data(
+                "[prefill shared qmm kernel=\(candidate.isAvailable ? "mpp-tile64" : "simdgroup")\(note)]\n".utf8))
+        } else {
+            self.mpp = nil
+        }
         self.geluMulPSO = try context.pipeline("gelu_mul_fp16")
     }
 
@@ -219,20 +232,31 @@ final class PrefillSharedExpert {
                                queryCount: Int,
                                d: Int,
                                intermediate: Int) {
-        qmm.encode(commandBuffer: cb,
-                   weights: gate.weights, weightsOffset: gate.weightsOffset,
-                   scales: gate.scales, scalesOffset: gate.scalesOffset,
-                   biases: gate.biases, biasesOffset: gate.biasesOffset,
-                   x: x, xOffset: xOffset,
-                   y: scratchGate, yOffset: scratchGateOffset,
-                   t: queryCount, n: intermediate, k: d)
-        qmm.encode(commandBuffer: cb,
-                   weights: up.weights, weightsOffset: up.weightsOffset,
-                   scales: up.scales, scalesOffset: up.scalesOffset,
-                   biases: up.biases, biasesOffset: up.biasesOffset,
-                   x: x, xOffset: xOffset,
-                   y: scratchUp, yOffset: scratchUpOffset,
-                   t: queryCount, n: intermediate, k: d)
+        // The MPP kernel where it takes the shape, the simdgroup QMM otherwise;
+        // both write the same `t x n` FP16 rows.
+        func gemm(_ proj: SharedExpertInt8Proj, x: MTLBuffer, xOffset: Int,
+                  y: MTLBuffer, yOffset: Int, n: Int, k: Int) {
+            if let mpp, mpp.encode(commandBuffer: cb,
+                                   weights: proj.weights, weightsOffset: proj.weightsOffset,
+                                   scales: proj.scales, scalesOffset: proj.scalesOffset,
+                                   biases: proj.biases, biasesOffset: proj.biasesOffset,
+                                   x: x, xOffset: xOffset,
+                                   y: y, yOffset: yOffset,
+                                   m: queryCount, n: n, k: k) != .unavailable {
+                return
+            }
+            qmm.encode(commandBuffer: cb,
+                       weights: proj.weights, weightsOffset: proj.weightsOffset,
+                       scales: proj.scales, scalesOffset: proj.scalesOffset,
+                       biases: proj.biases, biasesOffset: proj.biasesOffset,
+                       x: x, xOffset: xOffset,
+                       y: y, yOffset: yOffset,
+                       t: queryCount, n: n, k: k)
+        }
+        gemm(gate, x: x, xOffset: xOffset, y: scratchGate, yOffset: scratchGateOffset,
+             n: intermediate, k: d)
+        gemm(up, x: x, xOffset: xOffset, y: scratchUp, yOffset: scratchUpOffset,
+             n: intermediate, k: d)
 
         encodeGeluMul(commandBuffer: cb,
                       scratchGate: scratchGate, scratchGateOffset: scratchGateOffset,
@@ -240,12 +264,7 @@ final class PrefillSharedExpert {
                       scratchAct: scratchAct, scratchActOffset: scratchActOffset,
                       elements: queryCount * intermediate)
 
-        qmm.encode(commandBuffer: cb,
-                   weights: down.weights, weightsOffset: down.weightsOffset,
-                   scales: down.scales, scalesOffset: down.scalesOffset,
-                   biases: down.biases, biasesOffset: down.biasesOffset,
-                   x: scratchAct, xOffset: scratchActOffset,
-                   y: y, yOffset: yOffset,
-                   t: queryCount, n: d, k: intermediate)
+        gemm(down, x: scratchAct, xOffset: scratchActOffset, y: y, yOffset: yOffset,
+             n: d, k: intermediate)
     }
 }

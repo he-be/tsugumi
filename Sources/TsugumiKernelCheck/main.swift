@@ -712,10 +712,14 @@ func checkPrefillInt4QMM(t: Int, n: Int, k: Int, groupSize: Int,
 /// support); the skip is printed so a run on tensor hardware that skips is
 /// visible rather than silently green.
 func checkMPPPrefillInt4QMM(t: Int, n: Int, k: Int, groupSize: Int,
-                            seed: UInt64) throws -> [CaseResult] {
-    let name = "mpp-qmm t=\(t) n=\(n) k=\(k)"
+                            seed: UInt64,
+                            kernel kernelKind: MPPPrefillInt4QMM.Kernel = .threadgroup)
+    throws -> [CaseResult] {
+    let name = kernelKind == .threadgroup
+        ? "mpp-qmm t=\(t) n=\(n) k=\(k)"
+        : "mpp-qmm-\(kernelKind.rawValue) t=\(t) n=\(n) k=\(k)"
     let context = try makeContext(groupSize: groupSize)
-    let kernel = MPPPrefillInt4QMM(context: context)
+    let kernel = MPPPrefillInt4QMM(context: context, kernel: kernelKind)
     guard kernel.isAvailable else {
         print("  SKIP  \(name) g=\(groupSize)  no MPP pipeline on this device")
         return []
@@ -744,7 +748,7 @@ func checkMPPPrefillInt4QMM(t: Int, n: Int, k: Int, groupSize: Int,
                              x: xBuf, y: yBuf,
                              m: t, n: n, k: k)
     waitAndCheck(cmd, "\(name) g=\(groupSize)")
-    guard path == .affineThreadgroupF16 else {
+    guard path == (kernelKind == .tile64 ? .affineTile64F16 : .affineThreadgroupF16) else {
         fatalError("\(name) g=\(groupSize): ran the \(path.rawValue) path, "
                    + "so the MPP kernel is untested")
     }
@@ -2227,6 +2231,16 @@ for groupSize in groupSizes {
                                                        groupSize: groupSize, seed: 0xF5))
     pass.append(contentsOf: try checkMPPPrefillInt4QMM(t: 37, n: 100, k: 128,
                                                        groupSize: groupSize, seed: 0xF6))
+    // The tile64 kernel (projections and the shared MLP under
+    // TF_PREFILL_QMM=mpp64): Q, O, shared gate/up and down, then a row
+    // count and an N that both fall mid-tile.
+    for (t, n, k, seed) in [(64, 4096, 2816, 0xF8), (131, 2816, 4096, 0xF9),
+                            (131, 2112, 2816, 0xFA), (37, 2816, 2112, 0xFB),
+                            (37, 100, 128, 0xFC)] as [(Int, Int, Int, UInt64)] {
+        pass.append(contentsOf: try checkMPPPrefillInt4QMM(t: t, n: n, k: k,
+                                                           groupSize: groupSize, seed: seed,
+                                                           kernel: .tile64))
+    }
     // The prompt-chunk routed MoE GEMMs, simdgroup and (where built) MPP.
     pass.append(contentsOf: try checkPrefillRoutedMoEGEMM(groupSize: groupSize, seed: 0xF7))
 

@@ -1322,8 +1322,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     m: tokenCount,
                     n: rows,
                     k: columns)
-                if path == .affineThreadgroupF16 {
-                    prefillGPUProfile.recordProjection(family, path: "mpp")
+                if path != .unavailable {
+                    prefillGPUProfile.recordProjection(
+                        family, path: path == .affineThreadgroupF16 ? "mpp" : path.rawValue)
                     return
                 }
             }
