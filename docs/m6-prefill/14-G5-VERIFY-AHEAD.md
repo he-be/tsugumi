@@ -63,5 +63,6 @@
 
 - **既定は変えていない。**`TF_PREFILL_VERIFY_AHEAD` (既定 0) と `TF_PREFILL_VERIFY_AHEAD_PARALLEL` (既定は直列) を足しただけ。既定にするかは判断を仰ぐ。
 - **G0 からの通算 (導出、別 commit・別の日なので参考)**: G0 の 9.507 s ([10](10-G0-BASELINE.md)) → 4.432 s。
-- **GPU 律速に戻った**ので、手順 3 (attention 本体) が次の的になる。GPU busy 4.11 s のうち `attn` は約 2.8 s ([13 §1](13-PROJ-SHARED-MATMUL2D.md))。
+- **GPU 律速に戻った**ので、手順 3 (attention 本体) が次の的になる。並行・深さ 2 の構成で `attn` を level 2 に割ると ([`a0-profile-detail`](../../bench/m6/results/2026-09-24-Mac18-5-a0-profile-detail/summary.tsv)、n = 3、commit 67a087a)、
+  `attn.swa` 1.433 s (48%)、`post` 0.415 s (14%)、`qkv` 0.392 s (13%)、`attn.full` 0.299 s (10%)、`oproj` 0.233 s (8%)、`rope` 0.191 s (6%)。level 2 は `attn` を割るぶん膨らむので割合で読む ([10 §1.3](10-G0-BASELINE.md))。
 - **未確認**: 並行の腕の 1 本目の遅さの原因。16 GB 機でのスワップ。
