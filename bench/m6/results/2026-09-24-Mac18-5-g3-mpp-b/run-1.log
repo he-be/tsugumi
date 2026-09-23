@@ -1,0 +1,7 @@
+[prefill moe tiled kernel=mpp]
+チャン
+[stop=maxTokens prefill=2478tok new=1tok decode=0.00s tok/s=919.098]
+[load=0.516s layerVerify=4.497s/30layers prefill=7.450s ttft=7.451s peak=1.21GB rss=0.34GB]
+[expert prefill hit=0.0% 0/5768 io=1.071s | decode hit=0.0% 0/0 io=0.000s]
+[expert mmap layers=30 mapped=12.90GB sync=749(+5768/-4808) noop=0 residency=0.934s /tok=933.90ms]
+[decode/tok io=0.00ms cb1=0.00ms cb2=0.00ms head=0.00ms]

@@ -1,0 +1,8 @@
+[prefill gpu attn=3.528s(50%) shared=0.866s(12%) moe=2.572s(37%) tail=0.042s(1%) head=0.004s(0%) total=7.012s]
+[prefill gpu proj kv:simdgroup-matrix=120 o:simdgroup-matrix=60 q:simdgroup-matrix=60]
+ご
+[stop=maxTokens prefill=2478tok new=1tok decode=0.00s tok/s=569.144]
+[load=0.514s layerVerify=4.421s/30layers prefill=8.648s ttft=8.649s peak=1.21GB rss=0.34GB]
+[expert prefill hit=0.0% 0/5771 io=1.009s | decode hit=0.0% 0/0 io=0.000s]
+[expert mmap layers=30 mapped=12.90GB sync=748(+5771/-4811) noop=0 residency=0.906s /tok=905.86ms]
+[decode/tok io=0.00ms cb1=0.00ms cb2=0.00ms head=0.00ms]

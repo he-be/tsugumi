@@ -15,12 +15,12 @@
 | **G0** 基準線 | M6 は何を返し、素の pp はいくつか | **済** (2026-09-23、[10](10-G0-BASELINE.md))。GPU 側の最大は routed MoE ではなく attention の束だった |
 | G1 tensor 経路を開ける | group 32 のモデルで MPP 経路が本当にディスパッチされるか | 経路は開いた ([16](16-G1-MPP-GROUP32.md))。greedy の不一致は記録したまま追わない ([17](17-NAX-NOT-USED.md)) |
 | G2 `matmul2d` の素の実効値 | 自前カーネルから tensor ops で何 TFLOP/s 出るか | **関門から外した** ([17 §3](17-NAX-NOT-USED.md))。単体の数字で線を閉じない |
-| G3 routed MoE GEMM の tensor 化 | 本番ループで GPU 時間と壁時計が縮むか | **次にやる** (条件なし) |
+| G3 routed MoE GEMM の tensor 化 | 本番ループで GPU 時間と壁時計が縮むか | **縮んだ** ([12](12-G3-MOE-MATMUL2D.md))。routed MoE 2.58 → 1.10 s、壁時計 9.01 → 7.38 s。greedy は G1 と同じ行で分かれ、既定は未変更 (`TF_PREFILL_MOE=mpp`) |
 | G4 attention / 射影の tensor 化 | 同上 | 未着手 (G3 の後) |
 | G5 チャンク境界の io 直列の解消 | io を GPU の陰に隠せるか | 未着手 (G0 の後、G1〜G4 と独立) |
 | G6 Qwen 経路への波及 | Qwen prefill は M6 で io と gpu のどちらが重いか | 未着手 (モデルを M6 へ運ぶところから) |
 
-**次の一手**: routed MoE の expert GEMM を `matmul2d` で書き直す (G3)。M6 は実効 2.3 TFLOP/s で NAX をほぼ使っていない ([17](17-NAX-NOT-USED.md))。その後は射影と shared → attention 本体。
+**次の一手**: 射影と shared を `matmul2d` で書き直す ([17 §3](17-NAX-NOT-USED.md) の 2)。G3 の後の GPU 合計 5.54 s のうち `attn` が 3.54 s ([12](12-G3-MOE-MATMUL2D.md))。その後は attention 本体。
 
 ## 読む順
 
