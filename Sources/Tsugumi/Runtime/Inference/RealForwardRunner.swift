@@ -278,6 +278,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private static let rdadviseAdaptiveByteCap: UInt64 = 384 * 1_048_576
     private static let rdadviseAdaptiveSlowCallNanos: UInt64 = 1_000_000
     private static let prefillRoutedTileSchedulerConfig = PrefillRoutedTileSchedulerConfig()
+    /// `TF_PREFILL_VERIFY_AHEAD=N`: at each layer's head, start hashing the
+    /// next N layer files off the streamer queue, so a layer's first expert
+    /// access finds its file verified (docs/m6-prefill/13-PROJ-SHARED-MATMUL2D.md
+    /// §2). Unset or 0 keeps the one-layer-at-a-time open.
+    private static let prefillVerifyAhead = max(0, Int(
+        ProcessInfo.processInfo.environment["TF_PREFILL_VERIFY_AHEAD"] ?? "") ?? 0)
     /// Narrowest chunk that still uses the tiled routed-MoE GEMM. 0 keeps the
     /// pre-M4 behavior (always tiled).
     private static let groupedGEMMMinChunkTokens = Int(
@@ -1570,6 +1576,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             if L > 0 { onLayerProgress(L, cfg.numLayers) }
             let frontStart = PrefillHostProfile.mark()
             model.beginOpeningRoutedExpertStreamer(layer: L)
+            if Self.prefillVerifyAhead > 0 {
+                for ahead in (L + 1)...(L + Self.prefillVerifyAhead) where ahead < cfg.numLayers {
+                    model.beginVerifyingRoutedExpertLayerAhead(layer: ahead)
+                }
+            }
             let views = layerViews[L]
             let isFull = cfg.fullAttentionLayerMask[L] != 0
             let headDim = isFull ? cfg.fullHeadDim : cfg.headDim

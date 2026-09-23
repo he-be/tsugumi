@@ -68,4 +68,51 @@ extension ModelLoaderTests {
       return false
     }
   }
+
+  /// A layer hashed ahead of its open (`beginVerifyingRoutedExpertLayerAhead`)
+  /// opens from the descriptor that was hashed: same bytes, one open.
+  @Test func verifiedAheadLayerOpensWithTheSameBytes() throws {
+    let dir = try Self.writeToySynthetic()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let device = try #require(MTLCreateSystemDefaultDevice())
+    let model = try Model.load(
+      directoryURL: dir, device: device,
+      expecting: .gemma4Toy())
+    model.beginVerifyingRoutedExpertLayerAhead(layer: 1)
+    // Asking twice is a no-op.
+    model.beginVerifyingRoutedExpertLayerAhead(layer: 1)
+    #expect(model.openLayerFileCount() == 0)
+    let view = try model.routedExpert(layer: 1, expert: 4)
+    #expect(model.openLayerFileCount() == 1)
+    let bytes = view.buffer.contents().advanced(by: Int(view.offset))
+    #expect(bytes.load(fromByteOffset: 0, as: UInt8.self) == 1)  // layer 1
+    #expect(bytes.load(fromByteOffset: 1, as: UInt8.self) == 4)  // expert 4
+    #expect(bytes.load(fromByteOffset: 2, as: UInt8.self) == 0xC1)
+    #expect(model.telemetry.snapshot().layerVerifiedBytes > 0)
+  }
+
+  /// A verify-ahead that fails leaves nothing behind: the open repeats the
+  /// check and throws the same error the plain open does.
+  @Test func tamperedLayerFileVerifiedAheadStillFails() throws {
+    let dir = try Self.writeToySynthetic()
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let device = try #require(MTLCreateSystemDefaultDevice())
+    let model = try Model.load(
+      directoryURL: dir, device: device,
+      expecting: .gemma4Toy())
+    let url = dir.appendingPathComponent("packed_experts/layer_01.bin")
+    var data = try Data(contentsOf: url)
+    data[100] ^= 0xFF
+    try data.write(to: url)
+
+    model.beginVerifyingRoutedExpertLayerAhead(layer: 1)
+    #expect {
+      _ = try model.routedExpert(layer: 1, expert: 0)
+    } throws: { error in
+      if case ModelError.checksumMismatch(let f) = error {
+        return f == "packed_experts/layer_01.bin"
+      }
+      return false
+    }
+  }
 }

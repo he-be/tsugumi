@@ -133,6 +133,26 @@ public struct Model {
         }
     }
 
+    /// Layer files verified ahead of their open, off `streamersQueue`
+    /// (`beginVerifyingRoutedExpertLayerAhead`). Each entry is the descriptor
+    /// that was hashed, so the open that takes it maps exactly the bytes that
+    /// were checked. Guarded by `lock`, never by `streamersQueue`: an open
+    /// waits for its entry while holding that queue.
+    final class VerifyAheadBox: @unchecked Sendable {
+        struct Entry {
+            let done = DispatchGroup()
+            /// Set before `done` leaves; -1 when the check failed, which sends
+            /// the open back to verifying the file itself.
+            var fileDescriptor: Int32 = -1
+            var verifyNanos: UInt64 = 0
+            var verifiedBytes: UInt64 = 0
+        }
+        let lock = NSLock()
+        var entries: [Int: Entry] = [:]
+    }
+    let verifyAheadBox: VerifyAheadBox
+    let verifyAheadQueue: DispatchQueue
+
     init(device: MTLDevice,
          config: ArchConfig,
          streamingMode: ExpertStreamingMode,
@@ -158,6 +178,8 @@ public struct Model {
         self.modelDirectory = modelDirectory
         self.streamersBox = StreamersBox(numLayers: packedExpertsLayout.numLayers)
         self.streamersQueue = DispatchQueue(label: "tsugumi.expert-streamers")
+        self.verifyAheadBox = VerifyAheadBox()
+        self.verifyAheadQueue = DispatchQueue(label: "tsugumi.expert-verify-ahead")
         self.visionBox = VisionWeightsBox()
         self.visionQueue = DispatchQueue(label: "tsugumi.vision-weights")
         self.draftBox = DraftWeightsBox()
@@ -402,6 +424,78 @@ public struct Model {
         }
     }
 
+    /// Hash layer L's file on a queue of its own, so the open that follows
+    /// finds it verified instead of hashing in front of every expert access on
+    /// `streamersQueue` (docs/m6-prefill/13-PROJ-SHARED-MATMUL2D.md §2).
+    /// Idempotent; a no-op once the layer is open, or when the policy does not
+    /// hash. The check is the one `openLayerLocked` does — size, then SHA-256
+    /// of the descriptor it will map — and a failure is not reported here: the
+    /// open finds no descriptor and repeats the check, throwing as it always
+    /// has.
+    public func beginVerifyingRoutedExpertLayerAhead(layer L: Int) {
+        guard case .fullSha256 = integrityPolicy,
+              L >= 0, L < packedExpertsLayout.numLayers else { return }
+        let box = verifyAheadBox
+        box.lock.lock()
+        if box.entries[L] != nil {
+            box.lock.unlock()
+            return
+        }
+        let entry = VerifyAheadBox.Entry()
+        entry.done.enter()
+        box.entries[L] = entry
+        box.lock.unlock()
+
+        nonisolated(unsafe) let model = self
+        verifyAheadQueue.async {
+            var fd: Int32 = -1
+            var nanos: UInt64 = 0
+            var bytes: UInt64 = 0
+            let manifestRel = "packed_experts/\(model.packedExpertsLayout.layers[L].file)"
+            if let manifestEntry = model.manifest.files[manifestRel],
+               let opened = try? model.modelDirectory.openFile(manifestRel) {
+                let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+                if let size = try? model.modelDirectory.fileSize(
+                        fileDescriptor: opened, relativePath: manifestRel),
+                   size == manifestEntry.size,
+                   (try? Sha256Verifier.verifyFile(fileDescriptor: opened,
+                                                   named: manifestRel,
+                                                   expectedHex: manifestEntry.sha256)) != nil {
+                    fd = opened
+                    nanos = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start
+                    bytes = size
+                } else {
+                    close(opened)
+                }
+            }
+            box.lock.lock()
+            box.entries[L]?.fileDescriptor = fd
+            box.entries[L]?.verifyNanos = nanos
+            box.entries[L]?.verifiedBytes = bytes
+            box.lock.unlock()
+            entry.done.leave()
+        }
+    }
+
+    /// The descriptor a verify-ahead left for layer L, after waiting for it
+    /// to finish; nil when none was started or it failed.
+    private func takeVerifiedAhead(_ L: Int) -> (fd: Int32, nanos: UInt64, bytes: UInt64)? {
+        let box = verifyAheadBox
+        box.lock.lock()
+        let pending = box.entries[L]
+        box.lock.unlock()
+        guard let pending else { return nil }
+        pending.done.wait()
+        box.lock.lock()
+        let finished = box.entries[L]
+        // Leave the entry in place with no descriptor, so a later call for an
+        // already-open layer stays a no-op.
+        box.entries[L]?.fileDescriptor = -1
+        box.lock.unlock()
+        guard let finished, finished.fileDescriptor >= 0 else { return nil }
+        return (finished.fileDescriptor, finished.verifyNanos, finished.verifiedBytes)
+    }
+
     private func openLayerLocked(_ L: Int) throws {
         if streamersBox.streamers[L] != nil {
             return
@@ -420,9 +514,13 @@ public struct Model {
             .appendingPathComponent("packed_experts")
             .appendingPathComponent(basename)
         let manifestRel = "packed_experts/\(basename)"
-        let layerFD = try modelDirectory.openFile(manifestRel)
+        let ahead = streamersBox.layerVerified[L] ? nil : takeVerifiedAhead(L)
+        let layerFD = try ahead?.fd ?? modelDirectory.openFile(manifestRel)
         defer { close(layerFD) }
-        if !streamersBox.layerVerified[L] {
+        if let ahead {
+            verifyNanos = ahead.nanos
+            verifiedBytes = ahead.bytes
+        } else if !streamersBox.layerVerified[L] {
             guard let entry = manifest.files[manifestRel] else {
                 throw ModelError.missingFile(name: manifestRel)
             }
