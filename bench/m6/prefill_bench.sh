@@ -13,6 +13,14 @@ label=${1:?label}; shift
 n=6
 if [ $# -ge 1 ] && [ "$1" != "--" ]; then n=$1; shift; fi
 [ $# -ge 1 ] && [ "$1" = "--" ] && shift
+# A ledger-* label is the production default and nothing else (docs/m6-prefill/06-LEDGER.md):
+# no TF_ variable, no extra argument. Other labels are candidates and may carry both.
+case "$label" in
+    ledger*)
+        if env | grep -q '^TF_' || [ $# -ge 1 ]; then
+            echo "label '$label' is a ledger row: unset every TF_ variable and pass no extra args"; exit 1
+        fi ;;
+esac
 tokens=${PROMPT_TOKENS:-2478}
 bin="$repo/.build/release/TsugumiCLI"
 model="${MODEL:-$repo/scratch/gemma4-qat-sym.gturbo}"

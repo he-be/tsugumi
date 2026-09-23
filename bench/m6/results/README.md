@@ -7,3 +7,5 @@
 - 中身: `hostinfo.txt` (commit 入り) / `command.txt` / `env.txt` / `run-N.log` / `run-N.pre.txt` / `summary.tsv` / `output.txt`。
 - `run-N.log` は削らない。結果文書は `summary.tsv` から中央値を引く。
 - 結果文書と同じ commit に入れる。
+- 進捗の台帳 (`docs/m6-prefill/06-LEDGER.md`) は `../ledger.sh` がここから生成する。既定行になるのは `env.txt` に `TF_` が無く、
+  `command.txt` が固定形のままのディレクトリだけ。ラベル `ledger-*` は `prefill_bench.sh` がそれを強制する。
