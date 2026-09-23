@@ -1994,6 +1994,215 @@ kernel void attention_prefill_causal_qblock_d512(
         Q, K, V, O, p, span_end, tg, lane, simd_group, simdgroups);
 }
 
+// Sliding-window attention on the simdgroup matrix units.
+//
+// The query-blocked kernel above does every multiply as a scalar FMA and a
+// `simd_sum` per (query, key), so at headDim 256 it runs far below what the
+// GPU's matrix units give a GEMM of the same size. This one is a flash
+// attention in 8x8 fragments: a threadgroup owns 32 queries of one head (four
+// simdgroups of 8 rows), holds them in threadgroup memory for the whole key
+// loop, and walks the window in tiles of `kSgmmKeys` keys. S = Q K^T and
+// O += P V are `simdgroup_multiply_accumulate`; the online softmax works on
+// the fragments' own elements.
+//
+// Fragment layout: lane `l` of an 8x8 fragment holds row `fm` and columns
+// `fn`, `fn + 1` (the mapping MLX's steel attention uses). The four lanes of
+// one row differ in lane bits 0 and 3, so a row reduction is two
+// `simd_shuffle_xor`s. Each lane keeps one row's running max and a partial
+// sum of that row; the sum is reduced once at the end.
+constant constexpr uint kSgmmQueries = 32u;
+constant constexpr uint kSgmmKeys = 16u;
+constant constexpr uint kSgmmHeadDim = 256u;
+constant constexpr uint kSgmmStride = kSgmmHeadDim + 8u;
+constant constexpr uint kSgmmThreads = 128u;
+
+[[kernel, max_total_threads_per_threadgroup(128)]]
+kernel void attention_prefill_causal_sgmm_d256(
+    device const half* Q [[buffer(0)]],
+    device const half* K [[buffer(1)]],
+    device const half* V [[buffer(2)]],
+    device half* O [[buffer(3)]],
+    constant PrefillAttentionParams& p [[buffer(4)]],
+    device const uint* span_end [[buffer(5)]],
+    uint3 tg [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]]
+) {
+    threadgroup half q_tile[kSgmmQueries * kSgmmStride];
+    threadgroup half kv_tile[kSgmmKeys * kSgmmStride];
+    threadgroup uint bounds[8];
+
+    const uint qh = tg.y;
+    const uint q_block = tg.x * kSgmmQueries;
+    const uint q_per_kv = p.numQHeads / p.numKVHeads;
+    const uint kv_head_offset = (qh / q_per_kv) * kSgmmHeadDim;
+
+    const uint qid = lane / 4u;
+    const uint fm = (qid & 4u) + ((lane / 2u) % 4u);
+    const uint fn = (qid & 2u) * 2u + (lane % 2u) * 2u;
+
+    const uint row = simd_group * 8u + fm;
+    const uint t = q_block + row;
+    const bool row_active = t < p.queryCount;
+    const uint abs_q = p.startPosition + t;
+    uint row_first = 0u;
+    if (p.slidingWindow != 0u && abs_q + 1u > p.slidingWindow) {
+        row_first = abs_q + 1u - p.slidingWindow;
+    }
+    const uint row_last = row_active
+        ? prefill_attention_visible_end(p, span_end, t, abs_q)
+        : 0u;
+
+    // Key range of this simdgroup's rows, then of the whole threadgroup: the
+    // tiles are loaded cooperatively, so every simdgroup walks the union and
+    // skips the math on tiles its own rows cannot see.
+    const uint sg_first = simd_min(row_active ? row_first : 0xFFFFFFFFu);
+    const uint sg_last = simd_max(row_last);
+    if (lane == 0u) {
+        bounds[simd_group] = sg_first;
+        bounds[4u + simd_group] = sg_last;
+    }
+
+    // Q: 32 rows x 256, loaded once. Rows past the chunk are zero.
+    for (uint i = 0u; i < (kSgmmQueries * kSgmmHeadDim / 4u) / kSgmmThreads; ++i) {
+        const uint idx = i * kSgmmThreads + tid;
+        const uint r = idx / (kSgmmHeadDim / 4u);
+        const uint c = (idx % (kSgmmHeadDim / 4u)) * 4u;
+        const uint qt = q_block + r;
+        half4 v = half4(0.0h);
+        if (qt < p.queryCount) {
+            v = half4(*(device const packed_half4*)(Q + qt * p.qTokenStrideElements
+                                                    + qh * kSgmmHeadDim + c));
+        }
+        *(threadgroup half4*)(q_tile + r * kSgmmStride + c) = v;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    const uint block_first = min(min(bounds[0], bounds[1]), min(bounds[2], bounds[3]));
+    const uint block_last = max(max(bounds[4], bounds[5]), max(bounds[6], bounds[7]));
+
+    simdgroup_float8x8 o_frag[kSgmmHeadDim / 8u];
+    for (uint i = 0u; i < kSgmmHeadDim / 8u; ++i) {
+        o_frag[i] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    }
+    float row_max = -INFINITY;
+    float row_sum = 0.0f;
+    threadgroup const half* q_sg = q_tile + simd_group * 8u * kSgmmStride;
+
+    for (uint k0 = block_first; k0 < block_last; k0 += kSgmmKeys) {
+        const bool sg_live = k0 < sg_last && k0 + kSgmmKeys > sg_first;
+
+        // K tile.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint i = 0u; i < (kSgmmKeys * kSgmmHeadDim / 4u) / kSgmmThreads; ++i) {
+            const uint idx = i * kSgmmThreads + tid;
+            const uint r = idx / (kSgmmHeadDim / 4u);
+            const uint c = (idx % (kSgmmHeadDim / 4u)) * 4u;
+            const uint key = k0 + r;
+            half4 v = half4(0.0h);
+            if (key < block_last) {
+                v = half4(*(device const packed_half4*)(K + prefill_kv_slot(key) * p.kvTokenStrideElements
+                                                        + kv_head_offset + c));
+            }
+            *(threadgroup half4*)(kv_tile + r * kSgmmStride + c) = v;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        simdgroup_half8x8 p_frag[kSgmmKeys / 8u];
+        float factor = 1.0f;
+        if (sg_live) {
+            simdgroup_float8x8 s_frag[kSgmmKeys / 8u];
+            for (uint n = 0u; n < kSgmmKeys / 8u; ++n) {
+                s_frag[n] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+            }
+            for (uint d = 0u; d < kSgmmHeadDim; d += 8u) {
+                simdgroup_half8x8 qf;
+                simdgroup_load(qf, q_sg + d, kSgmmStride);
+                for (uint n = 0u; n < kSgmmKeys / 8u; ++n) {
+                    simdgroup_half8x8 kf;
+                    simdgroup_load(kf, kv_tile + n * 8u * kSgmmStride + d, kSgmmStride,
+                                   ulong2(0, 0), true);
+                    simdgroup_multiply_accumulate(s_frag[n], qf, kf, s_frag[n]);
+                }
+            }
+
+            float sv[kSgmmKeys / 8u][2];
+            float tile_max = -INFINITY;
+            for (uint n = 0u; n < kSgmmKeys / 8u; ++n) {
+                for (uint e = 0u; e < 2u; ++e) {
+                    const uint key = k0 + n * 8u + fn + e;
+                    const bool valid = key >= row_first && key < row_last;
+                    const float s = s_frag[n].thread_elements()[e] * p.scale;
+                    sv[n][e] = valid ? s : -INFINITY;
+                    tile_max = max(tile_max, sv[n][e]);
+                }
+            }
+            tile_max = max(tile_max, simd_shuffle_xor(tile_max, 1u));
+            tile_max = max(tile_max, simd_shuffle_xor(tile_max, 8u));
+            const float new_max = max(row_max, tile_max);
+            float tile_sum = 0.0f;
+            if (new_max == -INFINITY) {
+                for (uint n = 0u; n < kSgmmKeys / 8u; ++n) {
+                    p_frag[n] = make_filled_simdgroup_matrix<half, 8, 8>(0.0h);
+                }
+            } else {
+                factor = row_max == -INFINITY ? 0.0f : fast::exp(row_max - new_max);
+                for (uint n = 0u; n < kSgmmKeys / 8u; ++n) {
+                    for (uint e = 0u; e < 2u; ++e) {
+                        const float pv = sv[n][e] == -INFINITY ? 0.0f : fast::exp(sv[n][e] - new_max);
+                        tile_sum += pv;
+                        p_frag[n].thread_elements()[e] = half(pv);
+                    }
+                }
+                row_max = new_max;
+            }
+            row_sum = row_sum * factor + tile_sum;
+        }
+
+        // V tile into the same buffer.
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint i = 0u; i < (kSgmmKeys * kSgmmHeadDim / 4u) / kSgmmThreads; ++i) {
+            const uint idx = i * kSgmmThreads + tid;
+            const uint r = idx / (kSgmmHeadDim / 4u);
+            const uint c = (idx % (kSgmmHeadDim / 4u)) * 4u;
+            const uint key = k0 + r;
+            half4 v = half4(0.0h);
+            if (key < block_last) {
+                v = half4(*(device const packed_half4*)(V + prefill_kv_slot(key) * p.kvTokenStrideElements
+                                                        + kv_head_offset + c));
+            }
+            *(threadgroup half4*)(kv_tile + r * kSgmmStride + c) = v;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (sg_live) {
+            for (uint i = 0u; i < kSgmmHeadDim / 8u; ++i) {
+                o_frag[i].thread_elements()[0] *= factor;
+                o_frag[i].thread_elements()[1] *= factor;
+            }
+            for (uint n = 0u; n < kSgmmKeys / 8u; ++n) {
+                for (uint i = 0u; i < kSgmmHeadDim / 8u; ++i) {
+                    simdgroup_half8x8 vf;
+                    simdgroup_load(vf, kv_tile + n * 8u * kSgmmStride + i * 8u, kSgmmStride);
+                    simdgroup_multiply_accumulate(o_frag[i], p_frag[n], vf, o_frag[i]);
+                }
+            }
+        }
+    }
+
+    row_sum += simd_shuffle_xor(row_sum, 1u);
+    row_sum += simd_shuffle_xor(row_sum, 8u);
+    if (row_active) {
+        const float inv = row_sum > 0.0f ? 1.0f / row_sum : 0.0f;
+        device half* out_row = O + t * p.oTokenStrideElements + qh * kSgmmHeadDim;
+        for (uint i = 0u; i < kSgmmHeadDim / 8u; ++i) {
+            out_row[i * 8u + fn] = half(o_frag[i].thread_elements()[0] * inv);
+            out_row[i * 8u + fn + 1u] = half(o_frag[i].thread_elements()[1] * inv);
+        }
+    }
+}
+
 #if defined(__HAVE_TENSOR__)
 
 constant constexpr int kPrefillTensorOpsOutputs = 8;

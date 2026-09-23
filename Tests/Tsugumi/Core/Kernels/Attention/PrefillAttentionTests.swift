@@ -149,6 +149,62 @@ import TsugumiValidationSupport
         try Self.runAndCompare(fixture, label: "qblock-chunk-\(chunk)")
     }
 
+    /// `.causalSimdgroupMatrix` dispatches `attention_prefill_causal_sgmm_d256`:
+    /// 32 queries a threadgroup, 8 a simdgroup, keys in tiles of 16. The chunk
+    /// sizes straddle the 8- and 32-row edges, and the two starts put the
+    /// window's lower edge inside the chunk and before the prefix's start.
+    @Test(arguments: [1, 7, 8, 9, 31, 32, 33, 67, 130])
+    func simdgroupMatrixSlidingWindowMatchesReference(_ chunk: Int) throws {
+        for start in [0, 1_021] {
+            let fixture = Self.makeFixture(start: start,
+                                           chunk: chunk,
+                                           window: 1_024,
+                                           seed: 0xA990 + UInt64(chunk),
+                                           headDim: 256,
+                                           qHeads: 16,
+                                           kvHeads: 8)
+            let actual = try Self.runKernel(fixture, path: .causalSimdgroupMatrix)
+            let reference = Self.reference(fixture)
+            let maxAbs = RelError.maxAbsDiff(actual, reference)
+            let rel = RelError.compute(actual: actual, reference: reference)
+            #expect(maxAbs <= 2e-2, "sgmm-start\(start)-chunk\(chunk) maxAbs=\(maxAbs) rel=\(rel)")
+            #expect(rel <= 2e-2, "sgmm-start\(start)-chunk\(chunk) rel=\(rel) maxAbs=\(maxAbs)")
+        }
+    }
+
+    @Test func simdgroupMatrixRingCapacityMatchesLinearReference() throws {
+        let fixture = Self.makeFixture(start: 300,
+                                       chunk: 36,
+                                       window: 128,
+                                       seed: 0xA9A0,
+                                       headDim: 256,
+                                       qHeads: 16,
+                                       kvHeads: 8)
+        let ringCapacity = 192
+        var kRing = [Float](repeating: 0, count: ringCapacity * fixture.kvStride)
+        var vRing = [Float](repeating: 0, count: ringCapacity * fixture.kvStride)
+        for p in 0..<fixture.kvValid {
+            let dst = (p % ringCapacity) * fixture.kvStride
+            let src = p * fixture.kvStride
+            kRing.replaceSubrange(dst..<(dst + fixture.kvStride),
+                                  with: fixture.k[src..<(src + fixture.kvStride)])
+            vRing.replaceSubrange(dst..<(dst + fixture.kvStride),
+                                  with: fixture.v[src..<(src + fixture.kvStride)])
+        }
+
+        var ringFixture = fixture
+        ringFixture.k = kRing
+        ringFixture.v = vRing
+        let actual = try Self.runKernel(ringFixture,
+                                        kvRingCapacity: UInt32(ringCapacity),
+                                        path: .causalSimdgroupMatrix)
+        let reference = Self.reference(fixture)
+        let maxAbs = RelError.maxAbsDiff(actual, reference)
+        let rel = RelError.compute(actual: actual, reference: reference)
+        #expect(maxAbs <= 2e-2, "sgmm ring maxAbs=\(maxAbs) rel=\(rel)")
+        #expect(rel <= 2e-2, "sgmm ring rel=\(rel) maxAbs=\(maxAbs)")
+    }
+
     /// headDim 512 dispatches `attention_prefill_causal_qblock_d512`, the full
     /// attention layers. One simdgroup carries two queries there and a
     /// threadgroup carries 16, and those layers see the whole prefix rather

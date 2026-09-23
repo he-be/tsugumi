@@ -64,6 +64,14 @@ final class PrefillAttention {
                                   queriesPerSimdgroup: 2),
     ]
 
+    /// `TF_PREFILL_ATTN=sgmm` sends the default path's headDim-256 dispatches
+    /// to the simdgroup-matrix kernel, so an A/B runs on one binary.
+    private static let forcedSimdgroupMatrix =
+        ProcessInfo.processInfo.environment["TF_PREFILL_ATTN"] == "sgmm"
+    private static let sgmmHeadDim: UInt32 = 256
+    private static let sgmmQueries = 32
+    private static let sgmmThreads = 128
+
     private let context: MetalContext
     private let psoCausalTiled: MTLComputePipelineState
     private let psoFullTensorOps2DValidityV2: MTLComputePipelineState?
@@ -90,6 +98,9 @@ final class PrefillAttention {
                              kvRingCapacity: UInt32 = 0,
                              path: RuntimePrefillAttentionPath = .causalTiled) {
         validate(params)
+        let path = path == .causalQBlock && Self.forcedSimdgroupMatrix
+            ? .causalSimdgroupMatrix
+            : path
         precondition((params.spanMaskEnabled != 0) == (spanEnd != nil),
                      "the span mask flag and the span-end buffer must agree")
 
@@ -111,7 +122,7 @@ final class PrefillAttention {
             && params.numKVHeads == 2
             && params.scale == 1.0
         let tensorOpsPipeline = tensorOpsShape ? psoFullTensorOps2DValidityV2 : nil
-        enum Variant { case tensorOps, qBlock, tiled }
+        enum Variant { case tensorOps, sgmm, qBlock, tiled }
         let variant: Variant
         let pipeline: MTLComputePipelineState
         var qBlock: QBlockSpecialisation?
@@ -121,6 +132,9 @@ final class PrefillAttention {
         } else if tensorOpsShape && path == .fullTensorOps2DValidityV2 {
             preconditionFailure(
                 "TensorOps 2D prefill attention requires Apple10 MPP tensor support")
+        } else if path == .causalSimdgroupMatrix && params.headDim == Self.sgmmHeadDim {
+            variant = .sgmm
+            pipeline = sgmmPipeline(kvRingCapacity: kvRingCapacity)
         } else if let specialisation = Self.qBlockSpecialisations[params.headDim] {
             // Both attention kinds: 256 is the sliding-window layers, 512 the
             // full ones.
@@ -138,6 +152,7 @@ final class PrefillAttention {
         let threadCount: Int
         switch variant {
         case .tensorOps: threadCount = 128
+        case .sgmm: threadCount = Self.sgmmThreads
         case .qBlock: threadCount = Self.qBlockThreads
         case .tiled: threadCount = roundUp(max(threadWidth, headDim), toMultipleOf: threadWidth)
         }
@@ -161,6 +176,11 @@ final class PrefillAttention {
             groups = MTLSize(width: Int(params.queryCount),
                              height: Int(params.numQHeads) / 8,
                              depth: 1)
+        case .sgmm:
+            groups = MTLSize(
+                width: (Int(params.queryCount) + Self.sgmmQueries - 1) / Self.sgmmQueries,
+                height: Int(params.numQHeads),
+                depth: 1)
         case .qBlock:
             // One simdgroup per `queriesPerSimdgroup` queries, and the kernel
             // derives the same figure from `simdgroups_per_threadgroup`.
@@ -211,6 +231,17 @@ final class PrefillAttention {
                 constants: [MetalFunctionConstant(index: 76, value: .uint32(kvRingCapacity))])
         } catch {
             preconditionFailure("failed to build FP16 KV ring prefill attention pipeline: \(error)")
+        }
+    }
+
+    private func sgmmPipeline(kvRingCapacity: UInt32) -> MTLComputePipelineState {
+        let constants = kvRingCapacity > 0
+            ? [MetalFunctionConstant(index: 76, value: .uint32(kvRingCapacity))]
+            : []
+        do {
+            return try context.pipeline("attention_prefill_causal_sgmm_d256", constants: constants)
+        } catch {
+            preconditionFailure("failed to build simdgroup-matrix prefill attention pipeline: \(error)")
         }
     }
 
