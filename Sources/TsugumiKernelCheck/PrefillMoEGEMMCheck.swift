@@ -284,9 +284,16 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
     cases.append(result(name + " mpp", groupSize: groupSize,
                         rel: relativeError(actual: mpp, reference: expected),
                         tolerance: Double(Tolerance.fp16ChainedReduction), detail: detail))
+    // How many outputs the reduction order actually moved, and by how much.
+    var differing = 0
+    var maxAbs: Float = 0
+    for (a, b) in zip(mpp, simdgroup) where a != b {
+        differing += 1
+        maxAbs = max(maxAbs, abs(a - b))
+    }
     cases.append(result(name + " mpp vs simdgroup", groupSize: groupSize,
                         rel: relativeError(actual: mpp, reference: simdgroup),
                         tolerance: Double(Tolerance.fp16ChainedReduction),
-                        detail: "same staged weights; reduction order only"))
+                        detail: "differing=\(differing)/\(mpp.count) maxAbs=\(maxAbs)"))
     return cases
 }
