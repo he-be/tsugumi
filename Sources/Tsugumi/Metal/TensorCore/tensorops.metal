@@ -70,11 +70,15 @@ kernel void mpp_prefill_affine_threadgroup_f16(
         accumulator[element] = 0.0f;
     }
 
+    // The tile walks K in fixed 64-element steps; the affine group may be 32
+    // or 64, so the scale/bias index comes from the global K position rather
+    // than the tile counter (a group-32 tile spans two scale/bias pairs).
     const uint rowBytes = K / 2u;
     const uint groupsPerRow = K / kW4A8GroupSize;
+    const uint tilesPerRow = K / uint(kMPPAffineTileK);
     const uint lid = lid3.x;
     const uint threads = threads3.x;
-    for (uint group = 0; group < groupsPerRow; ++group) {
+    for (uint kTile = 0; kTile < tilesPerRow; ++kTile) {
         for (int element = 0; element < groupProduct.get_capacity(); ++element) {
             groupProduct[element] = 0.0f;
         }
@@ -85,13 +89,14 @@ kernel void mpp_prefill_affine_threadgroup_f16(
             const uint localK = linear % uint(kMPPAffineTileK);
             const uint globalN = tgid.x * uint(kMPPAffineTileN) + localN;
             if (globalN < N) {
-                const uint globalK = group * uint(kMPPAffineTileK) + localK;
+                const uint globalK = kTile * uint(kMPPAffineTileK) + localK;
                 const uint8_t packed = packedWeights[globalN * rowBytes + (globalK >> 1)];
                 const uint q = (globalK & 1u) == 0u
                     ? uint(packed & 0x0fu)
                     : uint(packed >> 4);
-                const float scale = float(scales[globalN * groupsPerRow + group]);
-                const float bias = w4a8_int4_bias(biases, globalN * groupsPerRow + group, scale);
+                const uint group = globalN * groupsPerRow + globalK / kW4A8GroupSize;
+                const float scale = float(scales[group]);
+                const float bias = w4a8_int4_bias(biases, group, scale);
                 weightTile[linear] = half(fma(float(q), scale, bias));
             } else {
                 weightTile[linear] = half(0.0f);
@@ -100,7 +105,7 @@ kernel void mpp_prefill_affine_threadgroup_f16(
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
         device_half_tensor groupA(
-            activations + group * uint(kMPPAffineTileK),
+            activations + kTile * uint(kMPPAffineTileK),
             dextents<int32_t, 2>(kMPPAffineTileK, M),
             array<int32_t, 2>({1, int32_t(K)}));
         auto tileA = groupA.slice(

@@ -1,24 +1,40 @@
 import Foundation
 import Metal
 
-final class MPPPrefillInt4QMM {
-    enum Path: String, Sendable {
+package final class MPPPrefillInt4QMM {
+    package enum Path: String, Sendable {
         case affineThreadgroupF16 = "affine-threadgroup-f16"
         case unavailable
     }
 
     static let tileM = 64
     static let tileN = 32
-    /// The MPP tile walks K in fixed 64-element steps, so this path only
-    /// applies to group-64 models. A group-32 model has two scale/bias pairs
-    /// per tile and cannot be expressed by this kernel — the wrapper reports
-    /// `.unavailable` rather than silently reading the wrong scales.
+    /// The MPP tile walks K in fixed 64-element steps. The kernel indexes
+    /// scale/bias by the global K position, so any group that divides the tile
+    /// (32 or 64) is expressible; a group-32 tile spans two scale/bias pairs.
     static let tileK = 64
+
+    /// `TF_PREFILL_QMM` picks the Q/K/V/O projection path so an A/B runs on one
+    /// binary (docs/m6-prefill/04-GATES.md G1): `mpp` takes this kernel at
+    /// any supported group size, `simdgroup` never takes it. Unset (or any
+    /// other value) keeps the default, which is this kernel for group-64
+    /// models only — group 32 stays on the simdgroup path until its numbers
+    /// are in.
+    private static let forcedPath = ProcessInfo.processInfo.environment["TF_PREFILL_QMM"]
+
+    /// Whether the prefill runner should offer projections to this kernel.
+    package static func isSelected(affineGroupSize: Int) -> Bool {
+        switch forcedPath {
+        case "mpp": return true
+        case "simdgroup": return false
+        default: return affineGroupSize == tileK
+        }
+    }
 
     private var pipeline: MTLComputePipelineState?
 
-    init(context: MetalContext) {
-        guard context.affineGroupSize == Self.tileK else {
+    package init(context: MetalContext) {
+        guard Self.tileK.isMultiple(of: context.affineGroupSize) else {
             self.pipeline = nil
             return
         }
@@ -37,12 +53,12 @@ final class MPPPrefillInt4QMM {
         }
     }
 
-    var isAvailable: Bool {
+    package var isAvailable: Bool {
         pipeline != nil
     }
 
     @discardableResult
-    func encode(commandBuffer: MTLCommandBuffer,
+    package func encode(commandBuffer: MTLCommandBuffer,
                        weights: MTLBuffer, weightsOffset: Int = 0,
                        scales: MTLBuffer, scalesOffset: Int = 0,
                        biases: MTLBuffer, biasesOffset: Int = 0,

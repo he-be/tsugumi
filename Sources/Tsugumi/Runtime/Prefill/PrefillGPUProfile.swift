@@ -62,6 +62,9 @@ struct PrefillGPUProfile {
 
     private var seconds: [Stage: Double] = [:]
     private var detailSeconds: [Detail: Double] = [:]
+    /// Dispatches per "family:path", so a run's log says which kernel served
+    /// each projection family (docs/m6-prefill/04-GATES.md G1).
+    private var projectionDispatches: [String: Int] = [:]
 
     mutating func record(_ stage: Stage,
                          _ commandBuffer: MTLCommandBuffer,
@@ -73,10 +76,16 @@ struct PrefillGPUProfile {
         if Self.isDetailed, let detail { detailSeconds[detail, default: 0] += span }
     }
 
+    mutating func recordProjection(_ family: PrefillProjectionFamily, path: String) {
+        guard Self.isEnabled else { return }
+        projectionDispatches["\(family):\(path)", default: 0] += 1
+    }
+
     var totalSeconds: Double { seconds.values.reduce(0, +) }
 
-    /// One line, formatted like the other prefill footers, plus a second line
-    /// with the `.attention` split when detail mode is on. `label` names the
+    /// One line, formatted like the other prefill footers, plus a line of
+    /// projection dispatch counts when any were recorded and a line with the
+    /// `.attention` split when detail mode is on. `label` names the
     /// path, so plain decode can be accounted with the same buckets as a block
     /// and the two read side by side.
     func summary(label: String = "prefill gpu") -> String {
@@ -88,6 +97,13 @@ struct PrefillGPUProfile {
         }
         var line = "[" + label + " " + parts.joined(separator: " ")
             + String(format: " total=%.3fs]", total)
+        if !projectionDispatches.isEmpty {
+            line += "\n[" + label + " proj "
+                + projectionDispatches.sorted { $0.key < $1.key }
+                    .map { "\($0.key)=\($0.value)" }
+                    .joined(separator: " ")
+                + "]"
+        }
         guard Self.isDetailed, !detailSeconds.isEmpty else { return line }
         let attentionTotal = detailSeconds.values.reduce(0, +)
         let detailParts = Detail.allCases.compactMap { detail -> String? in
@@ -103,5 +119,6 @@ struct PrefillGPUProfile {
     mutating func reset() {
         seconds.removeAll(keepingCapacity: true)
         detailSeconds.removeAll(keepingCapacity: true)
+        projectionDispatches.removeAll(keepingCapacity: true)
     }
 }

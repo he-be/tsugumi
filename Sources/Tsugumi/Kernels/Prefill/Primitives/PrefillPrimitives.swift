@@ -91,7 +91,8 @@ package final class PrefillInt4QMM {
     /// two paths can be measured against each other without a rebuild. It is
     /// also the way back to FP32 weight arithmetic: the tiled path stages its
     /// dequantized weights as FP16, which costs one rounding per weight.
-    /// Anything else, including unset, takes the tiled path.
+    /// Anything else, including unset, takes the tiled path. `mpp` and
+    /// `simdgroup` also decide whether Q/K/V/O try `MPPPrefillInt4QMM` first.
     private static let forcedPath = ProcessInfo.processInfo.environment["TF_PREFILL_QMM"]
 
     private let affineGroupSize: Int

@@ -698,6 +698,83 @@ func checkPrefillInt4QMM(t: Int, n: Int, k: Int, groupSize: Int,
                    + "kTilesPerGroup=\(groupSize / 32)")
 }
 
+// MARK: - Case 11 — prefill INT4 QMM through MPP `matmul2d`
+
+/// The same product through `MPPPrefillInt4QMM`, the tensor-ops path the
+/// Q/K/V/O projections take on hardware that builds it
+/// (docs/m6-prefill/04-GATES.md G1). Its K tile is 64, so at group 32 each tile
+/// spans two scale/bias pairs — the index has to come from the global K
+/// position. The detection case at group 32 scores the output against the
+/// reference that indexes scales by the tile counter instead (the bug that
+/// kept this path group-64 only), and must fail it.
+///
+/// Returns no cases where the device cannot build the pipeline (no tensor
+/// support); the skip is printed so a run on tensor hardware that skips is
+/// visible rather than silently green.
+func checkMPPPrefillInt4QMM(t: Int, n: Int, k: Int, groupSize: Int,
+                            seed: UInt64) throws -> [CaseResult] {
+    let name = "mpp-qmm t=\(t) n=\(n) k=\(k)"
+    let context = try makeContext(groupSize: groupSize)
+    let kernel = MPPPrefillInt4QMM(context: context)
+    guard kernel.isAvailable else {
+        print("  SKIP  \(name) g=\(groupSize)  no MPP pipeline on this device")
+        return []
+    }
+    var rng = SeedTree(seed).key("mpp-qmm-t\(t)-n\(n)-k\(k)-g\(groupSize)")
+    let rows = quantizedRows(count: n, n: k, groupSize: groupSize, rng: &rng)
+    let (packed, scales, biases) = packRows(rows)
+    let xFp16 = (0..<(t * k)).map { _ in Float16(rng.uniform(-1.0, 1.0)) }
+
+    let sentinel = [Float16](repeating: Float16(-7.0), count: t * n)
+    guard let wBuf = context.device.makeBuffer(bytes: packed, length: packed.count,
+                                               options: .storageModeShared),
+          let sBuf = context.device.makeBuffer(
+            bytes: scales, length: scales.count * MemoryLayout<UInt16>.stride,
+            options: .storageModeShared),
+          let bBuf = context.device.makeBuffer(
+            bytes: biases, length: biases.count * MemoryLayout<UInt16>.stride,
+            options: .storageModeShared),
+          let xBuf = Fp16Buffer.make(context.device, halves: xFp16),
+          let yBuf = Fp16Buffer.make(context.device, halves: sentinel),
+          let cmd = context.queue.makeCommandBuffer() else {
+        fatalError("buffer allocation failed")
+    }
+    let path = kernel.encode(commandBuffer: cmd,
+                             weights: wBuf, scales: sBuf, biases: bBuf,
+                             x: xBuf, y: yBuf,
+                             m: t, n: n, k: k)
+    waitAndCheck(cmd, "\(name) g=\(groupSize)")
+    guard path == .affineThreadgroupF16 else {
+        fatalError("\(name) g=\(groupSize): ran the \(path.rawValue) path, "
+                   + "so the MPP kernel is untested")
+    }
+
+    let actual = Fp16Buffer.read(yBuf, count: t * n)
+    let xRef = xFp16.map { Float($0) }
+    func reference(groupSize referenceGroup: Int) -> [Float] {
+        var out = [Float](repeating: 0, count: t * n)
+        for row in 0..<t {
+            let y = DequantInt4GemvRef.apply(weightRows: rows,
+                                             x: Array(xRef[(row * k)..<((row + 1) * k)]),
+                                             n: k, groupSize: referenceGroup)
+            out.replaceSubrange((row * n)..<((row + 1) * n), with: y)
+        }
+        return out
+    }
+    var cases = [result(name, groupSize: groupSize,
+                        rel: relativeError(actual: actual,
+                                           reference: reference(groupSize: groupSize)),
+                        tolerance: Double(Tolerance.fp16Reduction),
+                        detail: "path=\(path.rawValue) kTile=64 groupsPerKTile=\(64 / groupSize)")]
+    if groupSize < 64 {
+        cases.append(detectionResult(
+            name + " vs tile-counter scales", groupSize: groupSize,
+            rel: relativeError(actual: actual, reference: reference(groupSize: 64)),
+            floor: 10 * Double(Tolerance.fp16Reduction)))
+    }
+    return cases
+}
+
 // MARK: - Vision tower
 
 // The tower's weights are BF16, so none of these kernels read a scale, a bias
@@ -2142,6 +2219,14 @@ for groupSize in groupSizes {
                                         groupSize: groupSize, seed: 0xF2))
     pass.append(try checkPrefillInt4QMM(t: 7, n: 64, k: 128,
                                         groupSize: groupSize, seed: 0xF3))
+    // The MPP path at the production Q (4096 x 2816) and O (2816 x 4096)
+    // shapes, then a token and row count that both fall mid-tile.
+    pass.append(contentsOf: try checkMPPPrefillInt4QMM(t: 64, n: 4096, k: 2816,
+                                                       groupSize: groupSize, seed: 0xF4))
+    pass.append(contentsOf: try checkMPPPrefillInt4QMM(t: 131, n: 2816, k: 4096,
+                                                       groupSize: groupSize, seed: 0xF5))
+    pass.append(contentsOf: try checkMPPPrefillInt4QMM(t: 37, n: 100, k: 128,
+                                                       groupSize: groupSize, seed: 0xF6))
 
     printCases(pass)
     results.append(contentsOf: pass)

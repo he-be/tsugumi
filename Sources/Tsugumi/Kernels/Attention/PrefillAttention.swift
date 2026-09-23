@@ -71,9 +71,12 @@ final class PrefillAttention {
     init(context: MetalContext) throws {
         self.context = context
         self.psoCausalTiled = try context.pipeline("attention_prefill_causal_tiled")
-        self.psoFullTensorOps2DValidityV2 = context.device.supportsFamily(.apple10)
-            ? try? context.pipeline("attention_prefill_full_tensorops_2d_validity_v2")
-            : nil
+        // Gated on the pipeline itself, not on a GPU family: the kernel only
+        // exists where the library was built with tensor support, and a family
+        // flag is today's answer rather than the next machine's
+        // (docs/m6-prefill/05-RISKS.md §7).
+        self.psoFullTensorOps2DValidityV2 =
+            try? context.pipeline("attention_prefill_full_tensorops_2d_validity_v2")
     }
 
     func encodeCausal(commandBuffer: MTLCommandBuffer,

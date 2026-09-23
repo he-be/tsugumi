@@ -433,7 +433,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         self.prefillEmbed = try PrefillEmbedLookupInt4(context: context)
         self.prefillRMS = try PrefillRMSNorm(context: context)
         self.prefillQMM = try PrefillInt4QMM(context: context)
-        self.prefillMPPAffineInt4 = MPPPrefillInt4QMM(context: context)
+        self.prefillMPPAffineInt4 = MPPPrefillInt4QMM.isSelected(
+            affineGroupSize: context.affineGroupSize) ? MPPPrefillInt4QMM(context: context) : nil
         self.prefillQKVEpilogue = try PrefillQKVEpilogue(context: context)
         self.prefillAttention = try PrefillAttention(context: context)
         self.prefillPostAttention = try PrefillPostAttentionSetup(context: context)
@@ -1322,6 +1323,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     n: rows,
                     k: columns)
                 if path == .affineThreadgroupF16 {
+                    prefillGPUProfile.recordProjection(family, path: "mpp")
                     return
                 }
             }
@@ -1329,18 +1331,19 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                 for: family,
                 chunkTokens: tokenCount,
                 tiledQMM: prefillQMM.usesSimdgroupPath(k: columns)) == .qmm {
-                prefillQMM.encode(commandBuffer: commandBuffer,
-                                  weights: weights.buffer,
-                                  weightsOffset: Int(weights.offset),
-                                  scales: weights.buffer,
-                                  scalesOffset: Int(weights.scaleOffset),
-                                  biases: weights.buffer,
-                                  biasesOffset: Int(weights.biasOffset),
-                                  x: x,
-                                  y: y,
-                                  t: tokenCount,
-                                  n: rows,
-                                  k: columns)
+                let path = prefillQMM.encode(commandBuffer: commandBuffer,
+                                             weights: weights.buffer,
+                                             weightsOffset: Int(weights.offset),
+                                             scales: weights.buffer,
+                                             scalesOffset: Int(weights.scaleOffset),
+                                             biases: weights.buffer,
+                                             biasesOffset: Int(weights.biasOffset),
+                                             x: x,
+                                             y: y,
+                                             t: tokenCount,
+                                             n: rows,
+                                             k: columns)
+                prefillGPUProfile.recordProjection(family, path: path.rawValue)
                 return
             }
             // A block narrow enough for the k-row GEMV reads the weights once
@@ -1363,8 +1366,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                         t: tokenCount,
                                         m: UInt32(rows),
                                         n: UInt32(columns))
+                prefillGPUProfile.recordProjection(family, path: "gemv-rows")
                 return
             }
+            prefillGPUProfile.recordProjection(family, path: "gemv")
             for row in 0..<tokenCount {
                 int4.encode(commandBuffer: commandBuffer,
                             weights: weights.buffer,
