@@ -179,7 +179,13 @@ public struct Model {
         self.streamersBox = StreamersBox(numLayers: packedExpertsLayout.numLayers)
         self.streamersQueue = DispatchQueue(label: "tsugumi.expert-streamers")
         self.verifyAheadBox = VerifyAheadBox()
-        self.verifyAheadQueue = DispatchQueue(label: "tsugumi.expert-verify-ahead")
+        // `TF_PREFILL_VERIFY_AHEAD_PARALLEL=1` hashes the layers asked for at
+        // once instead of one after another: one SHA-256 stream is a single
+        // core's worth of throughput (docs/m6-prefill/14-G5-VERIFY-AHEAD.md).
+        self.verifyAheadQueue = ProcessInfo.processInfo
+            .environment["TF_PREFILL_VERIFY_AHEAD_PARALLEL"] == "1"
+            ? DispatchQueue(label: "tsugumi.expert-verify-ahead", attributes: .concurrent)
+            : DispatchQueue(label: "tsugumi.expert-verify-ahead")
         self.visionBox = VisionWeightsBox()
         self.visionQueue = DispatchQueue(label: "tsugumi.vision-weights")
         self.draftBox = DraftWeightsBox()
