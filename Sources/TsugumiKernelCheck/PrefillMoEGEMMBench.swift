@@ -76,6 +76,9 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
     if let pf = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf") {
         kernels.append(("mpp-pf", pf, 2))
     }
+    if let db = try? context.pipeline("prefill_moe_gemm_int4_mpp_db") {
+        kernels.append(("mpp-db", db, 2))
+    }
     if let fused = try? context.pipeline("prefill_moe_gemm_int4_mpp_gateup") {
         kernels.append(("mpp-gateup-fused", fused, 1))
     }
