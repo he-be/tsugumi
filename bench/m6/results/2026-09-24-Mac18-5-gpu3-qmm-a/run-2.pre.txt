@@ -1,0 +1,37 @@
+09:54:49
+The system has 17179869184 (1048576 pages with a page size of 16384).
+System-wide memory free percentage: 54%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   106167.
+Pages active:                                 328488.
+Pages inactive:                               153440.
+Pages speculative:                                38.
+Pages throttled:                                   0.
+Pages wired down:                             413925.
+Pages purgeable:                                   2.
+"Translation faults":                       87115136.
+Pages copy-on-write:                        17525997.
+Pages zero filled:                          57699409.
+Pages reactivated:                           2199618.
+Pages purged:                                 314528.
+File-backed pages:                            457856.
+Anonymous pages:                               24110.
+Pages stored in compressor:                    32874.
+Pages occupied by compressor:                   9010.
+Decompressions:                              3279940.
+Compressions:                                4382299.
+Pageins:                                   126625048.
+Pageouts:                                       2787.
+Swapins:                                           0.
+Swapouts:                                          0.
+Pages tagged:                                  41158.
+Pages tagged resident:                         37142.
+Pages tagged compressed:                        4016.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1927.
+Pages tag-storage free:                        22853.
+Pages tag-storage non-tag pageable:             7888.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     642688.
+Tagged compressions:                           11609.
+Tagged decompressions:                          3617.
