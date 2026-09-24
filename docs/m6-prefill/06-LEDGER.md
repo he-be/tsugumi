@@ -24,8 +24,9 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 6f9ae16 | ledger-router-shared-late | 6 | 3.142 | 3.119 | 4.446 | 0 |
 | 2026-09-24 | bda6631 | ledger-swa-mpp-default | 6 | 3.496 | 3.442 | 4.764 | 0 |
 | 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 |
+| 2026-09-24 | 5769e1f | ledger-verify-ahead8 | 6 | 2.885 | 2.840 | 4.045 | 0 |
 
-**読み (2026-09-24)**: 最新の行は 6f9ae16 の 3.142 s で、前の行 (883df28) の 3.134 s より 0.008 s 長い (導出)。6f9ae16 で変えたのは prompt chunk の router を GEMM にしたことと、shared expert を front の後に投入する順序 ([33](33-ROUTER-GEMM-SHARED-LATE.md))。同じバイナリで既定と交互に取った壁時計では 3.185 → 3.150 s で縮んだが、同じ日の既定そのものが 3.134 → 3.185 s にずれていて、台帳の行は動いていない。883df28 で 3.496 → 3.134 s (差 −0.362 s、導出、[32](32-QMM-NAX-DEFAULT.md))。その前は cd8c26b で 4.584 → 3.496 s ([26](26-SWA-ATTN-MPP-DEFAULT.md))、5decec4 で 7.184 → 4.584 s ([23](23-GPU-CANDIDATES-DEFAULT.md))、79eea8f で 8.682 → 7.184 s ([20](20-VERIFY-AHEAD-ALONE.md))。基準線 (837586c) の 9.506 s から 22d7629 の 8.682 s までの −0.824 s は、どの commit で動いたか未確認。
+**読み (2026-09-24)**: 最新の行は 5769e1f の 2.885 s で、前の行 (6f9ae16) の 3.142 s より 0.257 s 短い (導出)。5769e1f で変えたのは層ファイルの検証の先回りの深さ 2 → 8 で、GPU の空きの大半が fetch ではなく層ファイルの SHA-256 待ちだった ([34](34-VERIFY-AHEAD-DEPTH.md))。その前の 6f9ae16 は 3.142 s で、前の行 (883df28) の 3.134 s より 0.008 s 長い (導出)。6f9ae16 で変えたのは prompt chunk の router を GEMM にしたことと、shared expert を front の後に投入する順序 ([33](33-ROUTER-GEMM-SHARED-LATE.md))。同じバイナリで既定と交互に取った壁時計では 3.185 → 3.150 s で縮んだが、同じ日の既定そのものが 3.134 → 3.185 s にずれていて、台帳の行は動いていない。883df28 で 3.496 → 3.134 s (差 −0.362 s、導出、[32](32-QMM-NAX-DEFAULT.md))。その前は cd8c26b で 4.584 → 3.496 s ([26](26-SWA-ATTN-MPP-DEFAULT.md))、5decec4 で 7.184 → 4.584 s ([23](23-GPU-CANDIDATES-DEFAULT.md))、79eea8f で 8.682 → 7.184 s ([20](20-VERIFY-AHEAD-ALONE.md))。基準線 (837586c) の 9.506 s から 22d7629 の 8.682 s までの −0.824 s は、どの commit で動いたか未確認。
 
 ## 2. 既定でない構成 (候補。進捗ではない)
 
@@ -94,6 +95,34 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 767d3a4 | c4-host-late | 3 | 3.182 | 3.177 | 3.276 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_SHARED_LATE=1 |
 | 2026-09-24 | 9c093e8 | c4-lategemm-a | 3 | 3.150 | 3.149 | 4.388 | 0 | TF_PREFILL_ROUTER=gemm TF_PREFILL_SHARED_LATE=1 |
 | 2026-09-24 | 20891b0 | c4-lategemm-b | 3 | 3.146 | 3.137 | 3.258 | 0 | TF_PREFILL_ROUTER=gemm TF_PREFILL_SHARED_LATE=1 |
+| 2026-09-24 | f0285fa | f1-host-advoff-a | 3 | 3.181 | 3.136 | 3.275 | 0 | TF_EXPERT_MMAP_ADVISE=0 TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-24 | f0285fa | f1-host-advoff-b | 3 | 3.203 | 3.190 | 4.422 | 0 | TF_EXPERT_MMAP_ADVISE=0 TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-24 | f0285fa | f1-host-default-a | 3 | 3.138 | 3.119 | 4.410 | 0 | TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-24 | f0285fa | f1-host-default-b | 3 | 3.169 | 3.168 | 4.479 | 0 | TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-24 | f0285fa | f1-host-resasync-a | 3 | 3.156 | 3.147 | 3.285 | 0 | TF_EXPERT_MMAP_RESIDENCY_ASYNC=1 TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-24 | f0285fa | f1-host-resasync-b | 3 | 3.144 | 3.118 | 3.269 | 0 | TF_EXPERT_MMAP_RESIDENCY_ASYNC=1 TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-24 | f0285fa | f1-host-resoff-a | 3 | 3.169 | 3.165 | 3.262 | 0 | TF_EXPERT_MMAP_RESIDENCY=0 TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-24 | f0285fa | f1-host-resoff-b | 3 | 3.146 | 3.114 | 4.456 | 0 | TF_EXPERT_MMAP_RESIDENCY=0 TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-24 | 973a9b1 | f2-idle-by-host | 3 | 3.140 | 3.135 | 4.394 | 0 | TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-24 | 973a9b1 | f2-idle-trusted | 0 | - | - | - | 3 | TF_PREFILL_HOST_PROFILE=1 追加引数: --verification trusted-install |
+| 2026-09-24 | e53f5c8 | f3-idle-open | 3 | 3.656 | 3.143 | 4.455 | 0 | TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-24 | e53f5c8 | f4-ahead30-a | 3 | 4.321 | 4.309 | 4.570 | 0 | TF_PREFILL_VERIFY_AHEAD=30 |
+| 2026-09-24 | e53f5c8 | f4-ahead30-b | 3 | 4.329 | 4.306 | 4.563 | 0 | TF_PREFILL_VERIFY_AHEAD=30 |
+| 2026-09-24 | e53f5c8 | f4-ahead4-a | 3 | 3.243 | 3.047 | 4.230 | 0 | TF_PREFILL_VERIFY_AHEAD=4 |
+| 2026-09-24 | e53f5c8 | f4-ahead4-b | 3 | 3.003 | 3.001 | 3.087 | 0 | TF_PREFILL_VERIFY_AHEAD=4 |
+| 2026-09-24 | e53f5c8 | f4-ahead8-a | 3 | 2.883 | 2.882 | 4.008 | 0 | TF_PREFILL_VERIFY_AHEAD=8 |
+| 2026-09-24 | e53f5c8 | f4-ahead8-b | 3 | 2.885 | 2.872 | 4.001 | 0 | TF_PREFILL_VERIFY_AHEAD=8 |
+| 2026-09-24 | e53f5c8 | f4-default-a | 3 | 3.161 | 3.129 | 4.436 | 0 | 既定 |
+| 2026-09-24 | e53f5c8 | f4-default-b | 3 | 3.157 | 3.126 | 4.385 | 0 | 既定 |
+| 2026-09-24 | e53f5c8 | f5-ahead12-a | 3 | 2.996 | 2.986 | 3.014 | 0 | TF_PREFILL_VERIFY_AHEAD=12 |
+| 2026-09-24 | e53f5c8 | f5-ahead12-b | 3 | 3.003 | 2.991 | 3.035 | 0 | TF_PREFILL_VERIFY_AHEAD=12 |
+| 2026-09-24 | e53f5c8 | f5-ahead6-a | 3 | 2.936 | 2.914 | 3.993 | 0 | TF_PREFILL_VERIFY_AHEAD=6 |
+| 2026-09-24 | e53f5c8 | f5-ahead6-b | 3 | 2.950 | 2.939 | 3.067 | 0 | TF_PREFILL_VERIFY_AHEAD=6 |
+| 2026-09-24 | e53f5c8 | f5-ahead8-a | 3 | 2.913 | 2.893 | 3.033 | 0 | TF_PREFILL_VERIFY_AHEAD=8 |
+| 2026-09-24 | e53f5c8 | f5-ahead8-b | 3 | 2.891 | 2.874 | 3.990 | 0 | TF_PREFILL_VERIFY_AHEAD=8 |
+| 2026-09-24 | e53f5c8 | f5-greedy-ahead8 | 1 | 4.081 | 4.081 | 4.081 | 0 | TF_PREFILL_VERIFY_AHEAD=8 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | e53f5c8 | f5-greedy-default | 1 | 4.400 | 4.400 | 4.400 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | e53f5c8 | f5-host-ahead8 | 3 | 2.894 | 2.882 | 3.030 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_VERIFY_AHEAD=8 |
 | 2026-09-24 | 7c7ad7b | g3-greedy-mpp | 2 | 7.596 | 7.552 | 7.641 | 0 | TF_PREFILL_MOE=mpp 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | 7c7ad7b | g3-greedy-simdgroup | 2 | 9.034 | 8.787 | 9.280 | 0 | TF_PREFILL_MOE=simdgroup 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | 7c7ad7b | g3-mpp-a | 3 | 7.345 | 7.317 | 7.360 | 0 | TF_PREFILL_MOE=mpp |
@@ -159,6 +188,7 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 6f9ae16 | ledger-router-shared-late | 6 | 3.142 | 3.119 | 4.446 | 0 | 既定 |
 | 2026-09-24 | bda6631 | ledger-swa-mpp-default | 6 | 3.496 | 3.442 | 4.764 | 0 | 既定 |
 | 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 | 既定 |
+| 2026-09-24 | 5769e1f | ledger-verify-ahead8 | 6 | 2.885 | 2.840 | 4.045 | 0 | 既定 |
 | 2026-09-24 | 29948fd | s2-greedy-mpp64 | 2 | 7.409 | 7.153 | 7.664 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | 29948fd | s2-host-mpp64 | 3 | 7.342 | 7.228 | 7.357 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
 | 2026-09-24 | 29948fd | s2-host-simdgroup | 3 | 7.298 | 7.101 | 7.319 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_MOE=mpp TF_PREFILL_QMM=simdgroup |
