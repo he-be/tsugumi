@@ -285,11 +285,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// overrides it, and 0 keeps the one-layer-at-a-time open.
     private static let prefillVerifyAhead = max(0, Int(
         ProcessInfo.processInfo.environment["TF_PREFILL_VERIFY_AHEAD"] ?? "") ?? 2)
-    /// `TF_PREFILL_ADVISE_LAYER=1`: once a prompt chunk's routing for a layer
-    /// is read, `F_RDADVISE` every routed expert of that layer at once rather
-    /// than one tile at a time (docs/m6-prefill/42). A candidate.
+    /// Once a prompt chunk's routing for a layer is read, `F_RDADVISE` every
+    /// routed expert of that layer at once rather than one tile at a time
+    /// (docs/m6-prefill/42). The bytes read stay the same; the requests go
+    /// out earlier. `TF_PREFILL_ADVISE_LAYER=0` keeps the per-tile advice only.
     private static let prefillAdviseLayer =
-        ProcessInfo.processInfo.environment["TF_PREFILL_ADVISE_LAYER"] == "1"
+        ProcessInfo.processInfo.environment["TF_PREFILL_ADVISE_LAYER"] != "0"
     private static let adviseLayerQueue = DispatchQueue(label: "tsugumi.prefill.advise-layer")
     /// Narrowest chunk that still uses the tiled routed-MoE GEMM. 0 keeps the
     /// pre-M4 behavior (always tiled).
@@ -2045,8 +2046,9 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                                                    topK: cfg.topKExperts)
                     // The layer's routed experts are known now: ask for all of
                     // them at once instead of one tile at a time, off this
-                    // thread (docs/m6-prefill/42). A candidate.
-                    if Self.prefillAdviseLayer {
+                    // thread (docs/m6-prefill/42). Prompt chunks only; a
+                    // speculative block's few experts keep the per-tile advice.
+                    if Self.prefillAdviseLayer && !speculativeBlock {
                         let requested = Array(Set(pairs.map { Int($0.expert) })).sorted()
                         nonisolated(unsafe) let model = self.model
                         Self.adviseLayerQueue.async {
