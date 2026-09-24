@@ -1,0 +1,11 @@
+[prefill shared qmm kernel=mpp-nax]
+[prefill moe tiled kernel=mpp]
+チャンク化した prefill（Chunked Prefill）が、Time to First Token (TTFT) の短縮とメモリ使用量の抑制を同時に実現できる理由は、以下の3つの要点に整理されます。
+
+### 1. KV キャッシュの逐次的な確保によるメモリピークの抑制
+従来の
+[stop=maxTokens prefill=2478tok new=64tok decode=1.91s tok/s=33.422]
+[load=0.530s layerVerify=0.000s/30layers prefill=2.811s ttft=2.811s peak=1.30GB rss=0.34GB]
+[expert prefill hit=0.0% 0/5765 io=1.339s | decode hit=82.9% 12533/15120 io=0.188s]
+[expert mmap layers=30 mapped=12.90GB sync=2006(+8352/-7392) noop=630 residency=1.306s /tok=20.40ms]
+[decode/tok io=2.99ms cb1=0.46ms cb2=0.27ms head=3.01ms]
