@@ -20,10 +20,11 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-23 | 837586c | g0-baseline | 6 | 9.506 | 9.188 | 9.597 | 0 |
 | 2026-09-24 | 5decec4 | ledger-gpu3-default | 6 | 4.584 | 4.545 | 6.110 | 0 |
 | 2026-09-24 | 22d7629 | ledger-head | 6 | 8.682 | 8.633 | 8.801 | 0 |
+| 2026-09-24 | 883df28 | ledger-qmm-nax-default | 6 | 3.134 | 3.116 | 4.397 | 0 |
 | 2026-09-24 | bda6631 | ledger-swa-mpp-default | 6 | 3.496 | 3.442 | 4.764 | 0 |
 | 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 |
 
-**読み (2026-09-24)**: 既定は cd8c26b で 4.584 → 3.496 s (差 −1.088 s、導出)。変えたのは sliding window の attention の `matmul2d` 版を既定にしたことだけ ([26](26-SWA-ATTN-MPP-DEFAULT.md))。その前は 5decec4 で 7.184 → 4.584 s (GPU 側の候補 3 つ、[23](23-GPU-CANDIDATES-DEFAULT.md))。その前は 79eea8f で 8.682 → 7.184 s (層ファイルの検証の並行先読み、[20](20-VERIFY-AHEAD-ALONE.md))。基準線 (837586c) の 9.506 s から 22d7629 の 8.682 s までの −0.824 s は、どの commit で動いたか未確認。
+**読み (2026-09-24)**: 既定は 883df28 で 3.496 → 3.134 s (差 −0.362 s、導出)。変えたのは射影と shared MLP の QMM を MLX から写した `nax` のカーネルにしたことだけ ([32](32-QMM-NAX-DEFAULT.md))。その前は cd8c26b で 4.584 → 3.496 s (sliding window の attention の `matmul2d` 版、[26](26-SWA-ATTN-MPP-DEFAULT.md))。その前は 5decec4 で 7.184 → 4.584 s (GPU 側の候補 3 つ、[23](23-GPU-CANDIDATES-DEFAULT.md))。その前は 79eea8f で 8.682 → 7.184 s (層ファイルの検証の並行先読み、[20](20-VERIFY-AHEAD-ALONE.md))。基準線 (837586c) の 9.506 s から 22d7629 の 8.682 s までの −0.824 s は、どの commit で動いたか未確認。
 
 ## 2. 既定でない構成 (候補。進捗ではない)
 
@@ -60,6 +61,14 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 7667010 | b2g-profile-detail-fused | 3 | 3.503 | 3.489 | 4.682 | 0 | TF_PREFILL_GPU_PROFILE=2 TF_PREFILL_MOE_GATEUP=fused |
 | 2026-09-24 | db19ce9 | b2g-profile-detail-pf | 3 | 3.338 | 3.334 | 4.832 | 0 | TF_PREFILL_GPU_PROFILE=2 TF_PREFILL_MOE_PF=1 |
 | 2026-09-24 | 22fcb46 | b2g-profile-detail-pf32 | 3 | 3.551 | 3.492 | 5.157 | 0 | TF_PREFILL_GPU_PROFILE=2 TF_PREFILL_MOE_PF=1 |
+| 2026-09-24 | 21c7b0e | b2q-default-a | 3 | 3.425 | 3.381 | 4.455 | 0 | 既定 |
+| 2026-09-24 | da5081c | b2q-default-b | 3 | 3.371 | 3.368 | 4.473 | 0 | 既定 |
+| 2026-09-24 | cf769bd | b2q-greedy-default | 1 | 4.463 | 4.463 | 4.463 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | cf769bd | b2q-greedy-nax | 1 | 3.186 | 3.186 | 3.186 | 0 | TF_PREFILL_QMM=nax 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | 21c7b0e | b2q-nax-a | 3 | 3.147 | 3.119 | 4.436 | 0 | TF_PREFILL_QMM=nax |
+| 2026-09-24 | da5081c | b2q-nax-b | 3 | 3.138 | 3.126 | 3.264 | 0 | TF_PREFILL_QMM=nax |
+| 2026-09-24 | 72e8108 | b2q-profile-nax | 3 | 5.385 | 5.375 | 5.630 | 0 | TF_PREFILL_GPU_PROFILE=1 TF_PREFILL_QMM=nax |
+| 2026-09-24 | 845da52 | b2q-profile-nax1 | 3 | 3.110 | 3.085 | 4.492 | 0 | TF_PREFILL_GPU_PROFILE=1 TF_PREFILL_QMM=nax |
 | 2026-09-24 | 3f042e7 | best4-a | 3 | 4.578 | 4.545 | 5.181 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
 | 2026-09-24 | 3f042e7 | best4-b | 3 | 4.551 | 4.473 | 4.582 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
 | 2026-09-24 | 3f042e7 | best4-sgmm-a | 3 | 4.629 | 4.227 | 5.203 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
@@ -125,6 +134,7 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 22d7629 | h0-profile-detail | 3 | 8.754 | 8.646 | 8.842 | 0 | TF_PREFILL_GPU_PROFILE=2 |
 | 2026-09-24 | 5decec4 | ledger-gpu3-default | 6 | 4.584 | 4.545 | 6.110 | 0 | 既定 |
 | 2026-09-24 | 22d7629 | ledger-head | 6 | 8.682 | 8.633 | 8.801 | 0 | 既定 |
+| 2026-09-24 | 883df28 | ledger-qmm-nax-default | 6 | 3.134 | 3.116 | 4.397 | 0 | 既定 |
 | 2026-09-24 | bda6631 | ledger-swa-mpp-default | 6 | 3.496 | 3.442 | 4.764 | 0 | 既定 |
 | 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 | 既定 |
 | 2026-09-24 | 29948fd | s2-greedy-mpp64 | 2 | 7.409 | 7.153 | 7.664 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 追加引数: --max-new 64 --temperature 0 |
