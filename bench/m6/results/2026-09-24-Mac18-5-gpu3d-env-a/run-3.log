@@ -1,0 +1,8 @@
+[prefill shared qmm kernel=mpp-tile64]
+[prefill moe tiled kernel=mpp]
+ご
+[stop=maxTokens prefill=2478tok new=1tok decode=0.00s tok/s=1063.869]
+[load=0.541s layerVerify=6.445s/30layers prefill=4.707s ttft=4.708s peak=1.44GB rss=0.34GB]
+[expert prefill hit=0.0% 0/5759 io=1.091s | decode hit=0.0% 0/0 io=0.000s]
+[expert mmap layers=30 mapped=12.90GB sync=745(+5759/-4799) noop=0 residency=0.940s /tok=939.68ms]
+[decode/tok io=0.00ms cb1=0.00ms cb2=0.00ms head=0.00ms]

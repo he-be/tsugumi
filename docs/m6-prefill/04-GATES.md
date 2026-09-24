@@ -69,13 +69,13 @@ B1 の順に 1 段ずつ直す。1 段ごとに次を満たして閉じる。
 
 ## B3. 候補を既定に入れる
 
-10〜14 で足した口は、どれも既定になっていない。既定に入るまで台帳 ([06 §1](06-LEDGER.md)) は動かない。
+10〜19 で足した口は、すべて既定に入った (79eea8f、5decec4)。台帳 ([06 §1](06-LEDGER.md)) の最新行は `ledger-gpu3-default` 4.584 s。
 
 | 候補 | 結果文書 | 候補の (c)、秒 (台帳 §2) | 既定にするときの問い |
 | --- | --- | --- | --- |
-| `TF_PREFILL_MOE=mpp` | [12](12-G3-MOE-MATMUL2D.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md) | 新しい既定の上で単独 5.692 (3075b56) | greedy が 3 行目で分かれる。候補のどれでも同じ分岐 ([22](22-GPU-CANDIDATES-GREEDY-AND-FIRST-RUN.md))。受け入れるか |
-| `TF_PREFILL_QMM=mpp64` | [13](13-PROJ-SHARED-MATMUL2D.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md) | 新しい既定の上で単独 6.102、mpp と併用 4.636 (3075b56) | 新しい既定の上では単独でも縮む。mpp と併用すると、空きのある 1 本目が遅い ([22](22-GPU-CANDIDATES-GREEDY-AND-FIRST-RUN.md)) |
-| `TF_PREFILL_ATTN=sgmm` | [19](19-SWA-ATTN-SGMM-GQA.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md) | 新しい既定の上で単独 6.776、3 つ全部 4.167 (3075b56) | peak_gb +0.22 GB を受け入れるか |
+| ~~`TF_PREFILL_MOE=mpp`~~ | [12](12-G3-MOE-MATMUL2D.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md)、[22](22-GPU-CANDIDATES-GREEDY-AND-FIRST-RUN.md) | 新しい既定の上で単独 5.692 (3075b56) | **既定に入れた** (5decec4、[23](23-GPU-CANDIDATES-DEFAULT.md))。戻すのは `TF_PREFILL_MOE=simdgroup` |
+| ~~`TF_PREFILL_QMM=mpp64`~~ | [13](13-PROJ-SHARED-MATMUL2D.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md) | 新しい既定の上で単独 6.102、mpp と併用 4.636 (3075b56) | **既定に入れた** (5decec4、[23](23-GPU-CANDIDATES-DEFAULT.md))。戻すのは `TF_PREFILL_QMM=simdgroup` |
+| ~~`TF_PREFILL_ATTN=sgmm`~~ | [19](19-SWA-ATTN-SGMM-GQA.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md) | 新しい既定の上で単独 6.776、3 つ全部 4.167 (3075b56) | **既定に入れた** (5decec4、[23](23-GPU-CANDIDATES-DEFAULT.md))。戻すのは `TF_PREFILL_ATTN=qblock`。peak_gb +0.22 GB |
 | ~~`TF_PREFILL_VERIFY_AHEAD=2` + `_PARALLEL=1`~~ | [14](14-G5-VERIFY-AHEAD.md)、[20](20-VERIFY-AHEAD-ALONE.md) | 単独で 7.229 (f603ade) | **既定に入れた** (79eea8f、`ledger-verify-ahead` 7.184 s)。Swapouts 0、decode と greedy は同じ |
 
 **手順**: ユーザーが既定に入れると決めた候補ごとに、既定を変えた commit で `ledger-<候補名>` を n = 6 で取る。

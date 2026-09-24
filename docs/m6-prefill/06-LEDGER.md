@@ -20,8 +20,9 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-23 | 837586c | g0-baseline | 6 | 9.506 | 9.188 | 9.597 | 0 |
 | 2026-09-24 | 22d7629 | ledger-head | 6 | 8.682 | 8.633 | 8.801 | 0 |
 | 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 |
+| 2026-09-24 | 5decec4 | ledger-gpu3-default | 6 | 4.584 | 4.545 | 6.110 | 0 |
 
-**読み (2026-09-24)**: 既定は 79eea8f で 8.682 → 7.184 s (差 −1.498 s、導出)。変えたのは層ファイルの検証の並行先読み (深さ 2) を既定にしたことだけ ([20](20-VERIFY-AHEAD-ALONE.md))。基準線 (837586c) の 9.506 s から 22d7629 の 8.682 s までの −0.824 s は、どの commit で動いたか未確認。
+**読み (2026-09-24)**: 既定は 5decec4 で 7.184 → 4.584 s (差 −2.600 s、導出)。変えたのは GPU 側の候補 3 つ (`mpp` / `mpp64` / `sgmm`) を既定にしたことだけ ([23](23-GPU-CANDIDATES-DEFAULT.md))。その前は 79eea8f で 8.682 → 7.184 s (層ファイルの検証の並行先読み、[20](20-VERIFY-AHEAD-ALONE.md))。基準線 (837586c) の 9.506 s から 22d7629 の 8.682 s までの −0.824 s は、どの commit で動いたか未確認。
 
 ## 2. 既定でない構成 (候補。進捗ではない)
 
@@ -77,6 +78,11 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 3075b56 | gpu3-moeqmm-b | 3 | 4.688 | 4.584 | 5.297 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
 | 2026-09-24 | 3075b56 | gpu3-qmm-a | 3 | 6.140 | 6.020 | 6.174 | 0 | TF_PREFILL_QMM=mpp64 |
 | 2026-09-24 | 3075b56 | gpu3-qmm-b | 3 | 6.064 | 5.945 | 6.145 | 0 | TF_PREFILL_QMM=mpp64 |
+| 2026-09-24 | 585817a | gpu3d-def-a | 3 | 4.580 | 4.529 | 5.549 | 0 | 既定 |
+| 2026-09-24 | 585817a | gpu3d-def-b | 3 | 4.527 | 4.516 | 5.771 | 0 | 既定 |
+| 2026-09-24 | 585817a | gpu3d-env-a | 3 | 4.732 | 4.707 | 5.703 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
+| 2026-09-24 | 585817a | gpu3d-env-b | 3 | 4.600 | 4.556 | 5.757 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
+| 2026-09-24 | 5decec4 | gpu3d-greedy | 2 | 4.737 | 4.723 | 4.752 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | ae4cf42 | gpu3g-all3 | 2 | 4.307 | 4.275 | 4.339 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | ae4cf42 | gpu3g-attn | 2 | 6.793 | 6.711 | 6.874 | 0 | TF_PREFILL_ATTN=sgmm 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | 60c3d33 | gpu3g-base | 2 | 7.290 | 7.186 | 7.394 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
@@ -93,6 +99,7 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | ae4cf42 | gpu3r-gap60-102427 | 1 | 5.008 | 5.008 | 5.008 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
 | 2026-09-24 | ae4cf42 | gpu3r-moeqmm-a | 6 | 4.588 | 4.466 | 5.307 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
 | 2026-09-24 | 22d7629 | h0-profile-detail | 3 | 8.754 | 8.646 | 8.842 | 0 | TF_PREFILL_GPU_PROFILE=2 |
+| 2026-09-24 | 5decec4 | ledger-gpu3-default | 6 | 4.584 | 4.545 | 6.110 | 0 | 既定 |
 | 2026-09-24 | 22d7629 | ledger-head | 6 | 8.682 | 8.633 | 8.801 | 0 | 既定 |
 | 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 | 既定 |
 | 2026-09-24 | 29948fd | s2-greedy-mpp64 | 2 | 7.409 | 7.153 | 7.664 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 追加引数: --max-new 64 --temperature 0 |
