@@ -705,6 +705,94 @@ kernel void prefill_router_gemma4_bf16_block(
     }
 }
 
+// The same router as a GEMM (docs/m6-prefill/33): the row kernel above reads
+// the whole 720 KB weight once per token. Here a threadgroup takes 32 tokens
+// against every expert, so each weight tile is read once per 32 tokens, and
+// the dot products run on float simdgroup matrices. Operands are the row
+// kernel's exact floats (bf16 weight, half activation times the bf16 gain);
+// only the order of the sum differs. The top-k and softmax are the row
+// kernel's, one lane per token over the tile's scores.
+constant constexpr uint kRouterGemmRows = 32;
+constant constexpr uint kRouterGemmExperts = 128;
+constant constexpr uint kRouterGemmK = 32;
+
+kernel void prefill_router_gemma4_bf16_gemm(
+    device const bfloat*  W                [[buffer(0)]],
+    device const half*    hidden           [[buffer(1)]],
+    device const bfloat*  effective_scale  [[buffer(2)]],
+    device const bfloat*  per_expert_scale [[buffer(3)]],
+    device uint*          out_indices      [[buffer(4)]],
+    device half*          out_weights      [[buffer(5)]],
+    constant uint&        T                [[buffer(6)]],
+    constant uint&        num_experts      [[buffer(7)]],
+    constant uint&        D                [[buffer(8)]],
+    constant uint&        top_k            [[buffer(9)]],
+    constant uint&        hidden_stride    [[buffer(10)]],
+    uint                  tg               [[threadgroup_position_in_grid]],
+    uint                  tid              [[thread_index_in_threadgroup]],
+    uint                  sg               [[simdgroup_index_in_threadgroup]]
+) {
+    // x tile [32][32] then w tile [128][32]; the scores [32][128] reuse it.
+    threadgroup float tile[kRouterGemmRows * kRouterGemmK + kRouterGemmExperts * kRouterGemmK];
+    threadgroup float* xs = tile;
+    threadgroup float* ws = tile + kRouterGemmRows * kRouterGemmK;
+
+    const uint row0 = tg * kRouterGemmRows;
+    const uint NE = min(num_experts, kRouterGemmExperts);
+    const uint KK = min(top_k, kPrefillRouterMaxTopK);
+
+    simdgroup_float8x8 acc[4][4];
+    for (uint i = 0; i < 4; ++i)
+        for (uint j = 0; j < 4; ++j)
+            acc[i][j] = simdgroup_float8x8(0.0f);
+
+    for (uint k0 = 0; k0 < D; k0 += kRouterGemmK) {
+        // 128 threads: x is 1024 floats (8 each), w is 4096 (32 each).
+        for (uint i = tid; i < kRouterGemmRows * kRouterGemmK; i += 128) {
+            const uint r = i / kRouterGemmK;
+            const uint k = i % kRouterGemmK;
+            const uint row = row0 + r;
+            xs[i] = row < T
+                ? float(hidden[row * hidden_stride + k0 + k]) * float(effective_scale[k0 + k])
+                : 0.0f;
+        }
+        for (uint i = tid; i < kRouterGemmExperts * kRouterGemmK; i += 128) {
+            const uint e = i / kRouterGemmK;
+            const uint k = i % kRouterGemmK;
+            ws[i] = e < NE ? float(W[e * D + k0 + k]) : 0.0f;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        // Simdgroup sg owns experts [32 sg, 32 sg + 32) for all 32 rows.
+        for (uint kk = 0; kk < kRouterGemmK; kk += 8) {
+            simdgroup_float8x8 a[4];
+            simdgroup_float8x8 b[4];
+            for (uint i = 0; i < 4; ++i)
+                simdgroup_load(a[i], xs + (i * 8) * kRouterGemmK + kk, kRouterGemmK);
+            for (uint j = 0; j < 4; ++j)
+                simdgroup_load(b[j], ws + (sg * 32 + j * 8) * kRouterGemmK + kk,
+                               kRouterGemmK, ulong2(0, 0), true);
+            for (uint i = 0; i < 4; ++i)
+                for (uint j = 0; j < 4; ++j)
+                    simdgroup_multiply_accumulate(acc[i][j], a[i], b[j], acc[i][j]);
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    threadgroup float* scores = tile;
+    for (uint i = 0; i < 4; ++i)
+        for (uint j = 0; j < 4; ++j)
+            simdgroup_store(acc[i][j],
+                            scores + (i * 8) * kRouterGemmExperts + sg * 32 + j * 8,
+                            kRouterGemmExperts);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid < kRouterGemmRows && row0 + tid < T) {
+        prefill_router_emit_topk(scores + tid * kRouterGemmExperts, per_expert_scale,
+                                 out_indices, out_weights, NE, KK, row0 + tid, top_k);
+    }
+}
+
 kernel void prefill_moe_reduce_token_major(
     device const half* route_partials [[buffer(0)]],
     device const half* route_weights  [[buffer(1)]],

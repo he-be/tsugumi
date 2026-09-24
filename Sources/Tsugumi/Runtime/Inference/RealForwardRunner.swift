@@ -1857,6 +1857,23 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         d: UInt32(D),
                         topK: UInt32(cfg.topKExperts))
                 }
+            } else if prefillRouter.routerWeightBits == 16, PrefillRouter.gemmRequested,
+                      prefillRouter.supportsGEMM(numExperts: cfg.numExperts, d: D) {
+                prefillRouter.encodeGemma4BF16GEMM(
+                        commandBuffer: cb,
+                        weights: views.router.buffer,
+                        weightsOffset: Int(views.router.offset),
+                        hidden: scratch.routerX,
+                        effectiveScale: effectiveScaleBuffers[L],
+                        perExpertScale: views.routerPerExpertScale.buffer,
+                        perExpertScaleOffset: Int(views.routerPerExpertScale.offset),
+                        outIndices: scratch.routeIDs,
+                        outWeights: scratch.routeWeights,
+                        queryCount: UInt32(t),
+                        numExperts: UInt32(cfg.numExperts),
+                        d: UInt32(D),
+                        topK: UInt32(cfg.topKExperts),
+                        hiddenStrideElements: UInt32(D))
             } else if prefillRouter.routerWeightBits == 16 {
                 prefillRouter.encodeGemma4BF16Block(
                         commandBuffer: cb,

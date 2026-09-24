@@ -27,20 +27,32 @@ public struct PrefillTokenExpertPair: Equatable, Sendable {
     }
 }
 
-final class PrefillRouter {
+package final class PrefillRouter {
     private let pso: MTLComputePipelineState
+    /// The BF16 router as a 32-token GEMM with the top-k fused
+    /// (docs/m6-prefill/33). Built for 16-bit routers only.
+    private let gemmPSO: MTLComputePipelineState?
+
+    /// `TF_PREFILL_ROUTER=gemm` routes the prompt-chunk BF16 router through
+    /// `encodeGemma4BF16GEMM`; unset keeps the row-per-threadgroup kernel.
+    package static let gemmRequested =
+        ProcessInfo.processInfo.environment["TF_PREFILL_ROUTER"] == "gemm"
 
     private let affineGroupSize: Int
     /// 8 for affine INT8 router weights, 16 for BF16. Only the matching kernel
     /// is compiled.
     let routerWeightBits: Int
 
-    init(context: MetalContext, routerWeightBits: Int = 8) throws {
+    package init(context: MetalContext, routerWeightBits: Int = 8) throws {
         self.affineGroupSize = context.affineGroupSize
         self.routerWeightBits = routerWeightBits
         switch routerWeightBits {
-        case 8:  self.pso = try context.pipeline("prefill_router_gemma4_block")
-        case 16: self.pso = try context.pipeline("prefill_router_gemma4_bf16_block")
+        case 8:
+            self.pso = try context.pipeline("prefill_router_gemma4_block")
+            self.gemmPSO = nil
+        case 16:
+            self.pso = try context.pipeline("prefill_router_gemma4_bf16_block")
+            self.gemmPSO = try context.pipeline("prefill_router_gemma4_bf16_gemm")
         default: throw RouterError.unsupportedWeightBits(routerWeightBits)
         }
     }
@@ -103,7 +115,7 @@ final class PrefillRouter {
 
     /// BF16 (unquantized) router weights. Same contract as `encodeGemma4Block`
     /// minus the scale/bias buffers.
-    func encodeGemma4BF16Block(commandBuffer: MTLCommandBuffer,
+    package func encodeGemma4BF16Block(commandBuffer: MTLCommandBuffer,
                                weights: MTLBuffer,
                                weightsOffset: Int = 0,
                                hidden: MTLBuffer,
@@ -148,6 +160,65 @@ final class PrefillRouter {
         let tgWidth = min(max(Int(numExperts), 32), pso.maxTotalThreadsPerThreadgroup)
         enc.dispatchThreadgroups(MTLSize(width: Int(queryCount), height: 1, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: tgWidth, height: 1, depth: 1))
+        enc.endEncoding()
+    }
+
+    /// Whether `encodeGemma4BF16GEMM` takes this shape: a BF16 router, at
+    /// most 128 experts, and D in whole 32-element steps.
+    package func supportsGEMM(numExperts: Int, d: Int) -> Bool {
+        gemmPSO != nil && numExperts <= 128 && d % 32 == 0
+    }
+
+    /// Same contract and outputs as `encodeGemma4BF16Block`; the logits sum in
+    /// a different order, so a near-tie between two experts can resolve the
+    /// other way.
+    package func encodeGemma4BF16GEMM(commandBuffer: MTLCommandBuffer,
+                              weights: MTLBuffer,
+                              weightsOffset: Int = 0,
+                              hidden: MTLBuffer,
+                              hiddenOffset: Int = 0,
+                              effectiveScale: MTLBuffer,
+                              effectiveScaleOffset: Int = 0,
+                              perExpertScale: MTLBuffer,
+                              perExpertScaleOffset: Int = 0,
+                              outIndices: MTLBuffer,
+                              outIndicesOffset: Int = 0,
+                              outWeights: MTLBuffer,
+                              outWeightsOffset: Int = 0,
+                              queryCount: UInt32,
+                              numExperts: UInt32,
+                              d: UInt32,
+                              topK: UInt32,
+                              hiddenStrideElements: UInt32) {
+        guard let gemmPSO else {
+            preconditionFailure("BF16 router GEMM on a \(routerWeightBits)-bit router")
+        }
+        precondition(queryCount > 0, "queryCount must be positive")
+        precondition(supportsGEMM(numExperts: Int(numExperts), d: Int(d)),
+                     "router GEMM needs <= 128 experts and D % 32 == 0")
+        precondition(topK > 0 && topK <= 64, "topK must be in 1...64")
+        precondition(hiddenStrideElements >= d, "hidden stride is too small")
+        guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
+        enc.setComputePipelineState(gemmPSO)
+        enc.setBuffer(weights, offset: weightsOffset, index: 0)
+        enc.setBuffer(hidden, offset: hiddenOffset, index: 1)
+        enc.setBuffer(effectiveScale, offset: effectiveScaleOffset, index: 2)
+        enc.setBuffer(perExpertScale, offset: perExpertScaleOffset, index: 3)
+        enc.setBuffer(outIndices, offset: outIndicesOffset, index: 4)
+        enc.setBuffer(outWeights, offset: outWeightsOffset, index: 5)
+        var tVar = queryCount
+        var neVar = numExperts
+        var dVar = d
+        var topKVar = topK
+        var strideVar = hiddenStrideElements
+        enc.setBytes(&tVar, length: MemoryLayout<UInt32>.size, index: 6)
+        enc.setBytes(&neVar, length: MemoryLayout<UInt32>.size, index: 7)
+        enc.setBytes(&dVar, length: MemoryLayout<UInt32>.size, index: 8)
+        enc.setBytes(&topKVar, length: MemoryLayout<UInt32>.size, index: 9)
+        enc.setBytes(&strideVar, length: MemoryLayout<UInt32>.size, index: 10)
+        let groups = (Int(queryCount) + 31) / 32
+        enc.dispatchThreadgroups(MTLSize(width: groups, height: 1, depth: 1),
+                                 threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
         enc.endEncoding()
     }
 

@@ -516,6 +516,93 @@ func checkRouter(weightBits: Int, d: Int, numExperts: Int, draws: Int,
                       + (weightBits == 16 ? "" : ", groups=\(d / groupSize)"))
 }
 
+/// The prompt-chunk BF16 router, row kernel and 32-token GEMM
+/// (TF_PREFILL_ROUTER=gemm, docs/m6-prefill/33), against `routerReference`
+/// row by row. The hidden rows sit at a padded stride and the token count
+/// falls mid-tile, so the GEMM's tail rows and stride are both exercised.
+func checkPrefillRouterBF16(t: Int, d: Int, numExperts: Int, gemm: Bool,
+                            groupSize: Int, seed: UInt64) throws -> CaseResult {
+    let topK = 8
+    let stride = d + 16
+    let label = "prefill-router-bf16-\(gemm ? "gemm" : "row") t=\(t) d=\(d) experts=\(numExperts)"
+    let context = try makeContext(groupSize: groupSize)
+    let kernel = try PrefillRouter(context: context, routerWeightBits: 16)
+    var rng = SeedTree(seed).key(label)
+
+    let weightBits = (0..<(numExperts * d)).map { _ in Quantization.bf16Bits(rng.uniform(-0.2, 0.2)) }
+    let rows = (0..<numExperts).map { e in
+        (0..<d).map { Quantization.bf16ToFloat(weightBits[e * d + $0]) }
+    }
+    var hiddenFp16 = [Float16](repeating: 0, count: t * stride)
+    for i in 0..<(t * stride) { hiddenFp16[i] = Float16(rng.uniform(-1.0, 1.0)) }
+    let effectiveScaleBits = (0..<d).map { _ in Quantization.bf16Bits(rng.uniform(0.5, 1.5)) }
+    let perExpertScaleBits = (0..<numExperts).map { _ in Quantization.bf16Bits(rng.uniform(0.8, 1.2)) }
+    let perExpertScale = perExpertScaleBits.map { Quantization.bf16ToFloat($0) }
+
+    func halfBuffer(_ values: [UInt16]) -> MTLBuffer? {
+        context.device.makeBuffer(bytes: values,
+                                  length: values.count * MemoryLayout<UInt16>.stride,
+                                  options: .storageModeShared)
+    }
+    guard let wBuf = halfBuffer(weightBits),
+          let esBuf = halfBuffer(effectiveScaleBits),
+          let pesBuf = halfBuffer(perExpertScaleBits),
+          let hidden = Fp16Buffer.make(context.device, halves: hiddenFp16),
+          let outIndices = context.device.makeBuffer(
+            length: t * topK * MemoryLayout<UInt32>.stride, options: .storageModeShared),
+          let outWeights = Fp16Buffer.make(context.device, count: t * topK),
+          let cmd = context.queue.makeCommandBuffer() else {
+        fatalError("buffer allocation failed")
+    }
+    if gemm {
+        kernel.encodeGemma4BF16GEMM(
+            commandBuffer: cmd, weights: wBuf, hidden: hidden,
+            effectiveScale: esBuf, perExpertScale: pesBuf,
+            outIndices: outIndices, outWeights: outWeights,
+            queryCount: UInt32(t), numExperts: UInt32(numExperts), d: UInt32(d),
+            topK: UInt32(topK), hiddenStrideElements: UInt32(stride))
+    } else {
+        kernel.encodeGemma4BF16Block(
+            commandBuffer: cmd, weights: wBuf, hidden: hidden,
+            effectiveScale: esBuf, perExpertScale: pesBuf,
+            outIndices: outIndices, outWeights: outWeights,
+            queryCount: UInt32(t), numExperts: UInt32(numExperts), d: UInt32(d),
+            topK: UInt32(topK), hiddenStrideElements: UInt32(stride))
+    }
+    waitAndCheck(cmd, "\(label) g=\(groupSize)")
+
+    let gotWeights = Fp16Buffer.read(outWeights, count: t * topK)
+    var worstRel = 0.0
+    var mismatches: [String] = []
+    for row in 0..<t {
+        let x = (0..<d).map {
+            Float(hiddenFp16[row * stride + $0]) * Quantization.bf16ToFloat(effectiveScaleBits[$0])
+        }
+        let expected = routerReference(weightRows: rows, x: x, numExperts: numExperts,
+                                       topK: topK, perExpertScale: perExpertScale)
+        let got = (0..<topK).map {
+            Int(outIndices.contents().load(
+                fromByteOffset: (row * topK + $0) * MemoryLayout<UInt32>.stride,
+                as: UInt32.self))
+        }
+        if got != expected.indices {
+            mismatches.append("row \(row): gpu=\(got) cpu=\(expected.indices)")
+            continue
+        }
+        worstRel = Swift.max(worstRel, relativeError(
+            actual: Array(gotWeights[(row * topK)..<((row + 1) * topK)]),
+            reference: expected.weights))
+    }
+    let tolerance = Double(Tolerance.fp16Reduction)
+    if !mismatches.isEmpty {
+        return result(label, groupSize: groupSize, rel: .infinity, tolerance: tolerance,
+                      detail: "expert selection differs on \(mismatches.count) rows — "
+                          + mismatches.prefix(3).joined(separator: "; "))
+    }
+    return result(label, groupSize: groupSize, rel: worstRel, tolerance: tolerance,
+                  detail: "top-\(topK) agrees on all \(t) rows")
+}
+
 // MARK: - Case 6 — INT8 kernels
 
 /// The INT8 GEMV and the fused INT8 shared-expert carry the same fixed-64
@@ -2237,6 +2324,11 @@ for groupSize in groupSizes {
                                 groupSize: groupSize, seed: 0xD1))
     pass.append(try checkRouter(weightBits: 16, d: 2816, numExperts: 128, draws: 4,
                                 groupSize: groupSize, seed: 0xD2))
+    for (t, gemm, seed) in [(131, false, 0xD3), (131, true, 0xD3), (32, true, 0xD4),
+                            (7, true, 0xD5)] as [(Int, Bool, UInt64)] {
+        pass.append(try checkPrefillRouterBF16(t: t, d: 2816, numExperts: 128, gemm: gemm,
+                                               groupSize: groupSize, seed: seed))
+    }
     pass.append(try checkInt8GEMV(m: 128, n: 2112, groupSize: groupSize, seed: 0xE1))
     pass.append(try checkSharedExpertInt8(d: 2816, f: 2112, groupSize: groupSize,
                                           seed: 0xE2))
