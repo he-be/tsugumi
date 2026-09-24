@@ -226,7 +226,10 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
     }
     let geluMul = try context.pipeline("prefill_moe_gate_up_gelu_mul")
 
-    func run(_ pso: MTLComputePipelineState, label: String) -> [Float] {
+    // `narrow`: a second kernel for the blocks of at most 32 rows, dispatched
+    // after the first one takes the rest (the prefetch candidate's split).
+    func run(_ pso: MTLComputePipelineState, narrow: MTLComputePipelineState? = nil,
+             label: String) -> [Float] {
         guard let act = Fp16Buffer.make(device, count: 3 * rowTotal * f),
               let partials = Fp16Buffer.make(device, halves: [Float16](
                 repeating: Float16(-7.0), count: tokens * topK * d)),
@@ -234,11 +237,16 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
             fatalError("prefill routed GEMM allocation failed")
         }
         func gemm(mode: UInt32, nTiles: Int, depth: Int) {
+            let parts = narrow == nil
+                ? [(pso, blocks)]
+                : [(pso, blocks.filter { $0.rowCount > 32 }),
+                   (narrow!, blocks.filter { $0.rowCount <= 32 })]
+            for (partPSO, partBlocks) in parts where !partBlocks.isEmpty {
             guard let enc = cmd.makeComputeCommandEncoder() else { return }
-            enc.setComputePipelineState(pso)
+            enc.setComputePipelineState(partPSO)
             enc.setBuffer(hiddenBuffer, offset: 0, index: 0)
             enc.setBuffer(pairBuffer, offset: 0, index: 1)
-            var blockCopy = blocks
+            var blockCopy = partBlocks
             enc.setBytes(&blockCopy, length: blockCopy.count * MemoryLayout<MoEGEMMBlock>.stride,
                          index: 2)
             enc.setBuffer(partials, offset: 0, index: 5)
@@ -249,9 +257,10 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
             var m = mode
             enc.setBytes(&m, length: MemoryLayout<UInt32>.size, index: 11)
             for blob in blobBuffers { enc.useResource(blob, usage: .read) }
-            enc.dispatchThreadgroups(MTLSize(width: nTiles, height: blocks.count, depth: depth),
+            enc.dispatchThreadgroups(MTLSize(width: nTiles, height: partBlocks.count, depth: depth),
                                      threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
             enc.endEncoding()
+            }
         }
         gemm(mode: 0, nTiles: (f + 63) / 64, depth: 2)
         if let enc = cmd.makeComputeCommandEncoder() {
@@ -297,12 +306,15 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
                         detail: "differing=\(differing)/\(mpp.count) maxAbs=\(maxAbs)"))
 
     // The prefetch candidate (docs/m6-prefill/28) moves only when loads are
-    // issued, so it has to match the mpp run bit for bit.
-    guard let pfPSO = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf") else {
+    // issued and how tall a tile the short blocks get, so it has to match the
+    // mpp run bit for bit. The fixture's blocks include ones of at most 32 rows.
+    guard let pfPSO = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf"),
+          let pf32PSO = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_m32") else {
         print("  SKIP  \(name) mpp-pf g=\(groupSize)  no pipeline on this device")
         return cases
     }
-    let pf = run(pfPSO, label: name + " mpp-pf")
+    let narrowBlocks = blocks.filter { $0.rowCount <= 32 }.count
+    let pf = run(pfPSO, narrow: pf32PSO, label: name + " mpp-pf")
     cases.append(result(name + " mpp-pf", groupSize: groupSize,
                         rel: relativeError(actual: pf, reference: expected),
                         tolerance: Double(Tolerance.fp16ChainedReduction), detail: detail))
@@ -310,17 +322,7 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
     cases.append(result(name + " mpp-pf vs mpp", groupSize: groupSize,
                         rel: pfDiffering == 0 ? 0 : 1,
                         tolerance: 0,
-                        detail: "differing=\(pfDiffering)/\(pf.count)"))
+                        detail: "differing=\(pfDiffering)/\(pf.count) m32Blocks=\(narrowBlocks)"))
 
-    // Symmetric builds also carry the half-precision weight staging
-    // (`_hd`, docs/m6-prefill/28), which claims the same rounding.
-    if let hdPSO = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_hd") {
-        let hd = run(hdPSO, label: name + " mpp-pf-hd")
-        let hdDiffering = zip(hd, mpp).filter { $0 != $1 }.count
-        cases.append(result(name + " mpp-pf-hd vs mpp", groupSize: groupSize,
-                            rel: hdDiffering == 0 ? 0 : 1,
-                            tolerance: 0,
-                            detail: "differing=\(hdDiffering)/\(hd.count)"))
-    }
     return cases
 }

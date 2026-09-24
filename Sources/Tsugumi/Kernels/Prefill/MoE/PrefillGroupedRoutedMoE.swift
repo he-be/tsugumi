@@ -483,7 +483,8 @@ final class PrefillGroupedRoutedMoE {
 
     /// `TF_PREFILL_MOE_PF=1`: the mpp path runs `prefill_moe_gemm_int4_mpp_pf`,
     /// which issues the next K step's device loads before the current step's
-    /// `matmul2d` (docs/m6-prefill/28). A candidate; same values and K order.
+    /// `matmul2d`, and sends blocks of at most 32 rows to its 32-row twin in a
+    /// second dispatch (docs/m6-prefill/28). A candidate; same values and K order.
     private static let prefetchRequested =
         ProcessInfo.processInfo.environment["TF_PREFILL_MOE_PF"] == "1"
 
@@ -502,6 +503,9 @@ final class PrefillGroupedRoutedMoE {
     /// Set only when `mpp` was asked for and the device built it; nil on
     /// hardware without tensor ops, which then keeps the simdgroup kernel.
     private let gemmMPPPSO: MTLComputePipelineState?
+    /// The prefetch candidate's 32-row kernel, for blocks of at most 32 rows.
+    private let gemmMPPShortPSO: MTLComputePipelineState?
+    static let mppShortTileM = 32
     /// The kernel `encodeStreamedTiled` hands aligned shapes to.
     package var tiledKernel: TiledKernel { gemmMPPPSO != nil ? .mpp : .simdgroup }
     private let geluMulPSO: MTLComputePipelineState?
@@ -548,6 +552,7 @@ final class PrefillGroupedRoutedMoE {
         if Self.forcedPath == "scalar" {
             self.gemmPSO = nil
             self.gemmMPPPSO = nil
+            self.gemmMPPShortPSO = nil
             self.geluMulPSO = nil
         } else {
             // The tile shape fixes the threadgroup at 128 threads; a build
@@ -564,6 +569,10 @@ final class PrefillGroupedRoutedMoE {
             let mpp = (wantsMPP && usable) ? try? context.pipeline(mppName) : nil
             self.gemmMPPPSO = (mpp?.maxTotalThreadsPerThreadgroup ?? 0) >= Self.gemmThreadsPerGroup
                 ? mpp : nil
+            let short = (Self.prefetchRequested && gemmMPPPSO != nil)
+                ? try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_m32") : nil
+            self.gemmMPPShortPSO = (short?.maxTotalThreadsPerThreadgroup ?? 0) >= Self.gemmThreadsPerGroup
+                ? short : nil
         }
 
         // The rows path is a GEMV, so it stands on its own: `TF_PREFILL_MOE=scalar`
@@ -938,6 +947,7 @@ final class PrefillGroupedRoutedMoE {
             && hiddenOffset % 8 == 0
             && gateUpActScratchOffset % 8 == 0
         let gemmPSO = mppFits ? (gemmMPPPSO ?? simdgroupGEMMPSO) : simdgroupGEMMPSO
+        let shortPSO = (mppFits && gemmMPPPSO != nil) ? gemmMPPShortPSO : nil
         // Profile detail mode only: hand the buffer holding the group just
         // encoded to the caller, and continue in the one it returns.
         var commandBuffer = commandBuffer
@@ -951,18 +961,28 @@ final class PrefillGroupedRoutedMoE {
             // stride between the gate, up and act thirds of the scratch.
             p.pairStart = 0
             p.pairCount = UInt32(batch.rows)
-            var blocks = batch.blocks
-            let blockBytes = blocks.count * MemoryLayout<PrefillRoutedGEMMBlock>.stride
+            // With the 32-row kernel, a batch is two dispatches: the taller
+            // blocks, then the short ones. Rows keep their `local_row`, so the
+            // split changes no address.
+            let parts: [(MTLComputePipelineState, [PrefillRoutedGEMMBlock])]
+            if let shortPSO {
+                let short = UInt32(Self.mppShortTileM)
+                parts = [(gemmPSO, batch.blocks.filter { $0.rowCount > short }),
+                         (shortPSO, batch.blocks.filter { $0.rowCount <= short })]
+                    .filter { !$0.1.isEmpty }
+            } else {
+                parts = [(gemmPSO, batch.blocks)]
+            }
 
             func encodeGEMM(mode: UInt32, nTiles: Int, depth: Int) {
-                guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
-                enc.setComputePipelineState(gemmPSO)
+                // The parts write disjoint rows, so they may overlap.
+                guard let enc = parts.count > 1
+                    ? commandBuffer.makeComputeCommandEncoder(dispatchType: .concurrent)
+                    : commandBuffer.makeComputeCommandEncoder() else { return }
                 enc.setBuffer(hidden, offset: hiddenOffset,
                               index: PrefillGroupedRoutedMoEBufferIndex.hidden)
                 enc.setBuffer(sortedPairs, offset: sortedPairsOffset,
                               index: PrefillGroupedRoutedMoEBufferIndex.sortedPairs)
-                enc.setBytes(&blocks, length: blockBytes,
-                             index: PrefillGroupedRoutedMoEBufferIndex.blocks)
                 enc.setBuffer(routePartials, offset: routePartialsOffset,
                               index: PrefillGroupedRoutedMoEBufferIndex.routePartials)
                 enc.setBuffer(gateUpActScratch, offset: gateUpActScratchOffset,
@@ -978,10 +998,17 @@ final class PrefillGroupedRoutedMoE {
                 for view in binding.views {
                     enc.useResource(view.buffer, usage: .read)
                 }
-                enc.dispatchThreadgroups(MTLSize(width: nTiles,
-                                                 height: blocks.count,
-                                                 depth: depth),
-                                         threadsPerThreadgroup: threadgroup)
+                for (pso, partBlocks) in parts {
+                    var blocks = partBlocks
+                    enc.setComputePipelineState(pso)
+                    enc.setBytes(&blocks,
+                                 length: blocks.count * MemoryLayout<PrefillRoutedGEMMBlock>.stride,
+                                 index: PrefillGroupedRoutedMoEBufferIndex.blocks)
+                    enc.dispatchThreadgroups(MTLSize(width: nTiles,
+                                                     height: blocks.count,
+                                                     depth: depth),
+                                             threadsPerThreadgroup: threadgroup)
+                }
                 enc.endEncoding()
             }
 
