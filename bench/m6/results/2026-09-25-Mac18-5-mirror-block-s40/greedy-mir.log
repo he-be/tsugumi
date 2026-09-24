@@ -1,0 +1,11 @@
+[prefill shared qmm kernel=mpp-nax]
+[prefill moe tiled kernel=mpp]
+ご提示いただいた文書の要点は以下の通りです。
+
+### 1. 開発体制の変更と基本方針
+*   **2機体制への移行:** 2026-09-22より、MBP（母艦）とM6 mini（ヘッドレス）の2機
+[stop=maxTokens prefill=2342tok new=64tok decode=2.24s tok/s=28.622]
+[load=0.544s layerVerify=0.000s/30layers prefill=5.506s ttft=5.506s peak=1.28GB rss=0.34GB]
+[expert prefill hit=0.0% 0/6310 io=4.502s | decode hit=82.2% 12431/15120 io=0.512s]
+[expert mmap layers=30 mapped=12.90GB sync=2096(+8999/-8039) noop=610 residency=4.873s /tok=76.13ms]
+[decode/tok io=8.04ms cb1=0.43ms cb2=0.24ms head=2.98ms]

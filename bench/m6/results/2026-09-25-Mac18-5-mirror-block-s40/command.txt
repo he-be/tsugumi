@@ -1,0 +1,3 @@
+bench/m6/mirror_bench.sh mirror-block-s40 /Volumes/SSD256/tsugumi-mirror/packed_experts 4 0.40 block
+def: /Users/mh/dev/tsugumi/.build/release/TsugumiCLI --model /Users/mh/dev/tsugumi/scratch/gemma4-qat-sym.gturbo --messages-file bench/m6/prompts/<prompt>.json --expert-cache-slots 32 --prefill-chunk-tokens 2048 --max-new 1 --max-context 4096 --verification trusted-install
+mir: TF_EXPERT_MIRROR=/Volumes/SSD256/tsugumi-mirror/packed_experts TF_EXPERT_MIRROR_SHARE=0.40 <def>

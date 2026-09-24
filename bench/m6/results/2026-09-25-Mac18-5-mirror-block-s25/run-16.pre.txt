@@ -1,0 +1,40 @@
+06:49:03
+System-wide memory free percentage: 52%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   107531.
+Pages active:                                 350260.
+Pages inactive:                               115371.
+Pages speculative:                                51.
+Pages throttled:                                   0.
+Pages wired down:                             427171.
+Pages purgeable:                                   4.
+"Translation faults":                      424986081.
+Pages copy-on-write:                        88464355.
+Pages zero filled:                         290938661.
+Pages reactivated:                          13497684.
+Pages purged:                                1387617.
+File-backed pages:                            453832.
+Anonymous pages:                               11850.
+Pages stored in compressor:                    34577.
+Pages occupied by compressor:                  10684.
+Decompressions:                             21456140.
+Compressions:                               26668833.
+Pageins:                                   532759123.
+Pageouts:                                      14607.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45773.
+Pages tagged resident:                         38497.
+Pages tagged compressed:                        7276.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1833.
+Pages tag-storage free:                        19788.
+Pages tag-storage non-tag pageable:             8044.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1174720.
+Tagged compressions:                           99274.
+Tagged decompressions:                         65047.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  369.84 23768062 8584331.63   126.08 3139071 386511.15 

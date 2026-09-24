@@ -1,0 +1,40 @@
+06:50:03
+System-wide memory free percentage: 59%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   101750.
+Pages active:                                 393099.
+Pages inactive:                               151323.
+Pages speculative:                                86.
+Pages throttled:                                   0.
+Pages wired down:                             356379.
+Pages purgeable:                                4319.
+"Translation faults":                      425345244.
+Pages copy-on-write:                        89319313.
+Pages zero filled:                         291876967.
+Pages reactivated:                          13564881.
+Pages purged:                                1389462.
+File-backed pages:                            523034.
+Anonymous pages:                               21474.
+Pages stored in compressor:                    29875.
+Pages occupied by compressor:                   8431.
+Decompressions:                             21775444.
+Compressions:                               27057165.
+Pageins:                                   540344791.
+Pageouts:                                      14762.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45257.
+Pages tagged resident:                         38096.
+Pages tagged compressed:                        7161.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19998.
+Pages tag-storage non-tag pageable:             7642.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1149120.
+Tagged compressions:                           99443.
+Tagged decompressions:                         65329.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  370.76 24036112 8702866.64   126.08 3139071 386511.15 

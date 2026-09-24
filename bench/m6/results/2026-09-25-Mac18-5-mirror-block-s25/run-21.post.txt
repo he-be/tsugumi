@@ -1,0 +1,40 @@
+06:49:40
+System-wide memory free percentage: 29%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   103065.
+Pages active:                                 149736.
+Pages inactive:                                81752.
+Pages speculative:                               158.
+Pages throttled:                                   0.
+Pages wired down:                             665756.
+Pages purgeable:                                   4.
+"Translation faults":                      425194251.
+Pages copy-on-write:                        88975833.
+Pages zero filled:                         291496441.
+Pages reactivated:                          13538434.
+Pages purged:                                1387998.
+File-backed pages:                            219637.
+Anonymous pages:                               12009.
+Pages stored in compressor:                    34246.
+Pages occupied by compressor:                  10601.
+Decompressions:                             21653544.
+Compressions:                               26909022.
+Pageins:                                   537372988.
+Pageouts:                                      14701.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45138.
+Pages tagged resident:                         37879.
+Pages tagged compressed:                        7259.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19526.
+Pages tag-storage non-tag pageable:             8115.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1171136.
+Tagged compressions:                           99443.
+Tagged decompressions:                         65233.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  370.41 23930687 8656428.92   126.08 3139071 386511.15 

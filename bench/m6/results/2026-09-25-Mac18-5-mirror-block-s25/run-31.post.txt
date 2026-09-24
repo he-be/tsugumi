@@ -1,0 +1,40 @@
+06:50:34
+System-wide memory free percentage: 28%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   101969.
+Pages active:                                 145512.
+Pages inactive:                                77501.
+Pages speculative:                               129.
+Pages throttled:                                   0.
+Pages wired down:                             675440.
+Pages purgeable:                                   4.
+"Translation faults":                      425553612.
+Pages copy-on-write:                        89830759.
+Pages zero filled:                         292433767.
+Pages reactivated:                          13607191.
+Pages purged:                                1393044.
+File-backed pages:                            210668.
+Anonymous pages:                               12474.
+Pages stored in compressor:                    33904.
+Pages occupied by compressor:                  10517.
+Decompressions:                             21996832.
+Compressions:                               27324010.
+Pageins:                                   545351863.
+Pageouts:                                      14863.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45524.
+Pages tagged resident:                         38385.
+Pages tagged compressed:                        7139.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19578.
+Pages tag-storage non-tag pageable:             8062.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1146368.
+Tagged compressions:                           99470.
+Tagged decompressions:                         65378.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  371.18 24175310 8762975.93   126.08 3286543 404644.87 

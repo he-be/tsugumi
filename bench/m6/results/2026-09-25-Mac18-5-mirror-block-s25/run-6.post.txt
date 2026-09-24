@@ -1,0 +1,40 @@
+06:48:19
+System-wide memory free percentage: 36%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   101851.
+Pages active:                                 178795.
+Pages inactive:                               124320.
+Pages speculative:                                25.
+Pages throttled:                                   0.
+Pages wired down:                             595744.
+Pages purgeable:                                   4.
+"Translation faults":                      424663879.
+Pages copy-on-write:                        87694120.
+Pages zero filled:                         290095960.
+Pages reactivated:                          13434508.
+Pages purged:                                1381519.
+File-backed pages:                            290356.
+Anonymous pages:                               12784.
+Pages stored in compressor:                    33504.
+Pages occupied by compressor:                  10333.
+Decompressions:                             21122758.
+Compressions:                               26274749.
+Pageins:                                   525967861.
+Pageouts:                                      14491.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45780.
+Pages tagged resident:                         38638.
+Pages tagged compressed:                        7142.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1833.
+Pages tag-storage free:                        19645.
+Pages tag-storage non-tag pageable:             8190.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1146112.
+Tagged compressions:                           98954.
+Tagged decompressions:                         64863.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  369.27 23574015 8501200.09   126.11 2951800 363519.95 

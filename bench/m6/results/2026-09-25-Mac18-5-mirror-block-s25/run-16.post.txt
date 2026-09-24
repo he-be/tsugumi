@@ -1,0 +1,40 @@
+06:49:10
+System-wide memory free percentage: 48%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   102827.
+Pages active:                                 254747.
+Pages inactive:                               175366.
+Pages speculative:                                27.
+Pages throttled:                                   0.
+Pages wired down:                             467425.
+Pages purgeable:                                   4.
+"Translation faults":                      425014456.
+Pages copy-on-write:                        88548273.
+Pages zero filled:                         291030771.
+Pages reactivated:                          13504524.
+Pages purged:                                1387644.
+File-backed pages:                            418252.
+Anonymous pages:                               11888.
+Pages stored in compressor:                    34512.
+Pages occupied by compressor:                  10676.
+Decompressions:                             21494005.
+Compressions:                               26716474.
+Pageins:                                   533684444.
+Pageouts:                                      14627.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45678.
+Pages tagged resident:                         38415.
+Pages tagged compressed:                        7263.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1833.
+Pages tag-storage free:                        19600.
+Pages tag-storage non-tag pageable:             8041.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1172736.
+Tagged compressions:                           99274.
+Tagged decompressions:                         65060.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  369.95 23800655 8598790.81   126.08 3139071 386511.15 

@@ -1,0 +1,40 @@
+06:48:48
+System-wide memory free percentage: 24%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   102082.
+Pages active:                                 122787.
+Pages inactive:                                57974.
+Pages speculative:                                24.
+Pages throttled:                                   0.
+Pages wired down:                             717813.
+Pages purgeable:                                   4.
+"Translation faults":                      424873266.
+Pages copy-on-write:                        88206597.
+Pages zero filled:                         290651244.
+Pages reactivated:                          13477587.
+Pages purged:                                1381861.
+File-backed pages:                            168157.
+Anonymous pages:                               12628.
+Pages stored in compressor:                    33639.
+Pages occupied by compressor:                  10388.
+Decompressions:                             21339098.
+Compressions:                               26525036.
+Pageins:                                   530387863.
+Pageouts:                                      14572.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45473.
+Pages tagged resident:                         38320.
+Pages tagged compressed:                        7153.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1833.
+Pages tag-storage free:                        19705.
+Pages tag-storage non-tag pageable:             8130.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1148224.
+Tagged compressions:                           98991.
+Tagged decompressions:                         64887.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  369.64 23700954 8555386.86   126.09 3073032 378402.42 

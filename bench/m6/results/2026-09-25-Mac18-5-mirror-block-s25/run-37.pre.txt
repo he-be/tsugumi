@@ -1,0 +1,40 @@
+06:51:00
+System-wide memory free percentage: 61%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    99473.
+Pages active:                                 415978.
+Pages inactive:                               150188.
+Pages speculative:                                47.
+Pages throttled:                                   0.
+Pages wired down:                             336844.
+Pages purgeable:                                  36.
+"Translation faults":                      425734520.
+Pages copy-on-write:                        90258530.
+Pages zero filled:                         292905186.
+Pages reactivated:                          13638246.
+Pages purged:                                1393317.
+File-backed pages:                            554392.
+Anonymous pages:                               11821.
+Pages stored in compressor:                    30181.
+Pages occupied by compressor:                   8538.
+Decompressions:                             22173388.
+Compressions:                               27532301.
+Pageins:                                   549132179.
+Pageouts:                                      14931.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45386.
+Pages tagged resident:                         38176.
+Pages tagged compressed:                        7210.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        20093.
+Pages tag-storage non-tag pageable:             7547.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1157824.
+Tagged compressions:                           99989.
+Tagged decompressions:                         65826.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  371.49 24290830 8812398.74   126.06 3365247 414295.03 

@@ -1,0 +1,40 @@
+06:48:13
+System-wide memory free percentage: 40%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   103129.
+Pages active:                                 209366.
+Pages inactive:                               139957.
+Pages speculative:                                44.
+Pages throttled:                                   0.
+Pages wired down:                             548238.
+Pages purgeable:                                   4.
+"Translation faults":                      424631656.
+Pages copy-on-write:                        87609092.
+Pages zero filled:                         290003832.
+Pages reactivated:                          13426742.
+Pages purged:                                1381505.
+File-backed pages:                            336639.
+Anonymous pages:                               12728.
+Pages stored in compressor:                    33545.
+Pages occupied by compressor:                  10334.
+Decompressions:                             21080413.
+Compressions:                               26227796.
+Pageins:                                   525041333.
+Pageouts:                                      14469.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  46682.
+Pages tagged resident:                         39534.
+Pages tagged compressed:                        7148.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1833.
+Pages tag-storage free:                        20671.
+Pages tag-storage non-tag pageable:             8185.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1146944.
+Tagged compressions:                           98954.
+Tagged decompressions:                         64857.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  369.19 23550602 8490957.36   126.11 2917414 359284.90 

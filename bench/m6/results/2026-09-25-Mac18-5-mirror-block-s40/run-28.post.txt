@@ -1,0 +1,40 @@
+06:54:23
+System-wide memory free percentage: 43%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    98659.
+Pages active:                                 236753.
+Pages inactive:                               146150.
+Pages speculative:                                45.
+Pages throttled:                                   0.
+Pages wired down:                             518915.
+Pages purgeable:                                   4.
+"Translation faults":                      426962248.
+Pages copy-on-write:                        93165113.
+Pages zero filled:                         296091321.
+Pages reactivated:                          13869864.
+Pages purged:                                1411617.
+File-backed pages:                            370587.
+Anonymous pages:                               12361.
+Pages stored in compressor:                    33761.
+Pages occupied by compressor:                  10546.
+Decompressions:                             23354912.
+Compressions:                               29005684.
+Pageins:                                   576821014.
+Pageouts:                                      15489.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45403.
+Pages tagged resident:                         38371.
+Pages tagged compressed:                        7032.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19693.
+Pages tag-storage non-tag pageable:             7947.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1118400.
+Tagged compressions:                          100798.
+Tagged decompressions:                         66806.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  373.99 25110122 9170831.32   126.05 3968603 488534.21 

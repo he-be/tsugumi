@@ -1,0 +1,40 @@
+06:54:47
+System-wide memory free percentage: 43%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    99774.
+Pages active:                                 245044.
+Pages inactive:                               135570.
+Pages speculative:                                48.
+Pages throttled:                                   0.
+Pages wired down:                             520082.
+Pages purgeable:                                   4.
+"Translation faults":                      427102327.
+Pages copy-on-write:                        93506887.
+Pages zero filled:                         296462285.
+Pages reactivated:                          13897856.
+Pages purged:                                1411794.
+File-backed pages:                            368264.
+Anonymous pages:                               12398.
+Pages stored in compressor:                    33742.
+Pages occupied by compressor:                  10550.
+Decompressions:                             23503779.
+Compressions:                               29196100.
+Pageins:                                   580354039.
+Pageouts:                                      15536.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45845.
+Pages tagged resident:                         38800.
+Pages tagged compressed:                        7045.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19647.
+Pages tag-storage non-tag pageable:             7993.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1120512.
+Tagged compressions:                          100847.
+Tagged decompressions:                         66842.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  374.21 25192009 9206226.40   126.05 4129730 508345.63 

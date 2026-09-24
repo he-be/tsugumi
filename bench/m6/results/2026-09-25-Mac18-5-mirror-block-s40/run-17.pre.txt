@@ -1,0 +1,40 @@
+06:53:14
+System-wide memory free percentage: 63%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    97455.
+Pages active:                                 431254.
+Pages inactive:                               156310.
+Pages speculative:                                43.
+Pages throttled:                                   0.
+Pages wired down:                             315192.
+Pages purgeable:                                   4.
+"Translation faults":                      426539322.
+Pages copy-on-write:                        92140413.
+Pages zero filled:                         294971519.
+Pages reactivated:                          13787476.
+Pages purged:                                1407260.
+File-backed pages:                            575694.
+Anonymous pages:                               12118.
+Pages stored in compressor:                    33888.
+Pages occupied by compressor:                  10609.
+Decompressions:                             22976551.
+Compressions:                               28546808.
+Pageins:                                   567618506.
+Pageouts:                                      15293.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45661.
+Pages tagged resident:                         38602.
+Pages tagged compressed:                        7059.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19545.
+Pages tag-storage non-tag pageable:             8095.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1122560.
+Tagged compressions:                          100643.
+Tagged decompressions:                         66627.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  373.12 24820924 9044020.97   126.06 3830536 471542.24 

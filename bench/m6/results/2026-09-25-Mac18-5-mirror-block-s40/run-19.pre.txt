@@ -1,0 +1,40 @@
+06:53:25
+System-wide memory free percentage: 75%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    99383.
+Pages active:                                 554447.
+Pages inactive:                               151981.
+Pages speculative:                                42.
+Pages throttled:                                   0.
+Pages wired down:                             194607.
+Pages purgeable:                                   4.
+"Translation faults":                      426609759.
+Pages copy-on-write:                        92311208.
+Pages zero filled:                         295157578.
+Pages reactivated:                          13799541.
+Pages purged:                                1407322.
+File-backed pages:                            694247.
+Anonymous pages:                               12223.
+Pages stored in compressor:                    33844.
+Pages occupied by compressor:                  10608.
+Decompressions:                             23030310.
+Compressions:                               28613081.
+Pageins:                                   569008100.
+Pageouts:                                      15332.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  46169.
+Pages tagged resident:                         39122.
+Pages tagged compressed:                        7047.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19517.
+Pages tag-storage non-tag pageable:             8123.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1120960.
+Tagged compressions:                          100643.
+Tagged decompressions:                         66639.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  373.27 24870478 9065736.50   126.06 3830536 471542.24 

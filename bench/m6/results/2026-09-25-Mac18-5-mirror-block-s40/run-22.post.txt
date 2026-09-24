@@ -1,0 +1,40 @@
+06:53:47
+System-wide memory free percentage: 35%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   101623.
+Pages active:                                 222696.
+Pages inactive:                                81577.
+Pages speculative:                               116.
+Pages throttled:                                   0.
+Pages wired down:                             594568.
+Pages purgeable:                                   4.
+"Translation faults":                      426746345.
+Pages copy-on-write:                        92651878.
+Pages zero filled:                         295527994.
+Pages reactivated:                          13826908.
+Pages purged:                                1407585.
+File-backed pages:                            291950.
+Anonymous pages:                               12439.
+Pages stored in compressor:                    33685.
+Pages occupied by compressor:                  10488.
+Decompressions:                             23146245.
+Compressions:                               28747559.
+Pageins:                                   571711522.
+Pageouts:                                      15394.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45369.
+Pages tagged resident:                         38392.
+Pages tagged compressed:                        6977.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19550.
+Pages tag-storage non-tag pageable:             8090.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1107392.
+Tagged compressions:                          100643.
+Tagged decompressions:                         66706.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  373.56 24966750 9107981.09   126.06 3830536 471542.24 

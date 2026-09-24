@@ -1,0 +1,40 @@
+06:49:29
+System-wide memory free percentage: 44%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   100508.
+Pages active:                                 236041.
+Pages inactive:                               151306.
+Pages speculative:                                50.
+Pages throttled:                                   0.
+Pages wired down:                             512574.
+Pages purgeable:                                   4.
+"Translation faults":                      425123228.
+Pages copy-on-write:                        88804940.
+Pages zero filled:                         291310283.
+Pages reactivated:                          13524524.
+Pages purged:                                1387910.
+File-backed pages:                            375449.
+Anonymous pages:                               11948.
+Pages stored in compressor:                    34287.
+Pages occupied by compressor:                  10589.
+Decompressions:                             21589365.
+Compressions:                               26833281.
+Pageins:                                   535960159.
+Pageouts:                                      14662.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  46151.
+Pages tagged resident:                         38900.
+Pages tagged compressed:                        7251.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1833.
+Pages tag-storage free:                        19625.
+Pages tag-storage non-tag pageable:             8016.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1169472.
+Tagged compressions:                           99390.
+Tagged decompressions:                         65188.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  370.24 23880900 8634351.44   126.08 3139071 386511.15 

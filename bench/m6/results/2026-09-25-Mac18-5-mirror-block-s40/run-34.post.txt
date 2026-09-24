@@ -1,0 +1,40 @@
+06:54:59
+System-wide memory free percentage: 47%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    98542.
+Pages active:                                 280467.
+Pages inactive:                               150642.
+Pages speculative:                                47.
+Pages throttled:                                   0.
+Pages wired down:                             470878.
+Pages purgeable:                                   4.
+"Translation faults":                      427172109.
+Pages copy-on-write:                        93677717.
+Pages zero filled:                         296647449.
+Pages reactivated:                          13912930.
+Pages purged:                                1411866.
+File-backed pages:                            418707.
+Anonymous pages:                               12449.
+Pages stored in compressor:                    33716.
+Pages occupied by compressor:                  10492.
+Decompressions:                             23581325.
+Compressions:                               29293124.
+Pageins:                                   582166316.
+Pageouts:                                      15555.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  46177.
+Pages tagged resident:                         39144.
+Pages tagged compressed:                        7033.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19665.
+Pages tag-storage non-tag pageable:             7975.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1119552.
+Tagged compressions:                          100847.
+Tagged decompressions:                         66853.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  374.33 25234011 9224411.15   126.05 4212119 518479.76 

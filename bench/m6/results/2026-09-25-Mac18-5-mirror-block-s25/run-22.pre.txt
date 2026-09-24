@@ -1,0 +1,40 @@
+06:49:40
+System-wide memory free percentage: 46%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   103021.
+Pages active:                                 320208.
+Pages inactive:                                82909.
+Pages speculative:                               161.
+Pages throttled:                                   0.
+Pages wired down:                             494171.
+Pages purgeable:                                   4.
+"Translation faults":                      425198440.
+Pages copy-on-write:                        88976939.
+Pages zero filled:                         291497126.
+Pages reactivated:                          13538434.
+Pages purged:                                1387998.
+File-backed pages:                            391245.
+Anonymous pages:                               12033.
+Pages stored in compressor:                    34225.
+Pages occupied by compressor:                  10598.
+Decompressions:                             21653563.
+Compressions:                               26909022.
+Pageins:                                   537373001.
+Pageouts:                                      14701.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45125.
+Pages tagged resident:                         37879.
+Pages tagged compressed:                        7246.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19521.
+Pages tag-storage non-tag pageable:             8120.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1170432.
+Tagged compressions:                           99443.
+Tagged decompressions:                         65244.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  370.41 23930696 8656429.00   126.08 3139071 386511.15 

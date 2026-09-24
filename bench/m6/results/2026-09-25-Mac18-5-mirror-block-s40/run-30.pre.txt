@@ -1,0 +1,40 @@
+06:54:29
+System-wide memory free percentage: 59%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    97183.
+Pages active:                                 410827.
+Pages inactive:                               144434.
+Pages speculative:                                45.
+Pages throttled:                                   0.
+Pages wired down:                             348047.
+Pages purgeable:                                   4.
+"Translation faults":                      426998738.
+Pages copy-on-write:                        93251255.
+Pages zero filled:                         296184145.
+Pages reactivated:                          13876952.
+Pages purged:                                1411642.
+File-backed pages:                            542830.
+Anonymous pages:                               12476.
+Pages stored in compressor:                    33693.
+Pages occupied by compressor:                  10532.
+Decompressions:                             23395745.
+Compressions:                               29059778.
+Pageins:                                   577761044.
+Pageouts:                                      15490.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45443.
+Pages tagged resident:                         38413.
+Pages tagged compressed:                        7030.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19694.
+Pages tag-storage non-tag pageable:             7946.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1118016.
+Tagged compressions:                          100798.
+Tagged decompressions:                         66808.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  374.05 25131880 9180229.42   126.05 4011615 493824.79 

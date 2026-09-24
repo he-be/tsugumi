@@ -1,0 +1,40 @@
+06:53:37
+System-wide memory free percentage: 56%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   100888.
+Pages active:                                 365158.
+Pages inactive:                               140719.
+Pages speculative:                                55.
+Pages throttled:                                   0.
+Pages wired down:                             393749.
+Pages purgeable:                                   4.
+"Translation faults":                      426680805.
+Pages copy-on-write:                        92482162.
+Pages zero filled:                         295343374.
+Pages reactivated:                          13813570.
+Pages purged:                                1407384.
+File-backed pages:                            493538.
+Anonymous pages:                               12394.
+Pages stored in compressor:                    33719.
+Pages occupied by compressor:                  10499.
+Decompressions:                             23092609.
+Compressions:                               28687954.
+Pageins:                                   570591368.
+Pageouts:                                      15364.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  46077.
+Pages tagged resident:                         39087.
+Pages tagged compressed:                        6990.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19525.
+Pages tag-storage non-tag pageable:             8115.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1111104.
+Tagged compressions:                          100643.
+Tagged decompressions:                         66693.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  373.45 24925918 9090476.68   126.06 3830536 471542.24 

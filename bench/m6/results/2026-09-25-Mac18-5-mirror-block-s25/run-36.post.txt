@@ -1,0 +1,40 @@
+06:51:00
+System-wide memory free percentage: 42%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    99522.
+Pages active:                                 220887.
+Pages inactive:                               149060.
+Pages speculative:                                32.
+Pages throttled:                                   0.
+Pages wired down:                             533028.
+Pages purgeable:                                  36.
+"Translation faults":                      425730354.
+Pages copy-on-write:                        90257423.
+Pages zero filled:                         292904503.
+Pages reactivated:                          13638246.
+Pages purged:                                1393317.
+File-backed pages:                            358165.
+Anonymous pages:                               11814.
+Pages stored in compressor:                    30187.
+Pages occupied by compressor:                   8539.
+Decompressions:                             22173382.
+Compressions:                               27532301.
+Pageins:                                   549132154.
+Pageouts:                                      14931.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45386.
+Pages tagged resident:                         38176.
+Pages tagged compressed:                        7210.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        20060.
+Pages tag-storage non-tag pageable:             7580.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1157824.
+Tagged compressions:                           99989.
+Tagged decompressions:                         65826.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  371.49 24290820 8812398.64   126.06 3365247 414295.03 

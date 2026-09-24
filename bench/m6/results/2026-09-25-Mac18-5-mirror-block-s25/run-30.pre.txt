@@ -1,0 +1,40 @@
+06:50:24
+System-wide memory free percentage: 57%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    99218.
+Pages active:                                 400637.
+Pages inactive:                               130069.
+Pages speculative:                                87.
+Pages throttled:                                   0.
+Pages wired down:                             370512.
+Pages purgeable:                                   4.
+"Translation faults":                      425486937.
+Pages copy-on-write:                        89661004.
+Pages zero filled:                         292249070.
+Pages reactivated:                          13592380.
+Pages purged:                                1392904.
+File-backed pages:                            518461.
+Anonymous pages:                               12332.
+Pages stored in compressor:                    34002.
+Pages occupied by compressor:                  10545.
+Decompressions:                             21927492.
+Compressions:                               27244910.
+Pageins:                                   543811141.
+Pageouts:                                      14833.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45510.
+Pages tagged resident:                         38331.
+Pages tagged compressed:                        7179.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19580.
+Pages tag-storage non-tag pageable:             8060.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1153216.
+Tagged compressions:                           99470.
+Tagged decompressions:                         65338.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  371.06 24131027 8744081.06   126.08 3244362 399462.53 

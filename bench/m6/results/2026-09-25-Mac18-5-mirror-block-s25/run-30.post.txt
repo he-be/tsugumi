@@ -1,0 +1,40 @@
+06:50:30
+System-wide memory free percentage: 38%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   101325.
+Pages active:                                 210495.
+Pages inactive:                               119298.
+Pages speculative:                                40.
+Pages throttled:                                   0.
+Pages wired down:                             569380.
+Pages purgeable:                                   4.
+"Translation faults":                      425515336.
+Pages copy-on-write:                        89744906.
+Pages zero filled:                         292340386.
+Pages reactivated:                          13600419.
+Pages purged:                                1393005.
+File-backed pages:                            317414.
+Anonymous pages:                               12419.
+Pages stored in compressor:                    33957.
+Pages occupied by compressor:                  10530.
+Decompressions:                             21964468.
+Compressions:                               27289100.
+Pageins:                                   544699803.
+Pageouts:                                      14846.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45536.
+Pages tagged resident:                         38377.
+Pages tagged compressed:                        7159.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19587.
+Pages tag-storage non-tag pageable:             8053.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1150080.
+Tagged compressions:                           99470.
+Tagged decompressions:                         65358.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  371.13 24156033 8754903.24   126.08 3269285 402527.95 

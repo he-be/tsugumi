@@ -1,0 +1,40 @@
+06:53:52
+System-wide memory free percentage: 58%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   103230.
+Pages active:                                 392820.
+Pages inactive:                               146672.
+Pages speculative:                                61.
+Pages throttled:                                   0.
+Pages wired down:                             357807.
+Pages purgeable:                                   4.
+"Translation faults":                      426783520.
+Pages copy-on-write:                        92737663.
+Pages zero filled:                         295621004.
+Pages reactivated:                          13834819.
+Pages purged:                                1407653.
+File-backed pages:                            527052.
+Anonymous pages:                               12501.
+Pages stored in compressor:                    33638.
+Pages occupied by compressor:                  10478.
+Decompressions:                             23176719.
+Compressions:                               28781220.
+Pageins:                                   572443747.
+Pageouts:                                      15411.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45390.
+Pages tagged resident:                         38438.
+Pages tagged compressed:                        6952.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1832.
+Pages tag-storage free:                        19544.
+Pages tag-storage non-tag pageable:             8096.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1103040.
+Tagged compressions:                          100643.
+Tagged decompressions:                         66731.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  373.64 24993031 9119422.99   126.06 3830536 471542.24 
