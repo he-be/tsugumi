@@ -46,8 +46,11 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 2c5c0dd | b2-def-b | 3 | 4.614 | 4.207 | 5.329 | 0 | 既定 |
 | 2026-09-24 | 2c5c0dd | b2-greedy-def | 2 | 4.705 | 4.198 | 5.211 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | 2c5c0dd | b2-greedy-mpp | 2 | 4.198 | 3.656 | 4.740 | 0 | TF_PREFILL_ATTN=mpp 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | a122dd3 | b2-host | 3 | 3.507 | 3.474 | 3.681 | 0 | TF_PREFILL_HOST_PROFILE=1 |
 | 2026-09-24 | 2c5c0dd | b2-mpp-a | 3 | 3.573 | 3.558 | 4.885 | 0 | TF_PREFILL_ATTN=mpp |
 | 2026-09-24 | 2c5c0dd | b2-mpp-b | 3 | 3.585 | 3.547 | 4.850 | 0 | TF_PREFILL_ATTN=mpp |
+| 2026-09-24 | a122dd3 | b2-profile-detail | 3 | 3.913 | 3.478 | 4.694 | 0 | TF_PREFILL_GPU_PROFILE=2 |
+| 2026-09-24 | a122dd3 | b2-profile | 3 | 3.490 | 3.484 | 4.545 | 0 | TF_PREFILL_GPU_PROFILE=1 |
 | 2026-09-24 | 2c5c0dd | b2-swa-profile-detail | 3 | 3.694 | 3.660 | 5.031 | 0 | TF_PREFILL_ATTN=mpp TF_PREFILL_GPU_PROFILE=2 |
 | 2026-09-24 | 3f042e7 | best4-a | 3 | 4.578 | 4.545 | 5.181 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
 | 2026-09-24 | 3f042e7 | best4-b | 3 | 4.551 | 4.473 | 4.582 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
