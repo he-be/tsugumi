@@ -192,12 +192,6 @@ public func run(args: Args,
         let scratch = try RawCompletionScratch(context: context,
                                                vocab: model.config.vocabSize)
         let loadSeconds = Date().timeIntervalSince(loadStart)
-        var openLayersSeconds: Double?
-        if args.openLayersBeforePrompt {
-            let openStart = Date()
-            try model.openAllRoutedExpertLayers()
-            openLayersSeconds = Date().timeIntervalSince(openStart)
-        }
 
         if let tracePath = args.dumpExpertTrace {
             try model.telemetry.startTrace(path: tracePath, header: [
@@ -263,7 +257,6 @@ public func run(args: Args,
                 : 0
             var footer = "\n[stop=\(String(describing: stats.reason)) prefill=\(stats.prefillTokens)tok new=\(stats.newTokens)tok decode=\(String(format: "%.2f", stats.decodeSeconds))s tok/s=\(String(format: "%.3f", tokensPerSecond))]\n"
             footer += statsFooter(loadSeconds: loadSeconds,
-                                  openLayersSeconds: openLayersSeconds,
                                   stats: stats,
                                   telemetry: model.telemetry.snapshot(),
                                   runner: runner,
@@ -283,7 +276,6 @@ public func run(args: Args,
 /// Phase-0 instrumentation lines. Kept on their own lines below the original
 /// footer so existing footer parsers keep working unchanged.
 private func statsFooter(loadSeconds: Double,
-                         openLayersSeconds: Double? = nil,
                          stats: RawDecodeResult,
                          telemetry: ExpertTelemetrySnapshot,
                          runner: RealForwardRunner,
@@ -303,7 +295,6 @@ private func statsFooter(loadSeconds: Double,
     let newTokens = max(stats.newTokens, 1)
 
     var lines = "[load=\(s(loadSeconds))s"
-    if let openLayersSeconds { lines += " openLayers=\(s(openLayersSeconds))s" }
     lines += " layerVerify=\(s(telemetry.layerVerifySeconds))s/\(telemetry.layersOpened)layers"
     lines += " prefill=\(s(stats.prefillSeconds))s"
     lines += " ttft=\(s(stats.timeToFirstTokenSeconds))s"

@@ -422,16 +422,6 @@ public struct Model {
         }
     }
 
-    /// Open every routed-expert layer now instead of on first touch: the
-    /// hashes run in parallel on the verify-ahead queue, then each layer is
-    /// opened in order. For a caller that wants the integrity check out of the
-    /// first prefill's timing (`--open-layers-before-prompt`).
-    public func openAllRoutedExpertLayers() throws {
-        let layers = packedExpertsLayout.numLayers
-        for L in 0..<layers { beginVerifyingRoutedExpertLayerAhead(layer: L) }
-        for L in 0..<layers { try ensureLayerOpened(L) }
-    }
-
     /// Best-effort overlap hook for prefill: starts the same lazy layer open on
     /// the model's streamer queue without waiting for the first expert fetch.
     public func beginOpeningRoutedExpertStreamer(layer L: Int) {
