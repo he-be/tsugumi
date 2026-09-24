@@ -748,7 +748,12 @@ func checkMPPPrefillInt4QMM(t: Int, n: Int, k: Int, groupSize: Int,
                              x: xBuf, y: yBuf,
                              m: t, n: n, k: k)
     waitAndCheck(cmd, "\(name) g=\(groupSize)")
-    guard path == (kernelKind == .tile64 ? .affineTile64F16 : .affineThreadgroupF16) else {
+    let expected: MPPPrefillInt4QMM.Path = switch kernelKind {
+    case .threadgroup: .affineThreadgroupF16
+    case .tile64: .affineTile64F16
+    case .nax: .affineNAXF16
+    }
+    guard path == expected else {
         fatalError("\(name) g=\(groupSize): ran the \(path.rawValue) path, "
                    + "so the MPP kernel is untested")
     }
@@ -2253,6 +2258,16 @@ for groupSize in groupSizes {
         pass.append(contentsOf: try checkMPPPrefillInt4QMM(t: t, n: n, k: k,
                                                            groupSize: groupSize, seed: seed,
                                                            kernel: .tile64))
+    }
+    // MLX's NAX QMM ported (TF_PREFILL_QMM=nax, docs/m6-prefill/31): the same
+    // shapes, plus the full-attention Q+K (9216 x 2816) and O (2816 x 8192).
+    for (t, n, k, seed) in [(64, 4096, 2816, 0x1F8), (131, 2816, 4096, 0x1F9),
+                            (131, 2112, 2816, 0x1FA), (37, 2816, 2112, 0x1FB),
+                            (37, 100, 128, 0x1FC), (70, 9216, 2816, 0x1FD),
+                            (70, 2816, 8192, 0x1FE)] as [(Int, Int, Int, UInt64)] {
+        pass.append(contentsOf: try checkMPPPrefillInt4QMM(t: t, n: n, k: k,
+                                                           groupSize: groupSize, seed: seed,
+                                                           kernel: .nax))
     }
     // The prompt-chunk routed MoE GEMMs, simdgroup and (where built) MPP.
     pass.append(contentsOf: try checkPrefillRoutedMoEGEMM(groupSize: groupSize, seed: 0xF7))

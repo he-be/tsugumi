@@ -24,11 +24,12 @@ final class PrefillSharedExpert {
         self.qmm = weightBits == 4 ? try PrefillInt4QMM(context: context) : nil
         self.rowsGEMV = weightBits == 4 ? try DequantInt4GEMV(context: context) : nil
         if weightBits == 4, MPPPrefillInt4QMM.isSharedSelected {
-            let candidate = MPPPrefillInt4QMM(context: context, kernel: .tile64)
+            let candidate = MPPPrefillInt4QMM(context: context,
+                                              kernel: MPPPrefillInt4QMM.selectedKernel)
             self.mpp = candidate.isAvailable ? candidate : nil
             let note = candidate.isAvailable ? "" : " (mpp unavailable)"
             FileHandle.standardError.write(Data(
-                "[prefill shared qmm kernel=\(candidate.isAvailable ? "mpp-tile64" : "simdgroup")\(note)]\n".utf8))
+                "[prefill shared qmm kernel=\(candidate.isAvailable ? "mpp-\(candidate.kernel.rawValue)" : "simdgroup")\(note)]\n".utf8))
         } else {
             self.mpp = nil
         }

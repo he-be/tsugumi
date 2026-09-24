@@ -5,6 +5,7 @@ package final class MPPPrefillInt4QMM {
     package enum Path: String, Sendable {
         case affineThreadgroupF16 = "affine-threadgroup-f16"
         case affineTile64F16 = "affine-tile64-f16"
+        case affineNAXF16 = "affine-nax-f16"
         case unavailable
     }
 
@@ -17,6 +18,11 @@ package final class MPPPrefillInt4QMM {
         /// threadgroup memory, one `multiply_accumulate` destination
         /// (docs/m6-prefill/12-G3-MOE-MATMUL2D.md's routed kernel, dense).
         case tile64
+        /// `mpp_prefill_affine_nax_f16`: MLX's `affine_qmm_t_nax` ported
+        /// (docs/m6-prefill/31). 64x64x64 tile, 2x2 simdgroups each holding
+        /// 32x32 of C in registers, A read from device memory into fragments,
+        /// B alone staged, `matmul2d` 16x32x16 on one simdgroup.
+        case nax
     }
 
     static let tileM = 64
@@ -31,7 +37,8 @@ package final class MPPPrefillInt4QMM {
     /// kernel for the projections only, `simdgroup` never takes this kernel.
     /// `mpp64` takes the `tile64` kernel for the projections *and* the shared
     /// MLP (`isSharedSelected`, docs/m6-prefill/17-NAX-NOT-USED.md §3 step 2).
-    /// Unset is `mpp64`, the default since docs/m6-prefill/23. Where the device
+    /// Unset is `mpp64`, the default since docs/m6-prefill/23. `nax` is the
+    /// `mpp64` arm with the `nax` kernel (a candidate, docs/m6-prefill/31). Where the device
     /// cannot build the kernel, both fall back to the simdgroup QMM.
     private static let forcedPath = ProcessInfo.processInfo.environment["TF_PREFILL_QMM"]
 
@@ -39,17 +46,21 @@ package final class MPPPrefillInt4QMM {
     package static func isSelected(affineGroupSize: Int) -> Bool {
         switch forcedPath {
         case "simdgroup": return false
-        case "mpp", "mpp64", nil: return true
+        case "mpp", "mpp64", "nax", nil: return true
         default: return affineGroupSize == tileK
         }
     }
 
     /// Whether the prefill shared MLP should offer its three GEMMs to this
     /// kernel. The `mpp64` arm, which unset also is.
-    package static var isSharedSelected: Bool { forcedPath == nil || forcedPath == "mpp64" }
+    package static var isSharedSelected: Bool {
+        forcedPath == nil || forcedPath == "mpp64" || forcedPath == "nax"
+    }
 
     /// The kernel the environment asks for when the caller does not say.
-    package static var selectedKernel: Kernel { isSharedSelected ? .tile64 : .threadgroup }
+    package static var selectedKernel: Kernel {
+        forcedPath == "nax" ? .nax : isSharedSelected ? .tile64 : .threadgroup
+    }
 
     package let kernel: Kernel
     private var pipeline: MTLComputePipelineState?
@@ -61,9 +72,11 @@ package final class MPPPrefillInt4QMM {
             self.pipeline = nil
             return
         }
-        let name = kernel == .tile64
-            ? "mpp_prefill_affine_tile64_f16"
-            : "mpp_prefill_affine_threadgroup_f16"
+        let name = switch kernel {
+        case .threadgroup: "mpp_prefill_affine_threadgroup_f16"
+        case .tile64: "mpp_prefill_affine_tile64_f16"
+        case .nax: "mpp_prefill_affine_nax_f16"
+        }
         do {
             let library = try Self.compileTensorOpsLibrary(
                 device: context.device,
@@ -101,13 +114,13 @@ package final class MPPPrefillInt4QMM {
               biasesOffset.isMultiple(of: MemoryLayout<UInt16>.stride),
               xOffset.isMultiple(of: MemoryLayout<Float16>.stride),
               yOffset.isMultiple(of: MemoryLayout<Float16>.stride),
-              // tile64 loads the activations as half4.
+              // tile64 and nax load the activations as half4.
               kernel == .threadgroup || xOffset.isMultiple(of: 8),
               let pipeline,
               let encoder = commandBuffer.makeComputeCommandEncoder() else {
             return .unavailable
         }
-        let tileN = kernel == .tile64 ? 64 : Self.tileN
+        let tileN = kernel == .threadgroup ? Self.tileN : 64
 
         encoder.setComputePipelineState(pipeline)
         encoder.setBuffer(weights, offset: weightsOffset, index: 0)
@@ -129,7 +142,11 @@ package final class MPPPrefillInt4QMM {
                                            height: 1,
                                            depth: 1))
         encoder.endEncoding()
-        return kernel == .tile64 ? .affineTile64F16 : .affineThreadgroupF16
+        switch kernel {
+        case .threadgroup: return .affineThreadgroupF16
+        case .tile64: return .affineTile64F16
+        case .nax: return .affineNAXF16
+        }
     }
 
     /// `tensorops` is compiled outside the combined runtime library, so it has
