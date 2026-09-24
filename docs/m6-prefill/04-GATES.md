@@ -20,7 +20,7 @@
 | --- | --- | --- | --- |
 | (a) 起動と初回検証 | load、層ファイルの SHA-256 (`--verification full-sha256` の layerVerify) | prefill の計測には入れない ([35](35-PREFILL-WITHOUT-VERIFY.md)) | 測らない |
 | (b) 同じプロセスでの 2 回目以降の prefill | 層は開いて検証済み。expert キャッシュの状態は決めて書く | **口が無い** (CLI に同じプロンプトを繰り返す手段が無い)。CLI の変更が要る | 判断待ち |
-| (c) 新しいプロセスでの 1 回目の prefill、検証なし | `prefill_bench.sh` の `prefill`。`--verification trusted-install` (サイズだけ確かめ、SHA-256 はしない) | **台帳 ([06](06-LEDGER.md)) の量** (ef29110 から)。ef29110 より前の (c) は検証を含み、使わない ([35](35-PREFILL-WITHOUT-VERIFY.md)) | 取れる |
+| (c) 新しいプロセスでの 1 回目の prefill、検証なし | `prefill_bench.sh` の `prefill`。`--verification trusted-install` (サイズだけ確かめ、SHA-256 はしない)。**本文は自然文の組で、run ごとに替える** ([43 §3](43-LEDGER-PROMPT-REPEATED-SENTENCE.md)) | **台帳 ([06](06-LEDGER.md)) の量** (ef29110 から)。ef29110 より前の (c) は検証を含み、使わない ([35](35-PREFILL-WITHOUT-VERIFY.md))。619c515 までの行は繰り返し文 `bench/l.json` で取っていて、SSD の読みが 3 GiB に収まる本文だった。自然文では 6〜12 GiB 読む ([43](43-LEDGER-PROMPT-REPEATED-SENTENCE.md)) | 自然文の組はスクリプト未対応 |
 
 **合格**: (b) を測る口ができ、同じ commit で (a)(b)(c) を並べた証拠ディレクトリがある。(b) の中央値は台帳の 2 列目になる。
 **判断を仰ぐこと**: (b) の口を CLI に足してよいか (同じプロンプトを N 回 prefill し、回ごとにフッタを出す)。

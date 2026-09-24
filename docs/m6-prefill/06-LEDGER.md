@@ -8,10 +8,14 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 
 1. **測る量は 1 つ。**M6、既定のバイナリ (`TF_` 環境変数なし、追加引数なし)、`prefill_bench.sh` の固定コマンド、新しいプロセスの 1 回目の prefill 壁時計 (秒)。
    ラベルは `ledger-<何>`。`prefill_bench.sh` は `ledger-*` に `TF_` か追加引数が付いていると測らずに止まる。
+   **本文は自然文の組** (`bench/m6/prompts/` の 5 本、[43 §3](43-LEDGER-PROMPT-REPEATED-SENTENCE.md)) で、run ごとに本文を替える。行は本文ごとの中央値を並べる。
+   §1 の既存の行はすべて `bench/l.json` (同じ 1 文の 50 回繰り返し) で取ったもので、繰り返し文の履歴として残し、進捗と目標の判定には使わない。`prefill_bench.sh` と `ledger.sh` はまだ `bench/l.json` 固定で、この形は未実装。
 2. **比の列は無い。**倍率・pp・%・「下限の何倍か」は、この文書にも README の現在地にも書かない。変更の効果は秒の差で書く。
 3. **行が増えるのは証拠ディレクトリができたときだけ。**同じ commit で n ≥ 6。表は `bench/m6/ledger.sh` で作り直して貼る (§2 は `--all`)。
 4. **`TF_` 付きの構成は候補であって進捗ではない** (§2)。検査を通って秒が縮んだ候補は既定に入れる ([04 原則 2](04-GATES.md))。既定に入ったら、次の `ledger-*` の行が動いたかどうかでだけ確かめる。
-5. **数字の中身**: 層ファイルの SHA-256 検証は含まない (`--verification trusted-install`、[35](35-PREFILL-WITHOUT-VERIFY.md))。空の expert キャッシュと、その run のページキャッシュの状態 (M6 では 1 run あたり SSD から 3.0〜3.7 GiB 読む) は含む。[04 B0](04-GATES.md) の (c)。同じプロセスの 2 回目 (b) の列は、測る口ができてから足す。それまで (b) の数字は存在しない。
+5. **数字の中身**: 層ファイルの SHA-256 検証は含まない (`--verification trusted-install`、[35](35-PREFILL-WITHOUT-VERIFY.md))。空の expert キャッシュと、SSD からの読みは含む。[04 B0](04-GATES.md) の (c)。
+   読む量は本文で変わる (繰り返し文 `bench/l.json` は 1 run 3.0〜3.7 GiB、自然文は 5.9〜12.0 GiB、[43 §1](43-LEDGER-PROMPT-REPEATED-SENTENCE.md))。同じ本文を続けて流すとその本文のページがキャッシュに残るので、行には 1 run の Pageins と expert io を添える。
+   同じプロセスの 2 回目 (b) の列は、測る口ができてから足す。それまで (b) の数字は存在しない。
 
 ## 1. 既定 (進捗はここだけ)
 
@@ -25,6 +29,7 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-25 | 122e144 | ledger-router-nax | 6 | 2.267 | 2.252 | 2.744 | 0 |
 | 2026-09-25 | 994a0ef | ledger-swa-unfused | 6 | 2.482 | 2.471 | 2.984 | 0 |
 
+**読み (2026-09-25、[43](43-LEDGER-PROMPT-REPEATED-SENTENCE.md))**: 上の行はすべて繰り返し文 `bench/l.json` の値。自然文の既定は 2.595〜4.568 s (`w1-def-*`、台帳の形ではまだ取っていない)。以下は繰り返し文の中での経緯。
 **読み (2026-09-24)**: 表は `--verification trusted-install` で取った行だけ (ef29110 から、[35](35-PREFILL-WITHOUT-VERIFY.md))。ef29110 より前の行は層ファイルの SHA-256 検証を含む量で、`ledger.sh` は載せない。ef29110 の 2.897 s が、この量の最初の行。
 c08e2de (2.740 s) と 084de6b (2.626 s) は全注意の 2 回の既定の変更 ([36](36-FULL-ATTN-UNFUSED.md))、994a0ef (2.482 s) は SWA の変更 ([37](37-SWA-ATTN-UNFUSED.md))、122e144 (2.267 s) は router の変更 ([38](38-ROUTER-NAX.md))、275d0f5 (1.914 s) は routed MoE の GEMM の変更 ([40](40-MOE-GEMM-NAX.md))、619c515 (1.768 s) は層ごとの先読みの頼み方の変更 ([42](42-ADVISE-LAYER-AT-ROUTING.md))。この測定環境では同じ構成の n = 6 の中央値が 0.05 s 程度揺れる (36 §2)。
 

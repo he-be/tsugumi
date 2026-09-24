@@ -1,0 +1,1 @@
+/Users/mh/dev/tsugumi/.build/release/TsugumiServer --model /Users/mh/dev/tsugumi/scratch/gemma4-qat-sym.gturbo --port 8080 --ctx-size 4096 --expert-cache-slots 32 --prefill-chunk-tokens 2048 --verification trusted-install
