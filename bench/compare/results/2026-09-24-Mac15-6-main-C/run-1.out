@@ -1,0 +1,51 @@
+thought
+
+*   Input: An image of a pair of scissors.
+*   Instructions: Describe the contents of the photo in Japanese, following a specific order: Place (場所) $\rightarrow$ Time of day (時間帯) $\rightarrow$ Prominent objects (目立つ物). The description should be detailed.
+
+    *   Object: A pair of scissors.
+    *   Material: Stainless steel (logo "ALEX STAINLESS" is visible).
+    *   Handle: Large rings, one has a white plastic/rubber insert.
+    *   Text on blade: Some Japanese characters are visible at the top. Looking closely: "〇〇高等学校" (meaning "... High School").
+    *   Surface: A plain, white, flat surface (likely a table or desk).
+    *   Lighting: Even, diffuse light, suggesting indoor lighting or bright daylight from a window. No harsh shadows.
+
+    *   *Place (場所):* The object is on a plain white surface. It looks like a desk, table, or a piece of paper. Given the "High School" text on the scissors, it's likely in a classroom or a school setting.
+    *   *Time of Day (時間帯):* The lighting is bright and even. It's hard to be certain, but it looks like daytime (daylight) or bright indoor artificial lighting.
+    *   *Prominent Objects (目立つ物):* The main object is the scissors.
+        *   Details of the scissors: Stainless steel, "ALEX STAINLESS" brand, large finger rings, white insert in one ring.
+        *   Specific detail: There's Japanese text engraved on the blade: "〇〇高等学校" (partially obscured but clearly school-related).
+
+    *   *Drafting Place:* 白い平らな表面（机やテーブル、あるいは白い紙の上）に置かれています。持ち物の文字から、学校内である可能性が高いです。
+    *   *Drafting Time:* 明るい光が均一に当たっており、日中の明るい室内、あるいは窓際での撮影と思われます。
+    *   *Drafting Prominent Objects:* 中央に大きなステンレス製のハサミが写っています。ブランド名は「ALEX STAINLESS」と刻まれています。持ち手部分は大きく、片方のリングには白いプラスチックまたはゴムのインサートが入っています。また、刃の部分には「〇〇高等学校」という漢字が刻まれています。
+
+    *   Follow the requested order: Place $\rightarrow$ Time $\rightarrow$ Objects.
+    *   Use polite and descriptive Japanese.
+
+    *Refined Output Structure:*
+    1. **場所**: 白い平らな面（机やテーブル、あるいは白い紙の上）の上です。刃に「高等学校」という文字が見えることから、学校の教室や事務室などの室内であると推測されます。
+    2. **時間帯**: 明るく均一な光が当たっていることから、日中の明るい時間帯、もしくは照明の効いた室内での撮影と思われます。
+    3. **目立つ物**: 中央に写っているのは、ステンレス製の大きなハサミです。
+        *   ブランド名として「ALEX STAINLESS」というロゴが刻まれています。
+        *   持ち手（リング部分）は大きく、片方のリングの内側には白い素材（プラスチックまたはゴム）がはめ込まれています。
+        *   刃の部分には、何らかの「高等学校」の名前が刻印されています。
+
+    *   Place included? Yes.
+    *   Time included? Yes.
+    *   Prominent objects included? Yes.
+    *   Detailed? Yes.
+    *   Order correct? Yes.
+    *   Language: Japanese.ご指定いただいた順番で、写真の内容を詳しく説明します。
+
+**1. 場所**
+白く平らな面（机、テーブル、あるいは白い紙の上）の上に置かれています。ハサミの刃に「高等学校」という文字が刻まれていることから、学校内の教室や事務室などの室内である可能性が高いと考えられます。
+
+**2. 時間帯**
+影が非常に薄く、全体が明るく均一に照らされていることから、日中の明るい時間帯、あるいは照明の明るい室内での撮影と思われます。
+
+**3. 目立つ物**
+写真の中央に、ステンレス製の大きなハサミが写っています。
+* **ブランド・刻印:** 刃に近い部分に「ALEX STAINLESS」というロゴが刻印されています。また、刃の先端側には「〇〇高等学校」という漢字の刻印が見えます。
+* **形状・素材:** 金属製（ステンレス）で、持ち手（指を入れるリング部分）が非常に大きく設計されています。
+* **持ち手の詳細:** 片方のリングの内側

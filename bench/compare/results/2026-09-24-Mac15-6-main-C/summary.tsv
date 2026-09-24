@@ -1,0 +1,4 @@
+run	stop	prefill_tok	new_tok	decode_s	tok_s	load_s	layerVerify_s	prefill_s	ttft_s	peak_gb	mtp_accept	mtp_rounds	tower_s	soft_tok	wall_s	swapouts_delta	killed	exit
+1	maxTokens	301	1024	22.69	45.122	0.728	6.110	4.427	4.428	1.45	1.795	366	1.412	260	29.563	696	0	0
+2	maxTokens	301	1024	22.85	44.820	0.729	6.011	4.281	4.282	1.47	1.664	384	1.390	260	29.579	0	0	0
+3	endOfTurn	301	989	24.02	41.166	0.731	6.103	4.335	4.336	1.46	1.500	396	1.398	260	30.900	0	0	0

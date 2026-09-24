@@ -1,0 +1,64 @@
+thought
+
+*   Input: An image of a pair of stainless steel scissors.
+*   Constraints for output: Explain in Japanese, following the order of: Location (場所) $\rightarrow$ Time of day (時間帯) $\rightarrow$ Prominent objects (目立つ物).
+*   Details required: Detailed description (詳しく説明).
+
+    *   *Subject:* A pair of metal scissors.
+    *   *Brand/Labels:* "ALEX STAINLESS" and some Japanese text at the top ("...高校学校").
+    *   *Material:* Stainless steel (metal), white plastic/rubber grips.
+    *   *State:* Used, some scratches/wear on the metal part.
+    *   *Background:* A plain, light-colored surface (looks like a desk or a white tabletop).
+    *   *Lighting:* Even, soft lighting, possibly indoor overhead light or daylight from a window, but not strictly identifiable as "morning" or "night." It's just a brightly lit indoor setting.
+
+    *   **Step 1: Location (場所)**
+        *   The scissors are on a white surface. It looks like a desk, table, or perhaps a laboratory/classroom workbench.
+        *   Japanese: 白い平らな面の上（机や作業台のような場所）。
+
+    *   **Step 2: Time of day (時間帯)**
+        *   The lighting is bright and even. Hard to tell exact time, but it's definitely daytime or under strong indoor light. Since the user asks for it, I should note that the exact time is difficult to determine, but it appears to be in a well-lit environment (likely daytime).
+        *   Japanese: 明るい室内（昼間、あるいは十分な照明がある環境）。
+
+    *   **Step 3: Prominent objects (目立つ物)**
+        *   *The Scissors:* Stainless steel scissors. Large handles with white rings.
+        *   *Details on scissors:*
+            *   Brand name "ALEX STAINLESS".
+            *   Japanese text at the top: "...高校学校" (likely "something High School").
+            *   Structure: Metal blades/body, large circular finger holes with white plastic/rubber inserts.
+            *   Condition: Some scratches and wear.
+        *   Japanese:
+            *   メインの被写体は、ステンレス製の大きなハサミです。
+            *   持ち手部分は白いくぐり（プラスチックまたはゴム製）が入っています。
+            *   ブレード（刃）の部分には「ALEX STAINLESS」というロゴと、上部に「〇〇高校学校」といった日本語の刻印が見えます。
+            *   全体的に使い込まれたような、わずかな擦れや傷があります。
+
+    *   *Drafting the full response:*
+
+    この写真の内容を、ご指定の順番で説明します。
+
+    **場所**
+    白く清潔感のある、平らなテーブルや机の上です。
+
+    **時間帯**
+    照明が均一に当たっており、非常に明るいため、日中の明るい室内、あるいは強力な照明の下であると推測されます。
+
+    **目立つ物**
+    写真の中央に、使い込まれた様子のあるステンレス製の大きなハサミが写っています。
+    *   **ハサミの細部:** 金属部分は「ALEX STAINLESS」という文字が刻印されており、その上部には「〇〇高校学校」と思われる日本語の文字も刻まれています。
+    *   **持ち手:** 持ち手の穴（指を通す部分）には、白くて丸いプラスチックまたはゴム製のインサートがはめ込まれており、金属の質感と対照的です。
+    *   **状態:** 金属の表面には、使用に伴うと思われる細かな擦り傷がいくつか見られます。
+
+    *   Order: Location $\rightarrow$ Time $\rightarrow$ Objects? Yes.
+    *   Detailed? Yes.
+    *   Japanese? Yes.ご指定いただいた順番で、写真の内容を詳しく説明します。
+
+**場所**
+白く平らな、机や作業台のような表面の上です。
+
+**時間帯**
+全体に明るい光が回っており、影もソフトであることから、日中の明るい室内、あるいは十分な照明が確保された明るい環境であると推測されます。
+
+**目立つ物**
+写真の中央に、ステンレス製の大きなハサミが写っています。
+* **ハサミの刻印:** 金属部分には「ALEX STAINLESS」というブランドロゴと、その上部に「〇〇高校学校」という日本語の文字が刻まれています。
+* **持ち手（ハンドル）:** 指を通す大きな輪の部分には、滑り止めのためのものと思われる、白くて丸

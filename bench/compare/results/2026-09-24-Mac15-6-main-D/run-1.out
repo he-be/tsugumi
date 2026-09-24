@@ -1,0 +1,79 @@
+thought
+
+*   Goal: Python CLI tool to walk a directory, compute SHA-256 of regular files, and output as CSV (path, size, sha256).
+*   Requirements:
+    *   Use `argparse`.
+    *   Handle errors (keep going if a file can't be read).
+    *   Include a `unittest` module.
+    *   Tests should use a temporary directory.
+    *   Output format: CSV (columns: `path`, `size`, `sha256`).
+
+    *   `os` / `pathlib`: For directory walking and file system operations. `pathlib` is more modern and readable.
+    *   `hashlib`: For SHA-256 computation.
+    *   `csv`: For writing the output.
+    *   `argparse`: For CLI argument parsing.
+    *   `unittest`: For testing.
+    *   `tempfile`: For creating temporary test directories.
+    *   `sys`: For exit codes and standard output/error.
+
+    *   *Function: `compute_sha256(filepath)`*
+        *   Needs to read files in chunks to handle large files without consuming all RAM.
+        *   Needs to handle `PermissionError` or `OSError` (returning None or raising a specific error to be caught).
+
+    *   *Function: `walk_and_hash(root_dir)`*
+        *   Use `pathlib.Path.rglob('*')`.
+        *   Check `is_file()` and `is_symlink()` (usually, we only want regular files, not links, to avoid infinite loops or redundant work, though the prompt says "regular file").
+        *   For each file: get path, size, and hash.
+        *   Handle exceptions per file to keep going.
+        *   Return a list of dicts or tuples.
+
+    *   *Function: `main()`*
+        *   Setup `argparse`.
+        *   Arguments: `directory` (positional), `--output` (optional file path).
+        *   If no output provided, print to stdout? The prompt says "writes the results as CSV", usually implying a file or stdout. Let's support an output file or default to stdout.
+
+    *   *Hashing Logic (Chunked):*
+        ```python
+        sha256_hash = hashlib.sha256()
+        with open(fname, "rb") as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+        ```
+
+    *   *Walking Logic:*
+        ```python
+        results = []
+        for path in Path(root_dir).rglob('*'):
+            if path.is_file() and not path.is_symlink():
+                try:
+                    size = path.stat().st_size
+                    digest = compute_sha256(path)
+                    results.append({'path': str(path), 'size': size, 'sha256': digest})
+                except (PermissionError, OSError) as e:
+                    print(f"Error processing {path}: {e}", file=sys.stderr)
+        ```
+
+    *   Setup: Use `tempfile.TemporaryDirectory`.
+    *   Create files with known content.
+    *   Run the core logic on that directory.
+    *   Assert results match expected values.
+
+    *   I'll structure the script so the core logic is in functions that can be imported for testing.
+    *   The script will have a `if __name__ == "__main__":` block.
+
+    *   *Edge Case:* Empty file. `sha256` should be the hash of an empty string.
+    *   *Edge Case:* Large file. The chunked reading handles this.
+    *   *Edge Case:* Permissions. `try-except` inside the loop handles this.
+    *   *Edge Case:* Symlinks. The prompt says "regular files", so `is_file()` + `not is_symlink()` is safest.
+
+    *   Add docstrings.
+    *   Ensure type hinting for clarity.
+    *   Use `csv.DictWriter` for clean CSV generation.
+
+    *   `argparse` used? Yes.
+    *   Walks directory tree? Yes.
+    *   SHA-256? Yes.
+    *   Columns: path, size, sha256? Yes.
+    *   Keep going on error? Yes.
+    

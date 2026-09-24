@@ -1,0 +1,61 @@
+thought
+Technical assessment of the Tsugumi project for an engineer.
+
+        *   Central resource constraint.
+        *   How runtime divides resident and streamed data.
+        *   Why prefill and decode behave differently.
+        *   Limitations for interpreting benchmarks.
+        *   Three practical rules for evaluating future changes.
+
+        *   Concise technical assessment.
+        *   Under 500 words.
+        *   Do not copy headings or sentences from the source.
+        *   Do not copy verbatim.
+
+    *   *Project Name:* Tsugumi.
+    *   *Model:* Gemma 4 26B-A4B (a Mixture of Experts/MoE model).
+    *   *Goal:* Run large models on low-RAM Apple Silicon (e.g., 8GB).
+    *   *Mechanism:*
+        *   *Constraint:* Physical RAM (specifically targetting 8GB machines).
+        *   *Data Division:*
+            *   Resident (always in RAM): 1.35 GB core/shared weights + FP16 KV cache.
+            *   Streamed (from SSD): Expert weights (only those needed for the specific token).
+        *   *Prefill vs. Decode:*
+            *   *Prefill:* Uses chunks (up to 128 tokens) so a single expert fetch serves multiple tokens/rows simultaneously.
+            *   *Decode:* One token at a time, necessitating more frequent I/O for experts.
+        *   *Benchmarks:* Performance is highly dependent on prompt/generation length, SSD page-cache state, and hardware.
+        *   *Implementation:* Swift + Metal. Uses LFU cache for experts. Uses `pread` into Metal-visible buffers.
+
+    *   *Central Constraint:* The bottleneck is limited system memory (RAM), specifically making it possible to run 26B parameter models on hardware with as little as 8GB.
+
+    *   *Data Division:* To manage this, the engine separates the model. The shared components and the KV cache stay resident in memory. The specialized MoE (Mixture of Experts) weights are fetched from the SSD on demand based on router decisions.
+
+    *   *Prefill vs. Decode:* The divergence in behavior stems from how experts are utilized. During the prefill stage, the engine processes tokens in chunks (up to 128), allowing a single expert read to satisfy multiple rows. During decoding, the process is strictly sequential (one token at a time), increasing the frequency of I/O requests for the required experts.
+
+    *   *Benchmark Interpretation:* Numbers are not fixed ceilings; they are heavily influenced by the current state of the SSD's page cache, the length of the sequence, and the specific hardware architecture.
+
+    *   *Three Practical Rules:*
+        1. Check SSD cache status.
+        2. Consider sequence length impact.
+        3. Note the distinction between prefill and decode performance.
+
+    *   *Constraint:* "The primary limitation is the limited physical RAM on Apple Silicon devices..." -> "The fundamental constraint is limited system memory, specifically targeting efficient operation on 8GB Apple Silicon hardware." (Better).
+    *   *Data Division:* "The runtime splits the model into resident and streamed components. Shared weights and the KV cache are kept in memory, while the specific Mixture-of-Experts (MoE) weights are streamed from the SSD as needed via an LFU cache and parallel `pread` calls."
+    *   *Prefill/Decode:* "Performance varies between phases: prefill uses chunking (up to 128 tokens) to maximize the utility of each fetched expert across multiple rows, whereas decoding operates token-by-token, requiring more granular I/O for the routed experts."
+    *   *Benchmarks:* "When analyzing benchmark data, remember that results are highly sensitive to the state of the SSD page cache, prompt/generation length, and hardware-specific throughput."
+
+    *   *Rules:*
+        1. Account for SSD page-cache hits.
+        2. Differentiate between chunked prefill and single-token decode.
+        3. Factor in the context length and generation length.
+
+    *   Concise? Yes.
+    *   Central constraint included? Yes (RAM).
+    *   Data division included? Yes (Shared/KV in RAM, Experts on SSD).
+    *   Prefill vs. Decode explained? Yes (Chunking vs. sequential).
+    *   Benchmark limitations? Yes (Cache/Length/Hardware).
+    *   Three practical rules? Yes.
+    *   No copied headings/sentences? Check.
+    *   Under 500 words? Yes (~250 words).
+
+    (Self-Correction during drafting: Ensure I mention the MoE nature implicitly or explicitly as

@@ -1,0 +1,68 @@
+thought
+
+*   Input: An image of a pair of scissors.
+    *   Request: Describe what is in the photo in Japanese, following a specific order: Location $\rightarrow$ Time of day $\rightarrow$ Prominent objects.
+    *   Details: The description should be "detailed" (詳しく).
+
+    *   *Object:* A pair of stainless steel scissors.
+    *   *Details of the object:*
+        *   Material: Stainless steel (text "ALEX STAINLESS" is visible).
+        *   Branding: "ALEX STAINLESS".
+        *   Japanese text: Some kanji/characters are visible at the top left corner: "...高高等学校" (likely "...High School").
+        *   Condition: Used, some scratches, white plastic/rubber finger grips in the loops.
+    *   *Background/Setting:* A flat, plain, light-colored (white or very light grey) surface.
+    *   *Lighting/Time of Day:* The lighting is bright, even, and diffuse. It looks like indoor lighting (artificial) or bright daylight from a window. It's hard to pinpoint a specific "time of day" because it's a studio-like or close-up shot, but it's clearly daytime or a well-lit indoor environment.
+
+    *   **Step 1: Location (場所)**
+        *   The surface is plain and white. It looks like a desk, a table, or a white sheet of paper.
+        *   *Draft:* 白い机の上、または白い平らな面の上。 (On a white desk or a white flat surface.)
+
+    *   **Step 2: Time of day (時間帯)**
+        *   The lighting is bright and clear. It's hard to be certain, but it suggests daytime or a bright indoor setting.
+        *   *Draft:* 日中、または明るい照明の下。(During the day, or under bright lighting.)
+
+    *   **Step 3: Prominent objects (目立つ物)**
+        *   The main object is the scissors.
+        *   *Details:*
+            *   Large stainless steel scissors.
+            *   "ALEX STAINLESS" brand name visible.
+            *   White plastic ring inserts in the handles.
+            *   Text "高高等学校" (High School) near the top.
+            *   Positioned diagonally.
+        *   *Draft:* メインの被写体は、斜めに置かれたステンレス製のハサミです。「ALEX STAINLESS」というロゴがあり、持ち手部分には白いプラスチック製のリングが付いています。また、上部には「高高等学校」という文字が見えます。
+
+    *   Combine and refine into a natural Japanese flow.
+
+    *   *Location:* 白い平らな表面（デスクや紙の上など）の上。
+    *   *Time:* 明るい室内、あるいは日中の光が入る環境。
+    *   *Objects:* ステンレス製の大きなハサミ。
+
+    *Refined Detailed Version:*
+    【場所】
+    白く清潔感のある、平らな表面（デスク、テーブル、あるいは白い紙の上など）に置かれています。
+
+    【時間帯】
+    全体的に明るく均一な光が当たっており、日中の明るい時間帯、あるいは十分な照明のある室内で撮影されたものと考えられます。
+
+    【目立つ物】
+    写真の中央に、斜めに置かれたステンレス製の大きなハサミが写っています。
+    ハサミには「ALEX STAINLESS」というブランドロゴが刻印されており、持ち手（指をかける部分）には、滑り止めや使いやすさを考慮したと思われる白いプラスチック製のリングがはめ込まれています。
+    また、ハサミの刃に近い上部には、日本語で「〇〇高高等学校」の一部と思われる文字（「高高等学校」）が刻印されているのが見て取れます。
+
+    *   Location $\rightarrow$ Time $\rightarrow$ Prominent objects? Yes.
+    *   Detailed? Yes.
+    *   Japanese? Yes.
+
+    (Self-Correction during drafting): The prompt asks to describe *what is in the photo* in that order.
+
+    1. Place: White surface.
+    2. Time: Bright/Daytime.
+    3. Object: Stainless steel scissors (Alex brand, white rings, "High school" text).
+
+    Let's make the tone polite and descriptive.ご指定いただいた順序に従って、写真の内容を詳しく説明します。
+
+**【場所】**
+白く清潔感のある、平らな表面（デスク、テーブル、あるいは白い紙の上など）の上に置かれています。
+
+**【時間帯】**
+全体に明るく均一な光が回っており、

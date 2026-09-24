@@ -1,0 +1,54 @@
+thought
+
+*   Target Audience: An engineer who hasn't seen the project.
+    *   Goal: A concise technical assessment.
+    *   Content Requirements:
+        1.  Explain the central resource constraint.
+        2.  Explain how the runtime divides resident vs. streamed data.
+        3.  Explain why prefill and decode behave differently.
+        4.  Explain which limitations matter when interpreting benchmarks.
+        5.  End with three practical rules for evaluating future changes.
+    *   Constraints:
+        *   Concise/Technical.
+        *   No copying headings or sentences.
+        *   Under 500 words.
+
+    *   *Project Name:* Tsugumi.
+    *   *Core Function:* Runs a massive model (Gemma 4 26B-A4B) on limited hardware (e.g., 8 GB RAM Mac).
+    *   *Central Constraint:* RAM (specifically the high cost/scarcity of memory for large models).
+    *   *Data Division:*
+        *   Resident (In Memory): The shared 1.35 GB core and the FP16 KV cache.
+        *   Streamed (From SSD): Only the specific experts needed for a particular token (routed experts).
+    *   *Mechanism:* Router identifies top-8 experts; CPU plans; Metal handles shared weights while parallel `pread` calls fetch missing experts from SSD into Metal-visible buffers.
+    *   *Prefill vs. Decode:*
+        *   Prefill: Uses chunks (up to 128 tokens) so one expert fetch can serve multiple tokens.
+        *   Decode: Processes one token at a time, requiring repetitive expert fetching.
+    *   *Benchmark Limitations:* Performance is not a ceiling; it depends on prompt/generated length, SSD page-cache state, and specific hardware.
+    *   *Tech Stack:* Swift 6.2, Metal 4, macOS 26.
+
+    *   *Constraint:* Memory is the bottleneck. The goal is to fit a 26B parameter model into ~2GB RAM.
+    *   *Data Division:* It keeps the common parts (1.35 GB shared weights and KV cache) in RAM. The specialized expert weights are fetched from the SSD on demand.
+    *   *Prefill vs. Decode:* Prefill is efficient because it processes token chunks, meaning one I/O operation for experts serves many tokens. Decode is slower because it's token-by-token, requiring frequent I/O for each new step.
+    *   *Benchmark Interpretation:* Numbers change based on the cache state of the SSD, prompt/output length, and hardware variation.
+
+    *   *Constraint:* The primary bottleneck is the limited Unified Memory (RAM) on Apple Silicon, specifically targeting low-memory environments like 8 GB machines.
+    *   *Memory Strategy:* The runtime splits the model into resident and streamed components. The shared weight core and the FP16 KV cache remain in memory. The Mixture-of-Experts (MoE) routed weights are streamed from the SSD via parallel `pread` calls into Metal-visible buffers only when the router identifies them as necessary.
+    *   *Prefill vs. Decode:* Throughput varies significantly because of I/O utilization. During the prefill phase, the engine processes tokens in chunks (up to 128), allowing a single expert fetch to satisfy multiple tokens. During the decode phase, the process happens one token at a time, necessitating much more frequent I/O cycles.
+    *   *Benchmark Interpretation:* Performance metrics are highly sensitive to the SSD's page-cache state and the specific sequence lengths (prompt vs. completion) used during testing. They represent a snapshot rather than an absolute hardware limit.
+
+    *   *Three Rules for Future Evaluation:*
+        1. Account for SSD I/O latency and page-cache hits.
+        2. Distinguish between chunked prefill efficiency and token-by-token decode throughput.
+        3. Validate against varying prompt and generation lengths.
+
+    *   *Concise technical assessment?* Yes.
+    *   *Engineer audience?* Yes (uses terms like `pread`, MoE, KV cache, throughput).
+    *   *Central constraint included?* Yes.
+    *   *Resident vs. streamed included?* Yes.
+    *   *Prefill vs. decode included?* Yes.
+    *   *Benchmark limitations included?* Yes.
+    *   *Three practical rules at the end?* Yes.
+    *   *No copied headings/sentences?* Checked.
+    *   *Under 500 words?* Yes (currently ~230 words).
+
+    *Self-Correction during drafting:* Make sure to explicitly mention "Metal

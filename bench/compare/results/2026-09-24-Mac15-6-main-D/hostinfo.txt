@@ -1,0 +1,2 @@
+測定: 2026-09-24 / Mac15,6 Apple M3 Pro 18GB / macOS 15.7.5 (24G624) / Swift 6.3.3 / SDK 26.5 / Xcode 26.6 / APPLE SSD AP1024Z / commit ae4cf42 / minos 15.0
+注: commit は hostinfo.sh の出力では ?+dirty (git の無い展開先で実行したため)。バイナリは MBP で git archive ae4cf42 を scratchpad に展開し swift build -c release --product TsugumiCLI したもの。展開物は無改変。モデルは MODEL= でリポジトリの scratch/gemma4-qat-sym.gturbo を指した。

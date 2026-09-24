@@ -1,0 +1,49 @@
+thought
+
+*   Task: Write a concise technical assessment for an engineer.
+    *   Source: Provided text about "Tsugumi," a runtime for Gemma 4 26B-A4B.
+    *   Required Content:
+        1.  Central resource constraint.
+        2.  How the runtime divides resident vs. streamed data.
+        3.  Why prefill and decode behave differently.
+        4.  Limitations for interpreting benchmark numbers.
+        5.  Three practical rules for evaluating future changes.
+    *   Constraints:
+        *   Concise.
+        *   Do not copy headings or sentences.
+        *   Under 500 words.
+        *   Target audience: An engineer who has not seen the project.
+
+    *   *Model:* Gemma 4 26B-A4B (Mixture of Experts - MoE).
+    *   *Problem:* Model is huge (14.3 GB), but target is 8 GB RAM Macs.
+    *   *Solution:* Keep core weights/KV cache in RAM; stream experts from SSD.
+    *   *Memory split:*
+        *   Resident: ~1.35 GB core (shared weights) + FP16 KV cache.
+        *   Streamed: Specific MoE experts fetched from SSD via `pread` when needed by the router.
+    *   *Prefill vs. Decode:*
+        *   Prefill: Uses chunks (up to 128 tokens) so one expert fetch serves multiple rows (improves I/O efficiency).
+        *   Decode: Processes one token at a time, necessitating frequent expert swaps/fetches (I/O bound).
+    *   *Benchmarks:* Influenced by prompt length, generation length, page-cache state, and hardware specs.
+    *   *Implementation Details:* Swift + Metal, LFU expert cache, `pread` calls, parallel I/O while Metal runs the shared branch.
+
+    *   *Central Resource Constraint:* System memory (RAM) is the bottleneck. Specifically, fitting a 26B MoE model onto 8GB machines.
+    *   *Data Division:* The runtime keeps the "shared" weights (the core components common to all tokens) and the KV cache in resident RAM. The specialized "experts" (MoE components) are streamed from the SSD on-demand based on router output.
+    *   *Prefill vs. Decode:* Prefill is more efficient because it processes tokens in batches (up to 128), allowing a single SSD read of an expert to cover multiple tokens. Decode is one token at a time, meaning it relies heavily on rapid, single-token expert retrieval, making it much more sensitive to I/O latency.
+    *   *Benchmark Limitations:* Numbers aren't ceilings; they are heavily dependent on the state of the SSD page cache, the specific prompt/output length, and the hardware's I/O throughput.
+    *   *Three Rules:*
+        1.  Focus on I/O latency/throughput during expert swaps.
+        2.  Account for page-cache warmness.
+        3.  Consider token batching effects on prefill.
+
+    *   *Drafting Content:*
+        Tsugumi is a Swift and Metal-based inference engine designed to run large Mixture-of-Experts (MoE) models like Gemma 4 26B on memory-constrained Apple Silicon hardware (e.g., 8 GB RAM).
+
+        The primary constraint is RAM capacity. To overcome this, the engine splits the model into two parts: "resident" weights (the shared layers and the KV cache) remain permanently in memory, while the "routed" experts are dynamically streamed from the SSD using parallel `pread` calls as determined by the model's router.
+
+        The performance characteristics of prefill and decode differ due to how they handle I/O. During the prefill phase, the engine processes tokens in chunks (up to 128 tokens). This allows a single expert load from the SSD to serve multiple tokens, amortizing the I/O cost. In contrast, the decode phase processes tokens sequentially, one by one, meaning the system must fetch experts for every single token, making it much more sensitive to storage latency.
+
+        When analyzing performance metrics, be aware that benchmarks are not theoretical maximums. They are highly contingent on the device's I/O subsystem, the current state of the SSD page cache (warm vs. cold), and the specific length of the input and output sequences.
+
+        **Rules for evaluating future changes:**
+        1.  Measure I/O throughput and latency for expert swapping, as this is the primary bottleneck.
+        2.  Always specify the SSD page-cache state (e.g., warm cache) when reporting results.
