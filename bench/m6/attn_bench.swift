@@ -5,6 +5,10 @@
 //       attention_prefill_causal_qblock_d256:256:32 attention_prefill_causal_sgmm_d256:128:32 \
 //       attention_prefill_causal_sgmm_gqa_d256:256:32:2
 // 形は Gemma 4 の SWA 層: 16/8 ヘッド、d256、窓 1024、2478 トークンを 2048 + 430 の 2 チャンク、25 層分を 1 コマンドバッファ。
+// TF_ATTN_BENCH_SHAPE=full で全注意の層: 16/2 ヘッド、d512、窓なし、5 層分 (docs/m6-prefill/36)。
+//   TF_ATTN_BENCH_SHAPE=full /tmp/attn_bench Sources/Tsugumi/Metal/Prefill/prefill.metal \
+//       attention_prefill_causal_qblock_d512:256:16 attention_prefill_full_mpp_d512_r32:128:32 \
+//       attention_prefill_full_mpp_d512_r64:256:64
 import Metal
 import Foundation
 
@@ -21,7 +25,9 @@ let lib = try! device.makeLibrary(source: src, options: opts)
 
 struct Params { var startPosition: UInt32; var queryCount: UInt32; var headDim: UInt32; var numQHeads: UInt32; var numKVHeads: UInt32; var kvValidCount: UInt32; var slidingWindow: UInt32; var kvStride: UInt32; var qStride: UInt32; var oStride: UInt32; var scale: Float; var hasSpanMask: UInt32 }
 
-let H = 16, KVH = 8, D = 256, total = 2478, window = 1024
+let full = ProcessInfo.processInfo.environment["TF_ATTN_BENCH_SHAPE"] == "full"
+let H = 16, KVH = full ? 2 : 8, D = full ? 512 : 256, total = 2478, window = full ? 0 : 1024
+let layers = full ? 5 : 25
 func buf(_ n: Int, seed: UInt32) -> MTLBuffer {
     let b = device.makeBuffer(length: n * 2, options: .storageModeShared)!
     let p = b.contents().bindMemory(to: Float16.self, capacity: n)
@@ -44,7 +50,7 @@ for (ki, name) in kernels.enumerated() {
     for rep in 0..<6 {
         let cb = queue.makeCommandBuffer()!
         for (start, T) in [(0, 2048), (2048, total - 2048)] {
-            for _ in 0..<25 {
+            for _ in 0..<layers {
                 var p = Params(startPosition: UInt32(start), queryCount: UInt32(T), headDim: UInt32(D), numQHeads: UInt32(H), numKVHeads: UInt32(KVH), kvValidCount: UInt32(start + T), slidingWindow: UInt32(window), kvStride: UInt32(KVH * D), qStride: UInt32(H * D), oStride: UInt32(H * D), scale: 1, hasSpanMask: 0)
                 let enc = cb.makeComputeCommandEncoder()!
                 enc.setComputePipelineState(pso)
@@ -60,7 +66,7 @@ for (ki, name) in kernels.enumerated() {
         if rep > 0 { times.append(cb.gpuEndTime - cb.gpuStartTime) }
     }
     times.sort()
-    print(String(format: "%@  25 layers x 2 chunks: median %.3f s (min %.3f max %.3f)  regs? maxThreads=%d", fn, times[times.count/2], times[0], times.last!, pso.maxTotalThreadsPerThreadgroup))
+    print(String(format: "%@  %d layers x 2 chunks: median %.3f s (min %.3f max %.3f)  regs? maxThreads=%d", fn, layers, times[times.count/2], times[0], times.last!, pso.maxTotalThreadsPerThreadgroup))
 }
 // compare every output row of both chunks against kernel 0
 if kernels.count > 1 {

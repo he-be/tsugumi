@@ -79,6 +79,19 @@ final class PrefillAttention {
     /// simdgroup-matrix kernel, `=qblock` on the query-blocked one.
     private static let swaMPPDisabled = forcedSimdgroupMatrix || forcedQBlock
     private static let swaMPPRows = 64
+    /// The full-attention layers (headDim 512) on the same `matmul2d` kernel
+    /// (docs/m6-prefill/36), as a candidate: `TF_PREFILL_ATTN_FULL=mpp32`
+    /// takes 32 rows on 4 simdgroups, `=mpp64` 64 rows on 8. Unset keeps them
+    /// on the query-blocked kernel.
+    private static let fullMPPShape: (function: String, rows: Int, threads: Int)? = {
+        if swaMPPDisabled { return nil }
+        switch ProcessInfo.processInfo.environment["TF_PREFILL_ATTN_FULL"] {
+        case "mpp32": return ("attention_prefill_full_mpp_d512_r32", 32, 128)
+        case "mpp64": return ("attention_prefill_full_mpp_d512_r64", 64, 256)
+        default: return nil
+        }
+    }()
+    private static let fullMPPHeadDim: UInt32 = 512
     private static let swaMPPKeys: UInt32 = 64
     private static let swaMPPThreads = 128
     private static let sgmmHeadDim: UInt32 = 256
@@ -95,6 +108,7 @@ final class PrefillAttention {
     /// Whether the library has the `matmul2d` sliding-window kernel at all;
     /// the ring-specialised pipelines are built on first use.
     private let hasSwaMPP: Bool
+    private let hasFullMPP: Bool
 
     init(context: MetalContext) throws {
         self.context = context
@@ -107,6 +121,9 @@ final class PrefillAttention {
             try? context.pipeline("attention_prefill_full_tensorops_2d_validity_v2")
         self.hasSwaMPP = !Self.swaMPPDisabled
             && (try? context.pipeline("attention_prefill_swa_mpp_d256")) != nil
+        self.hasFullMPP = Self.fullMPPShape.map {
+            (try? context.pipeline($0.function)) != nil
+        } ?? false
     }
 
     func encodeCausal(commandBuffer: MTLCommandBuffer,
@@ -152,7 +169,12 @@ final class PrefillAttention {
             && params.headDim == Self.sgmmHeadDim
             && params.spanMaskEnabled == 0
             && kvRingCapacity % Self.swaMPPKeys == 0
-        enum Variant { case tensorOps, swaMPP, sgmm, sgmmGqa, qBlock, tiled }
+        let fullMPPShape = hasFullMPP
+            && path == .causalSimdgroupMatrix
+            && params.headDim == Self.fullMPPHeadDim
+            && params.spanMaskEnabled == 0
+            && kvRingCapacity % Self.swaMPPKeys == 0
+        enum Variant { case tensorOps, swaMPP, fullMPP, sgmm, sgmmGqa, qBlock, tiled }
         let variant: Variant
         let pipeline: MTLComputePipelineState
         var qBlock: QBlockSpecialisation?
@@ -165,6 +187,9 @@ final class PrefillAttention {
         } else if swaMPPShape {
             variant = .swaMPP
             pipeline = sgmmPipeline("attention_prefill_swa_mpp_d256", kvRingCapacity: kvRingCapacity)
+        } else if fullMPPShape, let shape = Self.fullMPPShape {
+            variant = .fullMPP
+            pipeline = sgmmPipeline(shape.function, kvRingCapacity: kvRingCapacity)
         } else if path == .causalSimdgroupMatrix && params.headDim == Self.sgmmHeadDim {
             let gqa = params.numQHeads == Self.sgmmGqaHeads * params.numKVHeads
             variant = gqa ? .sgmmGqa : .sgmm
@@ -189,6 +214,7 @@ final class PrefillAttention {
         switch variant {
         case .tensorOps: threadCount = 128
         case .swaMPP: threadCount = Self.swaMPPThreads
+        case .fullMPP: threadCount = Self.fullMPPShape?.threads ?? 0
         case .sgmm: threadCount = Self.sgmmThreads
         case .sgmmGqa: threadCount = Self.sgmmGqaThreads
         case .qBlock: threadCount = Self.qBlockThreads
@@ -217,6 +243,12 @@ final class PrefillAttention {
         case .swaMPP:
             groups = MTLSize(
                 width: (Int(params.queryCount) + Self.swaMPPRows - 1) / Self.swaMPPRows,
+                height: Int(params.numQHeads),
+                depth: 1)
+        case .fullMPP:
+            let rows = Self.fullMPPShape?.rows ?? 1
+            groups = MTLSize(
+                width: (Int(params.queryCount) + rows - 1) / rows,
                 height: Int(params.numQHeads),
                 depth: 1)
         case .sgmm, .sgmmGqa:

@@ -2380,6 +2380,9 @@ for groupSize in groupSizes {
     // The sliding-window prefill attention, sgmm and (where built) MPP. No
     // quantized weights in it, so both group sizes run the same fixture.
     pass.append(contentsOf: try checkPrefillSWAAttention(groupSize: groupSize, seed: 0xFD))
+    // The full-attention prefill attention (headDim 512), qblock and (where
+    // built) the MPP candidates.
+    pass.append(contentsOf: try checkPrefillFullAttention(groupSize: groupSize, seed: 0xFE))
 
     printCases(pass)
     results.append(contentsOf: pass)
