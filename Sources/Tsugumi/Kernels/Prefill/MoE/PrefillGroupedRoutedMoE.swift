@@ -487,11 +487,12 @@ final class PrefillGroupedRoutedMoE {
     /// second dispatch (docs/m6-prefill/28). A candidate; same values and K order.
     private static let prefetchRequested =
         ProcessInfo.processInfo.environment["TF_PREFILL_MOE_PF"] == "1"
-    /// `TF_PREFILL_MOE_NAX=1`: the mpp path runs `prefill_moe_gemm_int4_nax`,
-    /// the tile product on MLX's 16x16 fragments (docs/m6-prefill/40). A
-    /// candidate; same bindings, grid and outputs.
+    /// The mpp path runs `prefill_moe_gemm_int4_nax` by default, the tile
+    /// product on MLX's 16x16 fragments (docs/m6-prefill/40): same bindings,
+    /// grid and outputs, bit for bit. `TF_PREFILL_MOE_NAX=0` keeps
+    /// `prefill_moe_gemm_int4_mpp`.
     static let naxRequested =
-        ProcessInfo.processInfo.environment["TF_PREFILL_MOE_NAX"] == "1"
+        ProcessInfo.processInfo.environment["TF_PREFILL_MOE_NAX"] != "0"
 
     /// Reused staging, indexed the way a chunk uses it: one sorted-pair buffer
     /// per layer and one argument buffer per tile position. A layer's routed

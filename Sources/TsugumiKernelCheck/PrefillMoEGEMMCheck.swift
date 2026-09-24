@@ -305,8 +305,8 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
                         tolerance: Double(Tolerance.fp16ChainedReduction),
                         detail: "differing=\(differing)/\(mpp.count) maxAbs=\(maxAbs)"))
 
-    // The 16x16-fragment candidate (docs/m6-prefill/40, `TF_PREFILL_MOE_NAX=1`)
-    // stages the same FP16 weights but sums each K step in its own order.
+    // The 16x16-fragment kernel (the default where built, docs/m6-prefill/40;
+    // `TF_PREFILL_MOE_NAX=0` for mpp) stages the same FP16 weights.
     if let naxPSO = try? context.pipeline("prefill_moe_gemm_int4_nax") {
         let nax = run(naxPSO, label: name + " nax")
         cases.append(result(name + " nax", groupSize: groupSize,
