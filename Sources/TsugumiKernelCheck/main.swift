@@ -2058,6 +2058,13 @@ if arguments.contains("--rows-bench") {
 // (MoERowsBench.swift), which is where `docs/mtp/28-M8-PROPOSAL.md` §2 puts the
 // remaining GPU gap. Separate flag because it reports a slope in r rather than
 // a throughput, and because gate/up and down are timed apart.
+// `--dense-qmm-bench` times the dense prefill QMM kernels (tile64, nax) on the
+// projection and shared-MLP shapes (DenseQMMBench.swift, docs/m6-prefill/31).
+if arguments.contains("--dense-qmm-bench") {
+    try runDenseQMMBench(groupSize: groupSizes[0], iterations: 20)
+    exit(0)
+}
+
 // `--moe-gemm-bench` times the prompt-chunk routed gate/up GEMM (tiled path)
 // alone, by rows per expert (PrefillMoEGEMMBench.swift, docs/m6-prefill/28).
 if arguments.contains("--moe-gemm-bench") {
