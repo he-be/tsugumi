@@ -3179,9 +3179,9 @@ static inline void attn_frag_mma(thread attn_frag_f& c0, thread attn_frag_f& c1,
         16, 32, 16, false, TransposeB, true,
         matmul2d_descriptor::mode::multiply_accumulate);
     matmul2d<desc, execution_simdgroup> op;
-    auto ct_a = op.get_left_input_cooperative_tensor<half, half, float>();
-    auto ct_b = op.get_right_input_cooperative_tensor<half, half, float>();
-    auto ct_c = op.get_destination_cooperative_tensor<
+    auto ct_a = op.template get_left_input_cooperative_tensor<half, half, float>();
+    auto ct_b = op.template get_right_input_cooperative_tensor<half, half, float>();
+    auto ct_c = op.template get_destination_cooperative_tensor<
         metal::remove_addrspace_t<decltype(ct_a)>,
         metal::remove_addrspace_t<decltype(ct_b)>, float>();
     #pragma clang loop unroll(full)

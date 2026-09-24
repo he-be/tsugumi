@@ -1,0 +1,228 @@
+Swift/ErrorType.swift:254: Fatal error: Error raised at top level: Metal library compile failed: Error Domain=MTLLibraryErrorDomain Code=3 "program_source:2438:13: warning: variable 'final_m' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+        if (simd_lane_id == 0) {
+            ^~~~~~~~~~~~~~~~~
+program_source:2446:31: note: uninitialized use occurs here
+    const float m_final     = final_m;
+                              ^~~~~~~
+program_source:2438:9: note: remove the 'if' if its condition is always true
+        if (simd_lane_id == 0) {
+        ^~~~~~~~~~~~~~~~~~~~~~~
+program_source:2429:9: warning: variable 'final_m' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+    if (simd_group_id == 0) {
+        ^~~~~~~~~~~~~~~~~~
+program_source:2446:31: note: uninitialized use occurs here
+    const float m_final     = final_m;
+                              ^~~~~~~
+program_source:2429:5: note: remove the 'if' if its condition is always true
+    if (simd_group_id == 0) {
+    ^~~~~~~~~~~~~~~~~~~~~~~~
+program_source:2396:30: note: initialize the variable 'final_m' to silence this warning
+    threadgroup float final_m;
+                             ^
+                              = 0.0
+program_source:2438:13: warning: variable 'final_inv_d' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+        if (simd_lane_id == 0) {
+            ^~~~~~~~~~~~~~~~~
+program_source:2447:31: note: uninitialized use occurs here
+    const float inv_d_final = final_inv_d;
+                              ^~~~~~~~~~~
+program_source:2438:9: note: remove the 'if' if its condition is always true
+        if (simd_lane_id == 0) {
+        ^~~~~~~~~~~~~~~~~~~~~~~
+program_source:2429:9: warning: variable 'final_inv_d' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+    if (simd_group_id == 0) {
+        ^~~~~~~~~~~~~~~~~~
+program_source:2447:31: note: uninitialized use occurs here
+    const float inv_d_final = final_inv_d;
+                              ^~~~~~~~~~~
+program_source:2429:5: note: remove the 'if' if its condition is always true
+    if (simd_group_id == 0) {
+    ^~~~~~~~~~~~~~~~~~~~~~~~
+program_source:2397:34: note: initialize the variable 'final_inv_d' to silence this warning
+    threadgroup float final_inv_d;
+                                 ^
+                                  = 0.0
+program_source:7074:20: error: use 'template' keyword to treat 'get_left_input_cooperative_tensor' as a dependent template name
+    auto ct_a = op.get_left_input_cooperative_tensor<half, half, float>();
+                   ^
+                   template 
+program_source:7075:20: error: use 'template' keyword to treat 'get_right_input_cooperative_tensor' as a dependent template name
+    auto ct_b = op.get_right_input_cooperative_tensor<half, half, float>();
+                   ^
+                   template 
+program_source:7076:20: error: use 'template' keyword to treat 'get_destination_cooperative_tensor' as a dependent template name
+    auto ct_c = op.get_destination_cooperative_tensor<
+                   ^
+                   template 
+" UserInfo={NSLocalizedDescription=program_source:2438:13: warning: variable 'final_m' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+        if (simd_lane_id == 0) {
+            ^~~~~~~~~~~~~~~~~
+program_source:2446:31: note: uninitialized use occurs here
+    const float m_final     = final_m;
+                              ^~~~~~~
+program_source:2438:9: note: remove the 'if' if its condition is always true
+        if (simd_lane_id == 0) {
+        ^~~~~~~~~~~~~~~~~~~~~~~
+program_source:2429:9: warning: variable 'final_m' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+    if (simd_group_id == 0) {
+        ^~~~~~~~~~~~~~~~~~
+program_source:2446:31: note: uninitialized use occurs here
+    const float m_final     = final_m;
+                              ^~~~~~~
+program_source:2429:5: note: remove the 'if' if its condition is always true
+    if (simd_group_id == 0) {
+    ^~~~~~~~~~~~~~~~~~~~~~~~
+program_source:2396:30: note: initialize the variable 'final_m' to silence this warning
+    threadgroup float final_m;
+                             ^
+                              = 0.0
+program_source:2438:13: warning: variable 'final_inv_d' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+        if (simd_lane_id == 0) {
+            ^~~~~~~~~~~~~~~~~
+program_source:2447:31: note: uninitialized use occurs here
+    const float inv_d_final = final_inv_d;
+                              ^~~~~~~~~~~
+program_source:2438:9: note: remove the 'if' if its condition is always true
+        if (simd_lane_id == 0) {
+        ^~~~~~~~~~~~~~~~~~~~~~~
+program_source:2429:9: warning: variable 'final_inv_d' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+    if (simd_group_id == 0) {
+        ^~~~~~~~~~~~~~~~~~
+program_source:2447:31: note: uninitialized use occurs here
+    const float inv_d_final = final_inv_d;
+                              ^~~~~~~~~~~
+program_source:2429:5: note: remove the 'if' if its condition is always true
+    if (simd_group_id == 0) {
+    ^~~~~~~~~~~~~~~~~~~~~~~~
+program_source:2397:34: note: initialize the variable 'final_inv_d' to silence this warning
+    threadgroup float final_inv_d;
+                                 ^
+                                  = 0.0
+program_source:7074:20: error: use 'template' keyword to treat 'get_left_input_cooperative_tensor' as a dependent template name
+    auto ct_a = op.get_left_input_cooperative_tensor<half, half, float>();
+                   ^
+                   template 
+program_source:7075:20: error: use 'template' keyword to treat 'get_right_input_cooperative_tensor' as a dependent template name
+    auto ct_b = op.get_right_input_cooperative_tensor<half, half, float>();
+                   ^
+                   template 
+program_source:7076:20: error: use 'template' keyword to treat 'get_destination_cooperative_tensor' as a dependent template name
+    auto ct_c = op.get_destination_cooperative_tensor<
+                   ^
+                   template 
+}
+exit(64)=133
+Swift/ErrorType.swift:254: Fatal error: Error raised at top level: Metal library compile failed: Error Domain=MTLLibraryErrorDomain Code=3 "program_source:2438:13: warning: variable 'final_m' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+        if (simd_lane_id == 0) {
+            ^~~~~~~~~~~~~~~~~
+program_source:2446:31: note: uninitialized use occurs here
+    const float m_final     = final_m;
+                              ^~~~~~~
+program_source:2438:9: note: remove the 'if' if its condition is always true
+        if (simd_lane_id == 0) {
+        ^~~~~~~~~~~~~~~~~~~~~~~
+program_source:2429:9: warning: variable 'final_m' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+    if (simd_group_id == 0) {
+        ^~~~~~~~~~~~~~~~~~
+program_source:2446:31: note: uninitialized use occurs here
+    const float m_final     = final_m;
+                              ^~~~~~~
+program_source:2429:5: note: remove the 'if' if its condition is always true
+    if (simd_group_id == 0) {
+    ^~~~~~~~~~~~~~~~~~~~~~~~
+program_source:2396:30: note: initialize the variable 'final_m' to silence this warning
+    threadgroup float final_m;
+                             ^
+                              = 0.0
+program_source:2438:13: warning: variable 'final_inv_d' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+        if (simd_lane_id == 0) {
+            ^~~~~~~~~~~~~~~~~
+program_source:2447:31: note: uninitialized use occurs here
+    const float inv_d_final = final_inv_d;
+                              ^~~~~~~~~~~
+program_source:2438:9: note: remove the 'if' if its condition is always true
+        if (simd_lane_id == 0) {
+        ^~~~~~~~~~~~~~~~~~~~~~~
+program_source:2429:9: warning: variable 'final_inv_d' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+    if (simd_group_id == 0) {
+        ^~~~~~~~~~~~~~~~~~
+program_source:2447:31: note: uninitialized use occurs here
+    const float inv_d_final = final_inv_d;
+                              ^~~~~~~~~~~
+program_source:2429:5: note: remove the 'if' if its condition is always true
+    if (simd_group_id == 0) {
+    ^~~~~~~~~~~~~~~~~~~~~~~~
+program_source:2397:34: note: initialize the variable 'final_inv_d' to silence this warning
+    threadgroup float final_inv_d;
+                                 ^
+                                  = 0.0
+program_source:7074:20: error: use 'template' keyword to treat 'get_left_input_cooperative_tensor' as a dependent template name
+    auto ct_a = op.get_left_input_cooperative_tensor<half, half, float>();
+                   ^
+                   template 
+program_source:7075:20: error: use 'template' keyword to treat 'get_right_input_cooperative_tensor' as a dependent template name
+    auto ct_b = op.get_right_input_cooperative_tensor<half, half, float>();
+                   ^
+                   template 
+program_source:7076:20: error: use 'template' keyword to treat 'get_destination_cooperative_tensor' as a dependent template name
+    auto ct_c = op.get_destination_cooperative_tensor<
+                   ^
+                   template 
+" UserInfo={NSLocalizedDescription=program_source:2438:13: warning: variable 'final_m' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+        if (simd_lane_id == 0) {
+            ^~~~~~~~~~~~~~~~~
+program_source:2446:31: note: uninitialized use occurs here
+    const float m_final     = final_m;
+                              ^~~~~~~
+program_source:2438:9: note: remove the 'if' if its condition is always true
+        if (simd_lane_id == 0) {
+        ^~~~~~~~~~~~~~~~~~~~~~~
+program_source:2429:9: warning: variable 'final_m' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+    if (simd_group_id == 0) {
+        ^~~~~~~~~~~~~~~~~~
+program_source:2446:31: note: uninitialized use occurs here
+    const float m_final     = final_m;
+                              ^~~~~~~
+program_source:2429:5: note: remove the 'if' if its condition is always true
+    if (simd_group_id == 0) {
+    ^~~~~~~~~~~~~~~~~~~~~~~~
+program_source:2396:30: note: initialize the variable 'final_m' to silence this warning
+    threadgroup float final_m;
+                             ^
+                              = 0.0
+program_source:2438:13: warning: variable 'final_inv_d' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+        if (simd_lane_id == 0) {
+            ^~~~~~~~~~~~~~~~~
+program_source:2447:31: note: uninitialized use occurs here
+    const float inv_d_final = final_inv_d;
+                              ^~~~~~~~~~~
+program_source:2438:9: note: remove the 'if' if its condition is always true
+        if (simd_lane_id == 0) {
+        ^~~~~~~~~~~~~~~~~~~~~~~
+program_source:2429:9: warning: variable 'final_inv_d' is used uninitialized whenever 'if' condition is false [-Wsometimes-uninitialized]
+    if (simd_group_id == 0) {
+        ^~~~~~~~~~~~~~~~~~
+program_source:2447:31: note: uninitialized use occurs here
+    const float inv_d_final = final_inv_d;
+                              ^~~~~~~~~~~
+program_source:2429:5: note: remove the 'if' if its condition is always true
+    if (simd_group_id == 0) {
+    ^~~~~~~~~~~~~~~~~~~~~~~~
+program_source:2397:34: note: initialize the variable 'final_inv_d' to silence this warning
+    threadgroup float final_inv_d;
+                                 ^
+                                  = 0.0
+program_source:7074:20: error: use 'template' keyword to treat 'get_left_input_cooperative_tensor' as a dependent template name
+    auto ct_a = op.get_left_input_cooperative_tensor<half, half, float>();
+                   ^
+                   template 
+program_source:7075:20: error: use 'template' keyword to treat 'get_right_input_cooperative_tensor' as a dependent template name
+    auto ct_b = op.get_right_input_cooperative_tensor<half, half, float>();
+                   ^
+                   template 
+program_source:7076:20: error: use 'template' keyword to treat 'get_destination_cooperative_tensor' as a dependent template name
+    auto ct_c = op.get_destination_cooperative_tensor<
+                   ^
+                   template 
+}
+exit(32)=133
