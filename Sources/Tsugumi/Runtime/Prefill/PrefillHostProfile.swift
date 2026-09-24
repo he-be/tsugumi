@@ -81,6 +81,40 @@ struct PrefillHostProfile {
         let now = DispatchTime.now().uptimeNanoseconds
         guard now > start else { return }
         seconds[stage, default: 0] += Double(now - start) / 1e9
+        spans.append((stage, Double(start) / 1e9, Double(now) / 1e9))
+    }
+
+    /// Every stage interval, in the command buffers' time base (seconds of
+    /// host uptime), so the queue's empty stretches can be laid against what
+    /// the host was doing during them.
+    private var spans: [(stage: Stage, start: Double, end: Double)] = []
+
+    /// Queue-empty seconds per host stage: the part of each gap between merged
+    /// GPU intervals that falls inside that stage's intervals. What no stage
+    /// covers is `none` (the host between probes). The totals say which host
+    /// step the GPU was starved behind, which the per-stage sums cannot: a
+    /// stage can be long while the GPU is busy under it.
+    private var idleByStage: (byStage: [Stage: Double], none: Double, gaps: Int) {
+        let gaps = gpuQueue.gaps
+        var byStage: [Stage: Double] = [:]
+        var covered: Double = 0
+        let sortedSpans = spans.sorted { $0.start < $1.start }
+        var first = 0
+        for gap in gaps {
+            while first < sortedSpans.count, sortedSpans[first].end <= gap.start { first += 1 }
+            var index = first
+            while index < sortedSpans.count, sortedSpans[index].start < gap.end {
+                let span = sortedSpans[index]
+                let overlap = min(span.end, gap.end) - max(span.start, gap.start)
+                if overlap > 0 {
+                    byStage[span.stage, default: 0] += overlap
+                    covered += overlap
+                }
+                index += 1
+            }
+        }
+        let idle = gaps.reduce(0) { $0 + ($1.end - $1.start) }
+        return (byStage, max(0, idle - covered), gaps.count)
     }
 
     /// One command buffer's GPU span, taken from the buffer itself once it has
@@ -132,6 +166,13 @@ struct PrefillHostProfile {
                      ioSeconds > 0 ? bytes / ioSeconds : 0)
         if let gpuLine = gpuQueue.summary(label: "prefill gpuq") {
             line += "\n" + gpuLine
+            let idle = idleByStage
+            let idleParts = Stage.allCases.compactMap { stage -> String? in
+                guard let value = idle.byStage[stage], value > 0.0005 else { return nil }
+                return String(format: "%@=%.3fs", stage.rawValue, value)
+            }
+            line += "\n[prefill gpuq idle by host " + idleParts.joined(separator: " ")
+                + String(format: " none=%.3fs gaps=%d]", idle.none, idle.gaps)
         }
         return line
     }
@@ -144,6 +185,7 @@ struct PrefillHostProfile {
         experts = 0
         misses = 0
         ioSeconds = 0
+        spans.removeAll(keepingCapacity: true)
         gpuQueue.reset()
     }
 }

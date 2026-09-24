@@ -28,24 +28,39 @@ struct GPUQueueOccupancy {
         intervals.append((start, end))
     }
 
-    /// (busy, idle, span) in seconds over the union of the recorded intervals.
-    var occupancy: (busy: Double, idle: Double, span: Double)? {
-        guard !intervals.isEmpty else { return nil }
+    /// The recorded intervals merged, in start order.
+    var merged: [(start: Double, end: Double)] {
+        guard !intervals.isEmpty else { return [] }
         let sorted = intervals.sorted { $0.start < $1.start }
-        var busy: Double = 0
+        var out: [(start: Double, end: Double)] = []
         var mergedStart = sorted[0].start
         var mergedEnd = sorted[0].end
         for interval in sorted.dropFirst() {
             if interval.start > mergedEnd {
-                busy += mergedEnd - mergedStart
+                out.append((mergedStart, mergedEnd))
                 mergedStart = interval.start
                 mergedEnd = interval.end
             } else {
                 mergedEnd = max(mergedEnd, interval.end)
             }
         }
-        busy += mergedEnd - mergedStart
-        let span = mergedEnd - sorted[0].start
+        out.append((mergedStart, mergedEnd))
+        return out
+    }
+
+    /// The gaps between the merged intervals: where the queue was empty.
+    var gaps: [(start: Double, end: Double)] {
+        let busy = merged
+        guard busy.count > 1 else { return [] }
+        return zip(busy, busy.dropFirst()).map { ($0.end, $1.start) }
+    }
+
+    /// (busy, idle, span) in seconds over the union of the recorded intervals.
+    var occupancy: (busy: Double, idle: Double, span: Double)? {
+        let busyIntervals = merged
+        guard let first = busyIntervals.first, let last = busyIntervals.last else { return nil }
+        let busy = busyIntervals.reduce(0) { $0 + ($1.end - $1.start) }
+        let span = last.end - first.start
         return (busy, span - busy, span)
     }
 
