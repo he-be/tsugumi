@@ -34,6 +34,23 @@ public struct Model {
     /// (`docs/mtp/52-D-P7-PREFILL-QUEUE-DEPTH.md` §8、`TF_EXPERT_MMAP=0` で外れる)。
     /// ストリーマーを開くところと `ExpertCacheBudget` はここだけを読む。
     public var usesMappedExperts: Bool { MmapExpertMapping.isEnabled }
+    /// A second copy of `packed_experts/` on another SSD, read at the same time
+    /// as the model's own (docs/m6-prefill/44). `TF_EXPERT_MIRROR=<dir>` names
+    /// the directory that holds the `layer_*.bin` copies; nil (unset) reads
+    /// everything from the model directory.
+    public static let expertMirrorDirectory: String? = {
+        guard let raw = ProcessInfo.processInfo.environment["TF_EXPERT_MIRROR"],
+              !raw.isEmpty else { return nil }
+        return raw
+    }()
+    /// Fraction of each layer's experts read from the mirror
+    /// (`TF_EXPERT_MIRROR_SHARE`, default 0.32: M6's external SSD reads 1.57 GB/s
+    /// next to the internal 3.3 GB/s, docs/m6-prefill/44 §1).
+    public static let expertMirrorShare: Double = {
+        guard let raw = ProcessInfo.processInfo.environment["TF_EXPERT_MIRROR_SHARE"],
+              let value = Double(raw) else { return 0.32 }
+        return min(1, max(0, value))
+    }()
     public let expertCachePolicy: ExpertCachePolicy
     public let integrityPolicy: ModelIntegrityPolicy
     public var modelID: String { manifest.modelID }
@@ -563,6 +580,17 @@ public struct Model {
         case .pread(let configuredSlotCount):
             slotCount = configuredSlotCount
         }
+        let mirrorFD = try Self.expertMirrorDirectory.map { directory in
+            try openExpertMirror(directory: directory, basename: basename,
+                                 manifestRel: manifestRel)
+        }
+        defer { if let mirrorFD { close(mirrorFD) } }
+        let mirror = mirrorFD.map {
+            ExpertMirror(fileDescriptor: $0,
+                         onMirror: ExpertMirror.evenAssignment(
+                            count: packedExpertsLayout.expertsPerLayer,
+                            share: Self.expertMirrorShare))
+        }
         // 経路を決めるのはここ 1 か所である。既定は D (mmap + residency set、
         // docs/mtp/52 §5a)。`TF_EXPERT_MMAP=0` で 51 までの私有スロットに戻る。
         streamersBox.streamers[L] = try PreadExpertStreamer(
@@ -571,8 +599,40 @@ public struct Model {
             slotCount: slotCount,
             cachePolicy: expertCachePolicy,
             fileDescriptor: layerFD,
-            useMmap: usesMappedExperts)
+            useMmap: usesMappedExperts,
+            mirror: mirror)
         streamersBox.layerVerified[L] = true
+    }
+
+    /// Open the mirror's copy of one layer file and hold it to the same
+    /// integrity rule as the original: the manifest size always, and the
+    /// SHA-256 too under `.fullSha256`.
+    private func openExpertMirror(directory: String, basename: String,
+                                  manifestRel: String) throws -> Int32 {
+        guard let entry = manifest.files[manifestRel] else {
+            throw ModelError.missingFile(name: manifestRel)
+        }
+        let path = (directory as NSString).appendingPathComponent(basename)
+        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else {
+            throw ModelError.posixFailed(call: "open(\(path))", errno: errno)
+        }
+        var ok = false
+        defer { if !ok { close(fd) } }
+        var st = stat()
+        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
+            throw ModelError.posixFailed(call: "fstat(\(path))", errno: errno)
+        }
+        guard UInt64(st.st_size) == entry.size else {
+            throw ModelError.tensorSizeMismatch(
+                name: path, expected: entry.size, actual: UInt64(st.st_size))
+        }
+        if integrityPolicy == .fullSha256 {
+            try Sha256Verifier.verifyFile(fileDescriptor: fd, named: path,
+                                          expectedHex: entry.sha256)
+        }
+        ok = true
+        return fd
     }
 
     /// Test hook: how many layer files have been opened so far.

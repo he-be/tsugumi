@@ -64,3 +64,27 @@ public struct StreamLayout: Sendable {
         return UInt64(layer) * perLayer + UInt64(expert) * expertStride
     }
 }
+
+/// A copy of one layer file on a second SSD, and which experts to read from it
+/// (docs/m6-prefill/44). The two drives are read at the same time, so their
+/// bandwidths add; each expert is always read from the same side.
+public struct ExpertMirror: Sendable {
+    /// Borrowed; the streamer duplicates it.
+    public let fileDescriptor: Int32
+    public let onMirror: [Bool]
+
+    public init(fileDescriptor: Int32, onMirror: [Bool]) {
+        self.fileDescriptor = fileDescriptor
+        self.onMirror = onMirror
+    }
+
+    /// `share` of `count` experts, spread evenly over the index range:
+    /// expert `e` is on the mirror when `floor((e + 1) * share)` steps past
+    /// `floor(e * share)`. 0 puts none there, 1 puts all.
+    public static func evenAssignment(count: Int, share: Double) -> [Bool] {
+        let clamped = min(1, max(0, share))
+        return (0..<count).map { e in
+            Int((Double(e + 1) * clamped).rounded(.down)) != Int((Double(e) * clamped).rounded(.down))
+        }
+    }
+}

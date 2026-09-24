@@ -63,6 +63,11 @@ public final class PreadExpertStreamer: @unchecked Sendable {
     public let cachePolicy: ExpertCachePolicy
 
     private let fd: Int32
+    /// 同じ層ファイルの写し (別の SSD) の fd。-1 = 写し無し。`onMirror[e]` の
+    /// エキスパートだけをこちらから読む (docs/m6-prefill/44)。どのエキスパートも
+    /// 常に同じ側から読むので、ページキャッシュに同じバイトが 2 度載ることは無い。
+    private let mirrorFD: Int32
+    private let onMirror: [Bool]
     private let slotPointers: [UnsafeMutableRawPointer]
     private let slotBuffers: [MTLBuffer]
     /// D の経路。非 nil のときスロットは 1 本も無く、エキスパートはファイルの
@@ -107,7 +112,8 @@ public final class PreadExpertStreamer: @unchecked Sendable {
                  slotCount: Int,
                  cachePolicy: ExpertCachePolicy = .lfu,
                  fileDescriptor: Int32?,
-                 useMmap: Bool = false) throws {
+                 useMmap: Bool = false,
+                 mirror: ExpertMirror? = nil) throws {
         precondition(slotCount > 0, "slotCount must be positive")
         self.layout = layout
         self.slotCount = slotCount
@@ -134,6 +140,17 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         self.fd = openedFD
         var closeFDOnFailure = true
         defer { if closeFDOnFailure { close(openedFD) } }
+        let openedMirrorFD = mirror.map { fcntl($0.fileDescriptor, F_DUPFD_CLOEXEC, 0) } ?? -1
+        if mirror != nil, openedMirrorFD < 0 {
+            throw StreamerError.openFailed(path: layout.path, errno: errno)
+        }
+        self.mirrorFD = openedMirrorFD
+        defer { if closeFDOnFailure, openedMirrorFD >= 0 { close(openedMirrorFD) } }
+        if let mirror, mirror.onMirror.count != layout.expertsPerLayer {
+            throw StreamerError.invalidIOSplitConfiguration(
+                "mirror assigns \(mirror.onMirror.count) experts, layer has \(layout.expertsPerLayer)")
+        }
+        self.onMirror = mirror?.onMirror ?? []
 
         var fileStats = stat()
         guard fstat(openedFD, &fileStats) == 0,
@@ -165,7 +182,9 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         // (32 スロット x 30 層) が消えるのが D の残る根拠である (50 §4)。
         self.mmap = useMmap
             ? try MmapExpertMapping(layout: layout, device: device,
-                                    fileDescriptor: openedFD)
+                                    fileDescriptor: openedFD,
+                                    mirrorFileDescriptor: openedMirrorFD >= 0 ? openedMirrorFD : nil,
+                                    onMirror: mirror?.onMirror ?? [])
             : nil
 
         func unwind() {
@@ -207,6 +226,12 @@ public final class PreadExpertStreamer: @unchecked Sendable {
 
     deinit {
         close(fd)
+        if mirrorFD >= 0 { close(mirrorFD) }
+    }
+
+    @inline(__always)
+    private func fileDescriptor(forExpert expert: Int) -> Int32 {
+        mirrorFD >= 0 && expert >= 0 && expert < onMirror.count && onMirror[expert] ? mirrorFD : fd
     }
 
     public func loadExpert(layer: Int, expert: Int) throws
@@ -235,6 +260,7 @@ public final class PreadExpertStreamer: @unchecked Sendable {
             return (mmap.expertBuffers[expert], 0, layout.expertStride)
         }
         try readFull(
+            fd: fileDescriptor(forExpert: expert),
             into: slotPointers[slot],
             fileOffset: layout.streamOffset + regionOffset,
             count: Int(layout.expertStride))
@@ -600,35 +626,48 @@ public final class PreadExpertStreamer: @unchecked Sendable {
         return slotLastUse[lhs] < slotLastUse[rhs]
     }
 
-    private func expertAdviceRanges(experts: [Int]) -> [(offset: UInt64, count: UInt64)] {
+    private func expertAdviceRanges(experts: [Int]) -> [(fd: Int32, offset: UInt64, count: UInt64)] {
         experts.compactMap { expert in
             let regionOffset = layout.expertOffset(layer: 0, expert: expert)
             guard regionOffset + layout.expertStride <= layout.streamSize else { return nil }
-            return (layout.streamOffset + regionOffset, layout.expertStride)
+            return (fileDescriptor(forExpert: expert),
+                    layout.streamOffset + regionOffset, layout.expertStride)
         }
     }
 
-    private func adviseRanges(_ ranges: [(offset: UInt64, count: UInt64)],
+    private func adviseRanges(_ ranges: [(fd: Int32, offset: UInt64, count: UInt64)],
                               requested: Int) -> ExpertIOAdviceResult {
-        let coalesced = Self.coalescedAdjacentAdviceRanges(ranges)
         var failed = 0
         var bytes: UInt64 = 0
         var maxCallNanos: UInt64 = 0
-        for range in coalesced {
-            let result = RDAdvice.call(fd: fd, offset: range.offset, byteCount: range.count)
-            if !result.succeeded { failed += 1 }
-            bytes &+= result.requestedBytes
-            maxCallNanos = max(maxCallNanos, result.elapsedNanos)
+        var calls = 0
+        // 写しがあるときは 2 本の fd に分けて、それぞれで隣接をまとめる。
+        // 交互に出すのは、片方の SSD の要求が全部出るまでもう片方が待たないため。
+        let perFD = [fd, mirrorFD].filter { $0 >= 0 }.map { target in
+            (target, Self.coalescedAdjacentAdviceRanges(
+                ranges.filter { $0.fd == target }.map { ($0.offset, $0.count) }))
+        }
+        let longest = perFD.map { $0.1.count }.max() ?? 0
+        for index in 0..<longest {
+            for (target, coalesced) in perFD where index < coalesced.count {
+                let range = coalesced[index]
+                let result = RDAdvice.call(fd: target, offset: range.offset, byteCount: range.count)
+                if !result.succeeded { failed += 1 }
+                bytes &+= result.requestedBytes
+                maxCallNanos = max(maxCallNanos, result.elapsedNanos)
+                calls += 1
+            }
         }
         return ExpertIOAdviceResult(
             requested: requested,
             failed: failed,
-            calls: coalesced.count,
+            calls: calls,
             bytes: bytes,
             maxCallNanos: maxCallNanos)
     }
 
-    private func readFull(into destination: UnsafeMutableRawPointer,
+    private func readFull(fd: Int32,
+                          into destination: UnsafeMutableRawPointer,
                           fileOffset: UInt64,
                           count: Int) throws {
         var filled = 0

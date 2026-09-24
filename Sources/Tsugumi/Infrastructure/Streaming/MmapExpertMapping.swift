@@ -143,7 +143,10 @@ public final class MmapExpertMapping: @unchecked Sendable {
     private let residencyQueue = DispatchQueue(label: "tf.expert.residency",
                                                qos: .userInitiated)
 
-    init(layout: StreamLayout, device: MTLDevice, fileDescriptor: Int32) throws {
+    /// `mirrorFileDescriptor` は同じ層ファイルの写し (別の SSD)。`onMirror[e]` の
+    /// エキスパートのバッファだけ写しのマッピングから切る (docs/m6-prefill/44)。
+    init(layout: StreamLayout, device: MTLDevice, fileDescriptor: Int32,
+         mirrorFileDescriptor: Int32? = nil, onMirror: [Bool] = []) throws {
         let pageSize = Int(getpagesize())
         let stride = Int(layout.expertStride)
         let expertCount = layout.expertsPerLayer
@@ -167,6 +170,20 @@ public final class MmapExpertMapping: @unchecked Sendable {
         guard let raw, raw != MAP_FAILED else {
             throw StreamerError.openFailed(path: layout.path, errno: errno)
         }
+        var mirrorRaw: UnsafeMutableRawPointer?
+        if let mirrorFileDescriptor {
+            let mapped = mmap(nil, length, PROT_READ, MAP_SHARED | MAP_FILE, mirrorFileDescriptor, 0)
+            guard let mapped, mapped != MAP_FAILED else {
+                let savedErrno = errno
+                munmap(raw, length)
+                throw StreamerError.openFailed(path: layout.path + " (mirror)", errno: savedErrno)
+            }
+            mirrorRaw = mapped
+        }
+        func unmapAll() {
+            munmap(raw, length)
+            if let mirrorRaw { munmap(mirrorRaw, length) }
+        }
         self.base = raw
         self.mappedLength = length
 
@@ -176,17 +193,18 @@ public final class MmapExpertMapping: @unchecked Sendable {
             let offset = layout.streamOffset &+ layout.expertOffset(layer: 0, expert: expert)
             guard offset % UInt64(pageSize) == 0,
                   Int(offset) + stride <= length else {
-                munmap(raw, length)
+                unmapAll()
                 throw StreamerError.invalidIOSplitConfiguration(
                     "expert \(expert) offset \(offset) is not page-aligned inside the mapping")
             }
+            let source = expert < onMirror.count && onMirror[expert] ? (mirrorRaw ?? raw) : raw
             guard let buffer = device.makeBuffer(
-                bytesNoCopy: raw.advanced(by: Int(offset)),
+                bytesNoCopy: source.advanced(by: Int(offset)),
                 length: stride,
                 options: .storageModeShared,
                 deallocator: nil)
             else {
-                munmap(raw, length)
+                unmapAll()
                 throw StreamerError.bufferWrapFailed
             }
             buffer.label = "mmap-expert-\(expert)"
