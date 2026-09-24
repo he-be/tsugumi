@@ -1254,7 +1254,7 @@ kernel void prefill_moe_gemm_int4_mpp_pf_t(
         Bs,
         dextents<int32_t, 2>(kPrefillMoEMPPTileK, kPrefillMoEMPPTileN),
         array<int32_t, 2>({1, kPrefillMoEMPPTileK}));
-    auto accumulator = operation.get_destination_cooperative_tensor<
+    auto accumulator = operation.template get_destination_cooperative_tensor<
         decltype(tileA), decltype(tileB), float>();
     for (int element = 0; element < accumulator.get_capacity(); ++element) {
         accumulator[element] = 0.0f;
