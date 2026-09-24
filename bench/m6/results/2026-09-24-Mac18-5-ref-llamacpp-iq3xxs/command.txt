@@ -1,0 +1,1 @@
+/Users/mh/LLM/ref/llama.cpp/build/bin/llama-completion -m /Users/mh/LLM/ref/gemma-4-26B-A4B-it-UD-IQ3_XXS.gguf -f /Users/mh/dev/tsugumi/bench/m6/results/2026-09-24-Mac18-5-ref-llamacpp-iq3xxs/prompt.txt -n 1 -c 4096 -b 2048 -ub 2048 -fa on --temp 0 -no-cnv --no-display-prompt -fit off -lv 4

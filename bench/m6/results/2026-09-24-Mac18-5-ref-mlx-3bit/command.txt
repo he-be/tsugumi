@@ -1,0 +1,1 @@
+/Users/mh/LLM/ref/mlx-venv/bin/python -m mlx_lm generate --model /Users/mh/LLM/ref/gemma-4-26b-a4b-it-UD-MLX-3bit --prompt - --max-tokens 1 --temp 0 < prompt.txt

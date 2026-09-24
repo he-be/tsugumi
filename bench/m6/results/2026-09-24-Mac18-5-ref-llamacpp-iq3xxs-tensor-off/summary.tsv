@@ -1,0 +1,4 @@
+run	prompt_tok	prompt_ms	pp_tok_s	load_ms	tensor_api	exit
+1	2490	4791.34	519.7	5351.66		0
+2	2490	4493.82	554.1	568.81		0
+3	2490	4495.71	553.9	560.67		0

@@ -27,6 +27,7 @@ fp32 は M6 のほうが 5% 遅い。fp32 累積を残す設計は M6 で得を�
 | 項目 | 旧文書の値 | 置き場 | 状態 |
 | --- | --- | --- | --- |
 | tensor 無しの prefill、`bench/l.json` 2478 tok、32 スロット、chunk 2048 | M6 pp 288 / GPU 側 7.63 s、MBP pp 235 / 9.26 s (各 6 本) | [旧 §7-4a](../investigations/M6_MAC_MINI_TARGETING.md) の表のみ | **取り直し済** → [10](10-G0-BASELINE.md)。M6 の pp 288 は再現せず |
+| 同じ本文を外部ランタイムで prompt 処理 (暖まったプロセス、ハッシュ無し) | 無し (旧 §5-3 は「16 GB では成立しない」) | [ref-llamacpp-iq3xxs](../../bench/m6/results/2026-09-24-Mac18-5-ref-llamacpp-iq3xxs/summary.tsv) / [ref-mlx-3bit](../../bench/m6/results/2026-09-24-Mac18-5-ref-mlx-3bit/summary.tsv) | **取った** → [29](29-REFERENCE-RUNTIMES-ON-M6.md)。llama.cpp 4c5957c IQ3_XXS 2.393 s (n = 6、tensor API なし 4.494 s n = 3)、mlx_lm 0.31.3 3-bit 1.823 s (n = 6、peak 13.3 GB、Swapouts あり)。`iogpu.wired_limit_mb=14336` |
 | M6 の io が GPU と重ならない (io が 0.85 → 3.33 s でも GPU 側不変) | 同上 | 同上 | **方向のみ再現** (io の振れ 0.35 s)。[10 §2](10-G0-BASELINE.md) |
 | `MPPPrefillInt4QMM` が group 32 で nil | 単体プローブで確認とある | 旧 §7-1a、プローブ未保存 | **原因どおりと確認し、直した** → [16](16-G1-MPP-GROUP32.md) |
 | SSD `F_NOCACHE` 3.34 GB/s | 表は詳細 | [M6_SSD_BANDWIDTH](../investigations/M6_SSD_BANDWIDTH.md) | 表のみ、生ログ無し。**値は信用してよい** (プローブは `bench/rec_probe.c` / `io_depth_probe.c` で再現可) |

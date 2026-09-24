@@ -1,0 +1,2 @@
+測定: 2026-09-24 / Mac18,5 Apple M6 16GB / macOS 27.0 (26A428) / Swift 6.4 / SDK 27.0 / CLT / APPLE SSD AP0256Z / commit 88112df
+mlx 0.32.2 mlx_lm 0.31.3 / gemma-4-26b-a4b-it-UD-MLX-3bit 12928476 KiB
