@@ -80,3 +80,7 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 3f042e7 | sgmm-a | 6 | 8.829 | 8.626 | 8.957 | 0 | TF_PREFILL_ATTN=sgmm |
 | 2026-09-24 | 3f042e7 | sgmm-profile-detail-2 | 3 | 8.742 | 8.739 | 8.951 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_GPU_PROFILE=2 |
 | 2026-09-24 | 71786c5 | sgmm-profile-detail | 3 | 8.626 | 8.563 | 8.810 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_GPU_PROFILE=2 |
+| 2026-09-24 | f603ade | va0-dec64-a | 3 | 8.910 | 8.582 | 8.910 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | f603ade | va0-dec64-b | 3 | 8.957 | 8.661 | 9.352 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | f603ade | va2p-dec64-a | 3 | 7.323 | 7.203 | 7.374 | 0 | TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | f603ade | va2p-dec64-b | 3 | 7.216 | 7.197 | 7.242 | 0 | TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 追加引数: --max-new 64 --temperature 0 |
