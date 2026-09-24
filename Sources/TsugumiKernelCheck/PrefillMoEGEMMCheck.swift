@@ -226,16 +226,20 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
     }
     let geluMul = try context.pipeline("prefill_moe_gate_up_gelu_mul")
 
-    func run(_ pso: MTLComputePipelineState, label: String) -> [Float] {
+    // `gateUp`: the fused gate/up candidate (`prefill_moe_gemm_int4_mpp_gateup`,
+    // docs/m6-prefill/28) in place of the gate/up GEMM and the activation pass.
+    func run(_ pso: MTLComputePipelineState, gateUp: MTLComputePipelineState? = nil,
+             label: String) -> [Float] {
         guard let act = Fp16Buffer.make(device, count: 3 * rowTotal * f),
               let partials = Fp16Buffer.make(device, halves: [Float16](
                 repeating: Float16(-7.0), count: tokens * topK * d)),
               let cmd = context.queue.makeCommandBuffer() else {
             fatalError("prefill routed GEMM allocation failed")
         }
-        func gemm(mode: UInt32, nTiles: Int, depth: Int) {
+        func gemm(mode: UInt32, nTiles: Int, depth: Int,
+                  with override: MTLComputePipelineState? = nil) {
             guard let enc = cmd.makeComputeCommandEncoder() else { return }
-            enc.setComputePipelineState(pso)
+            enc.setComputePipelineState(override ?? pso)
             enc.setBuffer(hiddenBuffer, offset: 0, index: 0)
             enc.setBuffer(pairBuffer, offset: 0, index: 1)
             var blockCopy = blocks
@@ -253,8 +257,12 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
                                      threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
             enc.endEncoding()
         }
-        gemm(mode: 0, nTiles: (f + 63) / 64, depth: 2)
-        if let enc = cmd.makeComputeCommandEncoder() {
+        if let gateUp {
+            gemm(mode: 0, nTiles: (f + 63) / 64, depth: 1, with: gateUp)
+        } else {
+            gemm(mode: 0, nTiles: (f + 63) / 64, depth: 2)
+        }
+        if gateUp == nil, let enc = cmd.makeComputeCommandEncoder() {
             enc.setComputePipelineState(geluMul)
             enc.setBuffer(act, offset: 0, index: 0)
             var r = UInt32(rowTotal), fv = UInt32(f)
@@ -295,5 +303,21 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
                         rel: relativeError(actual: mpp, reference: simdgroup),
                         tolerance: Double(Tolerance.fp16ChainedReduction),
                         detail: "differing=\(differing)/\(mpp.count) maxAbs=\(maxAbs)"))
+
+    // The fused gate/up candidate keeps the mpp kernel's products and
+    // roundings, so it has to match the mpp run bit for bit.
+    guard let fusedPSO = try? context.pipeline("prefill_moe_gemm_int4_mpp_gateup") else {
+        print("  SKIP  \(name) mpp gateup-fused g=\(groupSize)  no pipeline on this device")
+        return cases
+    }
+    let fused = run(mppPSO, gateUp: fusedPSO, label: name + " mpp gateup-fused")
+    cases.append(result(name + " mpp gateup-fused", groupSize: groupSize,
+                        rel: relativeError(actual: fused, reference: expected),
+                        tolerance: Double(Tolerance.fp16ChainedReduction), detail: detail))
+    let fusedDiffering = zip(fused, mpp).filter { $0 != $1 }.count
+    cases.append(result(name + " mpp gateup-fused vs mpp", groupSize: groupSize,
+                        rel: fusedDiffering == 0 ? 0 : 1,
+                        tolerance: 0,
+                        detail: "differing=\(fusedDiffering)/\(fused.count)"))
     return cases
 }

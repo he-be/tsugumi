@@ -1168,6 +1168,161 @@ kernel void prefill_moe_gemm_int4_mpp(
         }
     }
 }
+
+/// Gate and up of `prefill_moe_gemm_int4_mpp` in one threadgroup, with the
+/// non-linearity in the epilogue (docs/m6-prefill/28). The mpp kernel runs
+/// gate and up as two threadgroups (`z`), each gathering the same 64 hidden
+/// rows for the same K steps; here one gather feeds both products. The tile
+/// product, the weight staging and the K order are the mpp kernel's, so gate
+/// and up come out of the accumulators with the same values; they are rounded
+/// to FP16 before the activation, as `prefill_moe_gate_up_gelu_mul` reads
+/// them, and only `act[2]` is written. The gate and up thirds of the scratch
+/// stay unwritten, and the separate activation pass is not dispatched.
+kernel void prefill_moe_gemm_int4_mpp_gateup(
+    device const half*                                   hidden         [[buffer(0)]],
+    device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
+    device const PrefillRoutedGEMMBlockMSL*              blocks         [[buffer(2)]],
+    device half*                                         act            [[buffer(7)]],
+    device const PrefillStreamedRoutedBlobsMSL&          routed         [[buffer(9)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p              [[buffer(10)]],
+    uint3                                                lid3           [[thread_position_in_threadgroup]],
+    uint3                                                tgid3          [[threadgroup_position_in_grid]]
+) {
+    constexpr auto descriptor = matmul2d_descriptor(
+        kPrefillMoEMPPTileM, kPrefillMoEMPPTileN, kPrefillMoEMPPTileK,
+        false, true, false,
+        matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<descriptor, execution_simdgroups<4>> operation;
+    using threadgroup_half_tensor =
+        tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>;
+
+    const uint lid = lid3.x;
+    const PrefillRoutedGEMMBlockMSL blk = blocks[tgid3.y];
+    const uint nBase = tgid3.x * uint(kPrefillMoEMPPTileN);
+    const uint N = p.F;
+    const uint K = p.D;
+    const uint act_rows = p.pair_count;
+
+    threadgroup half As[kPrefillMoEMPPTileM * kPrefillMoEMPPTileK];
+    threadgroup half Gs[kPrefillMoEMPPTileN * kPrefillMoEMPPTileK];
+    threadgroup half Us[kPrefillMoEMPPTileN * kPrefillMoEMPPTileK];
+    threadgroup uint src_off[kPrefillMoEMPPTileM];
+
+    device const uint8_t* blob = routed.blob[blk.local_slot];
+    device const uint8_t* Wg = blob + p.gate_W_off;
+    device const bfloat* Sg = reinterpret_cast<device const bfloat*>(blob + p.gate_s_off);
+    device const bfloat* Bg = reinterpret_cast<device const bfloat*>(blob + p.gate_b_off);
+    device const uint8_t* Wu = blob + p.up_W_off;
+    device const bfloat* Su = reinterpret_cast<device const bfloat*>(blob + p.up_s_off);
+    device const bfloat* Bu = reinterpret_cast<device const bfloat*>(blob + p.up_b_off);
+    device const half* X = hidden;
+    device half* Y = act + 2u * act_rows * p.F;
+
+    if (lid < uint(kPrefillMoEMPPTileM)) {
+        uint so = 0u;
+        if (lid < blk.row_count) {
+            so = sorted_pairs[blk.pair_start + lid].token * p.hidden_stride_elements;
+        }
+        src_off[lid] = so;
+    }
+
+    threadgroup_half_tensor tileA(
+        As,
+        dextents<int32_t, 2>(kPrefillMoEMPPTileK, kPrefillMoEMPPTileM),
+        array<int32_t, 2>({1, kPrefillMoEMPPTileK}));
+    threadgroup_half_tensor tileG(
+        Gs,
+        dextents<int32_t, 2>(kPrefillMoEMPPTileK, kPrefillMoEMPPTileN),
+        array<int32_t, 2>({1, kPrefillMoEMPPTileK}));
+    threadgroup_half_tensor tileU(
+        Us,
+        dextents<int32_t, 2>(kPrefillMoEMPPTileK, kPrefillMoEMPPTileN),
+        array<int32_t, 2>({1, kPrefillMoEMPPTileK}));
+    auto accG = operation.get_destination_cooperative_tensor<
+        decltype(tileA), decltype(tileG), float>();
+    auto accU = operation.get_destination_cooperative_tensor<
+        decltype(tileA), decltype(tileU), float>();
+    for (int element = 0; element < accG.get_capacity(); ++element) {
+        accG[element] = 0.0f;
+        accU[element] = 0.0f;
+    }
+
+    // Weight staging as in the mpp kernel, once for gate and once for up.
+    const uint groups = K / kPrefillGroupSize;
+    const uint row_bytes = K / 2u;
+    const uint w_n_local = lid & uint(kPrefillMoEMPPTileN - 1);
+    const uint w_k_half = (lid / uint(kPrefillMoEMPPTileN)) * 32u;
+    const uint w_n = nBase + w_n_local;
+    device const uint8_t* wg_row = Wg + w_n * row_bytes;
+    device const bfloat* sg_row = Sg + w_n * groups;
+    device const bfloat* bg_row = Bg + w_n * groups;
+    device const uint8_t* wu_row = Wu + w_n * row_bytes;
+    device const bfloat* su_row = Su + w_n * groups;
+    device const bfloat* bu_row = Bu + w_n * groups;
+    const uint b_local = w_n_local * uint(kPrefillMoEMPPTileK) + w_k_half;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint k0 = 0; k0 < K; k0 += uint(kPrefillMoEMPPTileK)) {
+        for (uint i = 0; i < 8u; ++i) {
+            const uint unit = i * kPrefillMoEMPPThreads + lid;
+            const uint m = unit / 16u;
+            const uint kk = (unit % 16u) * 4u;
+            const half4 v = (m < blk.row_count)
+                ? *((device const half4*)(X + src_off[m] + k0 + kk))
+                : half4(0.0h);
+            *((threadgroup half4*)(As + m * uint(kPrefillMoEMPPTileK) + kk)) = v;
+        }
+
+        if (w_n < N) {
+            const uint kb = k0 + w_k_half;
+            const uint g = kb / kPrefillGroupSize;
+            const float g_scale = float(sg_row[g]);
+            const float g_bias = prefill_int4_bias(bg_row, g, g_scale);
+            const float u_scale = float(su_row[g]);
+            const float u_bias = prefill_int4_bias(bu_row, g, u_scale);
+            device const ushort* g_ptr = (device const ushort*)(wg_row + (kb >> 1));
+            device const ushort* u_ptr = (device const ushort*)(wu_row + (kb >> 1));
+            for (uint q = 0; q < 8u; ++q) {
+                const uint gp = uint(g_ptr[q]);
+                const uint up = uint(u_ptr[q]);
+                half4 gv;
+                gv.x = half(fma(float(gp & 0x0Fu), g_scale, g_bias));
+                gv.y = half(fma(float((gp >> 4) & 0x0Fu), g_scale, g_bias));
+                gv.z = half(fma(float((gp >> 8) & 0x0Fu), g_scale, g_bias));
+                gv.w = half(fma(float((gp >> 12) & 0x0Fu), g_scale, g_bias));
+                half4 uv;
+                uv.x = half(fma(float(up & 0x0Fu), u_scale, u_bias));
+                uv.y = half(fma(float((up >> 4) & 0x0Fu), u_scale, u_bias));
+                uv.z = half(fma(float((up >> 8) & 0x0Fu), u_scale, u_bias));
+                uv.w = half(fma(float((up >> 12) & 0x0Fu), u_scale, u_bias));
+                *((threadgroup half4*)(Gs + b_local + q * 4u)) = gv;
+                *((threadgroup half4*)(Us + b_local + q * 4u)) = uv;
+            }
+        } else {
+            for (uint q = 0; q < 8u; ++q) {
+                *((threadgroup half4*)(Gs + b_local + q * 4u)) = half4(0.0h);
+                *((threadgroup half4*)(Us + b_local + q * 4u)) = half4(0.0h);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        operation.run(tileA, tileG, accG);
+        operation.run(tileA, tileU, accU);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (int element = 0; element < accG.get_capacity(); ++element) {
+        if (!accG.is_valid_element(element)) continue;
+        const auto position = accG.get_multidimensional_index(element);
+        const uint n = nBase + uint(position[0]);
+        const uint m = uint(position[1]);
+        if (m < blk.row_count && n < N) {
+            const float gate = float(half(accG[element]));
+            const float up = float(half(accU[element]));
+            Y[(blk.local_row + m) * p.F + n] = half(prefill_moe_gate_activation(gate) * up);
+        }
+    }
+}
 #endif
 
 // ---------------------------------------------------------------------------
