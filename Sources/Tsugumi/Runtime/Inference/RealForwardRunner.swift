@@ -285,6 +285,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// overrides it, and 0 keeps the one-layer-at-a-time open.
     private static let prefillVerifyAhead = max(0, Int(
         ProcessInfo.processInfo.environment["TF_PREFILL_VERIFY_AHEAD"] ?? "") ?? 2)
+    /// At each layer's head, ask the OS to read the routed experts of the
+    /// layer N ahead (and, at layer 0, of layers 0 ..< N) with `F_RDADVISE`
+    /// (docs/m6-prefill/41). A candidate: `TF_PREFILL_ADVISE_AHEAD=N`; unset
+    /// or 0 advises only a tile's misses, when the tile is fetched.
+    private static let prefillAdviseAhead = max(0, Int(
+        ProcessInfo.processInfo.environment["TF_PREFILL_ADVISE_AHEAD"] ?? "") ?? 0)
     /// Narrowest chunk that still uses the tiled routed-MoE GEMM. 0 keeps the
     /// pre-M4 behavior (always tiled).
     private static let groupedGEMMMinChunkTokens = Int(
@@ -1584,6 +1590,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
             if L > 0 { onLayerProgress(L, cfg.numLayers) }
             let frontStart = PrefillHostProfile.mark()
             model.beginOpeningRoutedExpertStreamer(layer: L)
+            if Self.prefillAdviseAhead > 0 {
+                let first = L == 0 ? 0 : L + Self.prefillAdviseAhead
+                for ahead in first...(L + Self.prefillAdviseAhead) where ahead < cfg.numLayers {
+                    model.beginAdvisingRoutedExpertLayer(layer: ahead)
+                }
+            }
             if Self.prefillVerifyAhead > 0 {
                 for ahead in (L + 1)...(L + Self.prefillVerifyAhead) where ahead < cfg.numLayers {
                     model.beginVerifyingRoutedExpertLayerAhead(layer: ahead)
