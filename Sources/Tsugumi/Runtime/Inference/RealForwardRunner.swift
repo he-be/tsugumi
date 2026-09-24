@@ -1983,7 +1983,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     cb.commit()
                     // `TF_PREFILL_SHARED_LATE=1` holds the shared expert until
                     // the front buffer is done, so the router is not sharing
-                    // the GPU with it (docs/m6-prefill/33).
+                    // the GPU with it, and a prompt chunk runs it behind the
+                    // expert reads instead (docs/m6-prefill/33).
                     if !Self.prefillSharedLate { sharedCB.commit() }
                     prefillHostProfile.add(.encodeFront, since: frontStart)
                     let frontWaitStart = PrefillHostProfile.mark()
@@ -2238,7 +2239,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     // for it here; it is checked with the rest of the layer at
                     // the next drain, and until then its dispatches are GPU
                     // work the expert reads below can hide behind.
-                    if !blockPipeline || !tileLookahead {
+                    // Under `TF_PREFILL_SHARED_LATE=1` a prompt chunk checks it
+                    // after the tail instead: the tail reads `h1` behind it on
+                    // the same queue, and the expert reads hide it here.
+                    if (!blockPipeline || !tileLookahead)
+                        && !(Self.prefillSharedLate && !blockPipeline) {
                         let sharedWaitStart = PrefillHostProfile.mark()
                         try waitProfiled(.shared, sharedCB)
                         prefillHostProfile.add(.waitShared, since: sharedWaitStart)
@@ -2599,6 +2604,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     } else {
                         try withExtendedLifetime(metadata) {
                             try waitProfiled(.tail, tailCB)
+                        }
+                        if Self.prefillSharedLate {
+                            let sharedWaitStart = PrefillHostProfile.mark()
+                            try waitProfiled(.shared, sharedCB)
+                            prefillHostProfile.add(.waitShared, since: sharedWaitStart)
                         }
                     }
                     prefillHostProfile.add(.tail, since: tailStart)
