@@ -2,7 +2,8 @@
 // 記録値ではない。本番ループの数字は prefill_bench.sh で取る。
 //   swiftc -O bench/m6/attn_bench.swift -o /tmp/attn_bench
 //   /tmp/attn_bench Sources/Tsugumi/Metal/Prefill/prefill.metal \
-//       attention_prefill_causal_qblock_d256:256:32 attention_prefill_causal_sgmm_d256:128:32
+//       attention_prefill_causal_qblock_d256:256:32 attention_prefill_causal_sgmm_d256:128:32 \
+//       attention_prefill_causal_sgmm_gqa_d256:256:32:2
 // 形は Gemma 4 の SWA 層: 16/8 ヘッド、d256、窓 1024、2478 トークンを 2048 + 430 の 2 チャンク、25 層分を 1 コマンドバッファ。
 import Metal
 import Foundation
@@ -33,8 +34,9 @@ let outs = kernels.map { _ in device.makeBuffer(length: 2048 * H * D * 2, option
 let dummy = device.makeBuffer(length: 16, options: .storageModeShared)!
 
 for (ki, name) in kernels.enumerated() {
-    let parts = name.split(separator: ":")   // fn:threads:queriesPerGroup
+    let parts = name.split(separator: ":")   // fn:threads:queriesPerGroup[:headsPerGroup]
     let fn = String(parts[0]); let threads = Int(parts[1])!; let qpg = Int(parts[2])!
+    let hpg = parts.count > 3 ? Int(parts[3])! : 1
     let cv = MTLFunctionConstantValues()
     let pso = try! device.makeComputePipelineState(function: lib.makeFunction(name: fn, constantValues: cv))
     var times: [Double] = []
@@ -49,7 +51,7 @@ for (ki, name) in kernels.enumerated() {
                 enc.setBuffer(outs[ki], offset: 0, index: 3)
                 enc.setBytes(&p, length: MemoryLayout<Params>.stride, index: 4)
                 enc.setBuffer(dummy, offset: 0, index: 5)
-                enc.dispatchThreadgroups(MTLSize(width: (T + qpg - 1) / qpg, height: H, depth: 1), threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
+                enc.dispatchThreadgroups(MTLSize(width: (T + qpg - 1) / qpg, height: H / hpg, depth: 1), threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
                 enc.endEncoding()
             }
         }

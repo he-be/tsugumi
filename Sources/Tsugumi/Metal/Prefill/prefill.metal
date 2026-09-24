@@ -2203,6 +2203,190 @@ kernel void attention_prefill_causal_sgmm_d256(
     }
 }
 
+// The same flash attention with the two query heads of one KV head in one
+// threadgroup, and Q in registers.
+//
+// `attention_prefill_causal_sgmm_d256` keeps 32 query rows in threadgroup
+// memory next to the K/V tile (25 KB), and each of its four simdgroups pulls
+// the K/V tile through threadgroup memory for one head only. Here eight
+// simdgroups share one K tile and one V tile: simdgroups 0-3 take 32 rows of
+// the first query head, 4-7 the same rows of the second. Q is read once into
+// 32 fragments per lane, so threadgroup memory holds only K and V (2 x 8.4 KB)
+// and a key tile needs two barriers instead of four. The host uses it only
+// when `numQHeads == 2 * numKVHeads`.
+constant constexpr uint kSgmmGqaHeads = 2u;
+constant constexpr uint kSgmmGqaThreads = 256u;
+
+[[kernel, max_total_threads_per_threadgroup(256)]]
+kernel void attention_prefill_causal_sgmm_gqa_d256(
+    device const half* Q [[buffer(0)]],
+    device const half* K [[buffer(1)]],
+    device const half* V [[buffer(2)]],
+    device half* O [[buffer(3)]],
+    constant PrefillAttentionParams& p [[buffer(4)]],
+    device const uint* span_end [[buffer(5)]],
+    uint3 tg [[threadgroup_position_in_grid]],
+    uint tid [[thread_index_in_threadgroup]],
+    uint lane [[thread_index_in_simdgroup]],
+    uint simd_group [[simdgroup_index_in_threadgroup]]
+) {
+    threadgroup half k_tile[kSgmmKeys * kSgmmStride];
+    threadgroup half v_tile[kSgmmKeys * kSgmmStride];
+    threadgroup uint bounds[16];
+
+    const uint kvh = tg.y;
+    const uint qh = kvh * kSgmmGqaHeads + simd_group / 4u;
+    const uint q_block = tg.x * kSgmmQueries;
+    const uint kv_head_offset = kvh * kSgmmHeadDim;
+
+    const uint qid = lane / 4u;
+    const uint fm = (qid & 4u) + ((lane / 2u) % 4u);
+    const uint fn = (qid & 2u) * 2u + (lane % 2u) * 2u;
+
+    const uint row = (simd_group % 4u) * 8u + fm;
+    const uint t = q_block + row;
+    const bool row_active = t < p.queryCount;
+    const uint abs_q = p.startPosition + t;
+    uint row_first = 0u;
+    if (p.slidingWindow != 0u && abs_q + 1u > p.slidingWindow) {
+        row_first = abs_q + 1u - p.slidingWindow;
+    }
+    const uint row_last = row_active
+        ? prefill_attention_visible_end(p, span_end, t, abs_q)
+        : 0u;
+
+    const uint sg_first = simd_min(row_active ? row_first : 0xFFFFFFFFu);
+    const uint sg_last = simd_max(row_last);
+    if (lane == 0u) {
+        bounds[simd_group] = sg_first;
+        bounds[8u + simd_group] = sg_last;
+    }
+
+    // Each lane fills its own two elements of every Q fragment. Rows past the
+    // chunk read the last row; their keys are all masked and they are not
+    // written back.
+    simdgroup_half8x8 q_frag[kSgmmHeadDim / 8u];
+    {
+        const uint qt = row_active ? t : p.queryCount - 1u;
+        device const half* q_row = Q + qt * p.qTokenStrideElements + qh * kSgmmHeadDim;
+        for (uint i = 0u; i < kSgmmHeadDim / 8u; ++i) {
+            const half2 v = half2(*(device const packed_half2*)(q_row + i * 8u + fn));
+            q_frag[i].thread_elements()[0] = v.x;
+            q_frag[i].thread_elements()[1] = v.y;
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    uint block_first = bounds[0];
+    uint block_last = bounds[8];
+    for (uint s = 1u; s < 8u; ++s) {
+        block_first = min(block_first, bounds[s]);
+        block_last = max(block_last, bounds[8u + s]);
+    }
+
+    simdgroup_float8x8 o_frag[kSgmmHeadDim / 8u];
+    for (uint i = 0u; i < kSgmmHeadDim / 8u; ++i) {
+        o_frag[i] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+    }
+    float row_max = -INFINITY;
+    float row_sum = 0.0f;
+
+    for (uint k0 = block_first; k0 < block_last; k0 += kSgmmKeys) {
+        const bool sg_live = k0 < sg_last && k0 + kSgmmKeys > sg_first;
+
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        for (uint i = 0u; i < (kSgmmKeys * kSgmmHeadDim / 4u) / kSgmmGqaThreads; ++i) {
+            const uint idx = i * kSgmmGqaThreads + tid;
+            const uint r = idx / (kSgmmHeadDim / 4u);
+            const uint c = (idx % (kSgmmHeadDim / 4u)) * 4u;
+            const uint key = k0 + r;
+            half4 kv = half4(0.0h);
+            half4 vv = half4(0.0h);
+            if (key < block_last) {
+                const uint off = prefill_kv_slot(key) * p.kvTokenStrideElements + kv_head_offset + c;
+                kv = half4(*(device const packed_half4*)(K + off));
+                vv = half4(*(device const packed_half4*)(V + off));
+            }
+            *(threadgroup half4*)(k_tile + r * kSgmmStride + c) = kv;
+            *(threadgroup half4*)(v_tile + r * kSgmmStride + c) = vv;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        if (!sg_live) {
+            continue;
+        }
+
+        simdgroup_float8x8 s_frag[kSgmmKeys / 8u];
+        for (uint n = 0u; n < kSgmmKeys / 8u; ++n) {
+            s_frag[n] = make_filled_simdgroup_matrix<float, 8, 8>(0.0f);
+        }
+        for (uint d = 0u; d < kSgmmHeadDim / 8u; ++d) {
+            for (uint n = 0u; n < kSgmmKeys / 8u; ++n) {
+                simdgroup_half8x8 kf;
+                simdgroup_load(kf, k_tile + n * 8u * kSgmmStride + d * 8u, kSgmmStride,
+                               ulong2(0, 0), true);
+                simdgroup_multiply_accumulate(s_frag[n], q_frag[d], kf, s_frag[n]);
+            }
+        }
+
+        float sv[kSgmmKeys / 8u][2];
+        float tile_max = -INFINITY;
+        for (uint n = 0u; n < kSgmmKeys / 8u; ++n) {
+            for (uint e = 0u; e < 2u; ++e) {
+                const uint key = k0 + n * 8u + fn + e;
+                const bool valid = key >= row_first && key < row_last;
+                const float s = s_frag[n].thread_elements()[e] * p.scale;
+                sv[n][e] = valid ? s : -INFINITY;
+                tile_max = max(tile_max, sv[n][e]);
+            }
+        }
+        tile_max = max(tile_max, simd_shuffle_xor(tile_max, 1u));
+        tile_max = max(tile_max, simd_shuffle_xor(tile_max, 8u));
+        // A row with no visible key yet (or a row past the chunk) keeps
+        // factor 1 and zero weights. The branch is per lane, and every lane
+        // still reaches the multiplies below.
+        const float new_max = max(row_max, tile_max);
+        const bool row_seen = new_max != -INFINITY;
+        const float factor = !row_seen ? 1.0f
+            : row_max == -INFINITY ? 0.0f
+            : fast::exp(row_max - new_max);
+        simdgroup_half8x8 p_frag[kSgmmKeys / 8u];
+        float tile_sum = 0.0f;
+        for (uint n = 0u; n < kSgmmKeys / 8u; ++n) {
+            for (uint e = 0u; e < 2u; ++e) {
+                const float pv = sv[n][e] == -INFINITY ? 0.0f : fast::exp(sv[n][e] - new_max);
+                tile_sum += pv;
+                p_frag[n].thread_elements()[e] = half(pv);
+            }
+        }
+        if (row_seen) {
+            row_max = new_max;
+        }
+        row_sum = row_sum * factor + tile_sum;
+
+        for (uint i = 0u; i < kSgmmHeadDim / 8u; ++i) {
+            o_frag[i].thread_elements()[0] *= factor;
+            o_frag[i].thread_elements()[1] *= factor;
+            for (uint n = 0u; n < kSgmmKeys / 8u; ++n) {
+                simdgroup_half8x8 vf;
+                simdgroup_load(vf, v_tile + n * 8u * kSgmmStride + i * 8u, kSgmmStride);
+                simdgroup_multiply_accumulate(o_frag[i], p_frag[n], vf, o_frag[i]);
+            }
+        }
+    }
+
+    row_sum += simd_shuffle_xor(row_sum, 1u);
+    row_sum += simd_shuffle_xor(row_sum, 8u);
+    if (row_active) {
+        const float inv = row_sum > 0.0f ? 1.0f / row_sum : 0.0f;
+        device half* out_row = O + t * p.oTokenStrideElements + qh * kSgmmHeadDim;
+        for (uint i = 0u; i < kSgmmHeadDim / 8u; ++i) {
+            out_row[i * 8u + fn] = half(o_frag[i].thread_elements()[0] * inv);
+            out_row[i * 8u + fn + 1u] = half(o_frag[i].thread_elements()[1] * inv);
+        }
+    }
+}
+
 #if defined(__HAVE_TENSOR__)
 
 constant constexpr int kPrefillTensorOpsOutputs = 8;

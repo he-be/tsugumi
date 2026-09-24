@@ -71,6 +71,10 @@ final class PrefillAttention {
     private static let sgmmHeadDim: UInt32 = 256
     private static let sgmmQueries = 32
     private static let sgmmThreads = 128
+    /// With two query heads per KV head (the pinned model's sliding-window
+    /// layers, 16/8) both heads share one threadgroup and its K/V tiles.
+    private static let sgmmGqaHeads: UInt32 = 2
+    private static let sgmmGqaThreads = 256
 
     private let context: MetalContext
     private let psoCausalTiled: MTLComputePipelineState
@@ -122,7 +126,7 @@ final class PrefillAttention {
             && params.numKVHeads == 2
             && params.scale == 1.0
         let tensorOpsPipeline = tensorOpsShape ? psoFullTensorOps2DValidityV2 : nil
-        enum Variant { case tensorOps, sgmm, qBlock, tiled }
+        enum Variant { case tensorOps, sgmm, sgmmGqa, qBlock, tiled }
         let variant: Variant
         let pipeline: MTLComputePipelineState
         var qBlock: QBlockSpecialisation?
@@ -133,8 +137,11 @@ final class PrefillAttention {
             preconditionFailure(
                 "TensorOps 2D prefill attention requires Apple10 MPP tensor support")
         } else if path == .causalSimdgroupMatrix && params.headDim == Self.sgmmHeadDim {
-            variant = .sgmm
-            pipeline = sgmmPipeline(kvRingCapacity: kvRingCapacity)
+            let gqa = params.numQHeads == Self.sgmmGqaHeads * params.numKVHeads
+            variant = gqa ? .sgmmGqa : .sgmm
+            pipeline = sgmmPipeline(
+                gqa ? "attention_prefill_causal_sgmm_gqa_d256" : "attention_prefill_causal_sgmm_d256",
+                kvRingCapacity: kvRingCapacity)
         } else if let specialisation = Self.qBlockSpecialisations[params.headDim] {
             // Both attention kinds: 256 is the sliding-window layers, 512 the
             // full ones.
@@ -153,6 +160,7 @@ final class PrefillAttention {
         switch variant {
         case .tensorOps: threadCount = 128
         case .sgmm: threadCount = Self.sgmmThreads
+        case .sgmmGqa: threadCount = Self.sgmmGqaThreads
         case .qBlock: threadCount = Self.qBlockThreads
         case .tiled: threadCount = roundUp(max(threadWidth, headDim), toMultipleOf: threadWidth)
         }
@@ -176,10 +184,10 @@ final class PrefillAttention {
             groups = MTLSize(width: Int(params.queryCount),
                              height: Int(params.numQHeads) / 8,
                              depth: 1)
-        case .sgmm:
+        case .sgmm, .sgmmGqa:
             groups = MTLSize(
                 width: (Int(params.queryCount) + Self.sgmmQueries - 1) / Self.sgmmQueries,
-                height: Int(params.numQHeads),
+                height: variant == .sgmmGqa ? Int(params.numKVHeads) : Int(params.numQHeads),
                 depth: 1)
         case .qBlock:
             // One simdgroup per `queriesPerSimdgroup` queries, and the kernel
@@ -234,12 +242,12 @@ final class PrefillAttention {
         }
     }
 
-    private func sgmmPipeline(kvRingCapacity: UInt32) -> MTLComputePipelineState {
+    private func sgmmPipeline(_ function: String, kvRingCapacity: UInt32) -> MTLComputePipelineState {
         let constants = kvRingCapacity > 0
             ? [MetalFunctionConstant(index: 76, value: .uint32(kvRingCapacity))]
             : []
         do {
-            return try context.pipeline("attention_prefill_causal_sgmm_d256", constants: constants)
+            return try context.pipeline(function, constants: constants)
         } catch {
             preconditionFailure("failed to build simdgroup-matrix prefill attention pipeline: \(error)")
         }

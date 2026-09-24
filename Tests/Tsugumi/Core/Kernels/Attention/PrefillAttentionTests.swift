@@ -149,8 +149,9 @@ import TsugumiValidationSupport
         try Self.runAndCompare(fixture, label: "qblock-chunk-\(chunk)")
     }
 
-    /// `.causalSimdgroupMatrix` dispatches `attention_prefill_causal_sgmm_d256`:
-    /// 32 queries a threadgroup, 8 a simdgroup, keys in tiles of 16. The chunk
+    /// `.causalSimdgroupMatrix` at 16/8 heads dispatches
+    /// `attention_prefill_causal_sgmm_gqa_d256`: 32 queries of both heads of a
+    /// KV head a threadgroup, 8 a simdgroup, keys in tiles of 16. The chunk
     /// sizes straddle the 8- and 32-row edges, and the two starts put the
     /// window's lower edge inside the chunk and before the prefix's start.
     @Test(arguments: [1, 7, 8, 9, 31, 32, 33, 67, 130])
@@ -170,6 +171,25 @@ import TsugumiValidationSupport
             #expect(maxAbs <= 2e-2, "sgmm-start\(start)-chunk\(chunk) maxAbs=\(maxAbs) rel=\(rel)")
             #expect(rel <= 2e-2, "sgmm-start\(start)-chunk\(chunk) rel=\(rel) maxAbs=\(maxAbs)")
         }
+    }
+
+    /// Any other head ratio keeps `attention_prefill_causal_sgmm_d256`, one
+    /// query head a threadgroup.
+    @Test(arguments: [7, 33])
+    func simdgroupMatrixWithoutHeadPairMatchesReference(_ chunk: Int) throws {
+        let fixture = Self.makeFixture(start: 1_021,
+                                       chunk: chunk,
+                                       window: 1_024,
+                                       seed: 0xA9B0 + UInt64(chunk),
+                                       headDim: 256,
+                                       qHeads: 16,
+                                       kvHeads: 16)
+        let actual = try Self.runKernel(fixture, path: .causalSimdgroupMatrix)
+        let reference = Self.reference(fixture)
+        let maxAbs = RelError.maxAbsDiff(actual, reference)
+        let rel = RelError.compute(actual: actual, reference: reference)
+        #expect(maxAbs <= 2e-2, "sgmm-no-pair-chunk\(chunk) maxAbs=\(maxAbs) rel=\(rel)")
+        #expect(rel <= 2e-2, "sgmm-no-pair-chunk\(chunk) rel=\(rel) maxAbs=\(maxAbs)")
     }
 
     @Test func simdgroupMatrixRingCapacityMatchesLinearReference() throws {
