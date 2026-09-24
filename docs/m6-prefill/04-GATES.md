@@ -77,7 +77,7 @@ B1 の順に 1 段ずつ直す。1 段ごとに次を満たして閉じる。
 
 ## B3. 候補を既定に入れる
 
-10〜19 で足した口は、すべて既定に入った (79eea8f、5decec4)。25 の `TF_PREFILL_ATTN=mpp` (cd8c26b)、32 の `TF_PREFILL_QMM=nax` (883df28)、33 の router GEMM と shared の投入順 (6f9ae16)、34 の検証の先回りの深さ 8 (5769e1f) も既定に入った。台帳 ([06 §1](06-LEDGER.md)) の最新行は `ledger-verify-ahead8` 2.885 s。
+10〜19 で足した口は、すべて既定に入った (79eea8f、5decec4)。25 の `TF_PREFILL_ATTN=mpp` (cd8c26b)、32 の `TF_PREFILL_QMM=nax` (883df28)、33 の router GEMM と shared の投入順 (6f9ae16)も既定に入った。台帳 ([06 §1](06-LEDGER.md)) の行はどれも検証を含む量で、進捗の物差しとしては取り下げた ([35](35-PREFILL-WITHOUT-VERIFY.md))。
 
 | 候補 | 結果文書 | 候補の (c)、秒 (台帳 §2) | 既定にするときの問い |
 | --- | --- | --- | --- |
@@ -88,7 +88,7 @@ B1 の順に 1 段ずつ直す。1 段ごとに次を満たして閉じる。
 | ~~`TF_PREFILL_ATTN=mpp`~~ | [25](25-SWA-ATTN-MPP.md) | 同じバイナリで既定と交互に 3.579 (3.547〜4.885、2c5c0dd) | **既定に入れた** (cd8c26b、`ledger-swa-mpp-default` 3.496 s、[26](26-SWA-ATTN-MPP-DEFAULT.md))。範囲の速い側に 0.051 s 外れ、sgmm に戻した対照も同じ向き。戻すのは `TF_PREFILL_ATTN=sgmm` |
 | ~~`TF_PREFILL_QMM=nax`~~ | [32](32-QMM-NAX-DEFAULT.md) | 同じバイナリで既定と交互に 3.143 (3.119〜4.436、845da52) | **既定に入れた** (883df28、`ledger-qmm-nax-default` 3.134 s)。戻すのは `TF_PREFILL_QMM=mpp64` |
 | ~~`TF_PREFILL_ROUTER=gemm` + `TF_PREFILL_SHARED_LATE=1`~~ | [33](33-ROUTER-GEMM-SHARED-LATE.md) | 同じバイナリで既定と交互に 3.150 (3.137〜4.388、9c093e8〜cfdb5d2) | **既定に入れた** (6f9ae16、`ledger-router-shared-late` 3.142 s。前の行 3.134 s から縮んでいない)。戻すのは `TF_PREFILL_ROUTER=row` / `TF_PREFILL_SHARED_LATE=0` |
-| ~~`TF_PREFILL_VERIFY_AHEAD=8`~~ | [34](34-VERIFY-AHEAD-DEPTH.md) | 同じバイナリで既定と交互に 2.884 (2.872〜4.008、e53f5c8) | **既定に入れた** (5769e1f、`ledger-verify-ahead8` 2.885 s。前の行 3.142 s から −0.257 s)。戻すのは `TF_PREFILL_VERIFY_AHEAD=2` |
+| ~~`TF_PREFILL_VERIFY_AHEAD=8`~~ | [34](34-VERIFY-AHEAD-DEPTH.md) | 同じバイナリで既定と交互に 2.884 (2.872〜4.008、e53f5c8) | **取り下げ**。縮んだのは検証の待ちで prefill の計算ではない。5769e1f で既定にし、b0b4de2 で 2 に戻した ([34](34-VERIFY-AHEAD-DEPTH.md)、[35](35-PREFILL-WITHOUT-VERIFY.md)) |
 
 **手順**: 原則 2 を満たした候補ごとに、既定を変えた commit で `ledger-<候補名>` を n = 6 で取る。
 **合格**: 台帳 §1 に新しい行があり、その中央値が候補の (c) のレンジに入っている。入っていなければ、既定にした結果として何かが違う (書き換えのミス、環境の違い)。理由が分かるまで次に進まない。
