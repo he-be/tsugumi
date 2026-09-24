@@ -48,6 +48,49 @@ public enum Sha256Verifier {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
+    /// SHA-256 of the bytes the segments name, in order, each read with
+    /// `pread` from its own descriptor. A layer file whose experts are split
+    /// between the model directory and a mirror copy (docs/m6-prefill/44) is
+    /// hashed as the bytes the runtime will actually read, so it matches the
+    /// manifest's whole-file digest exactly when those bytes are right.
+    package static func hashSegments(_ segments: [(fd: Int32, offset: UInt64, count: UInt64)],
+                                     displayName: String,
+                                     chunkBytes: Int = 1 << 20) throws -> String {
+        guard chunkBytes > 0 else {
+            throw ModelError.indexCorrupt(detail: "SHA-256 chunk size must be positive")
+        }
+        var ctx = CC_SHA256_CTX()
+        CC_SHA256_Init(&ctx)
+        var buf = [UInt8](repeating: 0, count: chunkBytes)
+        for segment in segments {
+            var done: UInt64 = 0
+            while done < segment.count {
+                let want = Int(min(UInt64(chunkBytes), segment.count - done))
+                let got: Int = buf.withUnsafeMutableBytes { raw -> Int in
+                    pread(segment.fd, raw.baseAddress!, want, off_t(segment.offset + done))
+                }
+                if got < 0, errno == EINTR { continue }
+                if got < 0 {
+                    throw ModelError.posixFailed(call: "pread(\(displayName))", errno: errno)
+                }
+                if got == 0 {
+                    throw ModelError.tensorSizeMismatch(
+                        name: displayName, expected: segment.offset + segment.count,
+                        actual: segment.offset + done)
+                }
+                buf.withUnsafeBytes { raw in
+                    _ = CC_SHA256_Update(&ctx, raw.baseAddress!, CC_LONG(got))
+                }
+                done += UInt64(got)
+            }
+        }
+        var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+        digest.withUnsafeMutableBytes { raw in
+            _ = CC_SHA256_Final(raw.baseAddress!.assumingMemoryBound(to: UInt8.self), &ctx)
+        }
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
     public static func hashData(_ data: Data) -> String {
         var ctx = CC_SHA256_CTX()
         CC_SHA256_Init(&ctx)

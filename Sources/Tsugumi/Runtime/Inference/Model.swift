@@ -34,23 +34,13 @@ public struct Model {
     /// (`docs/mtp/52-D-P7-PREFILL-QUEUE-DEPTH.md` §8、`TF_EXPERT_MMAP=0` で外れる)。
     /// ストリーマーを開くところと `ExpertCacheBudget` はここだけを読む。
     public var usesMappedExperts: Bool { MmapExpertMapping.isEnabled }
-    /// A second copy of `packed_experts/` on another SSD, read at the same time
-    /// as the model's own (docs/m6-prefill/44). `TF_EXPERT_MIRROR=<dir>` names
-    /// the directory that holds the `layer_*.bin` copies; nil (unset) reads
-    /// everything from the model directory.
-    public static let expertMirrorDirectory: String? = {
-        guard let raw = ProcessInfo.processInfo.environment["TF_EXPERT_MIRROR"],
-              !raw.isEmpty else { return nil }
-        return raw
-    }()
-    /// Fraction of each layer's experts read from the mirror
-    /// (`TF_EXPERT_MIRROR_SHARE`, default 0.32: M6's external SSD reads 1.57 GB/s
-    /// next to the internal 3.3 GB/s, docs/m6-prefill/44 §1).
-    public static let expertMirrorShare: Double = {
-        guard let raw = ProcessInfo.processInfo.environment["TF_EXPERT_MIRROR_SHARE"],
-              let value = Double(raw) else { return 0.32 }
-        return min(1, max(0, value))
-    }()
+    /// A copy of `packed_experts/` on a second SSD, read at the same time as
+    /// the model directory (docs/m6-prefill/44). Set from `expert-mirror.json`
+    /// when the model directory has one and its volume is mounted; nil reads
+    /// every expert from the model directory. `TF_EXPERT_MIRROR=0` forces nil.
+    public let expertMirror: ExpertMirrorReceipt?
+    /// Which experts of every layer come from the mirror; empty without one.
+    let expertMirrorAssignment: [Bool]
     public let expertCachePolicy: ExpertCachePolicy
     public let integrityPolicy: ModelIntegrityPolicy
     public var modelID: String { manifest.modelID }
@@ -161,6 +151,8 @@ public struct Model {
             /// Set before `done` leaves; -1 when the check failed, which sends
             /// the open back to verifying the file itself.
             var fileDescriptor: Int32 = -1
+            /// The mirror's copy of the same layer, -1 without one.
+            var mirrorFileDescriptor: Int32 = -1
             var verifyNanos: UInt64 = 0
             var verifiedBytes: UInt64 = 0
         }
@@ -181,6 +173,7 @@ public struct Model {
          manifest: Manifest,
          directoryURL: URL,
          modelDirectory: MoEPackModelDirectory,
+         expertMirror: ExpertMirrorReceipt? = nil,
          telemetry: ExpertTelemetry = ExpertTelemetry()) {
         self.device = device
         self.config = config
@@ -193,6 +186,10 @@ public struct Model {
         self.manifest = manifest
         self.directoryURL = directoryURL
         self.modelDirectory = modelDirectory
+        self.expertMirror = expertMirror
+        self.expertMirrorAssignment = expertMirror.map {
+            ExpertMirror.evenAssignment(count: packedExpertsLayout.expertsPerLayer, share: $0.share)
+        } ?? []
         self.streamersBox = StreamersBox(numLayers: packedExpertsLayout.numLayers)
         self.streamersQueue = DispatchQueue(label: "tsugumi.expert-streamers")
         self.verifyAheadBox = VerifyAheadBox()
@@ -452,10 +449,9 @@ public struct Model {
     /// finds it verified instead of hashing in front of every expert access on
     /// `streamersQueue` (docs/m6-prefill/13-PROJ-SHARED-MATMUL2D.md §2).
     /// Idempotent; a no-op once the layer is open, or when the policy does not
-    /// hash. The check is the one `openLayerLocked` does — size, then SHA-256
-    /// of the descriptor it will map — and a failure is not reported here: the
-    /// open finds no descriptor and repeats the check, throwing as it always
-    /// has.
+    /// hash. The check is the one `openLayerLocked` does (`openLayerFiles`) and
+    /// a failure is not reported here: the open finds no descriptor and
+    /// repeats the check, throwing as it always has.
     public func beginVerifyingRoutedExpertLayerAhead(layer L: Int) {
         guard case .fullSha256 = integrityPolicy,
               L >= 0, L < packedExpertsLayout.numLayers else { return }
@@ -472,38 +468,20 @@ public struct Model {
 
         nonisolated(unsafe) let model = self
         verifyAheadQueue.async {
-            var fd: Int32 = -1
-            var nanos: UInt64 = 0
-            var bytes: UInt64 = 0
-            let manifestRel = "packed_experts/\(model.packedExpertsLayout.layers[L].file)"
-            if let manifestEntry = model.manifest.files[manifestRel],
-               let opened = try? model.modelDirectory.openFile(manifestRel) {
-                let start = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-                if let size = try? model.modelDirectory.fileSize(
-                        fileDescriptor: opened, relativePath: manifestRel),
-                   size == manifestEntry.size,
-                   (try? Sha256Verifier.verifyFile(fileDescriptor: opened,
-                                                   named: manifestRel,
-                                                   expectedHex: manifestEntry.sha256)) != nil {
-                    fd = opened
-                    nanos = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - start
-                    bytes = size
-                } else {
-                    close(opened)
-                }
-            }
+            let files = try? model.openLayerFiles(L, verify: true)
             box.lock.lock()
-            box.entries[L]?.fileDescriptor = fd
-            box.entries[L]?.verifyNanos = nanos
-            box.entries[L]?.verifiedBytes = bytes
+            box.entries[L]?.fileDescriptor = files?.fd ?? -1
+            box.entries[L]?.mirrorFileDescriptor = files?.mirrorFD ?? -1
+            box.entries[L]?.verifyNanos = files?.verifyNanos ?? 0
+            box.entries[L]?.verifiedBytes = files?.verifiedBytes ?? 0
             box.lock.unlock()
             entry.done.leave()
         }
     }
 
-    /// The descriptor a verify-ahead left for layer L, after waiting for it
+    /// The descriptors a verify-ahead left for layer L, after waiting for it
     /// to finish; nil when none was started or it failed.
-    private func takeVerifiedAhead(_ L: Int) -> (fd: Int32, nanos: UInt64, bytes: UInt64)? {
+    private func takeVerifiedAhead(_ L: Int) -> LayerFiles? {
         let box = verifyAheadBox
         box.lock.lock()
         let pending = box.entries[L]
@@ -515,9 +493,131 @@ public struct Model {
         // Leave the entry in place with no descriptor, so a later call for an
         // already-open layer stays a no-op.
         box.entries[L]?.fileDescriptor = -1
+        box.entries[L]?.mirrorFileDescriptor = -1
         box.lock.unlock()
         guard let finished, finished.fileDescriptor >= 0 else { return nil }
-        return (finished.fileDescriptor, finished.verifyNanos, finished.verifiedBytes)
+        return LayerFiles(fd: finished.fileDescriptor,
+                          mirrorFD: finished.mirrorFileDescriptor,
+                          verifyNanos: finished.verifyNanos,
+                          verifiedBytes: finished.verifiedBytes)
+    }
+
+    /// One layer file and, with a mirror, its copy. The caller closes both.
+    struct LayerFiles {
+        var fd: Int32
+        /// -1 without a mirror.
+        var mirrorFD: Int32
+        var verifyNanos: UInt64 = 0
+        var verifiedBytes: UInt64 = 0
+
+        func close() {
+            Darwin.close(fd)
+            if mirrorFD >= 0 { Darwin.close(mirrorFD) }
+        }
+    }
+
+    /// Open layer L's file (and the mirror's copy, when there is a mirror).
+    /// With `verify`, check both sizes against the manifest and, under
+    /// `.fullSha256`, hash the bytes the runtime will read: each expert from
+    /// the side it is assigned to, the rest of the file from the model
+    /// directory. That stream is the whole file when the bytes are right, so
+    /// it is checked against the manifest's digest, and the two SSDs share the
+    /// reading (docs/m6-prefill/44).
+    func openLayerFiles(_ L: Int, verify: Bool) throws -> LayerFiles {
+        let basename = packedExpertsLayout.layers[L].file
+        let manifestRel = "packed_experts/\(basename)"
+        let fd = try modelDirectory.openFile(manifestRel)
+        var files = LayerFiles(fd: fd, mirrorFD: -1)
+        var ok = false
+        defer { if !ok { files.close() } }
+        if let expertMirror {
+            let path = (expertMirror.directory as NSString).appendingPathComponent(basename)
+            let mirrorFD = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard mirrorFD >= 0 else {
+                throw ModelError.posixFailed(call: "open(\(path))", errno: errno)
+            }
+            files.mirrorFD = mirrorFD
+        }
+        guard verify else {
+            ok = true
+            return files
+        }
+        guard let entry = manifest.files[manifestRel] else {
+            throw ModelError.missingFile(name: manifestRel)
+        }
+        let actualSize = try modelDirectory.fileSize(fileDescriptor: fd, relativePath: manifestRel)
+        guard actualSize == entry.size else {
+            throw ModelError.tensorSizeMismatch(
+                name: manifestRel, expected: entry.size, actual: actualSize)
+        }
+        if files.mirrorFD >= 0 {
+            var st = stat()
+            guard fstat(files.mirrorFD, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
+                throw ModelError.posixFailed(call: "fstat(mirror \(basename))", errno: errno)
+            }
+            guard UInt64(st.st_size) == entry.size else {
+                throw ModelError.tensorSizeMismatch(
+                    name: "mirror \(basename)", expected: entry.size, actual: UInt64(st.st_size))
+            }
+        }
+        switch integrityPolicy {
+        case .fullSha256:
+            let verifyStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
+            if files.mirrorFD >= 0 {
+                let segments = try layerHashSegments(L, fd: fd, mirrorFD: files.mirrorFD,
+                                                     fileSize: actualSize)
+                // Ask both drives for their part up front, so the hash below
+                // reads from the cache while the two SSDs fill it together.
+                for segment in segments {
+                    _ = RDAdvice.call(fd: segment.fd, offset: segment.offset,
+                                      byteCount: segment.count)
+                }
+                let actual = try Sha256Verifier.hashSegments(segments, displayName: manifestRel)
+                guard actual.lowercased() == entry.sha256.lowercased() else {
+                    throw ModelError.checksumMismatch(file: manifestRel)
+                }
+            } else {
+                try Sha256Verifier.verifyFile(fileDescriptor: fd,
+                                              named: manifestRel,
+                                              expectedHex: entry.sha256)
+            }
+            files.verifyNanos = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - verifyStart
+            files.verifiedBytes = actualSize
+        case .sizeCheckTrustedReceipt:
+            break
+        }
+        ok = true
+        return files
+    }
+
+    /// The whole layer file as segments in file order: each expert's stride
+    /// from the side it is read from, every other byte from the model
+    /// directory.
+    func layerHashSegments(_ L: Int, fd: Int32, mirrorFD: Int32,
+                           fileSize: UInt64) throws -> [(fd: Int32, offset: UInt64, count: UInt64)] {
+        let stride = packedExpertsLayout.expertStride
+        let experts = packedExpertsLayout.layers[L].experts.enumerated()
+            .map { (expert: $0.offset, offset: $0.element.offset) }
+            .sorted { $0.offset < $1.offset }
+        var segments: [(fd: Int32, offset: UInt64, count: UInt64)] = []
+        var cursor: UInt64 = 0
+        for item in experts {
+            guard item.offset >= cursor, item.offset + stride <= fileSize else {
+                throw ModelError.indexCorrupt(
+                    detail: "layer \(L) expert \(item.expert) overlaps or runs past the file")
+            }
+            if item.offset > cursor {
+                segments.append((fd, cursor, item.offset - cursor))
+            }
+            let onMirror = item.expert < expertMirrorAssignment.count
+                && expertMirrorAssignment[item.expert]
+            segments.append((onMirror ? mirrorFD : fd, item.offset, stride))
+            cursor = item.offset + stride
+        }
+        if cursor < fileSize {
+            segments.append((fd, cursor, fileSize - cursor))
+        }
+        return segments
     }
 
     private func openLayerLocked(_ L: Int) throws {
@@ -533,39 +633,15 @@ public struct Model {
                 verifyNanos: verifyNanos,
                 verifiedBytes: verifiedBytes)
         }
-        let basename = packedExpertsLayout.layers[L].file
         let url = directoryURL
             .appendingPathComponent("packed_experts")
-            .appendingPathComponent(basename)
-        let manifestRel = "packed_experts/\(basename)"
-        let ahead = streamersBox.layerVerified[L] ? nil : takeVerifiedAhead(L)
-        let layerFD = try ahead?.fd ?? modelDirectory.openFile(manifestRel)
-        defer { close(layerFD) }
-        if let ahead {
-            verifyNanos = ahead.nanos
-            verifiedBytes = ahead.bytes
-        } else if !streamersBox.layerVerified[L] {
-            guard let entry = manifest.files[manifestRel] else {
-                throw ModelError.missingFile(name: manifestRel)
-            }
-            let actualSize = try modelDirectory.fileSize(
-                fileDescriptor: layerFD, relativePath: manifestRel)
-            guard actualSize == entry.size else {
-                throw ModelError.tensorSizeMismatch(
-                    name: manifestRel, expected: entry.size, actual: actualSize)
-            }
-            switch integrityPolicy {
-            case .fullSha256:
-                let verifyStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
-                try Sha256Verifier.verifyFile(fileDescriptor: layerFD,
-                                              named: manifestRel,
-                                              expectedHex: entry.sha256)
-                verifyNanos = clock_gettime_nsec_np(CLOCK_UPTIME_RAW) - verifyStart
-                verifiedBytes = actualSize
-            case .sizeCheckTrustedReceipt:
-                break
-            }
-        }
+            .appendingPathComponent(packedExpertsLayout.layers[L].file)
+        let files = try streamersBox.layerVerified[L]
+            ? openLayerFiles(L, verify: false)
+            : (takeVerifiedAhead(L) ?? openLayerFiles(L, verify: true))
+        defer { files.close() }
+        verifyNanos = files.verifyNanos
+        verifiedBytes = files.verifiedBytes
         let streamSize = UInt64(packedExpertsLayout.expertsPerLayer)
             * packedExpertsLayout.expertStride
         let layout = StreamLayout(
@@ -580,17 +656,9 @@ public struct Model {
         case .pread(let configuredSlotCount):
             slotCount = configuredSlotCount
         }
-        let mirrorFD = try Self.expertMirrorDirectory.map { directory in
-            try openExpertMirror(directory: directory, basename: basename,
-                                 manifestRel: manifestRel)
-        }
-        defer { if let mirrorFD { close(mirrorFD) } }
-        let mirror = mirrorFD.map {
-            ExpertMirror(fileDescriptor: $0,
-                         onMirror: ExpertMirror.evenAssignment(
-                            count: packedExpertsLayout.expertsPerLayer,
-                            share: Self.expertMirrorShare))
-        }
+        let mirror = files.mirrorFD >= 0
+            ? ExpertMirror(fileDescriptor: files.mirrorFD, onMirror: expertMirrorAssignment)
+            : nil
         // 経路を決めるのはここ 1 か所である。既定は D (mmap + residency set、
         // docs/mtp/52 §5a)。`TF_EXPERT_MMAP=0` で 51 までの私有スロットに戻る。
         streamersBox.streamers[L] = try PreadExpertStreamer(
@@ -598,41 +666,10 @@ public struct Model {
             device: device,
             slotCount: slotCount,
             cachePolicy: expertCachePolicy,
-            fileDescriptor: layerFD,
+            fileDescriptor: files.fd,
             useMmap: usesMappedExperts,
             mirror: mirror)
         streamersBox.layerVerified[L] = true
-    }
-
-    /// Open the mirror's copy of one layer file and hold it to the same
-    /// integrity rule as the original: the manifest size always, and the
-    /// SHA-256 too under `.fullSha256`.
-    private func openExpertMirror(directory: String, basename: String,
-                                  manifestRel: String) throws -> Int32 {
-        guard let entry = manifest.files[manifestRel] else {
-            throw ModelError.missingFile(name: manifestRel)
-        }
-        let path = (directory as NSString).appendingPathComponent(basename)
-        let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else {
-            throw ModelError.posixFailed(call: "open(\(path))", errno: errno)
-        }
-        var ok = false
-        defer { if !ok { close(fd) } }
-        var st = stat()
-        guard fstat(fd, &st) == 0, (st.st_mode & S_IFMT) == S_IFREG else {
-            throw ModelError.posixFailed(call: "fstat(\(path))", errno: errno)
-        }
-        guard UInt64(st.st_size) == entry.size else {
-            throw ModelError.tensorSizeMismatch(
-                name: path, expected: entry.size, actual: UInt64(st.st_size))
-        }
-        if integrityPolicy == .fullSha256 {
-            try Sha256Verifier.verifyFile(fileDescriptor: fd, named: path,
-                                          expectedHex: entry.sha256)
-        }
-        ok = true
-        return fd
     }
 
     /// Test hook: how many layer files have been opened so far.
@@ -699,6 +736,8 @@ extension Model {
 
         let manifest = try ManifestReader.decode(
             data: manifestData, expecting: expecting)
+        let expertMirror = try ExpertMirrorReceipt.resolve(
+            modelDirectory: modelDirectory, manifestSha256: manifestSha)
         if let receipt {
             let receiptStart = clock_gettime_nsec_np(CLOCK_UPTIME_RAW)
             try VerifiedInstallReceiptReader.validate(receipt,
@@ -795,7 +834,8 @@ extension Model {
             packedExpertsLayout: layout,
             manifest: manifest,
             directoryURL: directoryURL,
-            modelDirectory: modelDirectory)
+            modelDirectory: modelDirectory,
+            expertMirror: expertMirror)
     }
 
     private static func validateTrustedReceiptLayerLayout(modelDirectory: MoEPackModelDirectory,

@@ -1,7 +1,9 @@
 #!/bin/sh
-# Default vs. TF_EXPERT_MIRROR (docs/m6-prefill/44), natural prompts rotated so
-# no two consecutive runs share a prompt (docs/m6-prefill/43 §3).
-#   bench/m6/mirror_bench.sh <label> <mirror dir> [rounds] [share] [alt|block]
+# The default (with the model's expert-mirror.json, docs/m6-prefill/44) vs.
+# TF_EXPERT_MIRROR=0 (model directory only), natural prompts rotated so no two
+# consecutive runs share a prompt (docs/m6-prefill/43 §3).
+#   bench/m6/mirror_bench.sh <label> [rounds] [alt|block]
+# Arms in summary.tsv: def (the default binary, no TF_) and off (TF_EXPERT_MIRROR=0).
 # alt (default): round r walks the five prompts; the arm alternates run by run
 # and the starting arm flips each round, so every (prompt, arm) cell gets
 # rounds / 2 runs. Neither arm finds the other's pages in the cache useful.
@@ -12,14 +14,15 @@
 # cumulative iostat MB of every disk before and after, so the bytes each SSD
 # served during the run are the difference.
 # Output: bench/m6/results/<date>-<host>-<label>/
-#   hostinfo.txt command.txt run-N.{log,pre.txt,post.txt} summary.tsv greedy-{def,mir}.log
+#   hostinfo.txt command.txt expert-mirror.json run-N.{log,pre.txt,post.txt}
+#   summary.tsv greedy-{def,off}.log
 set -eu
 repo=$(cd "$(dirname "$0")/../.." && pwd)
-label=${1:?label}; mirror=${2:?mirror dir}
-rounds=${3:-6}; share=${4:-0.32}; order=${5:-alt}
+label=${1:?label}; rounds=${2:-6}; order=${3:-alt}
 bin="$repo/.build/release/TsugumiCLI"
 model="${MODEL:-$repo/scratch/gemma4-qat-sym.gturbo}"
 [ -x "$bin" ] || { echo "no $bin"; exit 1; }
+[ -f "$model/expert-mirror.json" ] || { echo "no $model/expert-mirror.json (Scripts/make-expert-mirror.sh)"; exit 1; }
 if pgrep -fl 'TsugumiServer|TsugumiMac|TsugumiDecodeService|TsugumiCLI|TsugumiPackageTests|mlx_lm|mlx-lm' >/dev/null; then
     echo "another model process is running; refusing to measure"; exit 1
 fi
@@ -28,12 +31,13 @@ host=$(sysctl -n hw.model | tr ',' '-')
 out="$repo/bench/m6/results/$(date '+%Y-%m-%d')-$host-$label"
 mkdir -p "$out"
 sh "$repo/bench/hostinfo.sh" "$bin" > "$out/hostinfo.txt"
+cp "$model/expert-mirror.json" "$out/expert-mirror.json"
 prompts="ja-twomachine ja-m6readme en-readme en-server code-runner"
 fixed="--expert-cache-slots 32 --prefill-chunk-tokens 2048 --max-new 1 --max-context 4096 --verification trusted-install"
 {
     echo "bench/m6/mirror_bench.sh $*"
     echo "def: $bin --model $model --messages-file bench/m6/prompts/<prompt>.json $fixed"
-    echo "mir: TF_EXPERT_MIRROR=$mirror TF_EXPERT_MIRROR_SHARE=$share <def>"
+    echo "off: TF_EXPERT_MIRROR=0 <def>"
 } > "$out/command.txt"
 snap() {
     date '+%H:%M:%S'; memory_pressure -Q 2>/dev/null | tail -1 || true
@@ -49,18 +53,18 @@ run=1; r=1
 while [ "$r" -le "$rounds" ]; do
     k=0
     if [ "$order" = block ]; then
-        cells=$(for p in $prompts; do [ $((r % 2)) -eq 1 ] && echo "def/$p" || echo "mir/$p"; done
-                for p in $prompts; do [ $((r % 2)) -eq 1 ] && echo "mir/$p" || echo "def/$p"; done)
+        cells=$(for p in $prompts; do [ $((r % 2)) -eq 1 ] && echo "off/$p" || echo "def/$p"; done
+                for p in $prompts; do [ $((r % 2)) -eq 1 ] && echo "def/$p" || echo "off/$p"; done)
     else
         cells=$(for p in $prompts; do
-            if [ $(( (k + r) % 2 )) -eq 0 ]; then echo "def/$p"; else echo "mir/$p"; fi; k=$((k + 1)); done)
+            if [ $(( (k + r) % 2 )) -eq 0 ]; then echo "off/$p"; else echo "def/$p"; fi; k=$((k + 1)); done)
     fi
     for cell in $cells; do
         arm=${cell%%/*}; p=${cell#*/}
         snap > "$out/run-$run.pre.txt"
         rc=0
-        if [ "$arm" = mir ]; then
-            TF_EXPERT_MIRROR="$mirror" TF_EXPERT_MIRROR_SHARE="$share" \
+        if [ "$arm" = off ]; then
+            TF_EXPERT_MIRROR=0 \
                 "$bin" --model "$model" --messages-file "$repo/bench/m6/prompts/$p.json" $fixed \
                 > "$out/run-$run.log" 2>&1 || rc=$?
         else
@@ -89,5 +93,5 @@ done
 # Same text either way: greedy 64 tokens on one prompt, each arm once.
 g="--model $model --messages-file $repo/bench/m6/prompts/ja-twomachine.json --expert-cache-slots 32 --prefill-chunk-tokens 2048 --max-new 64 --temperature 0 --max-context 4096 --verification trusted-install"
 "$bin" $g > "$out/greedy-def.log" 2>&1 || echo "greedy def exit $?"
-TF_EXPERT_MIRROR="$mirror" TF_EXPERT_MIRROR_SHARE="$share" "$bin" $g > "$out/greedy-mir.log" 2>&1 || echo "greedy mir exit $?"
+TF_EXPERT_MIRROR=0 "$bin" $g > "$out/greedy-off.log" 2>&1 || echo "greedy off exit $?"
 echo "evidence: ${out#$repo/}"

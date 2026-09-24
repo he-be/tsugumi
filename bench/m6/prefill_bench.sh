@@ -35,6 +35,9 @@ host=$(sysctl -n hw.model | tr ',' '-')
 out="$repo/bench/m6/results/$(date '+%Y-%m-%d')-$host-$label"
 mkdir -p "$out"
 sh "$repo/bench/hostinfo.sh" "$bin" > "$out/hostinfo.txt"
+# The default reads part of every layer from a registered mirror when the model
+# has one (docs/m6-prefill/44); keep which, so a row says what it measured.
+[ -f "$model/expert-mirror.json" ] && cp "$model/expert-mirror.json" "$out/expert-mirror.json"
 # TF_BENCH_MESSAGES swaps the prompt for a measurement that is not a ledger row
 # (the ledger guard refuses any TF_ variable).
 messages="${TF_BENCH_MESSAGES:-$repo/bench/l.json}"
