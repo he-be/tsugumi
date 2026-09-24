@@ -60,3 +60,61 @@ func runDenseQMMBench(groupSize: Int, iterations: Int) throws {
         }
     }
 }
+
+// MARK: - Prefill BF16 router, off the prefill timeline
+//
+// `--router-bench` (docs/m6-prefill/33). The level-2 `post.router` segment ends
+// with a command buffer that runs beside the shared expert's, so its seconds
+// are not the router's. This times the row kernel and the GEMM alone at a full
+// prompt chunk (M = 2048), D 2816, 128 experts, top-8.
+
+func runRouterBench(groupSize: Int, iterations: Int) throws {
+    let context = try makeContext(groupSize: groupSize)
+    let device = context.device
+    let router = try PrefillRouter(context: context, routerWeightBits: 16)
+    var rng = SplitMix64(seed: 0x726f7574)
+    let m = 2048, d = 2816, experts = 128, topK = 8
+    let wBits = (0..<(experts * d)).map { _ in
+        Quantization.bf16Bits(Float(rng.next() % 2001) / 10000 - 0.1)
+    }
+    let esBits = [UInt16](repeating: Quantization.bf16Bits(1), count: d)
+    let pesBits = [UInt16](repeating: Quantization.bf16Bits(1), count: experts)
+    let xHalves = (0..<(m * d)).map { _ in Float16(Float(rng.next() % 2001) / 1000 - 1) }
+    guard let w = device.makeBuffer(bytes: wBits, length: wBits.count * 2, options: .storageModeShared),
+          let es = device.makeBuffer(bytes: esBits, length: esBits.count * 2, options: .storageModeShared),
+          let pes = device.makeBuffer(bytes: pesBits, length: pesBits.count * 2, options: .storageModeShared),
+          let x = device.makeBuffer(bytes: xHalves, length: xHalves.count * 2, options: .storageModeShared),
+          let ids = device.makeBuffer(length: m * topK * 4, options: .storageModeShared),
+          let wts = device.makeBuffer(length: m * topK * 2, options: .storageModeShared) else {
+        fatalError("router bench fixture failed")
+    }
+    let flops = 2.0 * Double(m) * Double(experts) * Double(d)
+    print("router bench: M \(m), D \(d), \(experts) experts, top-\(topK), median of \(iterations) (after 2 warm), 1 dispatch per command buffer")
+    print("kernel\tgpu_us\tTFLOP/s")
+    for gemm in [false, true] {
+        var samples: [Double] = []
+        for iteration in 0..<(iterations + 2) {
+            guard let cmd = context.queue.makeCommandBuffer() else { fatalError() }
+            if gemm {
+                router.encodeGemma4BF16GEMM(commandBuffer: cmd, weights: w, hidden: x,
+                                            effectiveScale: es, perExpertScale: pes,
+                                            outIndices: ids, outWeights: wts,
+                                            queryCount: UInt32(m), numExperts: UInt32(experts),
+                                            d: UInt32(d), topK: UInt32(topK),
+                                            hiddenStrideElements: UInt32(d))
+            } else {
+                router.encodeGemma4BF16Block(commandBuffer: cmd, weights: w, hidden: x,
+                                             effectiveScale: es, perExpertScale: pes,
+                                             outIndices: ids, outWeights: wts,
+                                             queryCount: UInt32(m), numExperts: UInt32(experts),
+                                             d: UInt32(d), topK: UInt32(topK),
+                                             hiddenStrideElements: UInt32(d))
+            }
+            waitAndCheck(cmd, "router bench")
+            if iteration >= 2 { samples.append(cmd.gpuEndTime - cmd.gpuStartTime) }
+        }
+        samples.sort()
+        let t = samples[samples.count / 2]
+        print(String(format: "%@\t%.1f\t%.2f", gemm ? "gemm" : "row", t * 1e6, flops / t / 1e12))
+    }
+}

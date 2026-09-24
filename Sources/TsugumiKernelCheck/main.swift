@@ -2152,6 +2152,13 @@ if arguments.contains("--dense-qmm-bench") {
     exit(0)
 }
 
+// `--router-bench` times the prompt-chunk BF16 router, row kernel and GEMM,
+// alone (DenseQMMBench.swift, docs/m6-prefill/33).
+if arguments.contains("--router-bench") {
+    try runRouterBench(groupSize: groupSizes[0], iterations: 20)
+    exit(0)
+}
+
 // `--moe-gemm-bench` times the prompt-chunk routed gate/up GEMM (tiled path)
 // alone, by rows per expert (PrefillMoEGEMMBench.swift, docs/m6-prefill/28).
 if arguments.contains("--moe-gemm-bench") {
