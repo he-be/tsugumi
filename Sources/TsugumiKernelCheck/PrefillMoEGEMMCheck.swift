@@ -311,5 +311,16 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
                         rel: pfDiffering == 0 ? 0 : 1,
                         tolerance: 0,
                         detail: "differing=\(pfDiffering)/\(pf.count)"))
+
+    // Symmetric builds also carry the half-precision weight staging
+    // (`_hd`, docs/m6-prefill/28), which claims the same rounding.
+    if let hdPSO = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_hd") {
+        let hd = run(hdPSO, label: name + " mpp-pf-hd")
+        let hdDiffering = zip(hd, mpp).filter { $0 != $1 }.count
+        cases.append(result(name + " mpp-pf-hd vs mpp", groupSize: groupSize,
+                            rel: hdDiffering == 0 ? 0 : 1,
+                            tolerance: 0,
+                            detail: "differing=\(hdDiffering)/\(hd.count)"))
+    }
     return cases
 }

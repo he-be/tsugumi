@@ -79,15 +79,13 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
     if let pf = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf") {
         kernels.append(("mpp-pf", [(pf, 64)]))
         let m32 = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_m32")
-        let m128 = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_m128")
         if let m32 {
             kernels.append(("mpp-pf-64/32", [(pf, 64), (m32, 32)]))
         }
-        if let m128 {
-            kernels.append(("mpp-pf-128", [(m128, 128)]))
-            kernels.append(("mpp-pf-128/64", [(m128, 128), (pf, 64)]))
-            if let m32 {
-                kernels.append(("mpp-pf-128/64/32", [(m128, 128), (pf, 64), (m32, 32)]))
+        if let hd = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_hd") {
+            kernels.append(("mpp-pf-hd", [(hd, 64)]))
+            if let hd32 = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_hd_m32") {
+                kernels.append(("mpp-pf-hd-64/32", [(hd, 64), (hd32, 32)]))
             }
         }
     }

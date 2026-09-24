@@ -1176,7 +1176,7 @@ kernel void prefill_moe_gemm_int4_mpp(
 /// k + 1 go into registers first and are dequantized and staged only after
 /// step k's product; one threadgroup buffer, the same two barriers. Values,
 /// roundings and K order are the mpp kernel's.
-template <int TM>
+template <int TM, bool HD>
 kernel void prefill_moe_gemm_int4_mpp_pf_t(
     device const half*                                   hidden         [[buffer(0)]],
     device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
@@ -1318,7 +1318,19 @@ kernel void prefill_moe_gemm_int4_mpp_pf_t(
         for (uint i = 0; i < kAUnits; ++i) {
             *((threadgroup half4*)(As + a_m[i] * uint(kPrefillMoEMPPTileK) + a_kk[i])) = a_reg[i];
         }
-        if (w_live) {
+        if (w_live && HD) {
+            // Symmetric weights: (q - 8) * scale in half. The integer and the
+            // scale are exact in half and the product is rounded once, which
+            // is the rounding `half(fma(q, s, -8 s))` makes (docs/m6-prefill/28).
+            const half hs = half(scale_reg);
+            for (uint q = 0; q < 8u; ++q) {
+                const ushort packed = w_reg[q];
+                const half4 qv = half4(ushort4(packed & 0x0Fu, (packed >> 4) & 0x0Fu,
+                                               (packed >> 8) & 0x0Fu, packed >> 12))
+                    - half4(8.0h);
+                *((threadgroup half4*)(b_dst + q * 4u)) = qv * hs;
+            }
+        } else if (w_live) {
             for (uint q = 0; q < 8u; ++q) {
                 const uint packed = uint(w_reg[q]);
                 half4 v;
@@ -1355,17 +1367,20 @@ kernel void prefill_moe_gemm_int4_mpp_pf_t(
 #undef PREFILL_MOE_PF_LOAD
 }
 
-#define PREFILL_MOE_GEMM_MPP_PF(NAME, TM)                                         \
-template [[host_name(NAME)]] kernel void prefill_moe_gemm_int4_mpp_pf_t<TM>(      \
+#define PREFILL_MOE_GEMM_MPP_PF(NAME, TM, HD)                                     \
+template [[host_name(NAME)]] kernel void prefill_moe_gemm_int4_mpp_pf_t<TM, HD>(  \
     device const half*, device const PrefillTokenExpertPairMSL*,                  \
     device const PrefillRoutedGEMMBlockMSL*, device half*, device half*,          \
     device const PrefillStreamedRoutedBlobsMSL&,                                  \
     constant PrefillGroupedRoutedMoEStreamedParamsMSL&, constant uint&,           \
     uint3, uint3);
 // Tile heights the bench compares (docs/m6-prefill/28).
-PREFILL_MOE_GEMM_MPP_PF("prefill_moe_gemm_int4_mpp_pf", 64)
-PREFILL_MOE_GEMM_MPP_PF("prefill_moe_gemm_int4_mpp_pf_m32", 32)
-PREFILL_MOE_GEMM_MPP_PF("prefill_moe_gemm_int4_mpp_pf_m128", 128)
+PREFILL_MOE_GEMM_MPP_PF("prefill_moe_gemm_int4_mpp_pf", 64, false)
+PREFILL_MOE_GEMM_MPP_PF("prefill_moe_gemm_int4_mpp_pf_m32", 32, false)
+#if MOEPACK_AFFINE_SYMMETRIC
+PREFILL_MOE_GEMM_MPP_PF("prefill_moe_gemm_int4_mpp_pf_hd", 64, true)
+PREFILL_MOE_GEMM_MPP_PF("prefill_moe_gemm_int4_mpp_pf_hd_m32", 32, true)
+#endif
 #undef PREFILL_MOE_GEMM_MPP_PF
 
 #endif
