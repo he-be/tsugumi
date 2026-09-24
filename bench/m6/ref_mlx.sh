@@ -31,7 +31,7 @@ echo "$($py -c 'import mlx.core as mx, mlx_lm; print("mlx", mx.__version__, "mlx
 python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); sys.stdout.write("".join(x["content"] for x in m if x["role"]=="user"))' "$repo/bench/l.json" > "$out/prompt.txt"
 set -- "$py" -m mlx_lm generate --model "$model" --prompt - --max-tokens 1 --temp 0
 echo "$* < prompt.txt" > "$out/command.txt"
-step=$(grep -m1 'prefill_step_size: int = ' "$($py -c 'import mlx_lm.generate as g; print(g.__file__)')" | sed 's/.*= *//; s/,.*//')
+step=$(grep -m1 'prefill_step_size: int = ' "$($py -c 'import os, mlx_lm; print(os.path.join(os.path.dirname(mlx_lm.__file__), "generate.py"))')" | sed 's/.*= *//; s/,.*//')
 { env | grep '^MLX_' || true; echo "MLX_MODEL=$model"; echo "prefill_step_size=$step (mlx_lm generate_step default)";   sysctl iogpu.wired_limit_mb 2>/dev/null || true; } > "$out/env.txt"
 printf 'run\tprompt_tok\tpp_tok_s\tpeak_gb\texit\n' > "$out/summary.tsv"
 i=1
