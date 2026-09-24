@@ -1,8 +1,9 @@
 #!/bin/sh
 # MLX kernels on Tsugumi's prefill shapes, per stage (bench/m6/ref_mlx_ops.py), one new
 # process per run, filed as evidence. Calibration of a foreign runtime, not a ledger row.
-#   bench/m6/ref_mlx_ops.sh <label> [n] [dtype]
+#   bench/m6/ref_mlx_ops.sh <label> [n] [dtype] [script]
 #   bench/m6/ref_mlx_ops.sh ref-mlx-ops-fp16 3 float16
+#   bench/m6/ref_mlx_ops.sh ref-mlx-sdpa512 3 float16 ref_mlx_sdpa512.py
 # Output: bench/m6/results/<date>-<host>-<label>/
 #   hostinfo.txt command.txt env.txt run-N.log run-N.pre.txt run-N.post.txt summary.tsv
 set -eu
@@ -10,6 +11,7 @@ repo=$(cd "$(dirname "$0")/../.." && pwd)
 label=${1:?label}; shift
 n=${1:-3}
 dtype=${2:-float16}
+script=${3:-ref_mlx_ops.py}
 venv=${MLX_VENV:-$HOME/LLM/ref/mlx-venv}
 py="$venv/bin/python"
 [ -x "$py" ] || { echo "no python at $py"; exit 1; }
@@ -21,7 +23,7 @@ out="$repo/bench/m6/results/$(date '+%Y-%m-%d')-$host-$label"
 mkdir -p "$out"
 sh "$repo/bench/hostinfo.sh" > "$out/hostinfo.txt"
 echo "$($py -c 'import mlx.core as mx; print("mlx", mx.__version__)')" >> "$out/hostinfo.txt"
-set -- "$py" "$repo/bench/m6/ref_mlx_ops.py" 5 "$dtype"
+set -- "$py" "$repo/bench/m6/$script" 5 "$dtype"
 echo "$*" > "$out/command.txt"
 { env | grep '^MLX_' || true; sysctl iogpu.wired_limit_mb 2>/dev/null || true; } > "$out/env.txt"
 i=1
