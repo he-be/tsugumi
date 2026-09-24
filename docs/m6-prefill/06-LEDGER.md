@@ -20,9 +20,10 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | c08e2de | ledger-full-attn-mpp | 6 | 2.740 | 2.722 | 3.110 | 0 |
 | 2026-09-24 | ef29110 | ledger-trusted | 6 | 2.897 | 2.880 | 3.123 | 0 |
 | 2026-09-25 | 084de6b | ledger-full-attn-unfused | 6 | 2.626 | 2.617 | 3.030 | 0 |
+| 2026-09-25 | 994a0ef | ledger-swa-unfused | 6 | 2.482 | 2.471 | 2.984 | 0 |
 
 **読み (2026-09-24)**: 表は `--verification trusted-install` で取った行だけ (ef29110 から、[35](35-PREFILL-WITHOUT-VERIFY.md))。ef29110 より前の行は層ファイルの SHA-256 検証を含む量で、`ledger.sh` は載せない。ef29110 の 2.897 s が、この量の最初の行。
-c08e2de (2.740 s) と 084de6b (2.626 s) は全注意の 2 回の既定の変更 ([36](36-FULL-ATTN-UNFUSED.md))。この測定環境では同じ構成の n = 6 の中央値が 0.05 s 程度揺れる (36 §2)。
+c08e2de (2.740 s) と 084de6b (2.626 s) は全注意の 2 回の既定の変更 ([36](36-FULL-ATTN-UNFUSED.md))、994a0ef (2.482 s) は SWA の変更 ([37](37-SWA-ATTN-UNFUSED.md))。この測定環境では同じ構成の n = 6 の中央値が 0.05 s 程度揺れる (36 §2)。
 
 ## 2. 既定でない構成 (候補。進捗ではない)
 
@@ -55,3 +56,11 @@ c08e2de (2.740 s) と 084de6b (2.626 s) は全注意の 2 回の既定の変更 
 | 2026-09-25 | 90ea97a | a3-unfused-a | 3 | 2.702 | 2.629 | 2.765 | 0 | TF_PREFILL_ATTN_FULL=unfused |
 | 2026-09-25 | a3ee85d | a3-unfused-b | 3 | 2.669 | 2.607 | 2.778 | 0 | TF_PREFILL_ATTN_FULL=unfused |
 | 2026-09-25 | 084de6b | ledger-full-attn-unfused | 6 | 2.626 | 2.617 | 3.030 | 0 | 既定 |
+| 2026-09-25 | 994a0ef | ledger-swa-unfused | 6 | 2.482 | 2.471 | 2.984 | 0 | 既定 |
+| 2026-09-25 | c0c2469 | s1-default-a | 3 | 2.733 | 2.637 | 2.853 | 0 | 既定 |
+| 2026-09-25 | ed16567 | s1-default-b | 3 | 2.762 | 2.632 | 2.842 | 0 | 既定 |
+| 2026-09-25 | eb5e1f6 | s1-greedy-default | 2 | 2.720 | 2.629 | 2.811 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-25 | 983fb02 | s1-greedy-unfused | 1 | 2.569 | 2.569 | 2.569 | 0 | TF_PREFILL_ATTN_SWA=unfused 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-25 | 312c2cb | s1-host-unfused | 3 | 2.533 | 2.429 | 2.573 | 0 | TF_PREFILL_ATTN_SWA=unfused TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-25 | 0fdb98d | s1-unfused-a | 3 | 2.554 | 2.545 | 2.626 | 0 | TF_PREFILL_ATTN_SWA=unfused |
+| 2026-09-25 | 78fbeca | s1-unfused-b | 3 | 2.476 | 2.416 | 2.624 | 0 | TF_PREFILL_ATTN_SWA=unfused |
