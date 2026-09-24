@@ -38,10 +38,14 @@ for m in msgs:
     parts.append(f"<start_of_turn>{role}\n{m['content']}<end_of_turn>\n")
 sys.stdout.write("".join(parts) + "<start_of_turn>model\n")
 EOF
+# -fit off: everything on the GPU or fail loudly. With -fit on, llama.cpp silently
+# moves MoE expert tensors to the CPU when the wired budget is short (seen on 16 GB
+# with the default iogpu.wired_limit_mb), which would measure the wrong thing.
+# -lv 4 (trace) keeps the Metal backend's device lines in run-N.log.
 set -- "$bin" -m "$gguf" -f "$out/prompt.txt" -n 1 -c "$ctx" -b "$ubatch" -ub "$ubatch" \
-    -fa on --temp 0 -no-cnv --no-display-prompt
+    -fa on --temp 0 -no-cnv --no-display-prompt -fit off -lv 4
 echo "$*" > "$out/command.txt"
-{ env | grep '^GGML_\|^LLAMA_' || true; echo "GGUF=$gguf"; echo "UBATCH=$ubatch"; echo "CTX=$ctx"; } > "$out/env.txt"
+{ env | grep '^GGML_\|^LLAMA_' || true; echo "GGUF=$gguf"; echo "UBATCH=$ubatch"; echo "CTX=$ctx";   sysctl iogpu.wired_limit_mb 2>/dev/null || true; } > "$out/env.txt"
 printf 'run\tprompt_tok\tprompt_ms\tpp_tok_s\tload_ms\ttensor_api\texit\n' > "$out/summary.tsv"
 i=1
 while [ "$i" -le "$n" ]; do

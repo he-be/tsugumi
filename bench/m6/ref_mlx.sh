@@ -32,7 +32,7 @@ python3 -c 'import json,sys; m=json.load(open(sys.argv[1])); sys.stdout.write(""
 set -- "$py" -m mlx_lm generate --model "$model" --prompt - --max-tokens 1 --temp 0
 echo "$* < prompt.txt" > "$out/command.txt"
 step=$(grep -m1 'prefill_step_size: int = ' "$($py -c 'import mlx_lm.generate as g; print(g.__file__)')" | sed 's/.*= *//; s/,.*//')
-{ env | grep '^MLX_' || true; echo "MLX_MODEL=$model"; echo "prefill_step_size=$step (mlx_lm generate_step default)"; } > "$out/env.txt"
+{ env | grep '^MLX_' || true; echo "MLX_MODEL=$model"; echo "prefill_step_size=$step (mlx_lm generate_step default)";   sysctl iogpu.wired_limit_mb 2>/dev/null || true; } > "$out/env.txt"
 printf 'run\tprompt_tok\tpp_tok_s\tpeak_gb\texit\n' > "$out/summary.tsv"
 i=1
 while [ "$i" -le "$n" ]; do
