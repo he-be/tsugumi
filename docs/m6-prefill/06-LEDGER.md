@@ -72,6 +72,9 @@ c08e2de (2.740 s) と 084de6b (2.626 s) は全注意の 2 回の既定の変更 
 | 2026-09-25 | a6d5b7c | m1-host-nax | 3 | 1.939 | 1.901 | 2.021 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_MOE_NAX=1 |
 | 2026-09-25 | dbdbfc0 | m1-nax-a | 3 | 1.960 | 1.915 | 2.132 | 0 | TF_PREFILL_MOE_NAX=1 |
 | 2026-09-25 | 905f2de | m1-nax-b | 3 | 1.935 | 1.911 | 2.037 | 0 | TF_PREFILL_MOE_NAX=1 |
+| 2026-09-25 | 3184baf | n1-profile-detail | 3 | 1.938 | 1.891 | 2.053 | 0 | TF_PREFILL_GPU_PROFILE=2 |
+| 2026-09-25 | adaf3ef | n1-profile | 3 | 1.957 | 1.898 | 2.070 | 0 | TF_PREFILL_GPU_PROFILE=1 |
+| 2026-09-25 | f96892d | p1-one-chunk | 3 | 1.668 | 1.620 | 1.798 | 0 | TF_BENCH_MESSAGES=/Users/mh/dev/tsugumi/bench/m6/l-1chunk.json |
 | 2026-09-25 | f3e951b | r1-default-a | 3 | 2.541 | 2.446 | 2.676 | 0 | 既定 |
 | 2026-09-25 | 401ad5e | r1-default-b | 3 | 2.617 | 2.489 | 2.631 | 0 | 既定 |
 | 2026-09-25 | 63438f0 | r1-greedy-nax | 2 | 2.531 | 2.430 | 2.632 | 0 | TF_PREFILL_ROUTER=nax 追加引数: --max-new 64 --temperature 0 |
@@ -87,3 +90,10 @@ c08e2de (2.740 s) と 084de6b (2.626 s) は全注意の 2 回の既定の変更 
 | 2026-09-25 | 78fbeca | s1-unfused-b | 3 | 2.476 | 2.416 | 2.624 | 0 | TF_PREFILL_ATTN_SWA=unfused |
 | 2026-09-25 | 486f102 | u1-profile-detail | 3 | 2.440 | 2.438 | 2.556 | 0 | TF_PREFILL_GPU_PROFILE=2 |
 | 2026-09-25 | 5430e0f | u1-profile | 3 | 2.589 | 2.425 | 2.938 | 0 | TF_PREFILL_GPU_PROFILE=1 |
+| 2026-09-25 | ee0d30d | v1-ahead1-a | 3 | 2.633 | 2.548 | 2.837 | 0 | TF_PREFILL_ADVISE_AHEAD=1 |
+| 2026-09-25 | 8198b1c | v1-ahead1-b | 3 | 2.614 | 2.506 | 2.785 | 0 | TF_PREFILL_ADVISE_AHEAD=1 |
+| 2026-09-25 | 516a50a | v1-ahead2-a | 3 | 2.757 | 2.636 | 2.835 | 0 | TF_PREFILL_ADVISE_AHEAD=2 |
+| 2026-09-25 | dab01c1 | v1-ahead2-b | 3 | 2.759 | 2.606 | 2.911 | 0 | TF_PREFILL_ADVISE_AHEAD=2 |
+| 2026-09-25 | c4f33ea | v1-default-a | 3 | 1.937 | 1.909 | 2.046 | 0 | 既定 |
+| 2026-09-25 | 104af99 | v1-default-b | 3 | 1.952 | 1.926 | 2.071 | 0 | 既定 |
+| 2026-09-25 | 3537b23 | v2-host-ahead1 | 3 | 2.719 | 2.431 | 2.981 | 0 | TF_PREFILL_ADVISE_AHEAD=1 TF_PREFILL_HOST_PROFILE=1 |
