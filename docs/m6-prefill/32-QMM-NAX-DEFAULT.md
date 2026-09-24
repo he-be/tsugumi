@@ -79,4 +79,4 @@ tile64 の列は `-nax1` の値 (`-nax0` とは 1% 以内)。**展開前**の版
 
 - 到達目標 (mlx_lm 1.823 s) に対して、台帳は 3.134 s。
 - [31](31-MLX-KERNELS-PER-STAGE.md) の残りの差: `post.router` 0.342 → `attn.full` 0.194 → `rope` 0.157 → `moe.down` 0.103 → `moe.gateup` 0.063 s。段の秒は、この既定の上で取り直す。
-- `shared` 段の GEMM 以外の 0.27 s は、段の中を分ける profile が無いので未分解。
+- `shared` 段の GEMM 以外の 0.27 s は、front の command buffer との重なりだった ([33 §1.3](33-ROUTER-GEMM-SHARED-LATE.md))。

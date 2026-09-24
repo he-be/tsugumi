@@ -21,10 +21,11 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 5decec4 | ledger-gpu3-default | 6 | 4.584 | 4.545 | 6.110 | 0 |
 | 2026-09-24 | 22d7629 | ledger-head | 6 | 8.682 | 8.633 | 8.801 | 0 |
 | 2026-09-24 | 883df28 | ledger-qmm-nax-default | 6 | 3.134 | 3.116 | 4.397 | 0 |
+| 2026-09-24 | 6f9ae16 | ledger-router-shared-late | 6 | 3.142 | 3.119 | 4.446 | 0 |
 | 2026-09-24 | bda6631 | ledger-swa-mpp-default | 6 | 3.496 | 3.442 | 4.764 | 0 |
 | 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 |
 
-**読み (2026-09-24)**: 既定は 883df28 で 3.496 → 3.134 s (差 −0.362 s、導出)。変えたのは射影と shared MLP の QMM を MLX から写した `nax` のカーネルにしたことだけ ([32](32-QMM-NAX-DEFAULT.md))。その前は cd8c26b で 4.584 → 3.496 s (sliding window の attention の `matmul2d` 版、[26](26-SWA-ATTN-MPP-DEFAULT.md))。その前は 5decec4 で 7.184 → 4.584 s (GPU 側の候補 3 つ、[23](23-GPU-CANDIDATES-DEFAULT.md))。その前は 79eea8f で 8.682 → 7.184 s (層ファイルの検証の並行先読み、[20](20-VERIFY-AHEAD-ALONE.md))。基準線 (837586c) の 9.506 s から 22d7629 の 8.682 s までの −0.824 s は、どの commit で動いたか未確認。
+**読み (2026-09-24)**: 最新の行は 6f9ae16 の 3.142 s で、前の行 (883df28) の 3.134 s より 0.008 s 長い (導出)。6f9ae16 で変えたのは prompt chunk の router を GEMM にしたことと、shared expert を front の後に投入する順序 ([33](33-ROUTER-GEMM-SHARED-LATE.md))。同じバイナリで既定と交互に取った壁時計では 3.185 → 3.150 s で縮んだが、同じ日の既定そのものが 3.134 → 3.185 s にずれていて、台帳の行は動いていない。883df28 で 3.496 → 3.134 s (差 −0.362 s、導出、[32](32-QMM-NAX-DEFAULT.md))。その前は cd8c26b で 4.584 → 3.496 s ([26](26-SWA-ATTN-MPP-DEFAULT.md))、5decec4 で 7.184 → 4.584 s ([23](23-GPU-CANDIDATES-DEFAULT.md))、79eea8f で 8.682 → 7.184 s ([20](20-VERIFY-AHEAD-ALONE.md))。基準線 (837586c) の 9.506 s から 22d7629 の 8.682 s までの −0.824 s は、どの commit で動いたか未確認。
 
 ## 2. 既定でない構成 (候補。進捗ではない)
 
@@ -73,6 +74,26 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 3f042e7 | best4-b | 3 | 4.551 | 4.473 | 4.582 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
 | 2026-09-24 | 3f042e7 | best4-sgmm-a | 3 | 4.629 | 4.227 | 5.203 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
 | 2026-09-24 | 3f042e7 | best4-sgmm-b | 3 | 4.146 | 4.110 | 4.353 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
+| 2026-09-24 | 958225d | c1-host | 3 | 3.178 | 3.133 | 4.412 | 0 | TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-24 | 1f84c76 | c1-profile-detail | 3 | 3.162 | 3.151 | 4.493 | 0 | TF_PREFILL_GPU_PROFILE=2 |
+| 2026-09-24 | bd52342 | c1-profile | 3 | 3.168 | 3.150 | 4.459 | 0 | TF_PREFILL_GPU_PROFILE=1 |
+| 2026-09-24 | 25b0463 | c2-default-a | 3 | 3.168 | 3.140 | 4.474 | 0 | 既定 |
+| 2026-09-24 | 3cf6d99 | c2-default-b | 3 | 3.179 | 3.145 | 3.275 | 0 | 既定 |
+| 2026-09-24 | 02358a1 | c2-gemm-a | 3 | 3.186 | 3.163 | 4.409 | 0 | TF_PREFILL_ROUTER=gemm |
+| 2026-09-24 | 7ba30b5 | c2-gemm-b | 3 | 3.161 | 3.155 | 3.298 | 0 | TF_PREFILL_ROUTER=gemm |
+| 2026-09-24 | dd5d171 | c2-host-gemm | 3 | 3.152 | 3.144 | 4.432 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_ROUTER=gemm |
+| 2026-09-24 | b161b91 | c2-profile-detail-gemm | 3 | 3.152 | 3.141 | 4.494 | 0 | TF_PREFILL_GPU_PROFILE=2 TF_PREFILL_ROUTER=gemm |
+| 2026-09-24 | 10130cb | c3-host-late-gemm | 3 | 3.170 | 3.165 | 3.289 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_ROUTER=gemm TF_PREFILL_SHARED_LATE=1 |
+| 2026-09-24 | dde599e | c3-host-late | 3 | 3.231 | 3.195 | 4.444 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_SHARED_LATE=1 |
+| 2026-09-24 | cdf320b | c3-profile-late | 3 | 3.203 | 3.192 | 4.423 | 0 | TF_PREFILL_GPU_PROFILE=1 TF_PREFILL_SHARED_LATE=1 |
+| 2026-09-24 | 00f7c0a | c4-default-a | 3 | 3.187 | 3.161 | 4.404 | 0 | 既定 |
+| 2026-09-24 | 9f0dc23 | c4-default-b | 3 | 3.182 | 3.158 | 4.489 | 0 | 既定 |
+| 2026-09-24 | cfdb5d2 | c4-greedy-default | 1 | 4.415 | 4.415 | 4.415 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | cfdb5d2 | c4-greedy-lategemm | 1 | 4.482 | 4.482 | 4.482 | 0 | TF_PREFILL_ROUTER=gemm TF_PREFILL_SHARED_LATE=1 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | 76c2b45 | c4-host-late-gemm | 3 | 3.127 | 3.116 | 4.389 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_ROUTER=gemm TF_PREFILL_SHARED_LATE=1 |
+| 2026-09-24 | 767d3a4 | c4-host-late | 3 | 3.182 | 3.177 | 3.276 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_SHARED_LATE=1 |
+| 2026-09-24 | 9c093e8 | c4-lategemm-a | 3 | 3.150 | 3.149 | 4.388 | 0 | TF_PREFILL_ROUTER=gemm TF_PREFILL_SHARED_LATE=1 |
+| 2026-09-24 | 20891b0 | c4-lategemm-b | 3 | 3.146 | 3.137 | 3.258 | 0 | TF_PREFILL_ROUTER=gemm TF_PREFILL_SHARED_LATE=1 |
 | 2026-09-24 | 7c7ad7b | g3-greedy-mpp | 2 | 7.596 | 7.552 | 7.641 | 0 | TF_PREFILL_MOE=mpp 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | 7c7ad7b | g3-greedy-simdgroup | 2 | 9.034 | 8.787 | 9.280 | 0 | TF_PREFILL_MOE=simdgroup 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | 7c7ad7b | g3-mpp-a | 3 | 7.345 | 7.317 | 7.360 | 0 | TF_PREFILL_MOE=mpp |
@@ -135,6 +156,7 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 5decec4 | ledger-gpu3-default | 6 | 4.584 | 4.545 | 6.110 | 0 | 既定 |
 | 2026-09-24 | 22d7629 | ledger-head | 6 | 8.682 | 8.633 | 8.801 | 0 | 既定 |
 | 2026-09-24 | 883df28 | ledger-qmm-nax-default | 6 | 3.134 | 3.116 | 4.397 | 0 | 既定 |
+| 2026-09-24 | 6f9ae16 | ledger-router-shared-late | 6 | 3.142 | 3.119 | 4.446 | 0 | 既定 |
 | 2026-09-24 | bda6631 | ledger-swa-mpp-default | 6 | 3.496 | 3.442 | 4.764 | 0 | 既定 |
 | 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 | 既定 |
 | 2026-09-24 | 29948fd | s2-greedy-mpp64 | 2 | 7.409 | 7.153 | 7.664 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 追加引数: --max-new 64 --temperature 0 |

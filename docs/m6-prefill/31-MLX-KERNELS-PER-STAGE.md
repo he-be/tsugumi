@@ -59,8 +59,9 @@ T = 2478 を台帳のチャンク (2048 + 430) に分け、sliding 25 層・full
 | 合計 | — | 2.056 | 2.068 | — | — |
 
 - `rope` の MLX 側は q と、このチャンクの k だけ (Tsugumi の `rope` 段の中身とは完全には揃えていない)。
-- `shared` の MLX 側は GEMM 3 本だけ。Tsugumi の `shared` 段には GEMM 以外 (`gelu_mul`、post-norm、並行に投入した command buffer の重なり) が約 0.27 s 乗っていて、中身は揃っていない ([32 §2](32-QMM-NAX-DEFAULT.md))。
-- `post.router` の MLX 側は fp16 の密 GEMM (`x @ Wᵀ`)。Tsugumi の router はトークンごとの bf16 GEMV ([04 B2](04-GATES.md) の B1 前の候補)。
+- `shared` の MLX 側は GEMM 3 本だけ。
+- `post.router` の MLX 側は fp16 の密 GEMM (`x @ Wᵀ`)。Tsugumi の router はトークンごとの bf16 GEMV ([04 B2](04-GATES.md) の B1 前の候補)。Tsugumi の `post.router` の区間は shared の command buffer と重なっていて、router のカーネル単体は 30 層で約 0.30 s だった ([33](33-ROUTER-GEMM-SHARED-LATE.md))。
+- `shared` の段 0.570 s も同じ重なりを含む。重ねずに流すと 0.162 s ([33 §1.3](33-ROUTER-GEMM-SHARED-LATE.md)、32 の既定の上)。
 - run 間の幅は fp16 で各段 0.003 s 以内。
 
 ## 2. 分かったこと / 外れたこと

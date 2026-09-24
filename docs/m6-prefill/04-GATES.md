@@ -73,11 +73,11 @@ B1 の順に 1 段ずつ直す。1 段ごとに次を満たして閉じる。
 | `attn.swa` | 0.872〜0.878 s (`b1s-profile-detail`) | 0.044 s | 候補 `TF_PREFILL_ATTN=mpp` で、level 2 の `attn.swa` の中央値が 0.45 s 以下。KernelCheck の新しい検査がすべて PASS。壁時計 (c) を既定と交互に各 n = 6 取り、秒の差を書く (壁時計に閾値は置かない) | **合格** (0.288 s)。候補の壁時計は既定と交互に 4.522 → 3.579 s ([25](25-SWA-ATTN-MPP.md)) |
 | `moe.gateup` | 0.734〜0.791 s (`b2-profile-detail`、[27 §1.1](27-B1-FLOOR-TABLE-ON-SWA-MPP.md)) | 0.253 s | `TF_` で切り替える候補で、level 2 の `moe.gateup` の中央値が 0.50 s 以下。KernelCheck の新しい検査がすべて PASS。壁時計 (c) を既定と交互に各 n = 6 取り、秒の差を書く (壁時計に閾値は置かない) | **不合格** (候補 `TF_PREFILL_MOE_PF=1` で 0.567 s)。壁時計は既定と交互に 3.698 → 3.705 s で、既定には入れていない ([28](28-MOE-GATEUP-PREFETCH.md)) |
 | `shared` (+ `qkv`・`oproj`、同じカーネル) | level 1 の `shared` 0.570 s (`b2-profile`、[27 §1.1](27-B1-FLOOR-TABLE-ON-SWA-MPP.md))。同じ形の MLX は 0.159 s ([31](31-MLX-KERNELS-PER-STAGE.md)) | 0.143 s | 候補 `TF_PREFILL_QMM=nax` (MLX の `affine_qmm_t_nax` を写したもの) で、level 1 の `shared` の中央値が 0.25 s 以下。KernelCheck の `mpp-qmm-nax` がすべて PASS。`qkv`・`oproj` の秒は並べて書く (閾値は置かない)。壁時計 (c) を既定と交互に各 n = 6 取り、秒の差を書く (壁時計に閾値は置かない) | **不合格** (`shared` 0.417 s。段の中に GEMM 以外が約 0.27 s)。壁時計は既定と交互に 3.403 → 3.143 s で縮んだので既定に入れた (883df28、[32](32-QMM-NAX-DEFAULT.md)) |
-| `post.router` | level 2 の 0.341 s (`c1-profile-detail`、[33](33-ROUTER-GEMM.md))。同じ形の MLX は 0.014 s ([31](31-MLX-KERNELS-PER-STAGE.md)) | 0.003 s | 候補 `TF_PREFILL_ROUTER=gemm` (32 トークン × 128 エキスパートの GEMM に top-k を融合) で、level 2 の `post.router` の中央値が 0.05 s 以下。KernelCheck の `prefill-router-bf16-gemm` がすべて PASS。壁時計 (c) を既定と交互に各 n = 6 取り、秒の差を書く (壁時計に閾値は置かない) | (計測中) |
+| `post.router` | level 2 の 0.341 s (`c1-profile-detail`、[33](33-ROUTER-GEMM-SHARED-LATE.md))。同じ形の MLX は 0.014 s ([31](31-MLX-KERNELS-PER-STAGE.md)) | 0.003 s | 候補 `TF_PREFILL_ROUTER=gemm` (32 トークン × 128 エキスパートの GEMM に top-k を融合) で、level 2 の `post.router` の中央値が 0.05 s 以下。KernelCheck の `prefill-router-bf16-gemm` がすべて PASS。壁時計 (c) を既定と交互に各 n = 6 取り、秒の差を書く (壁時計に閾値は置かない) | **不合格** (0.346 s。区間の終わりを並行に走る shared の command buffer が決めていて、router の秒を測れていない)。gemm だけの壁時計は既定と交互に 3.174 → 3.175 s。shared を front の後に投入する順序と併せて 3.185 → 3.150 s で、両方を既定に入れた (6f9ae16、[33](33-ROUTER-GEMM-SHARED-LATE.md)) |
 
 ## B3. 候補を既定に入れる
 
-10〜19 で足した口は、すべて既定に入った (79eea8f、5decec4)。25 の `TF_PREFILL_ATTN=mpp` (cd8c26b) と 32 の `TF_PREFILL_QMM=nax` (883df28) も既定に入った。台帳 ([06 §1](06-LEDGER.md)) の最新行は `ledger-qmm-nax-default` 3.134 s。
+10〜19 で足した口は、すべて既定に入った (79eea8f、5decec4)。25 の `TF_PREFILL_ATTN=mpp` (cd8c26b)、32 の `TF_PREFILL_QMM=nax` (883df28)、33 の router GEMM と shared の投入順 (6f9ae16) も既定に入った。台帳 ([06 §1](06-LEDGER.md)) の最新行は `ledger-router-shared-late` 3.142 s。
 
 | 候補 | 結果文書 | 候補の (c)、秒 (台帳 §2) | 既定にするときの問い |
 | --- | --- | --- | --- |
@@ -87,6 +87,7 @@ B1 の順に 1 段ずつ直す。1 段ごとに次を満たして閉じる。
 | ~~`TF_PREFILL_VERIFY_AHEAD=2` + `_PARALLEL=1`~~ | [14](14-G5-VERIFY-AHEAD.md)、[20](20-VERIFY-AHEAD-ALONE.md) | 単独で 7.229 (f603ade) | **既定に入れた** (79eea8f、`ledger-verify-ahead` 7.184 s)。Swapouts 0、decode と greedy は同じ |
 | ~~`TF_PREFILL_ATTN=mpp`~~ | [25](25-SWA-ATTN-MPP.md) | 同じバイナリで既定と交互に 3.579 (3.547〜4.885、2c5c0dd) | **既定に入れた** (cd8c26b、`ledger-swa-mpp-default` 3.496 s、[26](26-SWA-ATTN-MPP-DEFAULT.md))。範囲の速い側に 0.051 s 外れ、sgmm に戻した対照も同じ向き。戻すのは `TF_PREFILL_ATTN=sgmm` |
 | ~~`TF_PREFILL_QMM=nax`~~ | [32](32-QMM-NAX-DEFAULT.md) | 同じバイナリで既定と交互に 3.143 (3.119〜4.436、845da52) | **既定に入れた** (883df28、`ledger-qmm-nax-default` 3.134 s)。戻すのは `TF_PREFILL_QMM=mpp64` |
+| ~~`TF_PREFILL_ROUTER=gemm` + `TF_PREFILL_SHARED_LATE=1`~~ | [33](33-ROUTER-GEMM-SHARED-LATE.md) | 同じバイナリで既定と交互に 3.150 (3.137〜4.388、9c093e8〜cfdb5d2) | **既定に入れた** (6f9ae16、`ledger-router-shared-late` 3.142 s。前の行 3.134 s から縮んでいない)。戻すのは `TF_PREFILL_ROUTER=row` / `TF_PREFILL_SHARED_LATE=0` |
 
 **手順**: 原則 2 を満たした候補ごとに、既定を変えた commit で `ledger-<候補名>` を n = 6 で取る。
 **合格**: 台帳 §1 に新しい行があり、その中央値が候補の (c) のレンジに入っている。入っていなければ、既定にした結果として何かが違う (書き換えのミス、環境の違い)。理由が分かるまで次に進まない。
