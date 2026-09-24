@@ -79,11 +79,11 @@ final class PrefillAttention {
     /// simdgroup-matrix kernel, `=qblock` on the query-blocked one.
     private static let swaMPPDisabled = forcedSimdgroupMatrix || forcedQBlock
     private static let swaMPPRows = 64
-    /// The full-attention layers (headDim 512) run on the same `matmul2d`
-    /// kernel where the library has it, 64 rows on 8 simdgroups
-    /// (docs/m6-prefill/36). `TF_PREFILL_ATTN_FULL=mpp32` takes 32 rows on 4,
-    /// and `=qblock` (or `TF_PREFILL_ATTN=sgmm`/`=qblock`) keeps them on the
-    /// query-blocked kernel.
+    /// The fused fallback for the full-attention layers (headDim 512) where
+    /// the unfused path below does not fit: the same `matmul2d` kernel as the
+    /// sliding-window layers, 64 rows on 8 simdgroups (docs/m6-prefill/36).
+    /// `TF_PREFILL_ATTN_FULL=mpp32` takes 32 rows on 4, and `=qblock` (or
+    /// `TF_PREFILL_ATTN=sgmm`/`=qblock`) keeps them on the query-blocked kernel.
     private static let fullMPPShape: (function: String, rows: Int, threads: Int)? = {
         if swaMPPDisabled { return nil }
         switch ProcessInfo.processInfo.environment["TF_PREFILL_ATTN_FULL"] {
@@ -93,13 +93,13 @@ final class PrefillAttention {
         }
     }()
     private static let fullMPPHeadDim: UInt32 = 512
-    /// The full layers as MLX runs headDim 512: a GEMM for the scores, a
-    /// softmax, a GEMM for P·V, over as many query heads at a time as fit a
-    /// bounded scratch (docs/m6-prefill/36). A candidate for now,
-    /// `TF_PREFILL_ATTN_FULL=unfused`; a shape whose one head does not fit
-    /// falls back to the fused kernel.
+    /// The full layers by default, as MLX runs headDim 512: a GEMM for the
+    /// scores, a softmax, a GEMM for P·V, over as many query heads at a time as
+    /// fit a bounded scratch (docs/m6-prefill/36). A shape whose one head does
+    /// not fit (a long prefix) falls back to the fused kernel above. Any
+    /// `TF_PREFILL_ATTN_FULL` value (`mpp64`, `mpp32`, `qblock`) turns it off.
     private static let fullUnfusedRequested =
-        !swaMPPDisabled && ProcessInfo.processInfo.environment["TF_PREFILL_ATTN_FULL"] == "unfused"
+        !swaMPPDisabled && (ProcessInfo.processInfo.environment["TF_PREFILL_ATTN_FULL"] ?? "unfused") == "unfused"
     private static let fullUnfusedScratchBudget = 64 << 20
     private static let swaMPPKeys: UInt32 = 64
     private static let swaMPPThreads = 128

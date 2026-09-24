@@ -9,13 +9,13 @@ import TsugumiValidationSupport
 // (16 query heads over 2 KV heads, headDim 512, every earlier key visible),
 // against a CPU softmax over the FP16 inputs. The query-blocked kernel (the
 // default without tensor ops, and `TF_PREFILL_ATTN_FULL=qblock`) runs
-// everywhere; the `matmul2d` kernels `attention_prefill_full_mpp_d512_r64`
-// (the default where the library has tensor ops, docs/m6-prefill/36) and
-// `_r32` only exist in an MSL 4.0 build and are SKIPped elsewhere with the
-// skip printed. The unfused candidate (`TF_PREFILL_ATTN_FULL=unfused`:
-// `attention_prefill_full_scores_d512` → `_softmax_d512` → `_pv_d512`) is
-// checked the way `PrefillAttention` dispatches it, over head groups of 2 and
-// of all 16.
+// everywhere. The tensor-ops kernels only exist in an MSL 4.0 build and are
+// SKIPped elsewhere with the skip printed: the unfused default
+// (`attention_prefill_full_scores_d512` → `_softmax_d512` → `_pv_d512`,
+// docs/m6-prefill/36), checked the way `PrefillAttention` dispatches it over
+// head groups of 2 and of all 16, and the fused `matmul2d` kernels
+// `attention_prefill_full_mpp_d512_r64` (the fallback for a long prefix) and
+// `_r32`.
 //
 // Shapes: a first chunk that ends mid-block and a second chunk over the first
 // one's keys. A causal mask shifted by one key scored against the same output
