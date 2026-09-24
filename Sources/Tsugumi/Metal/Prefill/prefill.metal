@@ -3671,7 +3671,8 @@ inline void prefill_moe_gemm_int4_nax_impl(
     device const PrefillRoutedGEMMBlockMSL* blocks, device half* route_partials,
     device half* act, device const PrefillStreamedRoutedBlobsMSL& routed,
     constant PrefillGroupedRoutedMoEStreamedParamsMSL& p, constant uint& mode,
-    uint3 lid3, uint3 tgid3, ushort sgid, ushort lane
+    uint3 lid3, uint3 tgid3, ushort sgid, ushort lane,
+    threadgroup half* Ws, threadgroup uint* src_off, threadgroup uint* dst_off
 ) {
     const uint lid = lid3.x;
     const PrefillRoutedGEMMBlockMSL blk = blocks[tgid3.y];
@@ -3681,10 +3682,6 @@ inline void prefill_moe_gemm_int4_nax_impl(
     const uint N = gate_up ? p.F : p.D;
     const uint K = gate_up ? p.D : p.F;
     const uint act_rows = p.pair_count;
-
-    threadgroup half Ws[64u * kMoENaxLd];
-    threadgroup uint src_off[64];
-    threadgroup uint dst_off[64];
 
     device const uint8_t* blob = routed.blob[blk.local_slot];
     uint w_off = p.down_W_off;
@@ -3855,8 +3852,12 @@ kernel void NAME(                                                              \
     ushort sgid [[simdgroup_index_in_threadgroup]],                            \
     ushort lane [[thread_index_in_simdgroup]]                                  \
 ) {                                                                            \
+    threadgroup half Ws[64u * kMoENaxLd];                                      \
+    threadgroup uint src_off[64];                                              \
+    threadgroup uint dst_off[64];                                              \
     prefill_moe_gemm_int4_nax_impl<MF>(hidden, sorted_pairs, blocks,           \
-        route_partials, act, routed, p, mode, lid3, tgid3, sgid, lane);        \
+        route_partials, act, routed, p, mode, lid3, tgid3, sgid, lane,         \
+        Ws, src_off, dst_off);                                                 \
 }
 
 PREFILL_MOE_GEMM_INT4_NAX(prefill_moe_gemm_int4_nax, 2)
