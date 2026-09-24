@@ -61,8 +61,8 @@ public enum Sha256Verifier {
     /// busy — while the previous window is being hashed.
     package static func hashSegments(_ segments: [(fd: Int32, offset: UInt64, count: UInt64)],
                                      displayName: String,
-                                     pieceBytes: Int = 4 << 20,
-                                     windowPieces: Int = 16) throws -> String {
+                                     pieceBytes: Int = 2 << 20,
+                                     windowPieces: Int = 8) throws -> String {
         guard pieceBytes > 0, windowPieces > 0 else {
             throw ModelError.indexCorrupt(detail: "SHA-256 piece and window must be positive")
         }
