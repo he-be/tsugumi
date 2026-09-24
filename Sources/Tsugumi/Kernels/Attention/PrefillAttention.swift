@@ -100,11 +100,12 @@ final class PrefillAttention {
     /// `TF_PREFILL_ATTN_FULL` value (`mpp64`, `mpp32`, `qblock`) turns it off.
     private static let fullUnfusedRequested =
         !swaMPPDisabled && (ProcessInfo.processInfo.environment["TF_PREFILL_ATTN_FULL"] ?? "unfused") == "unfused"
-    /// The sliding-window layers (headDim 256) on the same three kernels, each
-    /// 64-row block keeping only its band of keys (docs/m6-prefill/37). A
-    /// candidate for now, `TF_PREFILL_ATTN_SWA=unfused`.
+    /// The sliding-window layers (headDim 256) by default on the same three
+    /// kernels, each 64-row block keeping only its band of keys
+    /// (docs/m6-prefill/37). `TF_PREFILL_ATTN_SWA=mpp` keeps them on the fused
+    /// `matmul2d` kernel.
     private static let swaUnfusedRequested =
-        !swaMPPDisabled && ProcessInfo.processInfo.environment["TF_PREFILL_ATTN_SWA"] == "unfused"
+        !swaMPPDisabled && (ProcessInfo.processInfo.environment["TF_PREFILL_ATTN_SWA"] ?? "unfused") == "unfused"
     private static let unfusedScratchBudget = 64 << 20
     private static let swaMPPKeys: UInt32 = 64
     private static let swaMPPThreads = 128
