@@ -17,7 +17,7 @@ G0 からの比、段の秒、tensor ops に載せたか、「下限の何倍か
 | | 値 (秒) | 出所 |
 | --- | --- | --- |
 | **既定の prefill 壁時計** (台帳の最新行) | 3.496 (3.442〜4.764)、commit bda6631 (ソースは cd8c26b)、2026-09-24、n = 6 | [06 §1](06-LEDGER.md) |
-| 既定でない最良 | なし (候補はすべて既定に入った) | [04 B3](04-GATES.md) |
+| 既定でない候補 | `TF_PREFILL_MOE_PF=1` 3.705 s (同じ時間帯の既定 3.698 s、各 n = 6)。縮んでいないので既定に入れていない | [28](28-MOE-GATEUP-PREFETCH.md) |
 
 **既定は 4.584 → 3.496 s** (cd8c26b、sliding window の attention の `matmul2d` 版を既定に、[26](26-SWA-ATTN-MPP-DEFAULT.md))。その前は 7.184 → 4.584 s (5decec4、[23](23-GPU-CANDIDATES-DEFAULT.md))、 8.682 → 7.184 s (79eea8f、[20](20-VERIFY-AHEAD-ALONE.md))。基準線 9.506 s → 8.682 s がどの commit で動いたかは未確認。
 
@@ -25,7 +25,7 @@ G0 からの比、段の秒、tensor ops に載せたか、「下限の何倍か
 | --- | --- | --- |
 | **B0** 測る量を分ける | 起動と初回検証 (a) / 同じプロセスでの 2 回目以降 (b) / 新しいプロセスでの 1 回目 (c、台帳の量) | (b) を測る口が無い。CLI の変更が要るので判断待ち |
 | **B1** 段ごとの下限表 | 各段の (実測 − 下限) の秒。手を入れる段を選ぶ道具で、進捗の物差しではない | **済み** ([24](24-B1-FLOOR-TABLE.md)、(c) で取った)。今の既定の上の差の大きい順は `moe.gateup` 0.49 → `shared` 0.43 → `post.router` 0.35 → `attn.full` 0.24 s ([27](27-B1-FLOOR-TABLE-ON-SWA-MPP.md)) |
-| **B2** 下限から遠い段から直す | 1 段ずつ。段の秒と、台帳の行 | 1 段目 `attn.swa` は既定に入った (GPU 0.873 → 0.288 s、[25](25-SWA-ATTN-MPP.md)・[26](26-SWA-ATTN-MPP-DEFAULT.md))。既定の上で取り直した順 ([27](27-B1-FLOOR-TABLE-ON-SWA-MPP.md)) で次は `moe.gateup` (差 0.487 s)、閾値は 04 B2 |
+| **B2** 下限から遠い段から直す | 1 段ずつ。段の秒と、台帳の行 | 1 段目 `attn.swa` は既定に入った (GPU 0.873 → 0.288 s、[25](25-SWA-ATTN-MPP.md)・[26](26-SWA-ATTN-MPP-DEFAULT.md))。2 段目 `moe.gateup` は候補で 0.753 → 0.567 s、閾値 0.50 s に届かず不合格 ([28](28-MOE-GATEUP-PREFETCH.md)) |
 | **B3** 候補を既定に入れる | 検証の並行先読み (79eea8f) と `mpp` / `mpp64` / `sgmm` (5decec4) | 23 までの候補は**済み** ([23](23-GPU-CANDIDATES-DEFAULT.md))。`TF_PREFILL_ATTN=mpp` も既定に入った ([26](26-SWA-ATTN-MPP-DEFAULT.md)、中央値は合格範囲の速い側に 0.05 s 外れ、対照も同じ向き) |
 
 以前の Gate (G0〜G5) の結果と読み替えは [04 の末尾](04-GATES.md) の索引にある。

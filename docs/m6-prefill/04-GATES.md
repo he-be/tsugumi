@@ -71,7 +71,7 @@ B1 の順に 1 段ずつ直す。1 段ごとに次を満たして閉じる。
 | 段 | 変更前 (level 2) | 下限 | 合格 (2026-09-24、計測の前に置いた) | 結果 |
 | --- | ---: | ---: | --- | --- |
 | `attn.swa` | 0.872〜0.878 s (`b1s-profile-detail`) | 0.044 s | 候補 `TF_PREFILL_ATTN=mpp` で、level 2 の `attn.swa` の中央値が 0.45 s 以下。KernelCheck の新しい検査がすべて PASS。壁時計 (c) を既定と交互に各 n = 6 取り、秒の差を書く (壁時計に閾値は置かない) | **合格** (0.288 s)。候補の壁時計は既定と交互に 4.522 → 3.579 s ([25](25-SWA-ATTN-MPP.md)) |
-| `moe.gateup` | 0.734〜0.791 s (`b2-profile-detail`、[27 §1.1](27-B1-FLOOR-TABLE-ON-SWA-MPP.md)) | 0.253 s | `TF_` で切り替える候補で、level 2 の `moe.gateup` の中央値が 0.50 s 以下。KernelCheck の新しい検査がすべて PASS。壁時計 (c) を既定と交互に各 n = 6 取り、秒の差を書く (壁時計に閾値は置かない) | 未着手 |
+| `moe.gateup` | 0.734〜0.791 s (`b2-profile-detail`、[27 §1.1](27-B1-FLOOR-TABLE-ON-SWA-MPP.md)) | 0.253 s | `TF_` で切り替える候補で、level 2 の `moe.gateup` の中央値が 0.50 s 以下。KernelCheck の新しい検査がすべて PASS。壁時計 (c) を既定と交互に各 n = 6 取り、秒の差を書く (壁時計に閾値は置かない) | **不合格** (候補 `TF_PREFILL_MOE_PF=1` で 0.567 s)。壁時計は既定と交互に 3.698 → 3.705 s で、既定には入れていない ([28](28-MOE-GATEUP-PREFETCH.md)) |
 
 ## B3. 候補を既定に入れる
 

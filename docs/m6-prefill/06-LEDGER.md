@@ -52,6 +52,14 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | a122dd3 | b2-profile-detail | 3 | 3.913 | 3.478 | 4.694 | 0 | TF_PREFILL_GPU_PROFILE=2 |
 | 2026-09-24 | a122dd3 | b2-profile | 3 | 3.490 | 3.484 | 4.545 | 0 | TF_PREFILL_GPU_PROFILE=1 |
 | 2026-09-24 | 2c5c0dd | b2-swa-profile-detail | 3 | 3.694 | 3.660 | 5.031 | 0 | TF_PREFILL_ATTN=mpp TF_PREFILL_GPU_PROFILE=2 |
+| 2026-09-24 | 22fcb46 | b2g-def-a | 3 | 3.708 | 3.688 | 4.873 | 0 | 既定 |
+| 2026-09-24 | 22fcb46 | b2g-def-b | 3 | 3.574 | 3.525 | 4.775 | 0 | 既定 |
+| 2026-09-24 | 22fcb46 | b2g-greedy-pf | 2 | 4.156 | 3.574 | 4.738 | 0 | TF_PREFILL_MOE_PF=1 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | 22fcb46 | b2g-pf-a | 3 | 3.991 | 3.418 | 5.149 | 0 | TF_PREFILL_MOE_PF=1 |
+| 2026-09-24 | 22fcb46 | b2g-pf-b | 3 | 3.417 | 3.396 | 4.903 | 0 | TF_PREFILL_MOE_PF=1 |
+| 2026-09-24 | 7667010 | b2g-profile-detail-fused | 3 | 3.503 | 3.489 | 4.682 | 0 | TF_PREFILL_GPU_PROFILE=2 TF_PREFILL_MOE_GATEUP=fused |
+| 2026-09-24 | db19ce9 | b2g-profile-detail-pf | 3 | 3.338 | 3.334 | 4.832 | 0 | TF_PREFILL_GPU_PROFILE=2 TF_PREFILL_MOE_PF=1 |
+| 2026-09-24 | 22fcb46 | b2g-profile-detail-pf32 | 3 | 3.551 | 3.492 | 5.157 | 0 | TF_PREFILL_GPU_PROFILE=2 TF_PREFILL_MOE_PF=1 |
 | 2026-09-24 | 3f042e7 | best4-a | 3 | 4.578 | 4.545 | 5.181 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
 | 2026-09-24 | 3f042e7 | best4-b | 3 | 4.551 | 4.473 | 4.582 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
 | 2026-09-24 | 3f042e7 | best4-sgmm-a | 3 | 4.629 | 4.227 | 5.203 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
