@@ -37,9 +37,10 @@ package final class MPPPrefillInt4QMM {
     /// kernel for the projections only, `simdgroup` never takes this kernel.
     /// `mpp64` takes the `tile64` kernel for the projections *and* the shared
     /// MLP (`isSharedSelected`, docs/m6-prefill/17-NAX-NOT-USED.md §3 step 2).
-    /// Unset is `mpp64`, the default since docs/m6-prefill/23. `nax` is the
-    /// `mpp64` arm with the `nax` kernel (a candidate, docs/m6-prefill/31). Where the device
-    /// cannot build the kernel, both fall back to the simdgroup QMM.
+    /// `nax` is the `mpp64` arm with the `nax` kernel, and unset is `nax`, the
+    /// default since docs/m6-prefill/32 (`mpp64` was, from docs/m6-prefill/23).
+    /// Where the device cannot build the kernel, all of them fall back to the
+    /// simdgroup QMM.
     private static let forcedPath = ProcessInfo.processInfo.environment["TF_PREFILL_QMM"]
 
     /// Whether the prefill runner should offer projections to this kernel.
@@ -52,14 +53,18 @@ package final class MPPPrefillInt4QMM {
     }
 
     /// Whether the prefill shared MLP should offer its three GEMMs to this
-    /// kernel. The `mpp64` arm, which unset also is.
+    /// kernel. The `mpp64` and `nax` arms, and unset.
     package static var isSharedSelected: Bool {
         forcedPath == nil || forcedPath == "mpp64" || forcedPath == "nax"
     }
 
     /// The kernel the environment asks for when the caller does not say.
     package static var selectedKernel: Kernel {
-        forcedPath == "nax" ? .nax : isSharedSelected ? .tile64 : .threadgroup
+        switch forcedPath {
+        case nil, "nax": .nax
+        case "mpp64": .tile64
+        default: .threadgroup
+        }
     }
 
     package let kernel: Kernel

@@ -13,8 +13,9 @@ final class PrefillSharedExpert {
     /// is 16x the arithmetic for the same answer. This path keeps the bytes and
     /// drops the waste (docs/mtp/16-M4.5-PLAN.md §4 c).
     private let rowsGEMV: DequantInt4GEMV?
-    /// INT4 only, and only under `TF_PREFILL_QMM=mpp64`: the batched path's
-    /// three GEMMs on `matmul2d` (docs/m6-prefill/17-NAX-NOT-USED.md §3, step 2).
+    /// INT4 only, and only under `TF_PREFILL_QMM` unset, `nax` or `mpp64`: the
+    /// batched path's three GEMMs on `matmul2d` (docs/m6-prefill/17 §3 step 2,
+    /// the `nax` kernel since docs/m6-prefill/32).
     /// Nil where the device cannot build it; `qmm` then serves as before.
     private let mpp: MPPPrefillInt4QMM?
     private let geluMulPSO: MTLComputePipelineState
