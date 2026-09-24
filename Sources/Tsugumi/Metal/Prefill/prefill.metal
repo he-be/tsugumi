@@ -3145,4 +3145,285 @@ ATTENTION_PREFILL_MPP_KERNEL(attention_prefill_swa_mpp_d256, 64, 256, 4)
 ATTENTION_PREFILL_MPP_KERNEL(attention_prefill_full_mpp_d512_r32, 32, 512, 4)
 ATTENTION_PREFILL_MPP_KERNEL(attention_prefill_full_mpp_d512_r64, 64, 512, 8)
 
+
+// --- Full attention (headDim 512) unfused, as MLX runs it (docs/m6-prefill/36) ---
+// MLX has no fused kernel at headDim 512: mlx_lm's sdpa there is a GEMM for
+// S = Q·Kᵀ, a masked softmax, and a GEMM for P·V, and that takes 0.073 s over
+// the prompt's 5 full layers on M6 where the fused `matmul2d` kernel above
+// takes 0.158 s. These three kernels do the same over a group of query heads
+// at a time, with S in f32 and P in f16 in a scratch the host bounds.
+// The GEMMs use the 16x16 fragments and the 16x32x16 `matmul2d` step of
+// MLX 0.32.2 (MIT, Copyright (c) 2023-2024 Apple Inc.) steel/gemm/nax.h
+// (BaseNAXFrag::get_coord / mma), as tensorops.metal's `mpp_prefill_affine_nax_f16`
+// does; A and B are read from device memory straight into fragments.
+typedef vec<half, 8> attn_frag_h;
+typedef vec<float, 8> attn_frag_f;
+
+// This lane's (column, row) in a 16x16 fragment; it holds rows r and r + 8,
+// columns c .. c + 3, as elements i * 4 + j. The fragment keeps the operand's
+// layout in memory; the descriptor's transpose flag says how to read it.
+static inline short2 attn_frag_coord(ushort lane) {
+    const short qid = short(lane >> 2);
+    const short fm = short((qid & 4) | ((lane >> 1) & 3));
+    const short fn = short(((qid & 2) | (lane & 1)) * 4);
+    return short2(fn, fm);
+}
+
+// (C n, C n+1) += A * (B n, B n+1), with B read transposed (`[n][k]` in
+// memory) or not (`[k][n]`).
+template <bool TransposeB>
+static inline void attn_frag_mma(thread attn_frag_f& c0, thread attn_frag_f& c1,
+                                 thread const attn_frag_h& a,
+                                 thread const attn_frag_h& b0, thread const attn_frag_h& b1) {
+    constexpr auto desc = matmul2d_descriptor(
+        16, 32, 16, false, TransposeB, true,
+        matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<desc, execution_simdgroup> op;
+    auto ct_a = op.get_left_input_cooperative_tensor<half, half, float>();
+    auto ct_b = op.get_right_input_cooperative_tensor<half, half, float>();
+    auto ct_c = op.get_destination_cooperative_tensor<
+        metal::remove_addrspace_t<decltype(ct_a)>,
+        metal::remove_addrspace_t<decltype(ct_b)>, float>();
+    #pragma clang loop unroll(full)
+    for (short i = 0; i < 8; ++i) {
+        ct_a[i] = a[i];
+        ct_b[i] = b0[i];
+        ct_b[8 + i] = b1[i];
+        ct_c[i] = c0[i];
+        ct_c[8 + i] = c1[i];
+    }
+    op.run(ct_a, ct_b, ct_c);
+    #pragma clang loop unroll(full)
+    for (short i = 0; i < 8; ++i) {
+        c0[i] = ct_c[i];
+        c1[i] = ct_c[8 + i];
+    }
+}
+
+// Rows `row`, `row + 8` and columns `col .. col + 3` of a 16x16 fragment of
+// a row-major half matrix; rows at or past `rows` read as zero.
+static inline void attn_frag_load(thread attn_frag_h& f, device const half* base,
+                                  uint stride, uint row, uint col, uint rows) {
+    #pragma clang loop unroll(full)
+    for (short i = 0; i < 2; ++i) {
+        const uint r = row + uint(i) * 8u;
+        const half4 v = r < rows ? *((device const half4*)(base + r * stride + col)) : half4(0.0h);
+        f[i * 4 + 0] = v.x;
+        f[i * 4 + 1] = v.y;
+        f[i * 4 + 2] = v.z;
+        f[i * 4 + 3] = v.w;
+    }
+}
+
+/// The head group and scratch layout the three kernels share.
+struct PrefillFullUnfusedParams {
+    uint headBase;      // first query head of this group
+    uint scoreStride;   // S / P row stride, a multiple of 64 >= kvValidCount
+    uint headRows;      // rows per head in S / P / rowSum (= queryCount)
+};
+
+constant constexpr uint kFullUnfusedHeadDim = 512;
+
+// S[g][r][c] = scale · Q[r][headBase + g] · K[c][kvh], a 64x64 tile per
+// threadgroup, 2x2 simdgroups of 32x32. Tiles wholly above the causal
+// diagonal are skipped: the softmax never reads them.
+[[kernel, max_total_threads_per_threadgroup(128)]]
+kernel void attention_prefill_full_scores_d512(
+    device const half* Q [[buffer(0)]],
+    device const half* K [[buffer(1)]],
+    device float* S [[buffer(2)]],
+    constant PrefillAttentionParams& p [[buffer(4)]],
+    constant PrefillFullUnfusedParams& u [[buffer(5)]],
+    uint3 tg [[threadgroup_position_in_grid]],
+    ushort sgid [[simdgroup_index_in_threadgroup]],
+    ushort lane [[thread_index_in_simdgroup]]
+) {
+    const uint kBase = tg.x * 64u;
+    const uint mBase = tg.y * 64u;
+    const uint lastRow = min(mBase + 63u, p.queryCount - 1u);
+    if (kBase > p.startPosition + lastRow || kBase >= p.kvValidCount) return;
+    const uint qh = u.headBase + tg.z;
+    const uint kvh = qh / (p.numQHeads / p.numKVHeads);
+    device const half* qBase = Q + qh * kFullUnfusedHeadDim;
+    device const half* kBase_ = K + kvh * kFullUnfusedHeadDim;
+    const uint tm = 32u * uint(sgid / 2);
+    const uint tn = 32u * uint(sgid % 2);
+    const short2 sc = attn_frag_coord(lane);
+
+    attn_frag_f C[2][2];
+    #pragma clang loop unroll(full)
+    for (short a = 0; a < 2; ++a) {
+        #pragma clang loop unroll(full)
+        for (short b = 0; b < 2; ++b) C[a][b] = attn_frag_f(0.0f);
+    }
+    #pragma clang loop unroll(disable)
+    for (uint k0 = 0; k0 < kFullUnfusedHeadDim; k0 += 32u) {
+        attn_frag_h A[2][2];
+        attn_frag_h B[2][2];
+        #pragma clang loop unroll(full)
+        for (short kk = 0; kk < 2; ++kk) {
+            const uint col = k0 + uint(kk) * 16u + uint(sc.x);
+            #pragma clang loop unroll(full)
+            for (short mm = 0; mm < 2; ++mm) {
+                attn_frag_load(A[mm][kk], qBase, p.qTokenStrideElements,
+                               mBase + tm + uint(mm) * 16u + uint(sc.y), col, p.queryCount);
+                attn_frag_load(B[mm][kk], kBase_, p.kvTokenStrideElements,
+                               kBase + tn + uint(mm) * 16u + uint(sc.y), col, p.kvValidCount);
+            }
+        }
+        #pragma clang loop unroll(full)
+        for (short mm = 0; mm < 2; ++mm) {
+            #pragma clang loop unroll(full)
+            for (short kk = 0; kk < 2; ++kk) {
+                attn_frag_mma<true>(C[mm][0], C[mm][1], A[mm][kk], B[0][kk], B[1][kk]);
+            }
+        }
+    }
+
+    device float* sHead = S + ulong(tg.z) * u.headRows * u.scoreStride;
+    #pragma clang loop unroll(full)
+    for (short mm = 0; mm < 2; ++mm) {
+        #pragma clang loop unroll(full)
+        for (short nn = 0; nn < 2; ++nn) {
+            #pragma clang loop unroll(full)
+            for (short i = 0; i < 2; ++i) {
+                const uint r = mBase + tm + uint(mm) * 16u + uint(sc.y) + uint(i) * 8u;
+                if (r >= p.queryCount) continue;
+                const uint c = kBase + tn + uint(nn) * 16u + uint(sc.x);
+                const float4 v = float4(C[mm][nn][i * 4 + 0], C[mm][nn][i * 4 + 1],
+                                        C[mm][nn][i * 4 + 2], C[mm][nn][i * 4 + 3]) * p.scale;
+                *((device float4*)(sHead + r * u.scoreStride + c)) = v;
+            }
+        }
+    }
+}
+
+// One simdgroup per row: P[c] = exp(S[c] - max) for the causal keys
+// 0 ..< min(kvValidCount, abs + 1), zero up to scoreStride; rowSum gets the
+// sum of the f32 weights. 4 rows per threadgroup, grid y is the head.
+[[kernel, max_total_threads_per_threadgroup(128)]]
+kernel void attention_prefill_full_softmax_d512(
+    device const float* S [[buffer(2)]],
+    device half* P [[buffer(3)]],
+    constant PrefillAttentionParams& p [[buffer(4)]],
+    constant PrefillFullUnfusedParams& u [[buffer(5)]],
+    device float* rowSum [[buffer(6)]],
+    uint3 tg [[threadgroup_position_in_grid]],
+    ushort sgid [[simdgroup_index_in_threadgroup]],
+    ushort lane [[thread_index_in_simdgroup]]
+) {
+    const uint t = tg.x * 4u + uint(sgid);
+    if (t >= p.queryCount) return;
+    const ulong rowIndex = ulong(tg.y) * u.headRows + t;
+    device const float4* s4 = (device const float4*)(S + rowIndex * u.scoreStride);
+    device half4* p4 = (device half4*)(P + rowIndex * u.scoreStride);
+    const uint last = min(p.kvValidCount, p.startPosition + t + 1u);
+    const uint quads = u.scoreStride / 4u;
+    const uint liveQuads = (last + 3u) / 4u;
+    float m = -INFINITY;
+    for (uint q = lane; q < liveQuads; q += 32u) {
+        const float4 v = s4[q];
+        const uint c = q * 4u;
+        m = max(m, c + 0u < last ? v.x : -INFINITY);
+        m = max(m, c + 1u < last ? v.y : -INFINITY);
+        m = max(m, c + 2u < last ? v.z : -INFINITY);
+        m = max(m, c + 3u < last ? v.w : -INFINITY);
+    }
+    m = simd_max(m);
+    float sum = 0.0f;
+    for (uint q = lane; q < quads; q += 32u) {
+        float4 w = float4(0.0f);
+        if (q < liveQuads) {
+            const float4 v = s4[q];
+            const uint c = q * 4u;
+            w.x = c + 0u < last ? fast::exp(v.x - m) : 0.0f;
+            w.y = c + 1u < last ? fast::exp(v.y - m) : 0.0f;
+            w.z = c + 2u < last ? fast::exp(v.z - m) : 0.0f;
+            w.w = c + 3u < last ? fast::exp(v.w - m) : 0.0f;
+        }
+        sum += w.x + w.y + w.z + w.w;
+        p4[q] = half4(w);
+    }
+    sum = simd_sum(sum);
+    if (lane == 0) rowSum[rowIndex] = sum;
+}
+
+// O[r][headBase + g][d] = (P[g][r] · V[kvh]) / rowSum, a 64-row by 64-column
+// tile per threadgroup, 2x2 simdgroups of 32x32; the key loop stops at the
+// tile's last causal key. P is zero past each row's causal end, and V rows
+// at or past kvValidCount read as zero.
+[[kernel, max_total_threads_per_threadgroup(128)]]
+kernel void attention_prefill_full_pv_d512(
+    device const half* V [[buffer(1)]],
+    device const half* P [[buffer(3)]],
+    device half* O [[buffer(0)]],
+    constant PrefillAttentionParams& p [[buffer(4)]],
+    constant PrefillFullUnfusedParams& u [[buffer(5)]],
+    device const float* rowSum [[buffer(6)]],
+    uint3 tg [[threadgroup_position_in_grid]],
+    ushort sgid [[simdgroup_index_in_threadgroup]],
+    ushort lane [[thread_index_in_simdgroup]]
+) {
+    const uint nBase = tg.x * 64u;
+    const uint mBase = tg.y * 64u;
+    const uint qh = u.headBase + tg.z;
+    const uint kvh = qh / (p.numQHeads / p.numKVHeads);
+    const uint lastRow = min(mBase + 63u, p.queryCount - 1u);
+    const uint keyEnd = min(p.kvValidCount, p.startPosition + lastRow + 1u);
+    device const half* pHead = P + ulong(tg.z) * u.headRows * u.scoreStride;
+    device const half* vBase = V + kvh * kFullUnfusedHeadDim + nBase;
+    const uint tm = 32u * uint(sgid / 2);
+    const uint tn = 32u * uint(sgid % 2);
+    const short2 sc = attn_frag_coord(lane);
+
+    attn_frag_f C[2][2];
+    #pragma clang loop unroll(full)
+    for (short a = 0; a < 2; ++a) {
+        #pragma clang loop unroll(full)
+        for (short b = 0; b < 2; ++b) C[a][b] = attn_frag_f(0.0f);
+    }
+    #pragma clang loop unroll(disable)
+    for (uint k0 = 0; k0 < keyEnd; k0 += 32u) {
+        attn_frag_h A[2][2];   // [m fragment][k fragment], P rows
+        attn_frag_h B[2][2];   // [k fragment][n fragment], V rows are keys
+        #pragma clang loop unroll(full)
+        for (short kk = 0; kk < 2; ++kk) {
+            #pragma clang loop unroll(full)
+            for (short mm = 0; mm < 2; ++mm) {
+                attn_frag_load(A[mm][kk], pHead, u.scoreStride,
+                               mBase + tm + uint(mm) * 16u + uint(sc.y),
+                               k0 + uint(kk) * 16u + uint(sc.x), p.queryCount);
+                attn_frag_load(B[kk][mm], vBase, p.kvTokenStrideElements,
+                               k0 + uint(kk) * 16u + uint(sc.y),
+                               tn + uint(mm) * 16u + uint(sc.x), p.kvValidCount);
+            }
+        }
+        #pragma clang loop unroll(full)
+        for (short mm = 0; mm < 2; ++mm) {
+            #pragma clang loop unroll(full)
+            for (short kk = 0; kk < 2; ++kk) {
+                attn_frag_mma<false>(C[mm][0], C[mm][1], A[mm][kk], B[kk][0], B[kk][1]);
+            }
+        }
+    }
+
+    #pragma clang loop unroll(full)
+    for (short mm = 0; mm < 2; ++mm) {
+        #pragma clang loop unroll(full)
+        for (short i = 0; i < 2; ++i) {
+            const uint r = mBase + tm + uint(mm) * 16u + uint(sc.y) + uint(i) * 8u;
+            if (r >= p.queryCount) continue;
+            const float sum = rowSum[ulong(tg.z) * u.headRows + r];
+            const float inv = sum > 0.0f ? 1.0f / sum : 0.0f;
+            #pragma clang loop unroll(full)
+            for (short nn = 0; nn < 2; ++nn) {
+                const uint c = nBase + tn + uint(nn) * 16u + uint(sc.x);
+                const half4 v = half4(float4(C[mm][nn][i * 4 + 0], C[mm][nn][i * 4 + 1],
+                                             C[mm][nn][i * 4 + 2], C[mm][nn][i * 4 + 3]) * inv);
+                *((device half4*)(O + r * p.oTokenStrideElements + qh * kFullUnfusedHeadDim + c)) = v;
+            }
+        }
+    }
+}
+
 #endif

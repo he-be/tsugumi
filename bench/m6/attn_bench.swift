@@ -8,7 +8,8 @@
 // TF_ATTN_BENCH_SHAPE=full で全注意の層: 16/2 ヘッド、d512、窓なし、5 層分 (docs/m6-prefill/36)。
 //   TF_ATTN_BENCH_SHAPE=full /tmp/attn_bench Sources/Tsugumi/Metal/Prefill/prefill.metal \
 //       attention_prefill_causal_qblock_d512:256:16 attention_prefill_full_mpp_d512_r32:128:32 \
-//       attention_prefill_full_mpp_d512_r64:256:64
+//       attention_prefill_full_mpp_d512_r64:256:64 unfused:128:64
+// `unfused` は全注意の 3 カーネル (scores → softmax → pv) を PrefillAttention と同じ頭のまとめ方 (64 MiB) で。
 import Metal
 import Foundation
 
@@ -45,7 +46,14 @@ for (ki, name) in kernels.enumerated() {
     let fn = String(parts[0]); let threads = Int(parts[1])!; let qpg = Int(parts[2])!
     let hpg = parts.count > 3 ? Int(parts[3])! : 1
     let cv = MTLFunctionConstantValues()
-    let pso = try! device.makeComputePipelineState(function: lib.makeFunction(name: fn, constantValues: cv))
+    let unfused = fn == "unfused"
+    let pso = try! device.makeComputePipelineState(function: lib.makeFunction(
+        name: unfused ? "attention_prefill_full_pv_d512" : fn, constantValues: cv))
+    let upso = unfused ? ["attention_prefill_full_scores_d512", "attention_prefill_full_softmax_d512"].map {
+        try! device.makeComputePipelineState(function: lib.makeFunction(name: $0, constantValues: cv)) } : []
+    let budget = 64 << 20
+    let scratch = device.makeBuffer(length: budget, options: .storageModePrivate)!
+    struct UParams { var headBase: UInt32; var scoreStride: UInt32; var headRows: UInt32 }
     var times: [Double] = []
     for rep in 0..<6 {
         let cb = queue.makeCommandBuffer()!
@@ -53,6 +61,31 @@ for (ki, name) in kernels.enumerated() {
             for _ in 0..<layers {
                 var p = Params(startPosition: UInt32(start), queryCount: UInt32(T), headDim: UInt32(D), numQHeads: UInt32(H), numKVHeads: UInt32(KVH), kvValidCount: UInt32(start + T), slidingWindow: UInt32(window), kvStride: UInt32(KVH * D), qStride: UInt32(H * D), oStride: UInt32(H * D), scale: 1, hasSpanMask: 0)
                 let enc = cb.makeComputeCommandEncoder()!
+                if unfused {
+                    let stride = (start + T + 63) / 64 * 64
+                    let perHead = T * stride * 6 + T * 4
+                    var group = H
+                    while group > 1 && (group * perHead > budget || H % group != 0) { group -= 1 }
+                    let pOff = group * T * stride * 4, sumOff = pOff + group * T * stride * 2
+                    for hb in Swift.stride(from: 0, to: H, by: group) {
+                        var u = UParams(headBase: UInt32(hb), scoreStride: UInt32(stride), headRows: UInt32(T))
+                        let tpt = MTLSize(width: 128, height: 1, depth: 1)
+                        enc.setComputePipelineState(upso[0])
+                        enc.setBuffer(q, offset: 0, index: 0); enc.setBuffer(k, offset: 0, index: 1)
+                        enc.setBuffer(scratch, offset: 0, index: 2)
+                        enc.setBytes(&p, length: MemoryLayout<Params>.stride, index: 4)
+                        enc.setBytes(&u, length: MemoryLayout<UParams>.stride, index: 5)
+                        enc.dispatchThreadgroups(MTLSize(width: stride / 64, height: (T + 63) / 64, depth: group), threadsPerThreadgroup: tpt)
+                        enc.setComputePipelineState(upso[1])
+                        enc.setBuffer(scratch, offset: pOff, index: 3); enc.setBuffer(scratch, offset: sumOff, index: 6)
+                        enc.dispatchThreadgroups(MTLSize(width: (T + 3) / 4, height: group, depth: 1), threadsPerThreadgroup: tpt)
+                        enc.setComputePipelineState(pso)
+                        enc.setBuffer(outs[ki], offset: start * H * D * 2, index: 0); enc.setBuffer(v, offset: 0, index: 1)
+                        enc.dispatchThreadgroups(MTLSize(width: D / 64, height: (T + 63) / 64, depth: group), threadsPerThreadgroup: tpt)
+                    }
+                    enc.endEncoding()
+                    continue
+                }
                 enc.setComputePipelineState(pso)
                 enc.setBuffer(q, offset: 0, index: 0); enc.setBuffer(k, offset: 0, index: 1); enc.setBuffer(v, offset: 0, index: 2)
                 enc.setBuffer(outs[ki], offset: start * H * D * 2, index: 3)
