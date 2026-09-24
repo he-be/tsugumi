@@ -3663,20 +3663,15 @@ kernel void prefill_router_gemma4_bf16_nax(
 // mpp kernel's FP16 roundings, and K runs in the same order.
 constant constexpr uint kMoENaxLd = 64u + 8u;
 
-[[kernel, max_total_threads_per_threadgroup(128)]]
-kernel void prefill_moe_gemm_int4_nax(
-    device const half*                                   hidden         [[buffer(0)]],
-    device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
-    device const PrefillRoutedGEMMBlockMSL*              blocks         [[buffer(2)]],
-    device half*                                         route_partials [[buffer(5)]],
-    device half*                                         act            [[buffer(7)]],
-    device const PrefillStreamedRoutedBlobsMSL&          routed         [[buffer(9)]],
-    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p              [[buffer(10)]],
-    constant uint&                                       mode           [[buffer(11)]],
-    uint3                                                lid3           [[thread_position_in_threadgroup]],
-    uint3                                                tgid3          [[threadgroup_position_in_grid]],
-    ushort                                               sgid           [[simdgroup_index_in_threadgroup]],
-    ushort                                               lane           [[thread_index_in_simdgroup]]
+// MF 16-row fragments per simdgroup: MF = 2 is the 64-row tile (2x2
+// simdgroups of 32x32), MF = 1 the 32-row one for short blocks (2x2 of 16x32).
+template <short MF>
+inline void prefill_moe_gemm_int4_nax_impl(
+    device const half* hidden, device const PrefillTokenExpertPairMSL* sorted_pairs,
+    device const PrefillRoutedGEMMBlockMSL* blocks, device half* route_partials,
+    device half* act, device const PrefillStreamedRoutedBlobsMSL& routed,
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL& p, constant uint& mode,
+    uint3 lid3, uint3 tgid3, ushort sgid, ushort lane
 ) {
     const uint lid = lid3.x;
     const PrefillRoutedGEMMBlockMSL blk = blocks[tgid3.y];
@@ -3724,7 +3719,7 @@ kernel void prefill_moe_gemm_int4_nax(
         dst_off[lid] = dof;
     }
 
-    const uint tm = 32u * uint(sgid / 2);
+    const uint tm = uint(16 * MF) * uint(sgid / 2);
     const uint tn = 32u * uint(sgid % 2);
     const short2 sc = attn_frag_coord(lane);
 
@@ -3739,18 +3734,18 @@ kernel void prefill_moe_gemm_int4_nax(
     device const bfloat* b_row = B + wN * groups;
     threadgroup half* bDst = Ws + bRow * kMoENaxLd + bCol;
 
-    attn_frag_f C[2][2];
+    attn_frag_f C[MF][2];
     #pragma clang loop unroll(full)
-    for (short a = 0; a < 2; ++a) {
+    for (short a = 0; a < MF; ++a) {
         #pragma clang loop unroll(full)
         for (short b = 0; b < 2; ++b) C[a][b] = attn_frag_f(0.0f);
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
     // This lane's two rows of each 16-row A fragment, as source offsets.
-    uint aOff[2][2];
-    bool aLive[2][2];
+    uint aOff[MF][2];
+    bool aLive[MF][2];
     #pragma clang loop unroll(full)
-    for (short mm = 0; mm < 2; ++mm) {
+    for (short mm = 0; mm < MF; ++mm) {
         #pragma clang loop unroll(full)
         for (short i = 0; i < 2; ++i) {
             const uint m = tm + uint(mm) * 16u + uint(sc.y) + uint(i) * 8u;
@@ -3788,13 +3783,13 @@ kernel void prefill_moe_gemm_int4_nax(
 
         #pragma clang loop unroll(disable)
         for (uint kk1 = 0; kk1 < 64u; kk1 += 32u) {
-            attn_frag_h A[2][2];   // [m fragment][k fragment]
+            attn_frag_h A[MF][2];  // [m fragment][k fragment]
             attn_frag_h Bf[2][2];  // [n fragment][k fragment]
             #pragma clang loop unroll(full)
             for (short kk = 0; kk < 2; ++kk) {
                 const uint col = k0 + kk1 + uint(kk) * 16u + uint(sc.x);
                 #pragma clang loop unroll(full)
-                for (short mm = 0; mm < 2; ++mm) {
+                for (short mm = 0; mm < MF; ++mm) {
                     #pragma clang loop unroll(full)
                     for (short i = 0; i < 2; ++i) {
                         const half4 v = aLive[mm][i]
@@ -3817,7 +3812,7 @@ kernel void prefill_moe_gemm_int4_nax(
                 }
             }
             #pragma clang loop unroll(full)
-            for (short mm = 0; mm < 2; ++mm) {
+            for (short mm = 0; mm < MF; ++mm) {
                 #pragma clang loop unroll(full)
                 for (short kk = 0; kk < 2; ++kk) {
                     attn_frag_mma<true>(C[mm][0], C[mm][1], A[mm][kk], Bf[0][kk], Bf[1][kk]);
@@ -3827,7 +3822,7 @@ kernel void prefill_moe_gemm_int4_nax(
     }
 
     #pragma clang loop unroll(full)
-    for (short mm = 0; mm < 2; ++mm) {
+    for (short mm = 0; mm < MF; ++mm) {
         #pragma clang loop unroll(full)
         for (short i = 0; i < 2; ++i) {
             const uint m = tm + uint(mm) * 16u + uint(sc.y) + uint(i) * 8u;
@@ -3843,5 +3838,28 @@ kernel void prefill_moe_gemm_int4_nax(
         }
     }
 }
+
+#define PREFILL_MOE_GEMM_INT4_NAX(NAME, MF)                                     \
+[[kernel, max_total_threads_per_threadgroup(128)]]                             \
+kernel void NAME(                                                              \
+    device const half* hidden [[buffer(0)]],                                   \
+    device const PrefillTokenExpertPairMSL* sorted_pairs [[buffer(1)]],        \
+    device const PrefillRoutedGEMMBlockMSL* blocks [[buffer(2)]],              \
+    device half* route_partials [[buffer(5)]],                                 \
+    device half* act [[buffer(7)]],                                            \
+    device const PrefillStreamedRoutedBlobsMSL& routed [[buffer(9)]],          \
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL& p [[buffer(10)]],       \
+    constant uint& mode [[buffer(11)]],                                        \
+    uint3 lid3 [[thread_position_in_threadgroup]],                             \
+    uint3 tgid3 [[threadgroup_position_in_grid]],                              \
+    ushort sgid [[simdgroup_index_in_threadgroup]],                            \
+    ushort lane [[thread_index_in_simdgroup]]                                  \
+) {                                                                            \
+    prefill_moe_gemm_int4_nax_impl<MF>(hidden, sorted_pairs, blocks,           \
+        route_partials, act, routed, p, mode, lid3, tgid3, sgid, lane);        \
+}
+
+PREFILL_MOE_GEMM_INT4_NAX(prefill_moe_gemm_int4_nax, 2)
+PREFILL_MOE_GEMM_INT4_NAX(prefill_moe_gemm_int4_nax_m32, 1)
 
 #endif

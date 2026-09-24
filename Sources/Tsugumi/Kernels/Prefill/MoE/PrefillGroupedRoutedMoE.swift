@@ -493,6 +493,11 @@ final class PrefillGroupedRoutedMoE {
     /// `prefill_moe_gemm_int4_mpp`.
     static let naxRequested =
         ProcessInfo.processInfo.environment["TF_PREFILL_MOE_NAX"] != "0"
+    /// `TF_PREFILL_MOE_NAX_M32=1`: blocks of at most 32 rows go to the 32-row
+    /// nax kernel (`prefill_moe_gemm_int4_nax_m32`, docs/m6-prefill/42), as
+    /// `TF_PREFILL_MOE_PF` does for the mpp one. A candidate.
+    static let naxShortRequested =
+        ProcessInfo.processInfo.environment["TF_PREFILL_MOE_NAX_M32"] == "1"
 
     /// Reused staging, indexed the way a chunk uses it: one sorted-pair buffer
     /// per layer and one argument buffer per tile position. A layer's routed
@@ -576,8 +581,10 @@ final class PrefillGroupedRoutedMoE {
             let mpp = (wantsMPP && usable) ? try? context.pipeline(mppName) : nil
             self.gemmMPPPSO = (mpp?.maxTotalThreadsPerThreadgroup ?? 0) >= Self.gemmThreadsPerGroup
                 ? mpp : nil
-            let short = (Self.prefetchRequested && gemmMPPPSO != nil)
-                ? try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_m32") : nil
+            let shortName = Self.prefetchRequested ? "prefill_moe_gemm_int4_mpp_pf_m32"
+                : Self.naxRequested && Self.naxShortRequested ? "prefill_moe_gemm_int4_nax_m32" : nil
+            let short = (shortName != nil && gemmMPPPSO != nil)
+                ? try? context.pipeline(shortName!) : nil
             self.gemmMPPShortPSO = (short?.maxTotalThreadsPerThreadgroup ?? 0) >= Self.gemmThreadsPerGroup
                 ? short : nil
         }

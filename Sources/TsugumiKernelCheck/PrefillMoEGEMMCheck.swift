@@ -317,6 +317,15 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
                             rel: relativeError(actual: nax, reference: mpp),
                             tolerance: Double(Tolerance.fp16ChainedReduction),
                             detail: "differing=\(naxDiffering)/\(nax.count)"))
+        // The 32-row tier (docs/m6-prefill/42) takes the blocks of at most 32
+        // rows; it stages the same weights and sums in the same order.
+        if let nax32PSO = try? context.pipeline("prefill_moe_gemm_int4_nax_m32") {
+            let nax32 = run(naxPSO, narrow: nax32PSO, label: name + " nax-64/32")
+            let differing = zip(nax32, mpp).filter { $0 != $1 }.count
+            cases.append(result(name + " nax-64/32 vs mpp", groupSize: groupSize,
+                                rel: differing == 0 ? 0 : 1, tolerance: 0,
+                                detail: "differing=\(differing)/\(nax32.count) m32Blocks=\(blocks.filter { $0.rowCount <= 32 }.count)"))
+        }
     } else {
         print("  SKIP  \(name) nax g=\(groupSize)  no pipeline on this device")
     }
