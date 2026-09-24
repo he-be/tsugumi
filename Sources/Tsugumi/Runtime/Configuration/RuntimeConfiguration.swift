@@ -16,9 +16,9 @@ public enum RuntimePrefillAttentionPath: String, Codable, Sendable {
     /// §7-6.
     case causalQBlock = "causal-qblock"
     /// The simdgroup-matrix flash kernel at headDim 256 (the sliding-window
-    /// layers), the query-blocked kernel everywhere else. A candidate, not the
-    /// default: `TF_PREFILL_ATTN=sgmm` turns `causalQBlock` into this
-    /// (docs/m6-prefill/06-LEDGER.md §2).
+    /// layers), the query-blocked kernel everywhere else. The default
+    /// (docs/m6-prefill/23): `TF_PREFILL_ATTN=qblock` turns it back into
+    /// `causalQBlock`, and `TF_PREFILL_ATTN=sgmm` turns `causalQBlock` into it.
     case causalSimdgroupMatrix = "causal-sgmm"
     case fullTensorOps2DPreferred = "full-tensorops-2d-preferred"
     case fullTensorOps2DValidityV2 = "full-tensorops-2d-validity-v2"
@@ -87,7 +87,7 @@ public struct RuntimeConfiguration: Sendable, Equatable {
                 rdadvisePolicy: RDAdvicePolicyMode = .off,
                 prefillEnabled: Bool = true,
                 prefillChunkTokens: Int = 2048,
-                prefillAttentionPath: RuntimePrefillAttentionPath = .causalQBlock,
+                prefillAttentionPath: RuntimePrefillAttentionPath = .causalSimdgroupMatrix,
                 forceLogitsHead: Bool = false) {
         precondition(Self.allowedExpertCacheSlots.contains(expertCacheSlots),
                      "unsupported expert-cache slot count")

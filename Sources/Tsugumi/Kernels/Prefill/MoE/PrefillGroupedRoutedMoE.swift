@@ -459,8 +459,17 @@ final class PrefillGroupedRoutedMoE {
     /// `PrefillInt4QMM`). `TF_PREFILL_MOE=mpp` takes the tiled path with its
     /// tile product on `matmul2d` (`prefill_moe_gemm_int4_mpp`,
     /// docs/m6-prefill/04-GATES.md G3) where the device builds it. Anything
-    /// else, including unset, takes the simdgroup tiled path.
+    /// else, including unset, takes the simdgroup tiled path — unless the
+    /// caller asks for a kernel, as Gemma's runner does with
+    /// `gemmaTiledKernel`.
     private static let forcedPath = ProcessInfo.processInfo.environment["TF_PREFILL_MOE"]
+
+    /// Gemma's default: `mpp` where the device builds it (docs/m6-prefill/23),
+    /// `TF_PREFILL_MOE=simdgroup` for the kernel it replaced. Qwen asks for
+    /// nothing and keeps the environment's answer.
+    package static var gemmaTiledKernel: TiledKernel {
+        forcedPath == "simdgroup" ? .simdgroup : .mpp
+    }
 
     /// The kernel behind the tiled path's two GEMMs.
     package enum TiledKernel: String, Sendable {

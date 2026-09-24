@@ -12,7 +12,7 @@ import Testing
         #expect(!runtime.rdadviseEnabled)
         #expect(runtime.prefillPolicy == .chunked)
         #expect(runtime.prefillChunkTokens == 2048)
-        #expect(runtime.prefillAttentionPath == .causalQBlock)
+        #expect(runtime.prefillAttentionPath == .causalSimdgroupMatrix)
         #expect(runtime.headPath == .fusedRows)
     }
 

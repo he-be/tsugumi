@@ -64,10 +64,14 @@ final class PrefillAttention {
                                   queriesPerSimdgroup: 2),
     ]
 
-    /// `TF_PREFILL_ATTN=sgmm` sends the default path's headDim-256 dispatches
-    /// to the simdgroup-matrix kernel, so an A/B runs on one binary.
+    /// `TF_PREFILL_ATTN=sgmm` sends `causalQBlock`'s headDim-256 dispatches
+    /// to the simdgroup-matrix kernel, and `TF_PREFILL_ATTN=qblock` sends the
+    /// Gemma default (`causalSimdgroupMatrix`) back to the query-blocked one,
+    /// so an A/B runs on one binary.
     private static let forcedSimdgroupMatrix =
         ProcessInfo.processInfo.environment["TF_PREFILL_ATTN"] == "sgmm"
+    private static let forcedQBlock =
+        ProcessInfo.processInfo.environment["TF_PREFILL_ATTN"] == "qblock"
     private static let sgmmHeadDim: UInt32 = 256
     private static let sgmmQueries = 32
     private static let sgmmThreads = 128
@@ -102,8 +106,9 @@ final class PrefillAttention {
                              kvRingCapacity: UInt32 = 0,
                              path: RuntimePrefillAttentionPath = .causalTiled) {
         validate(params)
-        let path = path == .causalQBlock && Self.forcedSimdgroupMatrix
-            ? .causalSimdgroupMatrix
+        let path: RuntimePrefillAttentionPath =
+            path == .causalQBlock && Self.forcedSimdgroupMatrix ? .causalSimdgroupMatrix
+            : path == .causalSimdgroupMatrix && Self.forcedQBlock ? .causalQBlock
             : path
         precondition((params.spanMaskEnabled != 0) == (spanEnd != nil),
                      "the span mask flag and the span-end buffer must agree")

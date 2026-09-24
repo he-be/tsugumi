@@ -450,7 +450,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
         self.prefillSharedExpert = try PrefillSharedExpert(
             context: context,
             weightBits: model.sharedExpertWeightBits)
-        self.prefillGroupedMoE = try PrefillGroupedRoutedMoE(context: context)
+        self.prefillGroupedMoE = try PrefillGroupedRoutedMoE(
+            context: context, tiledKernel: PrefillGroupedRoutedMoE.gemmaTiledKernel)
         self.prefillMoE = try PrefillMoE(context: context)
         self.prefillLayerTail = try PrefillLayerTail(context: context)
         self.prefillFinalRowHead = try PrefillFinalRowHeadInt4(context: context,

@@ -27,31 +27,29 @@ package final class MPPPrefillInt4QMM {
     static let tileK = 64
 
     /// `TF_PREFILL_QMM` picks the Q/K/V/O projection path so an A/B runs on one
-    /// binary (docs/m6-prefill/04-GATES.md G1): `mpp` takes this kernel at
-    /// any supported group size, `simdgroup` never takes it. Unset (or any
-    /// other value) keeps the default, which is this kernel for group-64
-    /// models only — group 32 stays on the simdgroup path until its numbers
-    /// are in.
+    /// binary (docs/m6-prefill/04-GATES.md G1): `mpp` takes the threadgroup
+    /// kernel for the projections only, `simdgroup` never takes this kernel.
     /// `mpp64` takes the `tile64` kernel for the projections *and* the shared
-    /// MLP (`isSharedSelected`), so one arm covers step 2 of
-    /// docs/m6-prefill/17-NAX-NOT-USED.md §3.
+    /// MLP (`isSharedSelected`, docs/m6-prefill/17-NAX-NOT-USED.md §3 step 2).
+    /// Unset is `mpp64`, the default since docs/m6-prefill/23. Where the device
+    /// cannot build the kernel, both fall back to the simdgroup QMM.
     private static let forcedPath = ProcessInfo.processInfo.environment["TF_PREFILL_QMM"]
 
     /// Whether the prefill runner should offer projections to this kernel.
     package static func isSelected(affineGroupSize: Int) -> Bool {
         switch forcedPath {
-        case "mpp", "mpp64": return true
         case "simdgroup": return false
+        case "mpp", "mpp64", nil: return true
         default: return affineGroupSize == tileK
         }
     }
 
     /// Whether the prefill shared MLP should offer its three GEMMs to this
-    /// kernel. Only the `mpp64` arm; unset keeps the simdgroup QMM.
-    package static var isSharedSelected: Bool { forcedPath == "mpp64" }
+    /// kernel. The `mpp64` arm, which unset also is.
+    package static var isSharedSelected: Bool { forcedPath == nil || forcedPath == "mpp64" }
 
     /// The kernel the environment asks for when the caller does not say.
-    package static var selectedKernel: Kernel { forcedPath == "mpp64" ? .tile64 : .threadgroup }
+    package static var selectedKernel: Kernel { isSharedSelected ? .tile64 : .threadgroup }
 
     package let kernel: Kernel
     private var pipeline: MTLComputePipelineState?
