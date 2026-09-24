@@ -32,6 +32,12 @@ enum ServerLog {
             + "cached=\(usage.promptTokensDetails.cachedTokens) "
             + "completion=\(usage.completionTokens) "
             + "finish=\(completion.finishReason)"
+        // RSP-3's prefill half, so the wall time a turn spent before its first
+        // token is readable from the log without the response body.
+        if let timings = completion.timings {
+            line += " prompt_n=\(timings.promptTokens)"
+                + " prompt_ms=\(String(format: "%.1f", timings.promptMilliseconds))"
+        }
         if !completion.reasoningContent.isEmpty {
             line += " reasoning=\(completion.reasoningContent.utf8.count)B"
         }

@@ -118,7 +118,7 @@ public actor TsugumiHTTPServer {
     /// LIF-3: whether the load has landed.
     public var isReady: Bool { readiness.backend != nil }
 
-    public func start(port: Int) async throws -> Channel {
+    public func start(port: Int, host: String = "127.0.0.1") async throws -> Channel {
         let modelID = self.modelID
         let readiness = self.readiness
         let coordinator = self.coordinator
@@ -156,7 +156,7 @@ public actor TsugumiHTTPServer {
                 }
             }
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
-        let channel = try await bootstrap.bind(host: "127.0.0.1", port: port).get()
+        let channel = try await bootstrap.bind(host: host, port: port).get()
         self.channel = channel
         return channel
     }

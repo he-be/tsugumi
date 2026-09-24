@@ -58,6 +58,10 @@ public enum ServerCORSPolicy: Equatable, Sendable {
 public struct ServerArguments: Equatable, Sendable {
     public let model: String
     public let port: Int
+    /// `--host`: the address the listener binds. 127.0.0.1 unless the
+    /// operator names another; there is no TLS, so anything wider is a choice
+    /// the operator makes for a trusted network.
+    public let host: String
     public let modelID: String
     public let maxContext: Int
     /// `-c` as given, before the rounding: Qwen3.8 is not in the measured table and takes its operating point (12K,
@@ -108,6 +112,8 @@ public struct ServerArguments: Equatable, Sendable {
 
       --model <dir>              Required model directory.
       --port <1...65535>         Loopback port (default 8080).
+      --host <address>           Bind address (default 127.0.0.1). The server
+                                 has no TLS; bind wider only on a trusted network.
       --model-id <id>            API model identifier (default gemma-4-26b-a4b-it).
       -c, --ctx-size <tokens>    Context length (default 16384). Any token count
                                  is accepted and rounded down to a size this
@@ -289,6 +295,7 @@ public struct ServerArguments: Equatable, Sendable {
     public static func parse(_ input: [String]) throws -> ServerArguments {
         var model: String?
         var port = 8080
+        var host = "127.0.0.1"
         var modelID = "gemma-4-26b-a4b-it"
         var maxContext = 16_384
         var requestedContext = 16_384
@@ -362,6 +369,11 @@ public struct ServerArguments: Equatable, Sendable {
                     throw ServerArgumentError.invalid("--port must be between 1 and 65535")
                 }
                 port = parsed
+            case "--host":
+                guard !value.isEmpty else {
+                    throw ServerArgumentError.invalid("--host must not be empty")
+                }
+                host = value
             case "--model-id":
                 guard !value.isEmpty else {
                     throw ServerArgumentError.invalid("--model-id must not be empty")
@@ -515,6 +527,7 @@ public struct ServerArguments: Equatable, Sendable {
         }
         return ServerArguments(model: model,
                                port: port,
+                               host: host,
                                modelID: modelID,
                                maxContext: maxContext,
                                requestedContext: requestedContext,

@@ -83,8 +83,8 @@ do {
     // `unavailable_error` until the load lands (LIF-2). The load takes tens of
     // seconds; a client that connects during it is told the server is coming
     // up, which a refused connection cannot say.
-    _ = try await server.start(port: arguments.port)
-    print("TsugumiServer listening at http://127.0.0.1:\(arguments.port) loading model=\(arguments.modelID)")
+    _ = try await server.start(port: arguments.port, host: arguments.host)
+    print("TsugumiServer listening at http://\(arguments.host):\(arguments.port) loading model=\(arguments.modelID)")
     // stdout はパイプに繋がれると全バッファリングになる (`Scripts/demo/serve.py`
     // は子プロセスの stdout を読む)。この行は「もう繋がる」の合図で、
     // プロセスが終わるまで見えないのでは意味がないので、ここで押し出す。
@@ -142,7 +142,7 @@ do {
     // `expert_io`: どちらの腕で回っているか。既定は mmap (docs/mtp/52 §5a)。
     // `TF_EXPERT_MMAP=0` で pread に戻る。
     let expertIO = MmapExpertMapping.isEnabled ? "mmap" : "pread"
-    print("TsugumiServer ready at http://127.0.0.1:\(arguments.port) model=\(arguments.modelID) family=\(isQwen38 ? "qwen4exp" : isOrnith ? "qwen3_5_moe" : "gemma4") context=\(isQwen38 ? arguments.requestedContext : arguments.maxContext) slots=\(runtimeConfiguration.expertCacheSlots) expert_io=\(expertIO) mtp=\(arguments.draftBlockSize) reasoning_budget=\(arguments.reasoningBudget) reasoning_format=\(arguments.reasoningFormat.rawValue)")
+    print("TsugumiServer ready at http://\(arguments.host):\(arguments.port) model=\(arguments.modelID) family=\(isQwen38 ? "qwen4exp" : isOrnith ? "qwen3_5_moe" : "gemma4") context=\(isQwen38 ? arguments.requestedContext : arguments.maxContext) slots=\(runtimeConfiguration.expertCacheSlots) expert_io=\(expertIO) mtp=\(arguments.draftBlockSize) reasoning_budget=\(arguments.reasoningBudget) reasoning_format=\(arguments.reasoningFormat.rawValue)")
     fflush(stdout)
 
     await terminator.value
