@@ -278,12 +278,13 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private static let rdadviseAdaptiveByteCap: UInt64 = 384 * 1_048_576
     private static let rdadviseAdaptiveSlowCallNanos: UInt64 = 1_000_000
     private static let prefillRoutedTileSchedulerConfig = PrefillRoutedTileSchedulerConfig()
-    /// `TF_PREFILL_VERIFY_AHEAD=N`: at each layer's head, start hashing the
-    /// next N layer files off the streamer queue, so a layer's first expert
-    /// access finds its file verified (docs/m6-prefill/13-PROJ-SHARED-MATMUL2D.md
-    /// §2). Unset or 0 keeps the one-layer-at-a-time open.
+    /// At each layer's head, start hashing the next N layer files off the
+    /// streamer queue, so a layer's first expert access finds its file
+    /// verified (docs/m6-prefill/13-PROJ-SHARED-MATMUL2D.md §2). Default 2
+    /// (docs/m6-prefill/20-VERIFY-AHEAD-ALONE.md); `TF_PREFILL_VERIFY_AHEAD=N`
+    /// overrides it, and 0 keeps the one-layer-at-a-time open.
     private static let prefillVerifyAhead = max(0, Int(
-        ProcessInfo.processInfo.environment["TF_PREFILL_VERIFY_AHEAD"] ?? "") ?? 0)
+        ProcessInfo.processInfo.environment["TF_PREFILL_VERIFY_AHEAD"] ?? "") ?? 2)
     /// Narrowest chunk that still uses the tiled routed-MoE GEMM. 0 keeps the
     /// pre-M4 behavior (always tiled).
     private static let groupedGEMMMinChunkTokens = Int(
