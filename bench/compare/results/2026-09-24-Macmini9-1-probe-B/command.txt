@@ -1,0 +1,1 @@
+/Users/mh/dev/tsugumi/.build/release/TsugumiCLI --model /Users/mh/dev/tsugumi/scratch/gemma4-qat-sym.gturbo --messages-file /Users/mh/dev/tsugumi/docs/benchmark-prompts/real-generation-v1/long-synthesis.json --thinking on --draft-block-size 4 --max-new 1024 --max-new 1

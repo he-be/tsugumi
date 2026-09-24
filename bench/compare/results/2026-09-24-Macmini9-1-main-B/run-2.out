@@ -1,0 +1,56 @@
+thought
+
+*   Source: A technical document for "Tsugumi," a Swift/Metal runtime for Gemma 4 26B-A4B inference on Apple Silicon.
+    *   Target Audience: An engineer who hasn't seen the project.
+    *   Key Content Requirements:
+        1.  Central resource constraint.
+        2.  How the runtime divides resident and streamed data.
+        3.  Why prefill and decode behave differently.
+        4.  Limitations when interpreting benchmark numbers.
+        5.  Three practical rules for evaluating future changes (Conclusion).
+    *   Constraints:
+        *   Concise technical assessment.
+        *   Do not copy headings or sentences.
+        *   Under 500 words.
+
+    *   *Model:* Gemma 4 26B-A4B (MoE architecture).
+    *   *Resource Constraint:* RAM/Memory (specifically targeting 8 GB Mac machines for a 14.3 GB model).
+    *   *Data Division:*
+        *   Resident: 1.35 GB shared weights + FP16 KV cache.
+        *   Streamed: Expert weights (from SSD via parallel `pread` calls).
+    *   *Prefill vs. Decode:*
+        *   Prefill: Uses chunks (up to 128 tokens) so a single expert fetch can serve multiple rows (increasing throughput/efficiency).
+        *   Decode: Happens one token at a time, making it more dependent on I/O latency for routed experts.
+    *   *Benchmarks:* Influenced by prompt length, generation length, page-cache state, and hardware.
+    *   *Architecture Details:* MoE (Mixture of Experts), LFU cache for experts, Metal for compute, Swift for runtime/orchestration.
+
+    *   *Central Constraint:* The primary bottleneck is the limited Unified Memory on Apple Silicon (e.g., 8 GB), making it impossible to load the full 14.3 GB model.
+
+    *   *Data Division:* The runtime maintains a minimal resident set in RAM, specifically the 1.35 GB shared weights and the FP16 KV cache. The massive weight volume (the routed experts) is stored on the SSD and streamed into Metal-visible buffers on demand using parallel `pread` calls and an LFU cache.
+
+    *   *Prefill vs. Decode:* Performance dynamics shift between these stages. During prefill, the engine processes tokens in 128-token chunks, allowing a single expert fetch to satisfy multiple rows of computation. In contrast, decoding occurs one token at a time, which places a heavier emphasis on I/O latency and the efficiency of the expert-fetching mechanism.
+
+    *   *Benchmark Interpretation:* Benchmarks are highly sensitive to environmental variables. One cannot treat them as theoretical ceilings; they are influenced by the current state of the system page-cache, the specific length of prompts/responses, and the underlying hardware configuration.
+
+    *   *Rules for Evaluating Changes:*
+        1.  Prioritize I/O-to-compute overlap efficiency.
+        2.  Measure performance across varying prompt/generation lengths.
+        3.  Account for SSD page-cache warmness in comparisons.
+
+    *   *Check word count:* The draft is well under 500 words.
+    *   *Check headings/sentences:* Ensure no "Memory got expensive" or "At a glance" or "The runtime, streaming installer..." etc.
+    *   *Check Tone:* Technical and professional.
+
+    *   *Refining "Data Division":* Instead of saying "The runtime keeps the...", say "Tsugumi splits the model into a resident set... and a streamed set..."
+    *   *Refining "Prefill vs Decode":* Use terms like "batching" or "token-level processing" to sound more like an engineer.
+
+    *Text:*
+    Tsugumi is a specialized inference runtime designed to execute large Mixture-of-Experts (MoE) models, specifically Gemma 4 26B-A4B, on memory-constrained Apple Silicon hardware.
+
+    **Resource Constraint**
+    The primary limitation is the Unified Memory bottleneck. To enable high-parameter models to run on devices with as little as 8 GB of RAM, the engine cannot hold the entire model weights in memory.
+
+    **Data Partitioning**
+    The runtime bifurcates the model weights. The shared weights (approx. 1.35 GB) and the FP16 KV cache are kept resident in RAM to ensure high-speed access. The heavy MoE expert weights are stored on the SSD and streamed into Metal-visible buffers via parallel `pread` calls, managed by an LFU cache to minimize redundant I/O.
+
+    **Execution Dynamics: Pref

@@ -1,0 +1,54 @@
+thought
+
+*   Input: An image of a pair of stainless steel scissors.
+*   Constraint 1: Language: Japanese.
+*   Constraint 2: Order of description: 1. Place (場所), 2. Time (時間帯), 3. Prominent objects (目立つ物).
+*   Constraint 3: Detail: "詳しく説明してください" (Explain in detail).
+
+    *   *Object:* A pair of stainless steel scissors.
+    *   *Brand/Text:* "ALEX STAINLESS" is clearly visible. There is also Japanese text etched on the top blade: "○○高高等学校" (partially obscured/cut off, but clearly a school name like "...High School").
+    *   *Condition:* Used, some scratches and small dark spots/marks on the metal.
+    *   *Background/Surface:* A plain, white, flat surface. Likely a desk, a table, or a piece of paper.
+    *   *Lighting:* Bright, diffused, coming from above/slightly to the side. No long shadows.
+
+        *   The background is a plain white surface.
+        *   Given the presence of school-related engraving (高高等学校), it's likely on a desk, a table in a classroom, or perhaps a workbench.
+        *   *Draft:* 白い平らな場所（机やテーブルの上）。
+
+        *   The lighting is bright and uniform. It doesn't look like low-angle golden hour light or harsh nighttime light. It looks like indoor artificial lighting or bright daylight.
+        *   *Draft:* 明るい日中、または室内の照明の下。
+
+        *   *Main object:* Stainless steel scissors.
+        *   *Details:*
+            *   Brand: "ALEX STAINLESS" is engraved.
+            *   Other engraving: "○○高高等学校" (a school name).
+            *   Material: Stainless steel, metallic finish.
+            *   Features: White/clear plastic/rubber rings in the finger loops.
+            *   Condition: Used, some scratches and minor stains.
+        *   *Draft:* ステンレス製のハサミ。ブランド名は「ALEX STAINLESS」と刻印されています。刃の部分には「○○高高等学校」という文字も見えます。持ち手部分には白いリングが付いています。
+
+    *   *Refining Place:* 白い平らな表面（机やテーブルの上）に置かれています。
+    *   *Refining Time:* 非常に明るい光が当たっており、日中の明るい室内、あるいは照明の強い環境下で撮影されたものと思われます。
+    *   *Refining Prominent Object:*
+        *   中心となるのは、使い込まれた様子のあるステンレス製のハサミです。
+        *   刃の根元付近には「ALEX STAINLESS」というブランドロゴが刻印されており、さらにその上部（刃の側面）には「○○高高等学校」という文字が刻まれています。
+        *   ハサミの持ち手（指を通す部分）には、滑り止めや快適な使用感のためのものと思われる、白いプラスチックまたはゴム製のリングがはめ込まれています。
+        *   金属部分には、使用に伴う細かな傷や汚れが見受けられます。
+
+    *   Order: Place $\rightarrow$ Time $\rightarrow$ Object? Yes.
+    *   Language: Japanese? Yes.
+    *   Detailed? Yes.
+
+    (Self-Correction during drafting): I should be careful not to guess the exact school name, just mention what is visible.
+
+    *Place:* 白い、平らな表面（机やテーブルのような場所）
+    *Time:* 明るい日中、あるいは室内の明るい照明の下
+    *Object:* ステンレス製のハサミ（ブランド名：ALEX STAINLESS、刻印：学校名の一部、持ち手の白いリング、使い込まれた質感）
+
+    *Drafting Final Response:*
+    **場所：** 白い平らな表面（机、テーブル、あるいは白い紙の上など）に置かれています。
+    **時間帯：** 全体的に非常に明るく、影がソフトであることから、日中の明るい光が入る室内、あるいは明るい事務用照明の下で撮影されたものと推測されます。
+    **目立つ物：**
+    中心となっているのは、使い込まれた質感を持つステンレス製のハサミです。
+    *   **刻印：** 刃の根元付近には「ALEX STAINLESS」というブランドロゴが刻まれており、さらにその上部の刃の側面には「○○高高等学校」という文字が刻まれています。
+    *   **形状と特徴：** 金属製のブレード（刃）と、持ち手部分にある白いプラスチックまたはゴム製のリングが特徴的です。

@@ -1,0 +1,51 @@
+thought
+Engineer (needs technical precision, no fluff).
+Concise technical assessment.
+A frozen project document for "Tsugumi" (a Swift/Metal runtime for Gemma 4 26B-A4B).
+
+        1.  Explain the central resource constraint.
+        2.  Explain how the runtime divides resident and streamed data.
+        3.  Explain why prefill and decode behave differently.
+        4.  Identify limitations to consider when interpreting benchmarks.
+        5.  Provide three practical rules for evaluating future changes.
+
+        *   No copying headings/sentences from the source.
+        *   Under 500 words.
+        *   Concise and technical.
+
+    *   *Project Goal:* Run Gemma 4 26B-A4B on low-RAM Macs (8GB) by using a ~2GB budget instead of 14.3GB.
+    *   *Central Constraint:* RAM (specifically, the need to fit a large MoE model into very limited system memory).
+    *   *Data Division:*
+        *   *Resident (always in RAM):* 1.35 GB shared weights and FP16 KV cache.
+        *   *Streamed (from SSD):* Routed experts (on-demand).
+    *   *Prefill vs. Decode:*
+        *   *Prefill:* Uses chunks (up to 128 tokens) so one expert fetch serves multiple rows.
+        *   *Decode:* One token at a time, requiring more frequent/repetitive routed layer loops.
+    *   *Benchmark Limitations:* Results depend on prompt/generated length, page-cache status, and hardware. They are reference points, not performance ceilings.
+    *   *How it works (Internal mechanism):* Metal handles attention/router (resident); CPU plans using the router/LFU cache; missing experts are fetched via `pread` into Metal-visible buffers while the shared branch is being computed.
+
+    *   *Resource Constraint:* The primary bottleneck is system memory (RAM). The goal is to run a large-scale Mixture-of-Experts (MoE) model on machines with limited memory (e.g., 8 GB) by avoiding loading the full parameter set.
+
+    *   *Data Division:* The runtime splits the model into two tiers. The core 1.35 GB of shared weights and the FP16 KV cache remain resident in memory. In contrast, the specific routed experts needed for each token are streamed from the SSD into Metal-visible buffers using parallel `pread` calls.
+
+    *   *Prefill vs. Decode:* During the prefill phase, the engine processes text in chunks (up to 128 tokens), allowing a single expert load to provide data for multiple rows simultaneously. During the decoding phase, generation occurs one token at a time, which shifts the workload into a loop that requires constant expert access for every single token generated.
+
+    *   *Benchmark Limitations:* Performance metrics are highly variable. They are influenced by the specific prompt and output lengths, the current state of the OS page cache, and the underlying hardware specifications. They represent baseline observations rather than theoretical maximums.
+
+    *   *Three Rules:*
+        1.  Validate performance against varied context lengths and prompt sizes.
+        2.  Account for SSD I/O latency and page-cache states when measuring throughput.
+        3.  Test across different Apple Silicon generations to normalize hardware-specific delta.
+
+    *   *Check Word Count:* Current draft is ~250 words. Well under the 500-word limit.
+    *   *Check Constraints:*
+        *   No copied headings/sentences? Checked.
+        *   No copied sentences? Let's re-read.
+            *   Source: "The runtime, streaming installer, CLI, and native Mac app are written in Swift and Metal." -> My version: "The runtime... uses...".
+            *   Source: "The core and FP16 KV cache in memory, then streams only the experts needed for each token from SSD." -> My version: "The core 1.35 GB... remains resident... routed experts... are streamed from the SSD..."
+            *   Source: "Prompt prefill uses chunks of up to 128 tokens so one fetched expert can serve multiple rows." -> My version: "During the prefill phase, the engine processes text in chunks... allowing a single expert load to provide data for multiple rows simultaneously."
+        *   Explain resource constraint? Yes (RAM/MoE size).
+        *   Explain data division? Yes (Resident vs. Streamed).
+        *   Explain prefill vs. decode? Yes (Chunking vs. single token).
+        *   Explain benchmark limitations? Yes (Context, cache, hardware).
+        *   Three

@@ -1,0 +1,45 @@
+thought
+
+*   Task: Write a concise technical assessment for an engineer.
+    *   Source: Provided "Tsugumi" project document.
+    *   Key points to cover:
+        1.  Central resource constraint.
+        2.  How runtime divides resident and streamed data.
+        3.  Why prefill and decode behave differently.
+        4.  Limitations for interpreting benchmark numbers.
+        5.  Three practical rules for evaluating future changes.
+    *   Constraints: Under 500 words, no copying headings/sentences, concise technical tone.
+
+    *   *Project Goal:* Run a 26B parameter model (Gemma 4 26B-A4B) on low-RAM Apple Silicon (8GB) by keeping a small footprint.
+    *   *Resource Constraint:* System RAM (specifically targeting 8GB devices). The model itself is 14.3 GB, so it can't fit in RAM.
+    *   *Data Division:*
+        *   Resident: 1.35 GB shared core + FP16 KV cache.
+        *   Streamed: Only required "experts" (from the MoE architecture) are fetched from the SSD on demand via `pread` into Metal-visible buffers.
+    *   *Prefill vs. Decode:*
+        *   Prefill: Uses chunks of up to 128 tokens. This allows one fetched expert to be reused for multiple rows, increasing efficiency.
+        *   Decode: Operates one token at a time, requiring repeated routed layer loops (higher I/O pressure per token).
+    *   *Benchmark Limitations:* Throughput is affected by prompt/generated length, page-cache state, and hardware. Results are "reference points," not "performance ceilings."
+    *   *Mechanism Details (for context):* Swift/Metal, LFU cache for experts, router identifies top-8 experts.
+
+    *   *Resource Constraint:* The bottleneck is available system memory. The goal is to run a large MoE model on limited (8GB) RAM.
+    *   *Data Management:* The runtime splits weights into a resident set and a streamed set. The shared core weights and KV cache are held in RAM, while specific experts are pulled from SSD on-demand using parallel reads.
+    *   *Prefill vs. Decode:* Prefill is optimized by processing tokens in chunks (up to 128), allowing the system to amortize the cost of fetching an expert across multiple tokens. In contrast, decoding processes one token at a time, which increases the frequency of expert swapping and I/O requests.
+    *   *Benchmark Interpretations:* Don't assume a fixed speed. Throughput varies significantly based on the state of the OS page cache, the length of the input/output, and the specific hardware configuration.
+
+    *   *Rule 1:* Check the page cache state.
+    *   *Rule 2:* Distinguish between prefill-heavy and decode-heavy workloads.
+    *   *Rule 3:* Verify if results are reference points or absolute ceilings.
+
+    *   *Resource Constraint:* The primary bottleneck is available system RAM. To support running 26B parameter models on 8GB hardware, the engine avoids loading the full 14.3 GB weight set.
+    *   *Data Partitioning:* The runtime splits data into resident and streamed components. The shared core weights and the FP16 KV cache remain in memory, while the specific experts required by the router are fetched from the SSD on-demand via parallel `pread` calls into Metal-visible buffers.
+    *   *Execution Characteristics:* Prefill and decoding phases exhibit different performance profiles due to how they utilize fetched weights. Prefill processes tokens in chunks (up to 128 tokens), allowing a single fetched expert to be reused for multiple rows, thereby amortizing I/O latency. Decoding, however, operates one token at a time, necessitating frequent expert swaps for each new step.
+    *   *Benchmark Context:* When reviewing performance metrics, remember that they represent reference points rather than absolute hardware ceilings. Throughput is highly sensitive to the current state of the OS page cache, token counts (prompt vs. generation), and the specific Apple Silicon architecture.
+
+    1.  Account for the page-cache state to ensure I/O consistency.
+    2.  Test with varying prompt/output lengths to capture the transition between prefill and decode performance.
+    3.  Treat reported speeds as moving targets influenced by concurrent system load.
+
+    *   *Check word count:* ~240 words (well under 500).
+    *   *Check constraints:* No copied headings or sentences. Covers all 4 required points + 3 rules.
+
+    *   "The primary bottleneck is available system RAM." (Original: "

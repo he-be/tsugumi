@@ -1,0 +1,58 @@
+thought
+
+*   Input: A single image of a pair of scissors.
+*   Instruction: Describe what is in the image in Japanese, following a specific order: Location (場所) $\rightarrow$ Time of day (時間帯) $\rightarrow$ Prominent objects (目立つ物) in detail.
+
+    *   Object: A pair of stainless steel scissors.
+    *   Details on the scissors:
+        *   Material: Stainless steel (labeled "ALLEX STAINLESS").
+        *   Brand/Labeling: "ALLEX STAINLESS" and some Japanese text at the top (looks like "XX高等学校" - XX High School).
+        *   Handles: Metal loops with white plastic/rubber inserts inside the rings.
+        *   Condition: Used, some scratches/marks on the metal.
+    *   Background/Location: A plain, white, flat surface (likely a desk, table, or sheet of paper).
+    *   Lighting/Time: Very even, bright, diffused light. No harsh shadows. This suggests indoor lighting (fluorescent or LED) rather than direct sunlight. It's hard to determine the exact time of day, but it looks like a standard indoor daytime or well-lit indoor environment.
+
+    *   *Location (場所):* A white, flat surface like a desk or table. (白い机の上、あるいは白い紙の上。)
+    *   *Time of day (時間帯):* Difficult to tell from the photo, but the bright, even light suggests daytime or a well-lit indoor room. (時間帯は不明ですが、明るく均一な光が当たっているため、日中の室内、あるいは照明の明るい場所と思われます。)
+    *   *Prominent objects (目立つ物):* A pair of stainless steel scissors.
+        *   Brand: ALLEX STAINLESS.
+        *   Text: "XX高等学校" (High school name).
+        *   Handles: Metal with white plastic rings.
+        *   Details: Scratches, stainless steel texture.
+
+    *   *Refining the Japanese text:*
+        *   *Place:* 白い平らな面（机の上、あるいは白い紙の上）に置かれています。
+        *   *Time:* 写真からは正確な時間は判別できませんが、均一で明るい光が当たっていることから、日中の室内、もしくは明るい照明の下であると推測されます。
+        *   *Objects:* 中央にステンレス製のハサミが写っています。
+            *   刃の付け根付近には「ALLEX STAINLESS」という文字と、その上部に「〇〇高等学校」という漢字が刻印されています。
+            *   ハサミの持ち手部分は金属製で、指を入れる穴の内側には白いプラスチック製のリングがはめ込まれています。
+            *   金属部分には使い込まれたような細かな傷が見られます。
+
+    *   Order: Location $\rightarrow$ Time $\rightarrow$ Prominent objects.
+    *   Language: Japanese.
+    *   Detail: Detailed description provided.
+
+    (Self-Correction during drafting: The Japanese text on the scissors is "XX高等学校". I should mention it's a school name.)
+
+    *Structure:*
+    1. 場所 (Location)
+    2. 時間帯 (Time)
+    3. 目立つ物 (Prominent objects)
+
+    *Final Polish:*
+    場所：白い、平らな表面（机の上、あるいは白い紙の上）です。
+    時間帯：正確な時間は不明ですが、明るく均一な光が当たっていることから、日中の室内、あるいは十分な照明がある環境であることが伺えます。
+    目立つ物：中央に写っているのは、ステンレス製のハサミです。
+    - 刃の付け根部分には「ALLEX STAINLESS」というブランド名と、その上に「〇〇高等学校」という文字が刻まれています。
+    - ハサミの持ち手（ループ部分）は金属製で、指を通す穴の内側には白いプラスチック製のリングが装着されています。
+    - 金属の表面には、使用に伴う細かな擦り傷や汚れが見受けられます。ご提示いただいた写真について、ご指定の順序で説明します。
+
+**場所**
+白い、平らな面（机の上、あるいは白い紙の上）に置かれています。
+
+**時間帯**
+写真からは正確な時間は判別できませんが、全体的に明るく均一な光が当たっており、強い影がないことから、日中の明るい室内、あるいは照明の行き届いた環境であると推測されます。
+
+**目立つ物**
+中央に写っているのは、ステンレス製のハサミです。
+* **刻印:** 刃の付け根付近には「ALLEX STAINLESS」という文字と、その上
