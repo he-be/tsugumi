@@ -517,9 +517,10 @@ func checkRouter(weightBits: Int, d: Int, numExperts: Int, draws: Int,
 }
 
 /// The prompt-chunk BF16 router, row kernel, 32-token GEMM
-/// (docs/m6-prefill/33) and its tensor-ops twin (`tensorOps`,
-/// TF_PREFILL_ROUTER=nax, docs/m6-prefill/38; SKIPped where the library has
-/// no tensor ops), against `routerReference` row by row. The hidden rows sit at a padded stride and the token count
+/// (docs/m6-prefill/33, `TF_PREFILL_ROUTER=gemm`) and its tensor-ops twin
+/// (`tensorOps`, the default where the library has tensor ops,
+/// docs/m6-prefill/38; SKIPped elsewhere), against `routerReference` row by
+/// row. The checks pass `tensorOps` explicitly, whatever the environment. The hidden rows sit at a padded stride and the token count
 /// falls mid-tile, so the GEMM's tail rows and stride are both exercised.
 func checkPrefillRouterBF16(t: Int, d: Int, numExperts: Int, gemm: Bool, tensorOps: Bool = false,
                             groupSize: Int, seed: UInt64) throws -> CaseResult? {

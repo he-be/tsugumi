@@ -33,12 +33,14 @@ package final class PrefillRouter {
     /// (docs/m6-prefill/33). Built for 16-bit routers only.
     private let gemmPSO: MTLComputePipelineState?
     /// The same GEMM on the tensor-ops 16x16 fragments (docs/m6-prefill/38),
-    /// where the library has them. A candidate for now: `TF_PREFILL_ROUTER=nax`.
+    /// the default where the library has them. `TF_PREFILL_ROUTER=gemm` keeps
+    /// the float simdgroup-matrix GEMM.
     private let naxPSO: MTLComputePipelineState?
     package static let naxRequested =
-        ProcessInfo.processInfo.environment["TF_PREFILL_ROUTER"] == "nax"
+        (ProcessInfo.processInfo.environment["TF_PREFILL_ROUTER"] ?? "nax") == "nax"
 
-    /// The prompt-chunk BF16 router goes through `encodeGemma4BF16GEMM`;
+    /// The prompt-chunk BF16 router goes through `encodeGemma4BF16GEMM`
+    /// (on tensor ops where the library has them, `naxPSO`);
     /// `TF_PREFILL_ROUTER=row` keeps the row-per-threadgroup kernel.
     package static let gemmEnabled =
         ProcessInfo.processInfo.environment["TF_PREFILL_ROUTER"] != "row"
