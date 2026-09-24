@@ -79,16 +79,17 @@ final class PrefillAttention {
     /// simdgroup-matrix kernel, `=qblock` on the query-blocked one.
     private static let swaMPPDisabled = forcedSimdgroupMatrix || forcedQBlock
     private static let swaMPPRows = 64
-    /// The full-attention layers (headDim 512) on the same `matmul2d` kernel
-    /// (docs/m6-prefill/36), as a candidate: `TF_PREFILL_ATTN_FULL=mpp32`
-    /// takes 32 rows on 4 simdgroups, `=mpp64` 64 rows on 8. Unset keeps them
-    /// on the query-blocked kernel.
+    /// The full-attention layers (headDim 512) run on the same `matmul2d`
+    /// kernel where the library has it, 64 rows on 8 simdgroups
+    /// (docs/m6-prefill/36). `TF_PREFILL_ATTN_FULL=mpp32` takes 32 rows on 4,
+    /// and `=qblock` (or `TF_PREFILL_ATTN=sgmm`/`=qblock`) keeps them on the
+    /// query-blocked kernel.
     private static let fullMPPShape: (function: String, rows: Int, threads: Int)? = {
         if swaMPPDisabled { return nil }
         switch ProcessInfo.processInfo.environment["TF_PREFILL_ATTN_FULL"] {
+        case "qblock": return nil
         case "mpp32": return ("attention_prefill_full_mpp_d512_r32", 32, 128)
-        case "mpp64": return ("attention_prefill_full_mpp_d512_r64", 64, 256)
-        default: return nil
+        default: return ("attention_prefill_full_mpp_d512_r64", 64, 256)
         }
     }()
     private static let fullMPPHeadDim: UInt32 = 512

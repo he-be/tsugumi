@@ -8,10 +8,11 @@ import TsugumiValidationSupport
 // The full-attention layers' prefill attention at the production head shape
 // (16 query heads over 2 KV heads, headDim 512, every earlier key visible),
 // against a CPU softmax over the FP16 inputs. The query-blocked kernel (the
-// default) runs everywhere; the `matmul2d` candidates
-// `attention_prefill_full_mpp_d512_r32` / `_r64` (docs/m6-prefill/36,
-// `TF_PREFILL_ATTN_FULL`) only exist in an MSL 4.0 build and are SKIPped
-// elsewhere with the skip printed.
+// default without tensor ops, and `TF_PREFILL_ATTN_FULL=qblock`) runs
+// everywhere; the `matmul2d` kernels `attention_prefill_full_mpp_d512_r64`
+// (the default where the library has tensor ops, docs/m6-prefill/36) and
+// `_r32` only exist in an MSL 4.0 build and are SKIPped elsewhere with the
+// skip printed.
 //
 // Shapes: a first chunk that ends mid-block and a second chunk over the first
 // one's keys. A causal mask shifted by one key scored against the same output
