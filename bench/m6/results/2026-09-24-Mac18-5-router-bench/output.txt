@@ -1,0 +1,5 @@
+router bench: M 2048, D 2816, 128 experts, top-8, median of 20 (after 2 warm), 1 dispatch per command buffer
+kernel	gpu_us	TFLOP/s
+row	8126.1	0.18
+gemm	4652.9	0.32
+exit=0
