@@ -1,0 +1,5 @@
+attention_prefill_causal_sgmm_gqa_d256  25 layers x 2 chunks: median 0.848 s (min 0.848 max 0.850)  regs? maxThreads=256
+attention_prefill_swa_mpp_d256  25 layers x 2 chunks: median 0.277 s (min 0.276 max 0.278)  regs? maxThreads=128
+unfused  25 layers x 2 chunks: median 0.112 s (min 0.112 max 0.113)  regs? maxThreads=128
+maxdiff vs attention_prefill_causal_sgmm_gqa_d256:256:32:2 (all 2478 rows): 0.00012207031  non-finite: 0
+maxdiff vs attention_prefill_causal_sgmm_gqa_d256:256:32:2 (all 2478 rows): 0.00012207031  non-finite: 0
