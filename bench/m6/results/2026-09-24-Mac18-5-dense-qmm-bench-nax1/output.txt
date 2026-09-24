@@ -1,0 +1,17 @@
+dense qmm bench: M 2048, g32 sym, median of 20 (after 2 warm), 1 dispatch per command buffer
+shape	N	K	kernel	gpu_us	TFLOP/s
+shared.gate	2112	2816	tile64	2793.7	8.72
+shared.gate	2112	2816	nax	1425.7	17.09
+shared.down	2816	2112	tile64	2548.5	9.56
+shared.down	2816	2112	nax	1274.7	19.11
+q.swa	4096	2816	tile64	5339.8	8.85
+q.swa	4096	2816	nax	2731.4	17.30
+k.swa	2048	2816	tile64	2693.3	8.77
+k.swa	2048	2816	nax	1365.1	17.30
+o.swa	2816	4096	tile64	5394.0	8.76
+o.swa	2816	4096	nax	3615.8	13.07
+q.full	8192	2816	tile64	10637.6	8.88
+q.full	8192	2816	nax	5470.4	17.27
+o.full	2816	8192	tile64	11153.0	8.47
+o.full	2816	8192	nax	8468.5	11.16
+exit=0
