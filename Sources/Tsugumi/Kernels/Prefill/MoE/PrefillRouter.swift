@@ -32,6 +32,11 @@ package final class PrefillRouter {
     /// The BF16 router as a 32-token GEMM with the top-k fused
     /// (docs/m6-prefill/33). Built for 16-bit routers only.
     private let gemmPSO: MTLComputePipelineState?
+    /// The same GEMM on the tensor-ops 16x16 fragments (docs/m6-prefill/38),
+    /// where the library has them. A candidate for now: `TF_PREFILL_ROUTER=nax`.
+    private let naxPSO: MTLComputePipelineState?
+    package static let naxRequested =
+        ProcessInfo.processInfo.environment["TF_PREFILL_ROUTER"] == "nax"
 
     /// The prompt-chunk BF16 router goes through `encodeGemma4BF16GEMM`;
     /// `TF_PREFILL_ROUTER=row` keeps the row-per-threadgroup kernel.
@@ -50,9 +55,11 @@ package final class PrefillRouter {
         case 8:
             self.pso = try context.pipeline("prefill_router_gemma4_block")
             self.gemmPSO = nil
+            self.naxPSO = nil
         case 16:
             self.pso = try context.pipeline("prefill_router_gemma4_bf16_block")
             self.gemmPSO = try context.pipeline("prefill_router_gemma4_bf16_gemm")
+            self.naxPSO = try? context.pipeline("prefill_router_gemma4_bf16_nax")
         default: throw RouterError.unsupportedWeightBits(routerWeightBits)
         }
     }
@@ -165,6 +172,9 @@ package final class PrefillRouter {
 
     /// Whether `encodeGemma4BF16GEMM` takes this shape: a BF16 router, at
     /// most 128 experts, and D in whole 32-element steps.
+    /// Whether the tensor-ops GEMM exists in this library.
+    package var hasTensorOpsGEMM: Bool { naxPSO != nil }
+
     package func supportsGEMM(numExperts: Int, d: Int) -> Bool {
         gemmPSO != nil && numExperts <= 128 && d % 32 == 0
     }
@@ -189,7 +199,8 @@ package final class PrefillRouter {
                               numExperts: UInt32,
                               d: UInt32,
                               topK: UInt32,
-                              hiddenStrideElements: UInt32) {
+                              hiddenStrideElements: UInt32,
+                              tensorOps: Bool = PrefillRouter.naxRequested) {
         guard let gemmPSO else {
             preconditionFailure("BF16 router GEMM on a \(routerWeightBits)-bit router")
         }
@@ -199,7 +210,7 @@ package final class PrefillRouter {
         precondition(topK > 0 && topK <= 64, "topK must be in 1...64")
         precondition(hiddenStrideElements >= d, "hidden stride is too small")
         guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
-        enc.setComputePipelineState(gemmPSO)
+        enc.setComputePipelineState(tensorOps ? naxPSO ?? gemmPSO : gemmPSO)
         enc.setBuffer(weights, offset: weightsOffset, index: 0)
         enc.setBuffer(hidden, offset: hiddenOffset, index: 1)
         enc.setBuffer(effectiveScale, offset: effectiveScaleOffset, index: 2)

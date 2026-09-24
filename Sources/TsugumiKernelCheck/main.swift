@@ -516,18 +516,25 @@ func checkRouter(weightBits: Int, d: Int, numExperts: Int, draws: Int,
                       + (weightBits == 16 ? "" : ", groups=\(d / groupSize)"))
 }
 
-/// The prompt-chunk BF16 router, row kernel and 32-token GEMM
-/// (TF_PREFILL_ROUTER=gemm, docs/m6-prefill/33), against `routerReference`
-/// row by row. The hidden rows sit at a padded stride and the token count
+/// The prompt-chunk BF16 router, row kernel, 32-token GEMM
+/// (docs/m6-prefill/33) and its tensor-ops twin (`tensorOps`,
+/// TF_PREFILL_ROUTER=nax, docs/m6-prefill/38; SKIPped where the library has
+/// no tensor ops), against `routerReference` row by row. The hidden rows sit at a padded stride and the token count
 /// falls mid-tile, so the GEMM's tail rows and stride are both exercised.
-func checkPrefillRouterBF16(t: Int, d: Int, numExperts: Int, gemm: Bool,
-                            groupSize: Int, seed: UInt64) throws -> CaseResult {
+func checkPrefillRouterBF16(t: Int, d: Int, numExperts: Int, gemm: Bool, tensorOps: Bool = false,
+                            groupSize: Int, seed: UInt64) throws -> CaseResult? {
     let topK = 8
     let stride = d + 16
-    let label = "prefill-router-bf16-\(gemm ? "gemm" : "row") t=\(t) d=\(d) experts=\(numExperts)"
+    let kind = tensorOps ? "nax" : gemm ? "gemm" : "row"
+    let label = "prefill-router-bf16-\(kind) t=\(t) d=\(d) experts=\(numExperts)"
     let context = try makeContext(groupSize: groupSize)
     let kernel = try PrefillRouter(context: context, routerWeightBits: 16)
-    var rng = SeedTree(seed).key(label)
+    if tensorOps && !kernel.hasTensorOpsGEMM {
+        print("  SKIP  \(label)  no MPP pipeline on this device")
+        return nil
+    }
+    // The fixture draws from the GEMM's key so the nax case sees the same data.
+    var rng = SeedTree(seed).key(label.replacingOccurrences(of: "-nax ", with: "-gemm "))
 
     let weightBits = (0..<(numExperts * d)).map { _ in Quantization.bf16Bits(rng.uniform(-0.2, 0.2)) }
     let rows = (0..<numExperts).map { e in
@@ -560,7 +567,7 @@ func checkPrefillRouterBF16(t: Int, d: Int, numExperts: Int, gemm: Bool,
             effectiveScale: esBuf, perExpertScale: pesBuf,
             outIndices: outIndices, outWeights: outWeights,
             queryCount: UInt32(t), numExperts: UInt32(numExperts), d: UInt32(d),
-            topK: UInt32(topK), hiddenStrideElements: UInt32(stride))
+            topK: UInt32(topK), hiddenStrideElements: UInt32(stride), tensorOps: tensorOps)
     } else {
         kernel.encodeGemma4BF16Block(
             commandBuffer: cmd, weights: wBuf, hidden: hidden,
@@ -2334,7 +2341,12 @@ for groupSize in groupSizes {
     for (t, gemm, seed) in [(131, false, 0xD3), (131, true, 0xD3), (32, true, 0xD4),
                             (7, true, 0xD5)] as [(Int, Bool, UInt64)] {
         pass.append(try checkPrefillRouterBF16(t: t, d: 2816, numExperts: 128, gemm: gemm,
-                                               groupSize: groupSize, seed: seed))
+                                               groupSize: groupSize, seed: seed)!)
+        if gemm, let nax = try checkPrefillRouterBF16(t: t, d: 2816, numExperts: 128, gemm: true,
+                                                      tensorOps: true, groupSize: groupSize,
+                                                      seed: seed) {
+            pass.append(nax)
+        }
     }
     pass.append(try checkInt8GEMV(m: 128, n: 2112, groupSize: groupSize, seed: 0xE1))
     pass.append(try checkSharedExpertInt8(d: 2816, f: 2112, groupSize: groupSize,

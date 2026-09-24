@@ -91,7 +91,9 @@ func runRouterBench(groupSize: Int, iterations: Int) throws {
     let flops = 2.0 * Double(m) * Double(experts) * Double(d)
     print("router bench: M \(m), D \(d), \(experts) experts, top-\(topK), median of \(iterations) (after 2 warm), 1 dispatch per command buffer")
     print("kernel\tgpu_us\tTFLOP/s")
-    for gemm in [false, true] {
+    let kinds = ["row", "gemm"] + (router.hasTensorOpsGEMM ? ["nax"] : [])
+    for kind in kinds {
+        let gemm = kind != "row"
         var samples: [Double] = []
         for iteration in 0..<(iterations + 2) {
             guard let cmd = context.queue.makeCommandBuffer() else { fatalError() }
@@ -101,7 +103,8 @@ func runRouterBench(groupSize: Int, iterations: Int) throws {
                                             outIndices: ids, outWeights: wts,
                                             queryCount: UInt32(m), numExperts: UInt32(experts),
                                             d: UInt32(d), topK: UInt32(topK),
-                                            hiddenStrideElements: UInt32(d))
+                                            hiddenStrideElements: UInt32(d),
+                                            tensorOps: kind == "nax")
             } else {
                 router.encodeGemma4BF16Block(commandBuffer: cmd, weights: w, hidden: x,
                                              effectiveScale: es, perExpertScale: pes,
@@ -115,6 +118,6 @@ func runRouterBench(groupSize: Int, iterations: Int) throws {
         }
         samples.sort()
         let t = samples[samples.count / 2]
-        print(String(format: "%@\t%.1f\t%.2f", gemm ? "gemm" : "row", t * 1e6, flops / t / 1e12))
+        print(String(format: "%@\t%.1f\t%.2f", kind, t * 1e6, flops / t / 1e12))
     }
 }

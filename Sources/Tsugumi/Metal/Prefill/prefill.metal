@@ -3472,4 +3472,110 @@ kernel void attention_prefill_unfused_pv_d##D(                                \
 ATTENTION_PREFILL_UNFUSED_KERNELS(256)
 ATTENTION_PREFILL_UNFUSED_KERNELS(512)
 
+// --- Prompt-chunk BF16 router on the 16x16 fragments (docs/m6-prefill/38) ---
+// `prefill_router_gemma4_bf16_gemm`'s contract and outputs, with the logits on
+// the `matmul2d` step above instead of float simdgroup matrices. The BF16
+// weights are exact in half; x · effective_scale is carried as a half pair
+// hi + lo (lo = the f32 product minus hi), two multiply-accumulates per step,
+// so the logits keep about f32 precision and differ from the float GEMM only
+// in summation order. 32 tokens by 128 experts per threadgroup; simdgroup s
+// owns experts [32 s, 32 s + 32).
+[[kernel, max_total_threads_per_threadgroup(128)]]
+kernel void prefill_router_gemma4_bf16_nax(
+    device const bfloat*  W                [[buffer(0)]],
+    device const half*    hidden           [[buffer(1)]],
+    device const bfloat*  effective_scale  [[buffer(2)]],
+    device const bfloat*  per_expert_scale [[buffer(3)]],
+    device uint*          out_indices      [[buffer(4)]],
+    device half*          out_weights      [[buffer(5)]],
+    constant uint&        T                [[buffer(6)]],
+    constant uint&        num_experts      [[buffer(7)]],
+    constant uint&        D                [[buffer(8)]],
+    constant uint&        top_k            [[buffer(9)]],
+    constant uint&        hidden_stride    [[buffer(10)]],
+    uint                  tg               [[threadgroup_position_in_grid]],
+    uint                  tid              [[thread_index_in_threadgroup]],
+    ushort                sgid             [[simdgroup_index_in_threadgroup]],
+    ushort                lane             [[thread_index_in_simdgroup]]
+) {
+    threadgroup float scores[kRouterGemmRows * kRouterGemmExperts];
+    const uint row0 = tg * kRouterGemmRows;
+    const uint NE = min(num_experts, kRouterGemmExperts);
+    const uint KK = min(top_k, kPrefillRouterMaxTopK);
+    const uint tn = 32u * uint(sgid);
+    const short2 sc = attn_frag_coord(lane);
+
+    attn_frag_f C[2][2];
+    #pragma clang loop unroll(full)
+    for (short a = 0; a < 2; ++a) {
+        #pragma clang loop unroll(full)
+        for (short b = 0; b < 2; ++b) C[a][b] = attn_frag_f(0.0f);
+    }
+    #pragma clang loop unroll(disable)
+    for (uint k0 = 0; k0 < D; k0 += 32u) {
+        attn_frag_h hi[2][2], lo[2][2], B[2][2];
+        #pragma clang loop unroll(full)
+        for (short kk = 0; kk < 2; ++kk) {
+            const uint col = k0 + uint(kk) * 16u + uint(sc.x);
+            const float4 scale = float4(*((device const bfloat4*)(effective_scale + col)));
+            #pragma clang loop unroll(full)
+            for (short mm = 0; mm < 2; ++mm) {
+                #pragma clang loop unroll(full)
+                for (short i = 0; i < 2; ++i) {
+                    const uint row = row0 + uint(mm) * 16u + uint(sc.y) + uint(i) * 8u;
+                    const float4 x = row < T
+                        ? float4(*((device const half4*)(hidden + row * hidden_stride + col))) * scale
+                        : float4(0.0f);
+                    const half4 h = half4(x);
+                    const half4 l = half4(x - float4(h));
+                    #pragma clang loop unroll(full)
+                    for (short j = 0; j < 4; ++j) {
+                        hi[mm][kk][i * 4 + j] = h[j];
+                        lo[mm][kk][i * 4 + j] = l[j];
+                    }
+                }
+                #pragma clang loop unroll(full)
+                for (short i = 0; i < 2; ++i) {
+                    const uint e = tn + uint(mm) * 16u + uint(sc.y) + uint(i) * 8u;
+                    const half4 w = e < NE
+                        ? half4(float4(*((device const bfloat4*)(W + e * D + col))))
+                        : half4(0.0h);
+                    #pragma clang loop unroll(full)
+                    for (short j = 0; j < 4; ++j) B[mm][kk][i * 4 + j] = w[j];
+                }
+            }
+        }
+        #pragma clang loop unroll(full)
+        for (short mm = 0; mm < 2; ++mm) {
+            #pragma clang loop unroll(full)
+            for (short kk = 0; kk < 2; ++kk) {
+                attn_frag_mma<true>(C[mm][0], C[mm][1], hi[mm][kk], B[0][kk], B[1][kk]);
+                attn_frag_mma<true>(C[mm][0], C[mm][1], lo[mm][kk], B[0][kk], B[1][kk]);
+            }
+        }
+    }
+
+    #pragma clang loop unroll(full)
+    for (short mm = 0; mm < 2; ++mm) {
+        #pragma clang loop unroll(full)
+        for (short nn = 0; nn < 2; ++nn) {
+            #pragma clang loop unroll(full)
+            for (short i = 0; i < 2; ++i) {
+                const uint r = uint(mm) * 16u + uint(sc.y) + uint(i) * 8u;
+                const uint e = tn + uint(nn) * 16u + uint(sc.x);
+                #pragma clang loop unroll(full)
+                for (short j = 0; j < 4; ++j) {
+                    scores[r * kRouterGemmExperts + e + uint(j)] = C[mm][nn][i * 4 + j];
+                }
+            }
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid < kRouterGemmRows && row0 + tid < T) {
+        prefill_router_emit_topk(scores + tid * kRouterGemmExperts, per_expert_scale,
+                                 out_indices, out_weights, NE, KK, row0 + tid, top_k);
+    }
+}
+
 #endif
