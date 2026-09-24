@@ -11,7 +11,7 @@ import TsugumiValidationSupport
 // default without tensor ops, and `TF_PREFILL_ATTN_FULL=qblock`) runs
 // everywhere. The tensor-ops kernels only exist in an MSL 4.0 build and are
 // SKIPped elsewhere with the skip printed: the unfused default
-// (`attention_prefill_full_scores_d512` → `_softmax_d512` → `_pv_d512`,
+// (`attention_prefill_unfused_scores_d512` → `_softmax` → `_pv_d512`,
 // docs/m6-prefill/36), checked the way `PrefillAttention` dispatches it over
 // head groups of 2 and of all 16, and the fused `matmul2d` kernels
 // `attention_prefill_full_mpp_d512_r64` (the fallback for a long prefix) and
@@ -133,10 +133,7 @@ func checkPrefillFullAttention(groupSize: Int, seed: UInt64) throws -> [CaseResu
         return Fp16Buffer.read(oBuffer, count: count * qStride)
     }
 
-    struct UnfusedParams { var headBase: UInt32; var scoreStride: UInt32; var headRows: UInt32 }
-
-    /// The three unfused kernels over head groups of `group`, as
-    /// `PrefillAttention.encodeFullUnfused` dispatches them.
+    /// The unfused kernels over head groups of `group`.
     func runUnfused(group: Int, start: Int, count: Int) throws -> [Float] {
         let slots = total + 64
         var kPhys = [Float16](repeating: .nan, count: slots * kvStride)
@@ -146,52 +143,24 @@ func checkPrefillFullAttention(groupSize: Int, seed: UInt64) throws -> [CaseResu
             vPhys[i] = v[i]
         }
         let qRows = Array(q[(start * qStride)..<((start + count) * qStride)])
-        let scores = try context.pipeline("attention_prefill_full_scores_d512")
-        let softmax = try context.pipeline("attention_prefill_full_softmax_d512")
-        let pv = try context.pipeline("attention_prefill_full_pv_d512")
-        let stride = (start + count + 63) / 64 * 64
-        let sBytes = group * count * stride * 4, pBytes = group * count * stride * 2
         guard let qBuffer = Fp16Buffer.make(device, halves: qRows),
               let kBuffer = Fp16Buffer.make(device, halves: kPhys),
               let vBuffer = Fp16Buffer.make(device, halves: vPhys),
               let oBuffer = Fp16Buffer.make(device, count: count * qStride),
-              let scratch = device.makeBuffer(length: sBytes + pBytes + group * count * 4,
-                                              options: .storageModePrivate),
-              let cmd = context.queue.makeCommandBuffer(),
-              let enc = cmd.makeComputeCommandEncoder() else {
+              let cmd = context.queue.makeCommandBuffer() else {
             fatalError("prefill full attention allocation failed")
         }
-        var p = FullParams(startPosition: UInt32(start), queryCount: UInt32(count),
+        // The full layers pass the whole prefix as the window (RealForwardRunner).
+        let p = FullParams(startPosition: UInt32(start), queryCount: UInt32(count),
                            headDim: UInt32(fullHeadDim), numQHeads: UInt32(fullHeads),
                            numKVHeads: UInt32(fullKVHeads), kvValidCount: UInt32(start + count),
-                           slidingWindow: 0, kvTokenStrideElements: UInt32(kvStride),
+                           slidingWindow: UInt32(start + count), kvTokenStrideElements: UInt32(kvStride),
                            qTokenStrideElements: UInt32(qStride), oTokenStrideElements: UInt32(qStride),
                            scale: 1.0, hasSpanMask: 0)
-        let rowTiles = (count + 63) / 64
-        let threads = MTLSize(width: 128, height: 1, depth: 1)
-        for headBase in Swift.stride(from: 0, to: fullHeads, by: group) {
-            var u = UnfusedParams(headBase: UInt32(headBase), scoreStride: UInt32(stride),
-                                  headRows: UInt32(count))
-            enc.setComputePipelineState(scores)
-            enc.setBuffer(qBuffer, offset: 0, index: 0)
-            enc.setBuffer(kBuffer, offset: 0, index: 1)
-            enc.setBuffer(scratch, offset: 0, index: 2)
-            enc.setBytes(&p, length: MemoryLayout<FullParams>.stride, index: 4)
-            enc.setBytes(&u, length: MemoryLayout<UnfusedParams>.stride, index: 5)
-            enc.dispatchThreadgroups(MTLSize(width: stride / 64, height: rowTiles, depth: group),
-                                     threadsPerThreadgroup: threads)
-            enc.setComputePipelineState(softmax)
-            enc.setBuffer(scratch, offset: sBytes, index: 3)
-            enc.setBuffer(scratch, offset: sBytes + pBytes, index: 6)
-            enc.dispatchThreadgroups(MTLSize(width: (count + 3) / 4, height: group, depth: 1),
-                                     threadsPerThreadgroup: threads)
-            enc.setComputePipelineState(pv)
-            enc.setBuffer(oBuffer, offset: 0, index: 0)
-            enc.setBuffer(vBuffer, offset: 0, index: 1)
-            enc.dispatchThreadgroups(MTLSize(width: fullHeadDim / 64, height: rowTiles, depth: group),
-                                     threadsPerThreadgroup: threads)
-        }
-        enc.endEncoding()
+        try encodeUnfusedPrefillAttention(
+            context: context, commandBuffer: cmd, q: qBuffer, k: kBuffer, v: vBuffer, out: oBuffer,
+            params: p, headDim: fullHeadDim, heads: fullHeads, rows: count,
+            kvValidCount: start + count, window: start + count, ring: 0, group: group)
         waitAndCheck(cmd, "unfused group=\(group) start=\(start) count=\(count)")
         return Fp16Buffer.read(oBuffer, count: count * qStride)
     }
@@ -228,7 +197,7 @@ func checkPrefillFullAttention(groupSize: Int, seed: UInt64) throws -> [CaseResu
                                              floor: 10 * Double(Tolerance.fp16ChainedReduction)))
             }
         }
-        guard (try? context.pipeline("attention_prefill_full_scores_d512")) != nil else {
+        guard (try? context.pipeline("attention_prefill_unfused_scores_d512")) != nil else {
             print("  SKIP  \(name) unfused  no MPP pipeline on this device")
             continue
         }

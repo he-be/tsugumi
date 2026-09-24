@@ -3146,12 +3146,16 @@ ATTENTION_PREFILL_MPP_KERNEL(attention_prefill_full_mpp_d512_r32, 32, 512, 4)
 ATTENTION_PREFILL_MPP_KERNEL(attention_prefill_full_mpp_d512_r64, 64, 512, 8)
 
 
-// --- Full attention (headDim 512) unfused, as MLX runs it (docs/m6-prefill/36) ---
+// --- Prefill attention unfused, as MLX runs headDim 512 (docs/m6-prefill/36・37) ---
 // MLX has no fused kernel at headDim 512: mlx_lm's sdpa there is a GEMM for
 // S = Q·Kᵀ, a masked softmax, and a GEMM for P·V, and that takes 0.073 s over
 // the prompt's 5 full layers on M6 where the fused `matmul2d` kernel above
 // takes 0.158 s. These three kernels do the same over a group of query heads
 // at a time, with S in f32 and P in f16 in a scratch the host bounds.
+// The sliding-window layers (headDim 256) use them too: each 64-row block
+// keeps only its band of keys, `scoreStride` columns from `band_start`, so a
+// 1024-key window needs 1152 columns whatever the prefix length. The full
+// layers are the band that starts at key 0 and spans every key.
 // The GEMMs use the 16x16 fragments and the 16x32x16 `matmul2d` step of
 // MLX 0.32.2 (MIT, Copyright (c) 2023-2024 Apple Inc.) steel/gemm/nax.h
 // (BaseNAXFrag::get_coord / mma), as tensorops.metal's `mpp_prefill_affine_nax_f16`
@@ -3201,13 +3205,15 @@ static inline void attn_frag_mma(thread attn_frag_f& c0, thread attn_frag_f& c1,
 }
 
 // Rows `row`, `row + 8` and columns `col .. col + 3` of a 16x16 fragment of
-// a row-major half matrix; rows at or past `rows` read as zero.
+// a row-major half matrix; rows at or past `rows` read as zero, and with a
+// ring the row is stored at `row % ring`.
 static inline void attn_frag_load(thread attn_frag_h& f, device const half* base,
-                                  uint stride, uint row, uint col, uint rows) {
+                                  uint stride, uint row, uint col, uint rows, uint ring = 0u) {
     #pragma clang loop unroll(full)
     for (short i = 0; i < 2; ++i) {
         const uint r = row + uint(i) * 8u;
-        const half4 v = r < rows ? *((device const half4*)(base + r * stride + col)) : half4(0.0h);
+        const uint phys = ring != 0u ? r % ring : r;
+        const half4 v = r < rows ? *((device const half4*)(base + phys * stride + col)) : half4(0.0h);
         f[i * 4 + 0] = v.x;
         f[i * 4 + 1] = v.y;
         f[i * 4 + 2] = v.z;
@@ -3216,36 +3222,42 @@ static inline void attn_frag_load(thread attn_frag_h& f, device const half* base
 }
 
 /// The head group and scratch layout the three kernels share.
-struct PrefillFullUnfusedParams {
+struct PrefillUnfusedParams {
     uint headBase;      // first query head of this group
-    uint scoreStride;   // S / P row stride, a multiple of 64 >= kvValidCount
+    uint scoreStride;   // S / P row stride: the band width, a multiple of 64
     uint headRows;      // rows per head in S / P / rowSum (= queryCount)
+    uint ring;          // KV ring capacity, 0 when K / V are linear
 };
 
-constant constexpr uint kFullUnfusedHeadDim = 512;
+// The first key any row of the 64-row block at chunk row `q0` can see.
+static inline uint attn_band_first_key(constant PrefillAttentionParams& p, uint q0) {
+    const uint abs = p.startPosition + q0;
+    return (p.slidingWindow != 0u && abs + 1u > p.slidingWindow) ? abs + 1u - p.slidingWindow : 0u;
+}
 
-// S[g][r][c] = scale · Q[r][headBase + g] · K[c][kvh], a 64x64 tile per
-// threadgroup, 2x2 simdgroups of 32x32. Tiles wholly above the causal
-// diagonal are skipped: the softmax never reads them.
-[[kernel, max_total_threads_per_threadgroup(128)]]
-kernel void attention_prefill_full_scores_d512(
-    device const half* Q [[buffer(0)]],
-    device const half* K [[buffer(1)]],
-    device float* S [[buffer(2)]],
-    constant PrefillAttentionParams& p [[buffer(4)]],
-    constant PrefillFullUnfusedParams& u [[buffer(5)]],
-    uint3 tg [[threadgroup_position_in_grid]],
-    ushort sgid [[simdgroup_index_in_threadgroup]],
-    ushort lane [[thread_index_in_simdgroup]]
+// The key S column 0 of that block stands for.
+static inline uint attn_band_start(constant PrefillAttentionParams& p, uint q0) {
+    return attn_band_first_key(p, q0) & ~63u;
+}
+
+// S[g][r][c] = scale · Q[r][headBase + g] · K[band_start + c][kvh], a 64x64
+// tile per threadgroup, 2x2 simdgroups of 32x32. Tiles no row of the block
+// can see are skipped: the softmax never reads them.
+template <uint D>
+inline void attention_prefill_unfused_scores_impl(
+    device const half* Q, device const half* K, device float* S,
+    constant PrefillAttentionParams& p, constant PrefillUnfusedParams& u,
+    uint3 tg, ushort sgid, ushort lane
 ) {
-    const uint kBase = tg.x * 64u;
     const uint mBase = tg.y * 64u;
     const uint lastRow = min(mBase + 63u, p.queryCount - 1u);
-    if (kBase > p.startPosition + lastRow || kBase >= p.kvValidCount) return;
+    const uint kBase = attn_band_start(p, mBase) + tg.x * 64u;
+    if (kBase > p.startPosition + lastRow || kBase >= p.kvValidCount
+        || kBase + 63u < attn_band_first_key(p, mBase)) return;
     const uint qh = u.headBase + tg.z;
     const uint kvh = qh / (p.numQHeads / p.numKVHeads);
-    device const half* qBase = Q + qh * kFullUnfusedHeadDim;
-    device const half* kBase_ = K + kvh * kFullUnfusedHeadDim;
+    device const half* qHead = Q + qh * D;
+    device const half* kHead = K + kvh * D;
     const uint tm = 32u * uint(sgid / 2);
     const uint tn = 32u * uint(sgid % 2);
     const short2 sc = attn_frag_coord(lane);
@@ -3257,7 +3269,7 @@ kernel void attention_prefill_full_scores_d512(
         for (short b = 0; b < 2; ++b) C[a][b] = attn_frag_f(0.0f);
     }
     #pragma clang loop unroll(disable)
-    for (uint k0 = 0; k0 < kFullUnfusedHeadDim; k0 += 32u) {
+    for (uint k0 = 0; k0 < D; k0 += 32u) {
         attn_frag_h A[2][2];
         attn_frag_h B[2][2];
         #pragma clang loop unroll(full)
@@ -3265,10 +3277,10 @@ kernel void attention_prefill_full_scores_d512(
             const uint col = k0 + uint(kk) * 16u + uint(sc.x);
             #pragma clang loop unroll(full)
             for (short mm = 0; mm < 2; ++mm) {
-                attn_frag_load(A[mm][kk], qBase, p.qTokenStrideElements,
+                attn_frag_load(A[mm][kk], qHead, p.qTokenStrideElements,
                                mBase + tm + uint(mm) * 16u + uint(sc.y), col, p.queryCount);
-                attn_frag_load(B[mm][kk], kBase_, p.kvTokenStrideElements,
-                               kBase + tn + uint(mm) * 16u + uint(sc.y), col, p.kvValidCount);
+                attn_frag_load(B[mm][kk], kHead, p.kvTokenStrideElements,
+                               kBase + tn + uint(mm) * 16u + uint(sc.y), col, p.kvValidCount, u.ring);
             }
         }
         #pragma clang loop unroll(full)
@@ -3289,7 +3301,7 @@ kernel void attention_prefill_full_scores_d512(
             for (short i = 0; i < 2; ++i) {
                 const uint r = mBase + tm + uint(mm) * 16u + uint(sc.y) + uint(i) * 8u;
                 if (r >= p.queryCount) continue;
-                const uint c = kBase + tn + uint(nn) * 16u + uint(sc.x);
+                const uint c = tg.x * 64u + tn + uint(nn) * 16u + uint(sc.x);
                 const float4 v = float4(C[mm][nn][i * 4 + 0], C[mm][nn][i * 4 + 1],
                                         C[mm][nn][i * 4 + 2], C[mm][nn][i * 4 + 3]) * p.scale;
                 *((device float4*)(sHead + r * u.scoreStride + c)) = v;
@@ -3298,15 +3310,16 @@ kernel void attention_prefill_full_scores_d512(
     }
 }
 
-// One simdgroup per row: P[c] = exp(S[c] - max) for the causal keys
-// 0 ..< min(kvValidCount, abs + 1), zero up to scoreStride; rowSum gets the
-// sum of the f32 weights. 4 rows per threadgroup, grid y is the head.
+// One simdgroup per row: P[c] = exp(S[c] - max) over the row's visible keys
+// (the window, causal, below kvValidCount), zero elsewhere in the band;
+// rowSum gets the sum of the f32 weights. 4 rows per threadgroup, grid y is
+// the head.
 [[kernel, max_total_threads_per_threadgroup(128)]]
-kernel void attention_prefill_full_softmax_d512(
+kernel void attention_prefill_unfused_softmax(
     device const float* S [[buffer(2)]],
     device half* P [[buffer(3)]],
     constant PrefillAttentionParams& p [[buffer(4)]],
-    constant PrefillFullUnfusedParams& u [[buffer(5)]],
+    constant PrefillUnfusedParams& u [[buffer(5)]],
     device float* rowSum [[buffer(6)]],
     uint3 tg [[threadgroup_position_in_grid]],
     ushort sgid [[simdgroup_index_in_threadgroup]],
@@ -3317,29 +3330,34 @@ kernel void attention_prefill_full_softmax_d512(
     const ulong rowIndex = ulong(tg.y) * u.headRows + t;
     device const float4* s4 = (device const float4*)(S + rowIndex * u.scoreStride);
     device half4* p4 = (device half4*)(P + rowIndex * u.scoreStride);
-    const uint last = min(p.kvValidCount, p.startPosition + t + 1u);
+    const uint band = attn_band_start(p, t & ~63u);
+    const uint abs = p.startPosition + t;
+    const uint firstKey = (p.slidingWindow != 0u && abs + 1u > p.slidingWindow) ? abs + 1u - p.slidingWindow : 0u;
+    const uint first = firstKey - band;
+    const uint last = min(p.kvValidCount, abs + 1u) - band;
     const uint quads = u.scoreStride / 4u;
+    const uint firstQuad = first / 4u;
     const uint liveQuads = (last + 3u) / 4u;
     float m = -INFINITY;
-    for (uint q = lane; q < liveQuads; q += 32u) {
+    for (uint q = firstQuad + lane; q < liveQuads; q += 32u) {
         const float4 v = s4[q];
         const uint c = q * 4u;
-        m = max(m, c + 0u < last ? v.x : -INFINITY);
-        m = max(m, c + 1u < last ? v.y : -INFINITY);
-        m = max(m, c + 2u < last ? v.z : -INFINITY);
-        m = max(m, c + 3u < last ? v.w : -INFINITY);
+        m = max(m, c + 0u >= first && c + 0u < last ? v.x : -INFINITY);
+        m = max(m, c + 1u >= first && c + 1u < last ? v.y : -INFINITY);
+        m = max(m, c + 2u >= first && c + 2u < last ? v.z : -INFINITY);
+        m = max(m, c + 3u >= first && c + 3u < last ? v.w : -INFINITY);
     }
     m = simd_max(m);
     float sum = 0.0f;
     for (uint q = lane; q < quads; q += 32u) {
         float4 w = float4(0.0f);
-        if (q < liveQuads) {
+        if (q >= firstQuad && q < liveQuads) {
             const float4 v = s4[q];
             const uint c = q * 4u;
-            w.x = c + 0u < last ? fast::exp(v.x - m) : 0.0f;
-            w.y = c + 1u < last ? fast::exp(v.y - m) : 0.0f;
-            w.z = c + 2u < last ? fast::exp(v.z - m) : 0.0f;
-            w.w = c + 3u < last ? fast::exp(v.w - m) : 0.0f;
+            w.x = c + 0u >= first && c + 0u < last ? fast::exp(v.x - m) : 0.0f;
+            w.y = c + 1u >= first && c + 1u < last ? fast::exp(v.y - m) : 0.0f;
+            w.z = c + 2u >= first && c + 2u < last ? fast::exp(v.z - m) : 0.0f;
+            w.w = c + 3u >= first && c + 3u < last ? fast::exp(v.w - m) : 0.0f;
         }
         sum += w.x + w.y + w.z + w.w;
         p4[q] = half4(w);
@@ -3348,30 +3366,26 @@ kernel void attention_prefill_full_softmax_d512(
     if (lane == 0) rowSum[rowIndex] = sum;
 }
 
-// O[r][headBase + g][d] = (P[g][r] · V[kvh]) / rowSum, a 64-row by 64-column
-// tile per threadgroup, 2x2 simdgroups of 32x32; the key loop stops at the
-// tile's last causal key. P is zero past each row's causal end, and V rows
-// at or past kvValidCount read as zero.
-[[kernel, max_total_threads_per_threadgroup(128)]]
-kernel void attention_prefill_full_pv_d512(
-    device const half* V [[buffer(1)]],
-    device const half* P [[buffer(3)]],
-    device half* O [[buffer(0)]],
-    constant PrefillAttentionParams& p [[buffer(4)]],
-    constant PrefillFullUnfusedParams& u [[buffer(5)]],
-    device const float* rowSum [[buffer(6)]],
-    uint3 tg [[threadgroup_position_in_grid]],
-    ushort sgid [[simdgroup_index_in_threadgroup]],
-    ushort lane [[thread_index_in_simdgroup]]
+// O[r][headBase + g][d] = (P[g][r] · V[band_start + ...][kvh]) / rowSum, a
+// 64-row by 64-column tile per threadgroup, 2x2 simdgroups of 32x32; the key
+// loop covers the block's visible keys. P is zero outside each row's keys,
+// and V rows at or past kvValidCount read as zero.
+template <uint D>
+inline void attention_prefill_unfused_pv_impl(
+    device const half* V, device const half* P, device half* O,
+    constant PrefillAttentionParams& p, constant PrefillUnfusedParams& u,
+    device const float* rowSum, uint3 tg, ushort sgid, ushort lane
 ) {
     const uint nBase = tg.x * 64u;
     const uint mBase = tg.y * 64u;
     const uint qh = u.headBase + tg.z;
     const uint kvh = qh / (p.numQHeads / p.numKVHeads);
     const uint lastRow = min(mBase + 63u, p.queryCount - 1u);
-    const uint keyEnd = min(p.kvValidCount, p.startPosition + lastRow + 1u);
+    const uint band = attn_band_start(p, mBase);
+    const uint colBegin = (attn_band_first_key(p, mBase) - band) & ~31u;
+    const uint colEnd = min(p.kvValidCount, p.startPosition + lastRow + 1u) - band;
     device const half* pHead = P + ulong(tg.z) * u.headRows * u.scoreStride;
-    device const half* vBase = V + kvh * kFullUnfusedHeadDim + nBase;
+    device const half* vHead = V + kvh * D + nBase;
     const uint tm = 32u * uint(sgid / 2);
     const uint tn = 32u * uint(sgid % 2);
     const short2 sc = attn_frag_coord(lane);
@@ -3383,7 +3397,7 @@ kernel void attention_prefill_full_pv_d512(
         for (short b = 0; b < 2; ++b) C[a][b] = attn_frag_f(0.0f);
     }
     #pragma clang loop unroll(disable)
-    for (uint k0 = 0; k0 < keyEnd; k0 += 32u) {
+    for (uint c0 = colBegin; c0 < colEnd; c0 += 32u) {
         attn_frag_h A[2][2];   // [m fragment][k fragment], P rows
         attn_frag_h B[2][2];   // [k fragment][n fragment], V rows are keys
         #pragma clang loop unroll(full)
@@ -3392,10 +3406,10 @@ kernel void attention_prefill_full_pv_d512(
             for (short mm = 0; mm < 2; ++mm) {
                 attn_frag_load(A[mm][kk], pHead, u.scoreStride,
                                mBase + tm + uint(mm) * 16u + uint(sc.y),
-                               k0 + uint(kk) * 16u + uint(sc.x), p.queryCount);
-                attn_frag_load(B[kk][mm], vBase, p.kvTokenStrideElements,
-                               k0 + uint(kk) * 16u + uint(sc.y),
-                               tn + uint(mm) * 16u + uint(sc.x), p.kvValidCount);
+                               c0 + uint(kk) * 16u + uint(sc.x), p.queryCount);
+                attn_frag_load(B[kk][mm], vHead, p.kvTokenStrideElements,
+                               band + c0 + uint(kk) * 16u + uint(sc.y),
+                               tn + uint(mm) * 16u + uint(sc.x), p.kvValidCount, u.ring);
             }
         }
         #pragma clang loop unroll(full)
@@ -3420,10 +3434,42 @@ kernel void attention_prefill_full_pv_d512(
                 const uint c = nBase + tn + uint(nn) * 16u + uint(sc.x);
                 const half4 v = half4(float4(C[mm][nn][i * 4 + 0], C[mm][nn][i * 4 + 1],
                                              C[mm][nn][i * 4 + 2], C[mm][nn][i * 4 + 3]) * inv);
-                *((device half4*)(O + r * p.oTokenStrideElements + qh * kFullUnfusedHeadDim + c)) = v;
+                *((device half4*)(O + r * p.oTokenStrideElements + qh * D + c)) = v;
             }
         }
     }
 }
+
+#define ATTENTION_PREFILL_UNFUSED_KERNELS(D)                                   \
+[[kernel, max_total_threads_per_threadgroup(128)]]                             \
+kernel void attention_prefill_unfused_scores_d##D(                            \
+    device const half* Q [[buffer(0)]],                                        \
+    device const half* K [[buffer(1)]],                                        \
+    device float* S [[buffer(2)]],                                             \
+    constant PrefillAttentionParams& p [[buffer(4)]],                          \
+    constant PrefillUnfusedParams& u [[buffer(5)]],                            \
+    uint3 tg [[threadgroup_position_in_grid]],                                 \
+    ushort sgid [[simdgroup_index_in_threadgroup]],                            \
+    ushort lane [[thread_index_in_simdgroup]]                                  \
+) {                                                                            \
+    attention_prefill_unfused_scores_impl<D>(Q, K, S, p, u, tg, sgid, lane);   \
+}                                                                              \
+[[kernel, max_total_threads_per_threadgroup(128)]]                             \
+kernel void attention_prefill_unfused_pv_d##D(                                \
+    device half* O [[buffer(0)]],                                              \
+    device const half* V [[buffer(1)]],                                        \
+    device const half* P [[buffer(3)]],                                        \
+    constant PrefillAttentionParams& p [[buffer(4)]],                          \
+    constant PrefillUnfusedParams& u [[buffer(5)]],                            \
+    device const float* rowSum [[buffer(6)]],                                  \
+    uint3 tg [[threadgroup_position_in_grid]],                                 \
+    ushort sgid [[simdgroup_index_in_threadgroup]],                            \
+    ushort lane [[thread_index_in_simdgroup]]                                  \
+) {                                                                            \
+    attention_prefill_unfused_pv_impl<D>(V, P, O, p, u, rowSum, tg, sgid, lane); \
+}
+
+ATTENTION_PREFILL_UNFUSED_KERNELS(256)
+ATTENTION_PREFILL_UNFUSED_KERNELS(512)
 
 #endif

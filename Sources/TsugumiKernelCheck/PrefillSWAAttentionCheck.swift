@@ -11,7 +11,10 @@ import TsugumiValidationSupport
 // default where the library has tensor ops, docs/m6-prefill/25・26) only
 // exists in an MSL 4.0 build and is SKIPped elsewhere with the skip printed;
 // `attention_prefill_causal_sgmm_gqa_d256` (the default elsewhere, and
-// `TF_PREFILL_ATTN=sgmm`) runs everywhere.
+// `TF_PREFILL_ATTN=sgmm`) runs everywhere. The unfused kernels
+// (`attention_prefill_unfused_scores_d256` → `_softmax` → `_pv_d256`,
+// docs/m6-prefill/37, `TF_PREFILL_ATTN_SWA=unfused`) run over head groups of
+// 4 and of all 16, where the library has tensor ops.
 //
 // Shapes: a window narrower than the chunk, a chunk that ends mid-block, a
 // second chunk over the first one's keys, and the same second chunk read
@@ -90,7 +93,7 @@ func checkPrefillSWAAttention(groupSize: Int, seed: UInt64) throws -> [CaseResul
     /// One dispatch of `function` over rows `start ..< start + count`, with K/V
     /// stored at `logical % ring` when `ring` is set.
     func run(_ function: String, threads: Int, rowsPerGroup: Int, headsPerGroup: Int,
-             start: Int, count: Int, ring: Int) throws -> [Float] {
+             start: Int, count: Int, ring: Int, unfusedGroup: Int = 0) throws -> [Float] {
         let slots = ring > 0 ? ring : total
         var kPhys = [Float16](repeating: .nan, count: slots * kvStride)
         var vPhys = [Float16](repeating: .nan, count: slots * kvStride)
@@ -106,13 +109,11 @@ func checkPrefillSWAAttention(groupSize: Int, seed: UInt64) throws -> [CaseResul
         let qRows = Array(q[(start * qStride)..<((start + count) * qStride)])
         let constants = ring > 0
             ? [MetalFunctionConstant(index: 76, value: .uint32(UInt32(ring)))] : []
-        let pso = try context.pipeline(function, constants: constants)
         guard let qBuffer = Fp16Buffer.make(device, halves: qRows),
               let kBuffer = Fp16Buffer.make(device, halves: kPhys),
               let vBuffer = Fp16Buffer.make(device, halves: vPhys),
               let oBuffer = Fp16Buffer.make(device, count: count * qStride),
-              let cmd = context.queue.makeCommandBuffer(),
-              let enc = cmd.makeComputeCommandEncoder() else {
+              let cmd = context.queue.makeCommandBuffer() else {
             fatalError("prefill SWA attention allocation failed")
         }
         var p = SWAParams(startPosition: UInt32(start), queryCount: UInt32(count),
@@ -121,6 +122,18 @@ func checkPrefillSWAAttention(groupSize: Int, seed: UInt64) throws -> [CaseResul
                           slidingWindow: UInt32(window), kvTokenStrideElements: UInt32(kvStride),
                           qTokenStrideElements: UInt32(qStride), oTokenStrideElements: UInt32(qStride),
                           scale: 1.0, hasSpanMask: 0)
+        if unfusedGroup > 0 {
+            try encodeUnfusedPrefillAttention(
+                context: context, commandBuffer: cmd, q: qBuffer, k: kBuffer, v: vBuffer, out: oBuffer,
+                params: p, headDim: swaHeadDim, heads: swaHeads, rows: count,
+                kvValidCount: start + count, window: window, ring: ring, group: unfusedGroup)
+            waitAndCheck(cmd, "unfused group=\(unfusedGroup) start=\(start) count=\(count) ring=\(ring)")
+            return Fp16Buffer.read(oBuffer, count: count * qStride)
+        }
+        let pso = try context.pipeline(function, constants: constants)
+        guard let enc = cmd.makeComputeCommandEncoder() else {
+            fatalError("prefill SWA attention allocation failed")
+        }
         enc.setComputePipelineState(pso)
         enc.setBuffer(qBuffer, offset: 0, index: 0)
         enc.setBuffer(kBuffer, offset: 0, index: 1)
@@ -166,6 +179,20 @@ func checkPrefillSWAAttention(groupSize: Int, seed: UInt64) throws -> [CaseResul
             cases.append(detectionResult(name + " mpp vs window/2", groupSize: groupSize,
                                          rel: relativeError(actual: mpp, reference: wrong),
                                          floor: 10 * Double(Tolerance.fp16ChainedReduction)))
+        }
+        for group in [4, 16] {
+            let unfused = try run("", threads: 0, rowsPerGroup: 0, headsPerGroup: 0,
+                                  start: start, count: count, ring: ring, unfusedGroup: group)
+            cases.append(result(name + " unfused group=\(group)", groupSize: groupSize,
+                                rel: relativeError(actual: unfused, reference: expected),
+                                tolerance: Double(Tolerance.fp16ChainedReduction)))
+            if ring == 0 && start == 0 && group == 4 {
+                let wrong = swaReference(q: q, k: k, v: v, start: start, count: count,
+                                         window: window / 2)
+                cases.append(detectionResult(name + " unfused vs window/2", groupSize: groupSize,
+                                             rel: relativeError(actual: unfused, reference: wrong),
+                                             floor: 10 * Double(Tolerance.fp16ChainedReduction)))
+            }
         }
     }
     return cases

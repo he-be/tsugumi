@@ -9,7 +9,8 @@
 //   TF_ATTN_BENCH_SHAPE=full /tmp/attn_bench Sources/Tsugumi/Metal/Prefill/prefill.metal \
 //       attention_prefill_causal_qblock_d512:256:16 attention_prefill_full_mpp_d512_r32:128:32 \
 //       attention_prefill_full_mpp_d512_r64:256:64 unfused:128:64
-// `unfused` は全注意の 3 カーネル (scores → softmax → pv) を PrefillAttention と同じ頭のまとめ方 (64 MiB) で。
+// `unfused` は 3 カーネル (scores → softmax → pv、docs/m6-prefill/36・37) を PrefillAttention と同じ帯の幅と頭のまとめ方 (64 MiB) で。
+// SWA の形 (既定) でも全注意の形でも回る。
 import Metal
 import Foundation
 
@@ -48,12 +49,12 @@ for (ki, name) in kernels.enumerated() {
     let cv = MTLFunctionConstantValues()
     let unfused = fn == "unfused"
     let pso = try! device.makeComputePipelineState(function: lib.makeFunction(
-        name: unfused ? "attention_prefill_full_pv_d512" : fn, constantValues: cv))
-    let upso = unfused ? ["attention_prefill_full_scores_d512", "attention_prefill_full_softmax_d512"].map {
+        name: unfused ? "attention_prefill_unfused_pv_d\(D)" : fn, constantValues: cv))
+    let upso = unfused ? ["attention_prefill_unfused_scores_d\(D)", "attention_prefill_unfused_softmax"].map {
         try! device.makeComputePipelineState(function: lib.makeFunction(name: $0, constantValues: cv)) } : []
     let budget = 64 << 20
     let scratch = device.makeBuffer(length: budget, options: .storageModePrivate)!
-    struct UParams { var headBase: UInt32; var scoreStride: UInt32; var headRows: UInt32 }
+    struct UParams { var headBase: UInt32; var scoreStride: UInt32; var headRows: UInt32; var ring: UInt32 }
     var times: [Double] = []
     for rep in 0..<6 {
         let cb = queue.makeCommandBuffer()!
@@ -62,13 +63,14 @@ for (ki, name) in kernels.enumerated() {
                 var p = Params(startPosition: UInt32(start), queryCount: UInt32(T), headDim: UInt32(D), numQHeads: UInt32(H), numKVHeads: UInt32(KVH), kvValidCount: UInt32(start + T), slidingWindow: UInt32(window), kvStride: UInt32(KVH * D), qStride: UInt32(H * D), oStride: UInt32(H * D), scale: 1, hasSpanMask: 0)
                 let enc = cb.makeComputeCommandEncoder()!
                 if unfused {
-                    let stride = (start + T + 63) / 64 * 64
+                    var stride = (start + T + 63) / 64 * 64
+                    if window > 0 && window < start + T { stride = min(stride, (window + 127 + 63) / 64 * 64) }
                     let perHead = T * stride * 6 + T * 4
                     var group = H
                     while group > 1 && (group * perHead > budget || H % group != 0) { group -= 1 }
                     let pOff = group * T * stride * 4, sumOff = pOff + group * T * stride * 2
                     for hb in Swift.stride(from: 0, to: H, by: group) {
-                        var u = UParams(headBase: UInt32(hb), scoreStride: UInt32(stride), headRows: UInt32(T))
+                        var u = UParams(headBase: UInt32(hb), scoreStride: UInt32(stride), headRows: UInt32(T), ring: 0)
                         let tpt = MTLSize(width: 128, height: 1, depth: 1)
                         enc.setComputePipelineState(upso[0])
                         enc.setBuffer(q, offset: 0, index: 0); enc.setBuffer(k, offset: 0, index: 1)

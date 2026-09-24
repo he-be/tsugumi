@@ -100,7 +100,12 @@ final class PrefillAttention {
     /// `TF_PREFILL_ATTN_FULL` value (`mpp64`, `mpp32`, `qblock`) turns it off.
     private static let fullUnfusedRequested =
         !swaMPPDisabled && (ProcessInfo.processInfo.environment["TF_PREFILL_ATTN_FULL"] ?? "unfused") == "unfused"
-    private static let fullUnfusedScratchBudget = 64 << 20
+    /// The sliding-window layers (headDim 256) on the same three kernels, each
+    /// 64-row block keeping only its band of keys (docs/m6-prefill/37). A
+    /// candidate for now, `TF_PREFILL_ATTN_SWA=unfused`.
+    private static let swaUnfusedRequested =
+        !swaMPPDisabled && ProcessInfo.processInfo.environment["TF_PREFILL_ATTN_SWA"] == "unfused"
+    private static let unfusedScratchBudget = 64 << 20
     private static let swaMPPKeys: UInt32 = 64
     private static let swaMPPThreads = 128
     private static let sgmmHeadDim: UInt32 = 256
@@ -118,10 +123,13 @@ final class PrefillAttention {
     /// the ring-specialised pipelines are built on first use.
     private let hasSwaMPP: Bool
     private let hasFullMPP: Bool
-    private let fullUnfusedPipelines: (scores: MTLComputePipelineState,
-                                       softmax: MTLComputePipelineState,
-                                       pv: MTLComputePipelineState)?
-    private var fullUnfusedScratch: MTLBuffer?
+    private typealias UnfusedPipelines = (scores: MTLComputePipelineState,
+                                          softmax: MTLComputePipelineState,
+                                          pv: MTLComputePipelineState)
+    /// Keyed by head dimension: 512 when the full layers use them, 256 when
+    /// the sliding-window ones do.
+    private let unfusedPipelines: [UInt32: UnfusedPipelines]
+    private var unfusedScratch: MTLBuffer?
 
     init(context: MetalContext) throws {
         self.context = context
@@ -134,14 +142,16 @@ final class PrefillAttention {
             try? context.pipeline("attention_prefill_full_tensorops_2d_validity_v2")
         self.hasSwaMPP = !Self.swaMPPDisabled
             && (try? context.pipeline("attention_prefill_swa_mpp_d256")) != nil
-        if Self.fullUnfusedRequested,
-           let scores = try? context.pipeline("attention_prefill_full_scores_d512"),
-           let softmax = try? context.pipeline("attention_prefill_full_softmax_d512"),
-           let pv = try? context.pipeline("attention_prefill_full_pv_d512") {
-            self.fullUnfusedPipelines = (scores, softmax, pv)
-        } else {
-            self.fullUnfusedPipelines = nil
+        var unfused: [UInt32: UnfusedPipelines] = [:]
+        for (headDim, requested) in [(UInt32(512), Self.fullUnfusedRequested),
+                                     (UInt32(256), Self.swaUnfusedRequested)] where requested {
+            if let scores = try? context.pipeline("attention_prefill_unfused_scores_d\(headDim)"),
+               let softmax = try? context.pipeline("attention_prefill_unfused_softmax"),
+               let pv = try? context.pipeline("attention_prefill_unfused_pv_d\(headDim)") {
+                unfused[headDim] = (scores, softmax, pv)
+            }
         }
+        self.unfusedPipelines = unfused
         self.hasFullMPP = Self.fullMPPShape.map {
             (try? context.pipeline($0.function)) != nil
         } ?? false
@@ -190,17 +200,13 @@ final class PrefillAttention {
             && params.headDim == Self.sgmmHeadDim
             && params.spanMaskEnabled == 0
             && kvRingCapacity % Self.swaMPPKeys == 0
-        if fullUnfusedPipelines != nil
-            && path == .causalSimdgroupMatrix
-            && params.headDim == Self.fullMPPHeadDim
-            && params.spanMaskEnabled == 0
-            && kvRingCapacity == 0
-            // Full layers pass the whole prefix as the window (RealForwardRunner).
-            && (params.slidingWindow == 0 || params.slidingWindow >= params.kvValidCount),
-           encodeFullUnfused(commandBuffer: commandBuffer,
-                             q: q, qOffset: qOffset, k: k, kOffset: kOffset,
-                             v: v, vOffset: vOffset, out: out, outOffset: outOffset,
-                             params: params) {
+        if let pipelines = unfusedPipelines[params.headDim],
+           path == .causalSimdgroupMatrix,
+           params.spanMaskEnabled == 0,
+           encodeUnfused(pipelines, commandBuffer: commandBuffer,
+                         q: q, qOffset: qOffset, k: k, kOffset: kOffset,
+                         v: v, vOffset: vOffset, out: out, outOffset: outOffset,
+                         params: params, kvRingCapacity: kvRingCapacity) {
             return
         }
         let fullMPPShape = hasFullMPP
@@ -310,74 +316,83 @@ final class PrefillAttention {
     }
 
 
-    /// `PrefillFullUnfusedParams` in prefill.metal.
-    private struct FullUnfusedParams {
+    /// `PrefillUnfusedParams` in prefill.metal.
+    private struct UnfusedParams {
         var headBase: UInt32
         var scoreStride: UInt32
         var headRows: UInt32
+        var ring: UInt32
     }
 
-    /// Encodes the unfused full attention, or returns false (encoding nothing)
-    /// when one head's scores do not fit the scratch budget.
-    private func encodeFullUnfused(commandBuffer: MTLCommandBuffer,
-                                   q: MTLBuffer, qOffset: Int,
-                                   k: MTLBuffer, kOffset: Int,
-                                   v: MTLBuffer, vOffset: Int,
-                                   out: MTLBuffer, outOffset: Int,
-                                   params: PrefillAttentionParams) -> Bool {
-        guard let pipelines = fullUnfusedPipelines else { return false }
+    /// Encodes the unfused attention, or returns false (encoding nothing)
+    /// when one head's scores do not fit the scratch budget. Each 64-row
+    /// block keeps `scoreStride` keys from its band start: every key for a
+    /// window that hides none (the full layers pass the whole prefix), the
+    /// window plus two blocks otherwise.
+    private func encodeUnfused(_ pipelines: UnfusedPipelines,
+                               commandBuffer: MTLCommandBuffer,
+                               q: MTLBuffer, qOffset: Int,
+                               k: MTLBuffer, kOffset: Int,
+                               v: MTLBuffer, vOffset: Int,
+                               out: MTLBuffer, outOffset: Int,
+                               params: PrefillAttentionParams,
+                               kvRingCapacity: UInt32) -> Bool {
         let rows = Int(params.queryCount)
-        let stride = roundUp(Int(params.kvValidCount), toMultipleOf: 64)
+        let kv = Int(params.kvValidCount)
+        let window = Int(params.slidingWindow)
+        var stride = roundUp(kv, toMultipleOf: 64)
+        if window > 0 && window < kv {
+            stride = min(stride, roundUp(window + 127, toMultipleOf: 64))
+        }
         let sBytesPerHead = rows * stride * MemoryLayout<Float>.stride
         let pBytesPerHead = rows * stride * MemoryLayout<Float16>.stride
         let sumBytesPerHead = rows * MemoryLayout<Float>.stride
         let bytesPerHead = sBytesPerHead + pBytesPerHead + sumBytesPerHead
         let heads = Int(params.numQHeads)
         var group = heads
-        while group > 1 && (group * bytesPerHead > Self.fullUnfusedScratchBudget || heads % group != 0) {
+        while group > 1 && (group * bytesPerHead > Self.unfusedScratchBudget || heads % group != 0) {
             group -= 1
         }
-        guard group * bytesPerHead <= Self.fullUnfusedScratchBudget else { return false }
-        let needed = group * bytesPerHead
-        if (fullUnfusedScratch?.length ?? 0) < needed {
-            guard let buffer = context.device.makeBuffer(length: Self.fullUnfusedScratchBudget,
+        guard group * bytesPerHead <= Self.unfusedScratchBudget else { return false }
+        if unfusedScratch == nil {
+            guard let buffer = context.device.makeBuffer(length: Self.unfusedScratchBudget,
                                                          options: .storageModePrivate) else {
                 return false
             }
-            buffer.label = "prefill full attention scratch"
-            fullUnfusedScratch = buffer
+            buffer.label = "prefill unfused attention scratch"
+            unfusedScratch = buffer
         }
-        guard let scratch = fullUnfusedScratch,
+        guard let scratch = unfusedScratch,
               let enc = commandBuffer.makeComputeCommandEncoder() else { return false }
         let pOffset = group * sBytesPerHead
         let sumOffset = pOffset + group * pBytesPerHead
         var p = params
         let rowTiles = (rows + 63) / 64
+        let threads = MTLSize(width: 128, height: 1, depth: 1)
         for headBase in Swift.stride(from: 0, to: heads, by: group) {
-            var u = FullUnfusedParams(headBase: UInt32(headBase), scoreStride: UInt32(stride),
-                                      headRows: UInt32(rows))
+            var u = UnfusedParams(headBase: UInt32(headBase), scoreStride: UInt32(stride),
+                                  headRows: UInt32(rows), ring: kvRingCapacity)
             enc.setComputePipelineState(pipelines.scores)
             enc.setBuffer(q, offset: qOffset, index: 0)
             enc.setBuffer(k, offset: kOffset, index: 1)
             enc.setBuffer(scratch, offset: 0, index: 2)
             enc.setBytes(&p, length: MemoryLayout<PrefillAttentionParams>.stride, index: 4)
-            enc.setBytes(&u, length: MemoryLayout<FullUnfusedParams>.stride, index: 5)
+            enc.setBytes(&u, length: MemoryLayout<UnfusedParams>.stride, index: 5)
             enc.dispatchThreadgroups(MTLSize(width: stride / 64, height: rowTiles, depth: group),
-                                     threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+                                     threadsPerThreadgroup: threads)
 
             enc.setComputePipelineState(pipelines.softmax)
-            enc.setBuffer(scratch, offset: 0, index: 2)
             enc.setBuffer(scratch, offset: pOffset, index: 3)
             enc.setBuffer(scratch, offset: sumOffset, index: 6)
             enc.dispatchThreadgroups(MTLSize(width: (rows + 3) / 4, height: group, depth: 1),
-                                     threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+                                     threadsPerThreadgroup: threads)
 
             enc.setComputePipelineState(pipelines.pv)
             enc.setBuffer(out, offset: outOffset, index: 0)
             enc.setBuffer(v, offset: vOffset, index: 1)
             enc.dispatchThreadgroups(
-                MTLSize(width: Int(Self.fullMPPHeadDim) / 64, height: rowTiles, depth: group),
-                threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+                MTLSize(width: Int(params.headDim) / 64, height: rowTiles, depth: group),
+                threadsPerThreadgroup: threads)
         }
         enc.endEncoding()
         return true
