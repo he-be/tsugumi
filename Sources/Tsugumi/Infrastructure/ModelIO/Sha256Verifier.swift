@@ -48,42 +48,92 @@ public enum Sha256Verifier {
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    /// SHA-256 of the bytes the segments name, in order, each read with
-    /// `pread` from its own descriptor. A layer file whose experts are split
-    /// between the model directory and a mirror copy (docs/m6-prefill/44) is
-    /// hashed as the bytes the runtime will actually read, so it matches the
-    /// manifest's whole-file digest exactly when those bytes are right.
+    /// SHA-256 of the bytes the segments name, in order. A layer file whose
+    /// experts are split between the model directory and a mirror copy
+    /// (docs/m6-prefill/44) is hashed as the bytes the runtime will actually
+    /// read, so it matches the manifest's whole-file digest exactly when those
+    /// bytes are right.
+    ///
+    /// The segments jump between two files, so neither gets the kernel's
+    /// sequential read-ahead that a plain `read` loop does. Instead the
+    /// segments are cut into pieces of at most `pieceBytes`, and a window of
+    /// `windowPieces` is read with every piece in flight at once — both drives
+    /// busy — while the previous window is being hashed.
     package static func hashSegments(_ segments: [(fd: Int32, offset: UInt64, count: UInt64)],
                                      displayName: String,
-                                     chunkBytes: Int = 1 << 20) throws -> String {
-        guard chunkBytes > 0 else {
-            throw ModelError.indexCorrupt(detail: "SHA-256 chunk size must be positive")
+                                     pieceBytes: Int = 4 << 20,
+                                     windowPieces: Int = 16) throws -> String {
+        guard pieceBytes > 0, windowPieces > 0 else {
+            throw ModelError.indexCorrupt(detail: "SHA-256 piece and window must be positive")
         }
-        var ctx = CC_SHA256_CTX()
-        CC_SHA256_Init(&ctx)
-        var buf = [UInt8](repeating: 0, count: chunkBytes)
+        var pieces: [(fd: Int32, offset: UInt64, count: Int)] = []
         for segment in segments {
             var done: UInt64 = 0
             while done < segment.count {
-                let want = Int(min(UInt64(chunkBytes), segment.count - done))
-                let got: Int = buf.withUnsafeMutableBytes { raw -> Int in
-                    pread(segment.fd, raw.baseAddress!, want, off_t(segment.offset + done))
-                }
-                if got < 0, errno == EINTR { continue }
-                if got < 0 {
-                    throw ModelError.posixFailed(call: "pread(\(displayName))", errno: errno)
-                }
-                if got == 0 {
-                    throw ModelError.tensorSizeMismatch(
-                        name: displayName, expected: segment.offset + segment.count,
-                        actual: segment.offset + done)
-                }
-                buf.withUnsafeBytes { raw in
-                    _ = CC_SHA256_Update(&ctx, raw.baseAddress!, CC_LONG(got))
-                }
-                done += UInt64(got)
+                let count = Int(min(UInt64(pieceBytes), segment.count - done))
+                pieces.append((segment.fd, segment.offset + done, count))
+                done += UInt64(count)
             }
         }
+        let windows = stride(from: 0, to: pieces.count, by: windowPieces).map {
+            Array(pieces[$0..<min($0 + windowPieces, pieces.count)])
+        }
+        let capacity = windowPieces * pieceBytes
+        let buffers = [UnsafeMutableRawPointer.allocate(byteCount: max(1, capacity), alignment: 16384),
+                       UnsafeMutableRawPointer.allocate(byteCount: max(1, capacity), alignment: 16384)]
+        defer { buffers.forEach { $0.deallocate() } }
+
+        final class ReadError: @unchecked Sendable {
+            let lock = NSLock()
+            var error: Error?
+            func record(_ e: Error) { lock.lock(); if error == nil { error = e }; lock.unlock() }
+        }
+        func readWindow(_ window: [(fd: Int32, offset: UInt64, count: Int)],
+                        into base: UnsafeMutableRawPointer, errors: ReadError) {
+            var starts: [Int] = []
+            var at = 0
+            for piece in window { starts.append(at); at += piece.count }
+            nonisolated(unsafe) let base = base
+            DispatchQueue.concurrentPerform(iterations: window.count) { index in
+                let piece = window[index]
+                var filled = 0
+                while filled < piece.count {
+                    let got = pread(piece.fd, base.advanced(by: starts[index] + filled),
+                                    piece.count - filled, off_t(piece.offset) + off_t(filled))
+                    if got < 0, errno == EINTR { continue }
+                    if got < 0 {
+                        errors.record(ModelError.posixFailed(call: "pread(\(displayName))", errno: errno))
+                        return
+                    }
+                    if got == 0 {
+                        errors.record(ModelError.tensorSizeMismatch(
+                            name: displayName, expected: piece.offset + UInt64(piece.count),
+                            actual: piece.offset + UInt64(filled)))
+                        return
+                    }
+                    filled += got
+                }
+            }
+        }
+
+        var ctx = CC_SHA256_CTX()
+        CC_SHA256_Init(&ctx)
+        let errors = ReadError()
+        let reader = DispatchQueue(label: "tsugumi.sha256.segments")
+        if let first = windows.first { readWindow(first, into: buffers[0], errors: errors) }
+        for (index, window) in windows.enumerated() {
+            if let error = errors.error { throw error }
+            let group = DispatchGroup()
+            if index + 1 < windows.count {
+                let next = windows[index + 1]
+                nonisolated(unsafe) let target = buffers[(index + 1) % 2]
+                reader.async(group: group) { readWindow(next, into: target, errors: errors) }
+            }
+            let bytes = window.reduce(0) { $0 + $1.count }
+            _ = CC_SHA256_Update(&ctx, buffers[index % 2], CC_LONG(bytes))
+            group.wait()
+        }
+        if let error = errors.error { throw error }
         var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
         digest.withUnsafeMutableBytes { raw in
             _ = CC_SHA256_Final(raw.baseAddress!.assumingMemoryBound(to: UInt8.self), &ctx)

@@ -136,7 +136,7 @@ extension ModelLoaderTests {
     let whole = try Sha256Verifier.hashFile(at: url)
     let split = try Sha256Verifier.hashSegments(
       [(fd, 0, 12_345), (fd, 12_345, 50_000), (fd, 62_345, 37_655)],
-      displayName: "segments", chunkBytes: 4096)
+      displayName: "segments", pieceBytes: 4096, windowPieces: 3)
     #expect(split == whole)
   }
 }

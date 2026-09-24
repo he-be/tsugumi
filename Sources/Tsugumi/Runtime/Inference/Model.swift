@@ -566,12 +566,6 @@ public struct Model {
             if files.mirrorFD >= 0 {
                 let segments = try layerHashSegments(L, fd: fd, mirrorFD: files.mirrorFD,
                                                      fileSize: actualSize)
-                // Ask both drives for their part up front, so the hash below
-                // reads from the cache while the two SSDs fill it together.
-                for segment in segments {
-                    _ = RDAdvice.call(fd: segment.fd, offset: segment.offset,
-                                      byteCount: segment.count)
-                }
                 let actual = try Sha256Verifier.hashSegments(segments, displayName: manifestRel)
                 guard actual.lowercased() == entry.sha256.lowercased() else {
                     throw ModelError.checksumMismatch(file: manifestRel)
