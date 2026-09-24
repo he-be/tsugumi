@@ -1,0 +1,9 @@
+[prefill gpu attn=3.354s(48%) shared=0.867s(12%) moe=2.735s(39%) tail=0.042s(1%) head=0.003s(0%) total=7.002s]
+[prefill gpu proj kv:simdgroup-matrix=120 o:simdgroup-matrix=60 q:simdgroup-matrix=60]
+[prefill gpu attn embed=0.000s(0%) norm=0.008s(0%) qkv=0.880s(26%) rope=0.399s(12%) kvcopy=0.008s(0%) attn.swa=0.865s(26%) attn.full=0.299s(9%) oproj=0.506s(15%) post=0.390s(12%) total=3.354s]
+ご
+[stop=maxTokens prefill=2478tok new=1tok decode=0.00s tok/s=1200.602]
+[load=0.530s layerVerify=4.588s/30layers prefill=8.742s ttft=8.742s peak=1.45GB rss=0.34GB]
+[expert prefill hit=0.0% 0/5751 io=0.950s | decode hit=0.0% 0/0 io=0.000s]
+[expert mmap layers=30 mapped=12.90GB sync=747(+5751/-4791) noop=0 residency=0.804s /tok=803.58ms]
+[decode/tok io=0.00ms cb1=0.00ms cb2=0.00ms head=0.00ms]

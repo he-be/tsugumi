@@ -26,23 +26,12 @@ G0 からの比、段の秒、tensor ops に載せたか、「下限の何倍か
 | **B0** 測る量を分ける | 起動と初回検証 (a) / 同じプロセスでの 2 回目以降 (b) / 新しいプロセスでの 1 回目 (c、台帳の量) | (b) を測る口が無い。CLI の変更が要るので判断待ち |
 | **B1** 段ごとの下限表 | 各段の (実測 − 下限) の秒。手を入れる段を選ぶ道具で、進捗の物差しではない | 未着手 |
 | **B2** 下限から遠い段から直す | 1 段ずつ。段の秒と、台帳の行 | B1 の後 |
-| **B3** 候補を既定に入れる | `TF_PREFILL_MOE=mpp` / `TF_PREFILL_QMM=mpp64` / `TF_PREFILL_VERIFY_AHEAD[_PARALLEL]` を既定にするか | 判断待ち。入れるまで台帳は動かない |
+| **B3** 候補を既定に入れる | `TF_PREFILL_MOE=mpp` / `TF_PREFILL_QMM=mpp64` / `TF_PREFILL_VERIFY_AHEAD[_PARALLEL]` / `TF_PREFILL_ATTN=sgmm` を既定にするか | 判断待ち。入れるまで台帳は動かない |
 
 以前の Gate (G0〜G5) の結果と読み替えは [04 の末尾](04-GATES.md) の索引にある。
 
-**中断中の作業 (2026-09-24)**: attn.swa (既定構成の GPU 内訳で 1.43 s、[`h0-profile-detail`](../../bench/m6/results/2026-09-24-Mac18-5-h0-profile-detail/)) を
-simdgroup_matrix の flash カーネル `attention_prefill_causal_sgmm_d256` (71786c5、`TF_PREFILL_ATTN=sgmm` の候補) に置き換える試み。
-- CPU 参照との一致: `Scripts/test.sh --filter PrefillAttentionTests` が MBP で通る。
-- M6 の本番ループ ([`sgmm-profile-detail`](../../bench/m6/results/2026-09-24-Mac18-5-sgmm-profile-detail/)、n = 3、profile): attn.swa 1.64 s。**既定の qblock の 1.43 s より遅い。**
-- カーネル単体 (`bench/m6/attn_bench.swift`、MBP、記録値ではない): qblock 1.73 s、sgmm 1.12 s。MBP と M6 で順位が逆。
-
-**再開手順**:
-1. M6 で単体ベンチを回し、M6 でも sgmm が遅いかを見る (本番ループの外で順位が逆になるかの切り分け):
-   `scp bench/m6/attn_bench.swift Sources/Tsugumi/Metal/Prefill/prefill.metal m6:/tmp/ && ssh m6 'cd /tmp && swiftc -O attn_bench.swift -o attn_bench && ./attn_bench prefill.metal attention_prefill_causal_qblock_d256:256:32 attention_prefill_causal_sgmm_d256:128:32'`
-2. M6 でも遅ければ、カーネルを直す。候補: threadgroup メモリからの読みが MMA 1 回あたり 1〜1.5 回と多い (QK は Q と Kᵀ の 2 本で 2 回の MMA)。
-   S を 2×2 の simdgroup で割る / PV を head dim で割って V の断片を 4 行ブロックで使い回す / GQA の 2 ヘッドを 1 threadgroup にまとめて K/V の読みを半分に。
-3. 単体で qblock を下回ったら `TF_PREFILL_ATTN=sgmm TF_PREFILL_GPU_PROFILE=2 bench/m6/cycle.sh prefill_bench.sh sgmm-profile-detail-2 3` → 壁時計 `TF_PREFILL_ATTN=sgmm bench/m6/cycle.sh prefill_bench.sh sgmm-a 6`。
-4. 候補のままなので台帳 §1 は動かない。既定に入れるかはユーザーの判断 ([04 B3](04-GATES.md))。結果文書は 19 番 (番号は `ls` で確かめてから)。
+**attn.swa の候補 (2026-09-24、[19](19-SWA-ATTN-SGMM-GQA.md))**: `TF_PREFILL_ATTN=sgmm` を GQA 2 ヘッド共有のカーネル (3f042e7) に替えた。
+GPU の attn.swa は 1.433 → 0.866 s。既定構成の壁時計は 8.829 s で縮まず、候補 4 つの構成では同じ commit で 4.565 → 4.290 s。既定に入れるかは判断待ち (B3)。
 
 その後は B3 の判断と、B0 (b) の口。
 

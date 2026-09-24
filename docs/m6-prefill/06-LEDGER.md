@@ -34,6 +34,10 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-23 | 906eae2 | g1-greedy-mpp | 2 | 9.657 | 9.587 | 9.728 | 0 | TF_PREFILL_GPU_PROFILE=1 TF_PREFILL_QMM=mpp 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-23 | 906eae2 | g1-greedy-simdgroup | 2 | 9.624 | 9.503 | 9.745 | 0 | TF_PREFILL_GPU_PROFILE=1 TF_PREFILL_QMM=simdgroup 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | 67a087a | a0-profile-detail | 3 | 4.624 | 4.590 | 5.151 | 0 | TF_PREFILL_GPU_PROFILE=2 TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
+| 2026-09-24 | 3f042e7 | best4-a | 3 | 4.578 | 4.545 | 5.181 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
+| 2026-09-24 | 3f042e7 | best4-b | 3 | 4.551 | 4.473 | 4.582 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
+| 2026-09-24 | 3f042e7 | best4-sgmm-a | 3 | 4.629 | 4.227 | 5.203 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
+| 2026-09-24 | 3f042e7 | best4-sgmm-b | 3 | 4.146 | 4.110 | 4.353 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 |
 | 2026-09-24 | 7c7ad7b | g3-greedy-mpp | 2 | 7.596 | 7.552 | 7.641 | 0 | TF_PREFILL_MOE=mpp 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | 7c7ad7b | g3-greedy-simdgroup | 2 | 9.034 | 8.787 | 9.280 | 0 | TF_PREFILL_MOE=simdgroup 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | 7c7ad7b | g3-mpp-a | 3 | 7.345 | 7.317 | 7.360 | 0 | TF_PREFILL_MOE=mpp |
@@ -73,4 +77,6 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 29948fd | s2-simdgroup-b | 3 | 7.336 | 7.322 | 7.397 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=simdgroup |
 | 2026-09-24 | 29948fd | s2-trusted-mpp64 | 0 | - | - | - | 3 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 追加引数: --verification trusted-install |
 | 2026-09-24 | 29948fd | s2-trusted-simdgroup | 0 | - | - | - | 3 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_MOE=mpp TF_PREFILL_QMM=simdgroup 追加引数: --verification trusted-install |
+| 2026-09-24 | 3f042e7 | sgmm-a | 6 | 8.829 | 8.626 | 8.957 | 0 | TF_PREFILL_ATTN=sgmm |
+| 2026-09-24 | 3f042e7 | sgmm-profile-detail-2 | 3 | 8.742 | 8.739 | 8.951 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_GPU_PROFILE=2 |
 | 2026-09-24 | 71786c5 | sgmm-profile-detail | 3 | 8.626 | 8.563 | 8.810 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_GPU_PROFILE=2 |
