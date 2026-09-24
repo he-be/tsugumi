@@ -31,6 +31,52 @@ import TsugumiValidationSupport
                 "full-layer K/V must diverge after K norm+RoPE and V no-scale norm")
     }
 
+    /// The one-dispatch epilogue (docs/m6-prefill/39) writes the same halves as
+    /// the separate norm and RoPE passes, bit for bit, at both layer shapes.
+    @Test(arguments: [(16, 8, 256, 128, Float(10_000.0)), (16, 2, 512, 64, Float(1_000_000.0))])
+    func fusedEpilogueMatchesSeparatePassesBitForBit(
+        shape: (numQHeads: Int, numKVHeads: Int, headDim: Int, rotatedPairs: Int, theta: Float)) throws {
+        let rows = 5
+        let qStride = shape.numQHeads * shape.headDim + 13
+        let kvStride = shape.numKVHeads * shape.headDim + 17
+        let q = Self.makeBlock(rows: rows, rowStride: qStride, usedPerRow: shape.numQHeads * shape.headDim,
+                               seed: 0x7A50_F05E, label: "q")
+        let k = Self.makeBlock(rows: rows, rowStride: kvStride, usedPerRow: shape.numKVHeads * shape.headDim,
+                               seed: 0x7A50_F05F, label: "k")
+        let v = Self.makeBlock(rows: rows, rowStride: kvStride, usedPerRow: shape.numKVHeads * shape.headDim,
+                               seed: 0x7A50_F060, label: "v")
+        var rng = SeedTree(0x7A50_F061).key("norm-weights")
+        let qWeight = (0..<shape.headDim).map { _ in Quantization.bf16Bits(rng.uniform(0.5, 1.5)) }
+        let kWeight = (0..<shape.headDim).map { _ in Quantization.bf16Bits(rng.uniform(0.5, 1.5)) }
+        let ctx = try MetalContext()
+        let block = try PrefillQKVEpilogue(context: ctx)
+        var outputs: [[[Float]]] = []
+        for fused in [false, true] {
+            let qBuf = Fp16Buffer.make(ctx.device, halves: q)!
+            let kBuf = Fp16Buffer.make(ctx.device, halves: k)!
+            let vBuf = Fp16Buffer.make(ctx.device, halves: v)!
+            let qW = ctx.device.makeBuffer(bytes: qWeight, length: qWeight.count * 2, options: .storageModeShared)!
+            let kW = ctx.device.makeBuffer(bytes: kWeight, length: kWeight.count * 2, options: .storageModeShared)!
+            let cb = ctx.queue.makeCommandBuffer()!
+            block.encode(commandBuffer: cb, q: qBuf, k: kBuf, v: vBuf, qWeight: qW, kWeight: kW,
+                         startPosition: 2045, queryCount: UInt32(rows), headDim: UInt32(shape.headDim),
+                         numQHeads: UInt32(shape.numQHeads), numKVHeads: UInt32(shape.numKVHeads),
+                         qTokenStrideElements: UInt32(qStride), kvTokenStrideElements: UInt32(kvStride),
+                         theta: shape.theta, rotatedPairs: UInt32(shape.rotatedPairs), eps: 1e-6,
+                         fused: fused)
+            cb.commit()
+            cb.waitUntilCompleted()
+            #expect(cb.error == nil)
+            outputs.append([Fp16Buffer.read(qBuf, count: rows * qStride),
+                            Fp16Buffer.read(kBuf, count: rows * kvStride),
+                            Fp16Buffer.read(vBuf, count: rows * kvStride)])
+        }
+        for (i, label) in ["Q", "K", "V"].enumerated() {
+            let mismatches = zip(outputs[0][i], outputs[1][i]).filter { $0.0 != $0.1 }.count
+            #expect(mismatches == 0, "\(label): \(mismatches) halves differ")
+        }
+    }
+
     private static func expectMatchesRepeatedScalar(rows: Int,
                                                     numQHeads: Int,
                                                     numKVHeads: Int,

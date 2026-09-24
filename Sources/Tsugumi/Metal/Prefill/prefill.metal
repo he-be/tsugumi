@@ -1966,6 +1966,80 @@ kernel void prefill_rope_proportional_neox_block(
                                  float(start_position + t), theta_base);
 }
 
+// The QKV epilogue in one pass (docs/m6-prefill/39): per (token, head) the
+// per-head RMS norm (Q and K with their BF16 weight, V without a scale) and,
+// for Q and K, NeoX RoPE over the first `rotated_pairs` pairs. Grid x runs
+// over the Q heads, then the K heads, then the V heads. The norm reduces in
+// the same order as `prefill_rmsnorm_*_perhead_block` at 256 threads and
+// rounds to half before the rotation, as the separate passes do through
+// memory, so the output is the same.
+[[kernel, max_total_threads_per_threadgroup(256)]]
+void prefill_qkv_norm_rope_block(
+    device half*         q                   [[buffer(0)]],
+    device half*         k                   [[buffer(1)]],
+    device half*         v                   [[buffer(2)]],
+    device const bfloat* q_weight            [[buffer(3)]],
+    device const bfloat* k_weight            [[buffer(4)]],
+    constant uint&       T                   [[buffer(5)]],
+    constant uint&       head_dim            [[buffer(6)]],
+    constant uint&       num_q_heads         [[buffer(7)]],
+    constant uint&       num_kv_heads        [[buffer(8)]],
+    constant uint&       q_stride            [[buffer(9)]],
+    constant uint&       kv_stride           [[buffer(10)]],
+    constant float&      eps                 [[buffer(11)]],
+    constant uint&       start_position      [[buffer(12)]],
+    constant float&      theta_base          [[buffer(13)]],
+    constant uint&       rotated_pairs       [[buffer(14)]],
+    uint3                tg                  [[threadgroup_position_in_grid]],
+    uint3                lid3                [[thread_position_in_threadgroup]],
+    uint3                lsize3              [[threads_per_threadgroup]],
+    uint                 lane                [[thread_index_in_simdgroup]],
+    uint                 sg                  [[simdgroup_index_in_threadgroup]],
+    uint                 sgs                 [[simdgroups_per_threadgroup]]
+) {
+    const uint slot = tg.x;
+    const uint t = tg.y;
+    const uint lid = lid3.x;
+    const uint lsize = lsize3.x;
+    if (t >= T || slot >= num_q_heads + 2u * num_kv_heads) return;
+    const bool isQ = slot < num_q_heads;
+    const bool isK = !isQ && slot < num_q_heads + num_kv_heads;
+    const uint h = isQ ? slot : isK ? slot - num_q_heads : slot - num_q_heads - num_kv_heads;
+    device half* xh = (isQ ? q + t * q_stride : (isK ? k : v) + t * kv_stride) + h * head_dim;
+    device const bfloat* w = isQ ? q_weight : k_weight;
+
+    threadgroup float partial[kPrefillRmsMaxSimdGroups];
+    threadgroup half y[512];
+    const float inv = prefill_rms_block_inv(xh, head_dim, eps, lid, lsize, lane, sg, sgs, partial);
+    if (!isQ && !isK) {
+        for (uint i = lid; i < head_dim; i += lsize) {
+            xh[i] = half(float(xh[i]) * inv);
+        }
+        return;
+    }
+    for (uint i = lid; i < head_dim; i += lsize) {
+        y[i] = half(float(xh[i]) * inv * float(w[i]));
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    const uint half_dim = head_dim / 2u;
+    for (uint i = lid; i < half_dim; i += lsize) {
+        if (i < rotated_pairs) {
+            const float exponent = -float(2u * i) / float(head_dim);
+            const float freq = pow(theta_base, exponent);
+            const float angle = float(start_position + t) * freq;
+            const float c = cos(angle);
+            const float s = sin(angle);
+            const float x0 = float(y[i]);
+            const float x1 = float(y[half_dim + i]);
+            xh[i] = half(x0 * c - x1 * s);
+            xh[half_dim + i] = half(x0 * s + x1 * c);
+        } else {
+            xh[i] = y[i];
+            xh[half_dim + i] = y[half_dim + i];
+        }
+    }
+}
+
 struct PrefillAttentionParams {
     uint startPosition;
     uint queryCount;
