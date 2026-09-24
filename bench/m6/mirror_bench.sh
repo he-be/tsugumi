@@ -2,7 +2,7 @@
 # The default (with the model's expert-mirror.json, docs/m6-prefill/44) vs.
 # TF_EXPERT_MIRROR=0 (model directory only), natural prompts rotated so no two
 # consecutive runs share a prompt (docs/m6-prefill/43 §3).
-#   bench/m6/mirror_bench.sh <label> [rounds] [alt|block]
+#   bench/m6/mirror_bench.sh <label> [rounds] [alt|block] [trusted-install|full-sha256]
 # Arms in summary.tsv: def (the default binary, no TF_) and off (TF_EXPERT_MIRROR=0).
 # alt (default): round r walks the five prompts; the arm alternates run by run
 # and the starting arm flips each round, so every (prompt, arm) cell gets
@@ -18,7 +18,7 @@
 #   summary.tsv greedy-{def,off}.log
 set -eu
 repo=$(cd "$(dirname "$0")/../.." && pwd)
-label=${1:?label}; rounds=${2:-6}; order=${3:-alt}
+label=${1:?label}; rounds=${2:-6}; order=${3:-alt}; verification=${4:-trusted-install}
 bin="$repo/.build/release/TsugumiCLI"
 model="${MODEL:-$repo/scratch/gemma4-qat-sym.gturbo}"
 [ -x "$bin" ] || { echo "no $bin"; exit 1; }
@@ -33,7 +33,7 @@ mkdir -p "$out"
 sh "$repo/bench/hostinfo.sh" "$bin" > "$out/hostinfo.txt"
 cp "$model/expert-mirror.json" "$out/expert-mirror.json"
 prompts="ja-twomachine ja-m6readme en-readme en-server code-runner"
-fixed="--expert-cache-slots 32 --prefill-chunk-tokens 2048 --max-new 1 --max-context 4096 --verification trusted-install"
+fixed="--expert-cache-slots 32 --prefill-chunk-tokens 2048 --max-new 1 --max-context 4096 --verification $verification"
 {
     echo "bench/m6/mirror_bench.sh $*"
     echo "def: $bin --model $model --messages-file bench/m6/prompts/<prompt>.json $fixed"
@@ -91,7 +91,7 @@ while [ "$r" -le "$rounds" ]; do
     r=$((r + 1))
 done
 # Same text either way: greedy 64 tokens on one prompt, each arm once.
-g="--model $model --messages-file $repo/bench/m6/prompts/ja-twomachine.json --expert-cache-slots 32 --prefill-chunk-tokens 2048 --max-new 64 --temperature 0 --max-context 4096 --verification trusted-install"
+g="--model $model --messages-file $repo/bench/m6/prompts/ja-twomachine.json --expert-cache-slots 32 --prefill-chunk-tokens 2048 --max-new 64 --temperature 0 --max-context 4096 --verification $verification"
 "$bin" $g > "$out/greedy-def.log" 2>&1 || echo "greedy def exit $?"
 TF_EXPERT_MIRROR=0 "$bin" $g > "$out/greedy-off.log" 2>&1 || echo "greedy off exit $?"
 echo "evidence: ${out#$repo/}"
