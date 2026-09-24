@@ -69,27 +69,32 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
         argumentEncoder.setBuffer(blob, offset: 0, index: index)
     }
 
-    // (name, tiers): each tier is (kernel, tile rows), tallest first. An
-    // expert's rows are cut into blocks of the tallest tier; the remainder
-    // goes to the shortest tier that holds it.
-    var kernels: [(String, [(MTLComputePipelineState, Int)])] = []
-    if let mpp = try? context.pipeline("prefill_moe_gemm_int4_mpp") {
-        kernels.append(("mpp", [(mpp, 64)]))
+    // (name, tiers): each tier is (kernel, tile rows, tile columns, threads),
+    // tallest first. An expert's rows are cut into blocks of the tallest
+    // tier; the remainder goes to the shortest tier that holds it.
+    typealias Tier = (MTLComputePipelineState, Int, Int, Int)
+    var kernels: [(String, [Tier])] = []
+    func pso(_ name: String) -> MTLComputePipelineState? { try? context.pipeline(name) }
+    if let mpp = pso("prefill_moe_gemm_int4_mpp") {
+        kernels.append(("mpp", [(mpp, 64, 64, 128)]))
     }
-    if let pf = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf") {
-        kernels.append(("mpp-pf", [(pf, 64)]))
-        let m32 = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_m32")
-        if let m32 {
-            kernels.append(("mpp-pf-64/32", [(pf, 64), (m32, 32)]))
+    if let pf = pso("prefill_moe_gemm_int4_mpp_pf"),
+       let m32 = pso("prefill_moe_gemm_int4_mpp_pf_m32") {
+        kernels.append(("mpp-pf", [(pf, 64, 64, 128)]))
+        kernels.append(("mpp-pf-64/32", [(pf, 64, 64, 128), (m32, 32, 64, 128)]))
+        if let m128 = pso("prefill_moe_gemm_int4_mpp_pf_m128s8") {
+            kernels.append(("mpp-pf-128s8/64/32",
+                            [(m128, 128, 64, 256), (pf, 64, 64, 128), (m32, 32, 64, 128)]))
         }
-        if let hd = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_hd") {
-            kernels.append(("mpp-pf-hd", [(hd, 64)]))
-            if let hd32 = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_hd_m32") {
-                kernels.append(("mpp-pf-hd-64/32", [(hd, 64), (hd32, 32)]))
+        if let n128 = pso("prefill_moe_gemm_int4_mpp_pf_n128s8") {
+            kernels.append(("mpp-pf-n128s8", [(n128, 64, 128, 256)]))
+            if let n128m32 = pso("prefill_moe_gemm_int4_mpp_pf_m32n128s8") {
+                kernels.append(("mpp-pf-n128s8-64/32",
+                                [(n128, 64, 128, 256), (n128m32, 32, 128, 256)]))
             }
         }
     }
-    kernels.append(("simdgroup", [(try context.pipeline("prefill_moe_gemm_int4"), 64)]))
+    kernels.append(("simdgroup", [(try context.pipeline("prefill_moe_gemm_int4"), 64, 64, 128)]))
 
     let perBuffer = 8
     print("moe-gemm-bench g=\(groupSize) sym D=\(benchD) F=\(benchF) experts=\(benchExperts) iterations=\(iterations)")
@@ -143,9 +148,8 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
             let paddedFlops = 2.0 * 2.0 * Double(paddedRows) * Double(benchF) * Double(benchD)
             func encode(_ cmd: MTLCommandBuffer) {
                 for (tier, blocks) in zip(tiers, tierBlocks) where !blocks.isEmpty {
-                let pso = tier.0
                 guard let enc = cmd.makeComputeCommandEncoder() else { return }
-                enc.setComputePipelineState(pso)
+                enc.setComputePipelineState(tier.0)
                 enc.setBuffer(hidden, offset: 0, index: 0)
                 enc.setBuffer(pairBuffer, offset: 0, index: 1)
                 var blockCopy = blocks
@@ -159,9 +163,9 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
                 var mode: UInt32 = 0
                 enc.setBytes(&mode, length: 4, index: 11)
                 for blob in blobs { enc.useResource(blob, usage: .read) }
-                enc.dispatchThreadgroups(MTLSize(width: (benchF + 63) / 64, height: blocks.count,
-                                                 depth: 2),
-                                         threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
+                enc.dispatchThreadgroups(MTLSize(width: (benchF + tier.2 - 1) / tier.2,
+                                                 height: blocks.count, depth: 2),
+                                         threadsPerThreadgroup: MTLSize(width: tier.3, height: 1, depth: 1))
                 enc.endEncoding()
                 }
             }
