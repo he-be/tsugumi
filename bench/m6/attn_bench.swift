@@ -30,7 +30,8 @@ func buf(_ n: Int, seed: UInt32) -> MTLBuffer {
     return b
 }
 let q = buf(2048 * H * D, seed: 1), k = buf(total * KVH * D, seed: 2), v = buf(total * KVH * D, seed: 3)
-let outs = kernels.map { _ in device.makeBuffer(length: 2048 * H * D * 2, options: .storageModeShared)! }
+// Each chunk writes its own rows, so the comparison below covers every row of both chunks.
+let outs = kernels.map { _ in device.makeBuffer(length: total * H * D * 2, options: .storageModeShared)! }
 let dummy = device.makeBuffer(length: 16, options: .storageModeShared)!
 
 for (ki, name) in kernels.enumerated() {
@@ -48,7 +49,7 @@ for (ki, name) in kernels.enumerated() {
                 let enc = cb.makeComputeCommandEncoder()!
                 enc.setComputePipelineState(pso)
                 enc.setBuffer(q, offset: 0, index: 0); enc.setBuffer(k, offset: 0, index: 1); enc.setBuffer(v, offset: 0, index: 2)
-                enc.setBuffer(outs[ki], offset: 0, index: 3)
+                enc.setBuffer(outs[ki], offset: start * H * D * 2, index: 3)
                 enc.setBytes(&p, length: MemoryLayout<Params>.stride, index: 4)
                 enc.setBuffer(dummy, offset: 0, index: 5)
                 enc.dispatchThreadgroups(MTLSize(width: (T + qpg - 1) / qpg, height: H / hpg, depth: 1), threadsPerThreadgroup: MTLSize(width: threads, height: 1, depth: 1))
@@ -61,14 +62,18 @@ for (ki, name) in kernels.enumerated() {
     times.sort()
     print(String(format: "%@  25 layers x 2 chunks: median %.3f s (min %.3f max %.3f)  regs? maxThreads=%d", fn, times[times.count/2], times[0], times.last!, pso.maxTotalThreadsPerThreadgroup))
 }
-// compare outputs of first chunk against kernel 0
+// compare every output row of both chunks against kernel 0
 if kernels.count > 1 {
-    let n = 2478 - 2048
-    let a = outs[0].contents().bindMemory(to: Float16.self, capacity: 2048 * H * D)
+    let n = total * H * D
+    let a = outs[0].contents().bindMemory(to: Float16.self, capacity: n)
     for ki in 1..<kernels.count {
-        let b = outs[ki].contents().bindMemory(to: Float16.self, capacity: 2048 * H * D)
+        let b = outs[ki].contents().bindMemory(to: Float16.self, capacity: n)
         var m: Float = 0
-        for i in 0..<(n * H * D) { m = max(m, abs(Float(a[i]) - Float(b[i]))) }
-        print("maxdiff vs \(kernels[0]) (second chunk rows): \(m)")
+        var bad = 0
+        for i in 0..<n {
+            let d = abs(Float(a[i]) - Float(b[i]))
+            if !d.isFinite { bad += 1 } else { m = max(m, d) }
+        }
+        print("maxdiff vs \(kernels[0]) (all \(total) rows): \(m)  non-finite: \(bad)")
     }
 }

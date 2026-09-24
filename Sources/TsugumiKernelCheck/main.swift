@@ -2243,6 +2243,9 @@ for groupSize in groupSizes {
     }
     // The prompt-chunk routed MoE GEMMs, simdgroup and (where built) MPP.
     pass.append(contentsOf: try checkPrefillRoutedMoEGEMM(groupSize: groupSize, seed: 0xF7))
+    // The sliding-window prefill attention, sgmm and (where built) MPP. No
+    // quantized weights in it, so both group sizes run the same fixture.
+    pass.append(contentsOf: try checkPrefillSWAAttention(groupSize: groupSize, seed: 0xFD))
 
     printCases(pass)
     results.append(contentsOf: pass)

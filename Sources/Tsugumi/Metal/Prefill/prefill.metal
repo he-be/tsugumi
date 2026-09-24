@@ -2654,4 +2654,174 @@ kernel void attention_prefill_full_tensorops_2d_validity_v2(
         row_max, row_sum, row_old_scale);
 }
 
+
+// Sliding-window attention at headDim 256 with both products on `matmul2d`
+// (docs/m6-prefill/24 §1.3: attn.swa was 0.81 s against a 0.04 s floor on the
+// simdgroup-matrix kernel). One threadgroup takes 64 query rows of one head.
+// S = Q·Kᵀ reads Q and a 64-key block of K straight from device memory, the
+// online softmax runs on a threadgroup copy of S, and P·V accumulates into one
+// cooperative destination for the whole key range. K and V are sliced per
+// block, so a ring (FC_PREFILL_KV_RING_CAP) must be a multiple of the block:
+// the host checks that, and that the span mask is off, before it picks this.
+// Keys past `kvValidCount` read as zero through the tensor extents and are
+// masked; rows past the chunk are masked and never written.
+constant constexpr int kSwaMppRows = 64;
+constant constexpr int kSwaMppKeys = 64;
+constant constexpr int kSwaMppHeadDim = 256;
+
+[[kernel, max_total_threads_per_threadgroup(128)]]
+kernel void attention_prefill_swa_mpp_d256(
+    device half* Q [[buffer(0)]],
+    device half* K [[buffer(1)]],
+    device half* V [[buffer(2)]],
+    device half* O [[buffer(3)]],
+    constant PrefillAttentionParams& p [[buffer(4)]],
+    uint3 tg [[threadgroup_position_in_grid]],
+    uint lid [[thread_index_in_threadgroup]]
+) {
+    constexpr auto qk_desc = matmul2d_descriptor(
+        kSwaMppRows, kSwaMppKeys, kSwaMppHeadDim, false, true, false);
+    constexpr auto pv_desc = matmul2d_descriptor(
+        kSwaMppRows, kSwaMppHeadDim, kSwaMppKeys, false, false, false,
+        matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<qk_desc, execution_simdgroups<4>> qk_op;
+    matmul2d<pv_desc, execution_simdgroups<4>> pv_op;
+    using device_half_tensor = tensor<device half, dextents<int32_t, 2>, tensor_inline>;
+    using threadgroup_half_tensor = tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>;
+
+    threadgroup float score_tile[kSwaMppRows * kSwaMppKeys];
+    threadgroup half weight_tile[kSwaMppRows * kSwaMppKeys];
+    threadgroup float row_max[kSwaMppRows];
+    threadgroup float row_sum[kSwaMppRows];
+    threadgroup float row_scale[kSwaMppRows];
+
+    const uint q0 = tg.x * uint(kSwaMppRows);
+    const uint qh = tg.y;
+    const uint kvh = qh / (p.numQHeads / p.numKVHeads);
+    const uint ring = (is_function_constant_defined(FC_PREFILL_KV_RING_CAP)
+                       && FC_PREFILL_KV_RING_CAP != 0u) ? FC_PREFILL_KV_RING_CAP : 0u;
+    const uint key_extent = ring != 0u ? ring : p.kvValidCount;
+
+    device_half_tensor q_tensor(
+        Q + qh * uint(kSwaMppHeadDim),
+        dextents<int32_t, 2>(kSwaMppHeadDim, int32_t(p.queryCount)),
+        array<int32_t, 2>({1, int32_t(p.qTokenStrideElements)}));
+    device_half_tensor k_tensor(
+        K + kvh * uint(kSwaMppHeadDim),
+        dextents<int32_t, 2>(kSwaMppHeadDim, int32_t(key_extent)),
+        array<int32_t, 2>({1, int32_t(p.kvTokenStrideElements)}));
+    device_half_tensor v_tensor(
+        V + kvh * uint(kSwaMppHeadDim),
+        dextents<int32_t, 2>(kSwaMppHeadDim, int32_t(key_extent)),
+        array<int32_t, 2>({1, int32_t(p.kvTokenStrideElements)}));
+    threadgroup_half_tensor w_tensor(
+        weight_tile,
+        dextents<int32_t, 2>(kSwaMppKeys, kSwaMppRows),
+        array<int32_t, 2>({1, kSwaMppKeys}));
+    auto q_slice = q_tensor.slice(0, int32_t(q0));
+
+    // Two threads per row, 32 keys each, neighbours in one simdgroup.
+    const uint my_row = lid >> 1;
+    const uint my_half = lid & 1u;
+    const uint my_t = q0 + my_row;
+    const bool my_active = my_t < p.queryCount;
+    const uint my_abs = p.startPosition + my_t;
+    const uint my_first = (p.slidingWindow != 0u && my_abs + 1u > p.slidingWindow)
+        ? my_abs + 1u - p.slidingWindow : 0u;
+    const uint my_last = my_active ? min(p.kvValidCount, my_abs + 1u) : 0u;
+    if (my_half == 0u) {
+        row_max[my_row] = -INFINITY;
+        row_sum[my_row] = 0.0f;
+    }
+
+    // Keys any row of the block can see, from the block's first and last rows.
+    const uint last_t = min(q0 + uint(kSwaMppRows), p.queryCount) - 1u;
+    const uint first_abs = p.startPosition + q0;
+    const uint block_first = (p.slidingWindow != 0u && first_abs + 1u > p.slidingWindow)
+        ? first_abs + 1u - p.slidingWindow : 0u;
+    const uint block_last = min(p.kvValidCount, p.startPosition + last_t + 1u);
+
+    auto acc = pv_op.get_destination_cooperative_tensor<
+        decltype(w_tensor), decltype(v_tensor.slice(0, 0)), float>();
+    #pragma clang loop unroll(full)
+    for (int e = 0; e < acc.get_capacity(); ++e) {
+        if (acc.is_valid_element(e)) acc[e] = 0.0f;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    for (uint k0 = block_first & ~uint(kSwaMppKeys - 1); k0 < block_last; k0 += uint(kSwaMppKeys)) {
+        const int32_t phys = int32_t(ring != 0u ? k0 % ring : k0);
+        auto k_slice = k_tensor.slice(0, phys);
+        auto s = qk_op.get_destination_cooperative_tensor<
+            decltype(q_slice), decltype(k_slice), float>();
+        #pragma clang loop unroll(full)
+        for (int e = 0; e < s.get_capacity(); ++e) {
+            if (s.is_valid_element(e)) s[e] = 0.0f;
+        }
+        qk_op.run(q_slice, k_slice, s);
+        #pragma clang loop unroll(full)
+        for (int e = 0; e < s.get_capacity(); ++e) {
+            if (!s.is_valid_element(e)) continue;
+            const auto pos = s.get_multidimensional_index(e);
+            score_tile[uint(pos[1]) * uint(kSwaMppKeys) + uint(pos[0])] = s[e] * p.scale;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        float sv[32];
+        float tile_max = -INFINITY;
+        for (uint j = 0u; j < 32u; ++j) {
+            const uint col = my_half * 32u + j;
+            const uint key = k0 + col;
+            const bool valid = key >= my_first && key < my_last;
+            sv[j] = valid ? score_tile[my_row * uint(kSwaMppKeys) + col] : -INFINITY;
+            tile_max = max(tile_max, sv[j]);
+        }
+        tile_max = max(tile_max, simd_shuffle_xor(tile_max, 1u));
+        const float old_max = row_max[my_row];
+        const float new_max = max(old_max, tile_max);
+        const bool seen = new_max != -INFINITY;
+        const float scale = !seen ? 1.0f
+            : old_max == -INFINITY ? 0.0f
+            : fast::exp(old_max - new_max);
+        float tile_sum = 0.0f;
+        for (uint j = 0u; j < 32u; ++j) {
+            const float w = sv[j] == -INFINITY ? 0.0f : fast::exp(sv[j] - new_max);
+            tile_sum += w;
+            weight_tile[my_row * uint(kSwaMppKeys) + my_half * 32u + j] = half(w);
+        }
+        tile_sum += simd_shuffle_xor(tile_sum, 1u);
+        // Both threads of the row read row_max above; the barrier below
+        // orders the write against the next block's reads.
+        simdgroup_barrier(mem_flags::mem_threadgroup);
+        if (my_half == 0u) {
+            if (seen) row_max[my_row] = new_max;
+            row_sum[my_row] = row_sum[my_row] * scale + tile_sum;
+            row_scale[my_row] = scale;
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        #pragma clang loop unroll(full)
+        for (int e = 0; e < acc.get_capacity(); ++e) {
+            if (!acc.is_valid_element(e)) continue;
+            const auto pos = acc.get_multidimensional_index(e);
+            acc[e] *= row_scale[uint(pos[1])];
+        }
+        auto v_slice = v_tensor.slice(0, phys);
+        pv_op.run(w_tensor, v_slice, acc);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    #pragma clang loop unroll(full)
+    for (int e = 0; e < acc.get_capacity(); ++e) {
+        if (!acc.is_valid_element(e)) continue;
+        const auto pos = acc.get_multidimensional_index(e);
+        const uint row = uint(pos[1]);
+        const uint t = q0 + row;
+        if (t >= p.queryCount) continue;
+        const float sum = row_sum[row];
+        O[t * p.oTokenStrideElements + qh * uint(kSwaMppHeadDim) + uint(pos[0])] =
+            half(sum > 0.0f ? acc[e] / sum : 0.0f);
+    }
+}
+
 #endif

@@ -72,6 +72,14 @@ final class PrefillAttention {
         ProcessInfo.processInfo.environment["TF_PREFILL_ATTN"] == "sgmm"
     private static let forcedQBlock =
         ProcessInfo.processInfo.environment["TF_PREFILL_ATTN"] == "qblock"
+    /// `TF_PREFILL_ATTN=mpp` sends the headDim-256 dispatches of either
+    /// default to the `matmul2d` kernel where the library has it and the shape
+    /// allows (docs/m6-prefill/25). A candidate: off unless asked for.
+    private static let forcedSwaMPP =
+        ProcessInfo.processInfo.environment["TF_PREFILL_ATTN"] == "mpp"
+    private static let swaMPPRows = 64
+    private static let swaMPPKeys: UInt32 = 64
+    private static let swaMPPThreads = 128
     private static let sgmmHeadDim: UInt32 = 256
     private static let sgmmQueries = 32
     private static let sgmmThreads = 128
@@ -83,6 +91,9 @@ final class PrefillAttention {
     private let context: MetalContext
     private let psoCausalTiled: MTLComputePipelineState
     private let psoFullTensorOps2DValidityV2: MTLComputePipelineState?
+    /// Whether the library has the `matmul2d` sliding-window kernel at all;
+    /// the ring-specialised pipelines are built on first use.
+    private let hasSwaMPP: Bool
 
     init(context: MetalContext) throws {
         self.context = context
@@ -93,6 +104,8 @@ final class PrefillAttention {
         // (docs/m6-prefill/05-RISKS.md §7).
         self.psoFullTensorOps2DValidityV2 =
             try? context.pipeline("attention_prefill_full_tensorops_2d_validity_v2")
+        self.hasSwaMPP = Self.forcedSwaMPP
+            && (try? context.pipeline("attention_prefill_swa_mpp_d256")) != nil
     }
 
     func encodeCausal(commandBuffer: MTLCommandBuffer,
@@ -131,7 +144,14 @@ final class PrefillAttention {
             && params.numKVHeads == 2
             && params.scale == 1.0
         let tensorOpsPipeline = tensorOpsShape ? psoFullTensorOps2DValidityV2 : nil
-        enum Variant { case tensorOps, sgmm, sgmmGqa, qBlock, tiled }
+        // K and V are sliced a key block at a time, so a ring has to be a
+        // whole number of blocks; the kernel has no span mask.
+        let swaMPPShape = hasSwaMPP
+            && (path == .causalSimdgroupMatrix || path == .causalQBlock)
+            && params.headDim == Self.sgmmHeadDim
+            && params.spanMaskEnabled == 0
+            && kvRingCapacity % Self.swaMPPKeys == 0
+        enum Variant { case tensorOps, swaMPP, sgmm, sgmmGqa, qBlock, tiled }
         let variant: Variant
         let pipeline: MTLComputePipelineState
         var qBlock: QBlockSpecialisation?
@@ -141,6 +161,9 @@ final class PrefillAttention {
         } else if tensorOpsShape && path == .fullTensorOps2DValidityV2 {
             preconditionFailure(
                 "TensorOps 2D prefill attention requires Apple10 MPP tensor support")
+        } else if swaMPPShape {
+            variant = .swaMPP
+            pipeline = sgmmPipeline("attention_prefill_swa_mpp_d256", kvRingCapacity: kvRingCapacity)
         } else if path == .causalSimdgroupMatrix && params.headDim == Self.sgmmHeadDim {
             let gqa = params.numQHeads == Self.sgmmGqaHeads * params.numKVHeads
             variant = gqa ? .sgmmGqa : .sgmm
@@ -164,6 +187,7 @@ final class PrefillAttention {
         let threadCount: Int
         switch variant {
         case .tensorOps: threadCount = 128
+        case .swaMPP: threadCount = Self.swaMPPThreads
         case .sgmm: threadCount = Self.sgmmThreads
         case .sgmmGqa: threadCount = Self.sgmmGqaThreads
         case .qBlock: threadCount = Self.qBlockThreads
@@ -189,6 +213,11 @@ final class PrefillAttention {
             groups = MTLSize(width: Int(params.queryCount),
                              height: Int(params.numQHeads) / 8,
                              depth: 1)
+        case .swaMPP:
+            groups = MTLSize(
+                width: (Int(params.queryCount) + Self.swaMPPRows - 1) / Self.swaMPPRows,
+                height: Int(params.numQHeads),
+                depth: 1)
         case .sgmm, .sgmmGqa:
             groups = MTLSize(
                 width: (Int(params.queryCount) + Self.sgmmQueries - 1) / Self.sgmmQueries,
