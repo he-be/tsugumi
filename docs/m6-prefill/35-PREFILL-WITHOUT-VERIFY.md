@@ -1,4 +1,4 @@
-# 35. prefill の計測から層ファイルの検証を外す — 全層を先に開く形は、ページキャッシュを追い出して別の歪みを入れた (実測、2026-09-24)
+# 35. prefill の計測から層ファイルの検証を外す — `trusted-install` で 2.897 s。全層を先に開く形はページキャッシュを追い出すので使わない (実測、2026-09-24)
 
 **決まり (ユーザー、2026-09-24)**: prefill の秒に、層ファイルの SHA-256 検証を含めない。検証を含む計測は使わない。
 [06](06-LEDGER.md) の行はすべて検証を含む量 (新しいプロセスの 1 回目の prefill。層ファイルは初めて触るときに開いてハッシュする) だったので、進捗の物差しから取り下げた。
@@ -28,7 +28,24 @@
 
 `nv-host` の 3 本目: `fetch` 1.292 s、GPU の空き 0.831 s のうち `fetch` の間 0.727 s。residency の同期が 1.255 s (34 では 0.18 s 前後)。
 
-## 2. 次に渡すもの
+## 2. `trusted-install` で測った (ef29110)
 
-- 検証をせずに prefill を測るには `--verification trusted-install` (ファイルサイズだけ確かめる) を使う。M6 のモデルの受領書は MBP のパスを指していて読めない (34 §2)。`TsugumiRepack --verify-install` で M6 の置き場所の受領書を作り直すかは、ユーザーの判断を待っている。
-- `prefill_bench.sh` は b0b4de2 から `--open-layers-before-prompt` を付けている。これは §0-3 の理由で差し替える。
+M6 の受領書を `TsugumiRepack --verify-install --input-moepack scratch/gemma4-qat-sym.gturbo` で M6 の置き場所に作り直した (ユーザーの了承の上。39 ファイル 15,681,261,432 バイトが一致、manifest のハッシュは前と同じ。元の受領書は M6 の `~/verified-install.json.mbp-path.bak`)。
+`prefill_bench.sh` は `--verification trusted-install` で測る。`--open-layers-before-prompt` は CLI から消した。
+
+証拠: [`ledger-trusted`](../../bench/m6/results/2026-09-24-Mac18-5-ledger-trusted/) (n = 6)、[`trusted-host`](../../bench/m6/results/2026-09-24-Mac18-5-trusted-host/) (`TF_PREFILL_HOST_PROFILE=1`、n = 3)。commit ef29110。全 run exit 0、Swapouts 0。
+
+| | 値 |
+| --- | --- |
+| prefill s (run 順) | 3.123、2.993、2.884、2.889、2.905、2.880。**中央値 2.897** (台帳 §1 の最初の行) |
+| run 中の Pageins (MiB、導出) | 3633、3659、3095、2961、3031、3129 |
+| GPU busy / idle (`trusted-host` の 2・3 本目) | 2.451 / 0.335、2.457 / 0.328 s |
+| GPU の空きのうち `fetch` の間 | 0.270、0.272 s |
+| residency の同期 (`[expert mmap]`) | 0.726、0.712 s |
+
+- 検証が無いので、エキスパートのページは prefill の中で SSD から引かれる。その分が residency の同期 (0.18 → 0.71 s) と、fetch の間の GPU の空きに出ている。
+- 到達目標 mlx_lm 1.823 s (検証なし、暖まったプロセス) と並べる量はこれ。差は 1.07 s (導出)。GPU busy 2.45 s が MLX の全体 1.823 s より 0.63 s 長い。
+
+## 3. 次に渡すもの
+
+- 残る差は GPU busy (2.45 s) と、SSD からの読みで GPU が空く分 (約 0.3 s)。
