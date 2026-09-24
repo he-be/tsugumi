@@ -6,7 +6,7 @@
 # (2478 prompt tokens), 32 slots, chunk 2048, max-new 1, max-context 4096,
 # full-sha256. Change nothing here without a new label; pp is 2478 / prefill s.
 # Output: bench/m6/results/<date>-<host>-<label>/
-#   hostinfo.txt command.txt env.txt run-N.log run-N.pre.txt summary.tsv
+#   hostinfo.txt command.txt env.txt run-N.log run-N.pre.txt run-N.post.txt summary.tsv
 set -eu
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 label=${1:?label}; shift
@@ -41,9 +41,11 @@ echo "$*" > "$out/command.txt"
 printf 'run\tprefill_s\tpp_tok_s\tprefill_io_s\tlayerVerify_s\tload_s\tttft_s\tpeak_gb\texit\n' > "$out/summary.tsv"
 i=1
 while [ "$i" -le "$n" ]; do
-    { date '+%H:%M:%S'; memory_pressure -Q 2>/dev/null || true; vm_stat | sed -n '1,8p'; } > "$out/run-$i.pre.txt"
+    { date '+%H:%M:%S'; memory_pressure -Q 2>/dev/null || true; vm_stat; } > "$out/run-$i.pre.txt"
     rc=0
     "$@" > "$out/run-$i.log" 2>&1 || rc=$?
+    # After the run too, so Swapins/Swapouts during it are the difference of the two.
+    { date '+%H:%M:%S'; memory_pressure -Q 2>/dev/null || true; vm_stat; } > "$out/run-$i.post.txt"
     awk -v run="$i" -v tokens="$tokens" -v rc="$rc" '
         /^\[load=/ { for (k = 1; k <= NF; k++) { split($k, kv, "="); sub(/^\[/, "", kv[1]); v = kv[2]; sub(/s.*$|GB.*$|\]$/, "", v); f[kv[1]] = v } }
         /^\[expert prefill/ { for (k = 1; k <= NF; k++) if ($k ~ /^io=/) { v = $k; sub(/^io=/, "", v); sub(/s$/, "", v); pio = v; break } }

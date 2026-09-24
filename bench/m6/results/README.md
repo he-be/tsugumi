@@ -4,7 +4,7 @@
 
 - 命名: `YYYY-MM-DD-<hw.model>-<label>/`。`Mac15-6` = MBP (M3 Pro)、`Mac18-5` = M6 mini。
 - 作るのはスクリプト (`../run_probe.sh`、`../prefill_bench.sh`) で、手で作らない。
-- 中身: `hostinfo.txt` (commit 入り) / `command.txt` / `env.txt` / `run-N.log` / `run-N.pre.txt` / `summary.tsv` / `output.txt`。
+- 中身: `hostinfo.txt` (commit 入り) / `command.txt` / `env.txt` / `run-N.log` / `run-N.pre.txt` / `run-N.post.txt` (前後の vm_stat 全行、差が run 中の Swapouts) / `summary.tsv` / `output.txt`。
 - `run-N.log` は削らない。結果文書は `summary.tsv` から中央値を引く。
 - 結果文書と同じ commit に入れる。
 - 進捗の台帳 (`docs/m6-prefill/06-LEDGER.md`) は `../ledger.sh` がここから生成する。既定行になるのは `env.txt` に `TF_` が無く、
