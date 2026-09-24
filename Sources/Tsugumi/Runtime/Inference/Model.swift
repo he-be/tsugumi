@@ -440,12 +440,17 @@ public struct Model {
         guard L >= 0, L < packedExpertsLayout.numLayers else { return }
         nonisolated(unsafe) let model = self
         let experts = Array(0..<packedExpertsLayout.layers[L].experts.count)
+        // Opened on the streamer queue; the advice itself goes to a queue of
+        // its own, so a long `F_RDADVISE` never holds up the next layer's open.
         streamersQueue.async {
             guard (try? model.openLayerLocked(L)) != nil,
                   let streamer = model.streamersBox.streamers[L] else { return }
-            _ = streamer.adviseExperts(experts: experts)
+            Self.adviseQueue.async {
+                _ = streamer.adviseExperts(experts: experts)
+            }
         }
     }
+    private static let adviseQueue = DispatchQueue(label: "tsugumi.prefill.advise-ahead")
 
     /// Hash layer L's file on a queue of its own, so the open that follows
     /// finds it verified instead of hashing in front of every expert access on
