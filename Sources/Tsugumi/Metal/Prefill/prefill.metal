@@ -1362,9 +1362,10 @@ template [[host_name(NAME)]] kernel void prefill_moe_gemm_int4_mpp_pf_t<TM>(    
     device const PrefillStreamedRoutedBlobsMSL&,                                  \
     constant PrefillGroupedRoutedMoEStreamedParamsMSL&, constant uint&,           \
     uint3, uint3);
-// 64 rows for full blocks; 32 for a block of at most 32 rows (docs/m6-prefill/28).
+// Tile heights the bench compares (docs/m6-prefill/28).
 PREFILL_MOE_GEMM_MPP_PF("prefill_moe_gemm_int4_mpp_pf", 64)
 PREFILL_MOE_GEMM_MPP_PF("prefill_moe_gemm_int4_mpp_pf_m32", 32)
+PREFILL_MOE_GEMM_MPP_PF("prefill_moe_gemm_int4_mpp_pf_m128", 128)
 #undef PREFILL_MOE_GEMM_MPP_PF
 
 #endif

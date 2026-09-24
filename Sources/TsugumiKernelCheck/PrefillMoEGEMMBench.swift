@@ -69,18 +69,29 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
         argumentEncoder.setBuffer(blob, offset: 0, index: index)
     }
 
-    // (name, 64-row kernel, kernel for blocks of at most 32 rows or nil).
-    var kernels: [(String, MTLComputePipelineState, MTLComputePipelineState?)] = []
+    // (name, tiers): each tier is (kernel, tile rows), tallest first. An
+    // expert's rows are cut into blocks of the tallest tier; the remainder
+    // goes to the shortest tier that holds it.
+    var kernels: [(String, [(MTLComputePipelineState, Int)])] = []
     if let mpp = try? context.pipeline("prefill_moe_gemm_int4_mpp") {
-        kernels.append(("mpp", mpp, nil))
+        kernels.append(("mpp", [(mpp, 64)]))
     }
     if let pf = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf") {
-        kernels.append(("mpp-pf", pf, nil))
-        if let m32 = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_m32") {
-            kernels.append(("mpp-pf-m32tail", pf, m32))
+        kernels.append(("mpp-pf", [(pf, 64)]))
+        let m32 = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_m32")
+        let m128 = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_m128")
+        if let m32 {
+            kernels.append(("mpp-pf-64/32", [(pf, 64), (m32, 32)]))
+        }
+        if let m128 {
+            kernels.append(("mpp-pf-128", [(m128, 128)]))
+            kernels.append(("mpp-pf-128/64", [(m128, 128), (pf, 64)]))
+            if let m32 {
+                kernels.append(("mpp-pf-128/64/32", [(m128, 128), (pf, 64), (m32, 32)]))
+            }
         }
     }
-    kernels.append(("simdgroup", try context.pipeline("prefill_moe_gemm_int4"), nil))
+    kernels.append(("simdgroup", [(try context.pipeline("prefill_moe_gemm_int4"), 64)]))
 
     let perBuffer = 8
     print("moe-gemm-bench g=\(groupSize) sym D=\(benchD) F=\(benchF) experts=\(benchExperts) iterations=\(iterations)")
@@ -89,21 +100,10 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
         // Pairs: expert e takes rows [e*r, (e+1)*r), tokens drawn without a
         // pattern so the gather is scattered as in production.
         var pairs: [MoEGEMMBenchPair] = []
-        var blocks: [MoEGEMMBenchBlock] = []
         for expert in 0..<benchExperts {
-            let start = pairs.count
             for _ in 0..<rowsPerExpert {
                 pairs.append(MoEGEMMBenchPair(token: UInt32(rng.next() % UInt64(benchTokens)),
                                               expert: UInt32(expert), rank: 0, weightBits: 0))
-            }
-            var done = 0
-            while done < rowsPerExpert {
-                let count = min(64, rowsPerExpert - done)
-                blocks.append(MoEGEMMBenchBlock(localSlot: UInt32(expert),
-                                                pairStart: UInt32(start + done),
-                                                rowCount: UInt32(count),
-                                                localRow: UInt32(start + done)))
-                done += count
             }
         }
         let rows = pairs.count
@@ -121,16 +121,31 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
             fatalError("moe gemm bench allocation failed")
         }
         let flops = 2.0 * 2.0 * Double(rows) * Double(benchF) * Double(benchD)
-        let paddedRows = blocks.count * 64
-        let paddedFlops = 2.0 * 2.0 * Double(paddedRows) * Double(benchF) * Double(benchD)
-
-        for (name, pso64, pso32) in kernels {
-            // With a 32-row kernel, blocks of at most 32 rows go to it in a
-            // second dispatch.
-            let narrow = pso32 == nil ? [] : blocks.filter { $0.rowCount <= 32 }
-            let wide = pso32 == nil ? blocks : blocks.filter { $0.rowCount > 32 }
+        for (name, tiers) in kernels {
+            var tierBlocks = [[MoEGEMMBenchBlock]](repeating: [], count: tiers.count)
+            for expert in 0..<benchExperts {
+                let start = expert * rowsPerExpert
+                var done = 0
+                while done < rowsPerExpert {
+                    let left = rowsPerExpert - done
+                    var tier = 0
+                    if left < tiers[0].1 {
+                        tier = tiers.lastIndex { $0.1 >= left } ?? 0
+                    }
+                    let count = min(tiers[tier].1, left)
+                    tierBlocks[tier].append(MoEGEMMBenchBlock(localSlot: UInt32(expert),
+                                                              pairStart: UInt32(start + done),
+                                                              rowCount: UInt32(count),
+                                                              localRow: UInt32(start + done)))
+                    done += count
+                }
+            }
+            let blockCount = tierBlocks.reduce(0) { $0 + $1.count }
+            let paddedRows = zip(tiers, tierBlocks).reduce(0) { $0 + $1.0.1 * $1.1.count }
+            let paddedFlops = 2.0 * 2.0 * Double(paddedRows) * Double(benchF) * Double(benchD)
             func encode(_ cmd: MTLCommandBuffer) {
-                for (pso, blocks) in [(pso64, wide), (pso32 ?? pso64, narrow)] where !blocks.isEmpty {
+                for (tier, blocks) in zip(tiers, tierBlocks) where !blocks.isEmpty {
+                let pso = tier.0
                 guard let enc = cmd.makeComputeCommandEncoder() else { return }
                 enc.setComputePipelineState(pso)
                 enc.setBuffer(hidden, offset: 0, index: 0)
@@ -166,7 +181,7 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
             let one = time(dispatches: 1)
             let batched = time(dispatches: perBuffer)
             print(String(format: "%@\t%d\t%d\t%d\t%.1f\t%.1f\t%.2f\t%.2f\t%.2f",
-                         name, rowsPerExpert, rows, blocks.count, one * 1e6, batched * 1e6,
+                         name, rowsPerExpert, rows, blockCount, one * 1e6, batched * 1e6,
                          flops / one / 1e12, flops / batched / 1e12, paddedFlops / batched / 1e12))
         }
     }
