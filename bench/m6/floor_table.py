@@ -29,9 +29,19 @@ floor = {
     'attn.swa': (LS * 4 * 16 * 256 * sw, LS * T * (4096 + 2048 + 2048 + 4096) * 2),
     'attn.full': (LF * 4 * 16 * 512 * fc, LF * T * (8192 + 1024 + 8192) * 2),
     'post': (L * 2 * T * H * 128, L * (4 * T * H * 2 + 128 * H * 2)),
+    # post split (level 2 from 24's follow-up on): the norms read hidden and
+    # the attention output and write hidden plus the three FFN inputs; the
+    # router reads its input and its bf16 weight once.
+    'post.norm': (0, L * 6 * T * H * 2),
+    'post.router': (L * 2 * T * H * 128, L * (T * H * 2 + 128 * H * 2)),
     'shared': (L * 2 * T * H * 2112 * 3, L * (3 * H * 2112 * W + 2 * T * H * 2)),
     'moe': (L * 2 * T * 8 * H * 704 * 3, L * (128 * 3 * H * 704 * W + 2 * T * H * 2)),
     'tail': (0, L * 3 * T * H * 2),
+    # moe split, for the stages as they are built (gate/up written to scratch,
+    # gelu reads both and writes act, down writes one partial per pair).
+    'moe.gateup': (L * 2 * T * 8 * H * 704 * 2, L * (128 * 2 * H * 704 * W + T * H * 2 + T * 8 * 704 * 2 * 2)),
+    'moe.gelu': (0, L * T * 8 * 704 * 2 * 3),
+    'moe.down': (L * 2 * T * 8 * 704 * H, L * (128 * H * 704 * W + T * 8 * 704 * 2 + T * 8 * H * 2)),
 }
 
 def lines(d, prefix):
@@ -44,20 +54,31 @@ def lines(d, prefix):
 
 l1 = lines(sys.argv[1], '[prefill gpu attn=')
 l2 = lines(sys.argv[2], '[prefill gpu attn embed=')
+l2m = lines(sys.argv[2], '[prefill gpu moe ')
 med = {k: statistics.median(r[k] for r in l1) for k in ('attn', 'shared', 'moe', 'tail')}
 mid = sorted(l2, key=lambda r: r['total'])[len(l2) // 2]
 parts = {k: v for k, v in mid.items() if k != 'total'}
 meas = {k: med['attn'] * v / sum(parts.values()) for k, v in parts.items()}
 meas.update({k: med[k] for k in ('shared', 'moe', 'tail')})
+if 'post.norm' in meas:
+    meas['post'] = meas['post.norm'] + meas['post.router']
+if l2m:
+    # Same rule as attn: level-2 fractions of the median run, on level 1's moe.
+    midm = sorted(l2m, key=lambda r: r['total'])[len(l2m) // 2]
+    for k in ('gateup', 'gelu', 'down', 'other'):
+        meas['moe.' + k] = med['moe'] * midm.get(k, 0) / midm['total']
 
 print(f'ceilings: {flops / 1e12:.2f} TFLOP/s, {bw / 1e9:.1f} GB/s; level-1 runs {len(l1)}, level-2 runs {len(l2)}')
 print('stage\tTFLOP\tGB\tcompute_s\tbytes_s\tfloor_s\tmeasured_s\tgap_s')
 rows = []
 for k, (f, b) in floor.items():
+    if k not in meas:
+        continue
     lb = max(f / flops, b / bw)
     rows.append((meas[k] - lb, k, f, b, lb))
 for gap, k, f, b, lb in sorted(rows, reverse=True):
     print(f'{k}\t{f / 1e12:.3f}\t{b / 1e9:.3f}\t{f / flops:.3f}\t{b / bw:.3f}\t{lb:.3f}\t{meas[k]:.3f}\t{gap:.3f}')
 rest = {k: v for k, v in meas.items() if k not in floor}
 print('not in table (no floor derived):', ', '.join(f'{k} {v:.3f}' for k, v in rest.items()))
-print(f'sum floor {sum(r[4] for r in rows):.3f}  sum measured {sum(meas.values()):.3f}')
+top = [r for r in rows if '.' not in r[1] or r[1].startswith('attn.')]
+print(f'sum floor {sum(r[4] for r in top):.3f}  sum measured {sum(meas[r[1]] for r in top):.3f} (stages without a split row)')

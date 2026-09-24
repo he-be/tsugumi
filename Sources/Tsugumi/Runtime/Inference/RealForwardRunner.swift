@@ -1809,6 +1809,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                             routedStrideElements: UInt32(D),
                                             routerStrideElements: UInt32(D),
                                             eps: eps)
+            try cutProfiled(.postNorm)
             // A block narrow enough for the row-at-a-time decode router takes
             // it. The router is 720 KB a layer, so reading it once per row
             // costs about a millisecond a block; what it buys is that the
@@ -1964,7 +1965,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     sharedCB.commit()
                     prefillHostProfile.add(.encodeFront, since: frontStart)
                     let frontWaitStart = PrefillHostProfile.mark()
-                    try waitProfiled(.attention, cb, detail: .post)
+                    try waitProfiled(.attention, cb, detail: .router)
                     try flushProfiledSegments()
                     prefillHostProfile.add(.waitFront, since: frontWaitStart)
                     // The previous layer's routed buffer has to be done before
@@ -2258,6 +2259,11 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         let argumentBuffer: PrefillStreamedTileArgumentBuffer
                     }
                     var pendingTiles: [PendingPrefillTile] = []
+                    /// Detail mode only: a prompt chunk's tiles encode their
+                    /// GEMMs and gelu into buffers of their own, committed ahead
+                    /// of the tile's buffer and read back once the layer's
+                    /// tiles are drained (`PrefillGPUProfile.MoEDetail`).
+                    var moeProfiledSegments: [(PrefillGPUProfile.MoEDetail, MTLCommandBuffer)] = []
                     var tileLifetime = PrefillStreamedTileSlotLifetime()
                     func drainOldestPendingTile() throws {
                         guard !pendingTiles.isEmpty else { return }
@@ -2457,8 +2463,15 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                            // measurement uses to find where the crossover is
                            // (docs/mtp/15-M4-RESULTS.md §4).
                            prefillGroupedMoE.usesExpertGEMMPath(d: D, f: cfg.moeIntermediateSize) {
+                            let splitTile = PrefillGPUProfile.isDetailed && !blockPipeline
+                            func profiledSegment() -> MTLCommandBuffer? {
+                                guard let next = ctx.queue.makeCommandBuffer() else { return nil }
+                                attachExpertResidency(next, layer: L)
+                                return next
+                            }
+                            let firstSegment = splitTile ? profiledSegment() : nil
                             _ = prefillGroupedMoE.encodeStreamedTiled(
-                                commandBuffer: tileCB,
+                                commandBuffer: firstSegment ?? tileCB,
                                 hidden: scratch.routedX,
                                 sortedPairs: metadata.sortedPairs,
                                 routePartials: scratch.routePartials,
@@ -2467,7 +2480,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                 binding: fetch.binding,
                                 groups: tileGroups,
                                 params: streamedParams,
-                                maxRowsPerBatch: scratch.layout.routedGEMMBatchRows)
+                                maxRowsPerBatch: scratch.layout.routedGEMMBatchRows,
+                                profileCut: firstSegment == nil ? nil : { detail, segment in
+                                    segment.commit()
+                                    moeProfiledSegments.append((detail, segment))
+                                    return profiledSegment()
+                                })
                         } else {
                             _ = prefillGroupedMoE.encodeStreamedBatched(
                                 commandBuffer: tileCB,
@@ -2507,6 +2525,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     }
                     while !pendingTiles.isEmpty {
                         try drainOldestPendingTile()
+                    }
+                    for (detail, segment) in moeProfiledSegments {
+                        try waitForCompletion(segment)
+                        prefillGPUProfile.recordMoE(detail, segment)
+                        prefillHostProfile.recordGPUInterval(start: segment.gpuStartTime,
+                                                             end: segment.gpuEndTime)
                     }
                     let tailStart = PrefillHostProfile.mark()
                     guard let tailCB = ctx.queue.makeCommandBuffer() else {

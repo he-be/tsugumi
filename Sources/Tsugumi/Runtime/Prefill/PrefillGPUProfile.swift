@@ -50,18 +50,32 @@ struct PrefillGPUProfile {
         case attentionFull = "attn.full"
         /// The output projection.
         case outputProjection = "oproj"
-        /// Post-attention norms plus the router.
-        case post
+        /// Post-attention residual and the three pre-FFN norms.
+        case postNorm = "post.norm"
+        /// The router (and the router-ahead preview when it is on).
+        case router = "post.router"
+    }
+
+    /// Sub-stages of a prompt chunk's routed tiles, resolved only in detail
+    /// mode. Each tile's gate/up GEMM, gelu and down GEMM get a command buffer
+    /// of their own, so the `moe` bucket can say how much of it is the GEMMs.
+    /// Whatever stays in the tile's own buffer is printed as `other`.
+    enum MoEDetail: String, CaseIterable {
+        case gateUp = "gateup"
+        case gelu
+        case down
     }
 
     private static let level = ProcessInfo.processInfo.environment["TF_PREFILL_GPU_PROFILE"]
 
     static let isEnabled = level == "1" || level == "2"
-    /// `TF_PREFILL_GPU_PROFILE=2`: also split `.attention` into `Detail` groups.
+    /// `TF_PREFILL_GPU_PROFILE=2`: also split `.attention` into `Detail` groups
+    /// and a prompt chunk's routed tiles into `MoEDetail` groups.
     static let isDetailed = level == "2"
 
     private var seconds: [Stage: Double] = [:]
     private var detailSeconds: [Detail: Double] = [:]
+    private var moeDetailSeconds: [MoEDetail: Double] = [:]
     /// Dispatches per "family:path", so a run's log says which kernel served
     /// each projection family (docs/m6-prefill/04-GATES.md G1).
     private var projectionDispatches: [String: Int] = [:]
@@ -74,6 +88,16 @@ struct PrefillGPUProfile {
         guard span > 0 else { return }
         seconds[stage, default: 0] += span
         if Self.isDetailed, let detail { detailSeconds[detail, default: 0] += span }
+    }
+
+    /// A detail-mode segment of a routed tile: counted in `.moe` like the
+    /// tile's own buffer, and in its `MoEDetail` group.
+    mutating func recordMoE(_ detail: MoEDetail, _ commandBuffer: MTLCommandBuffer) {
+        guard Self.isDetailed else { return }
+        let span = commandBuffer.gpuEndTime - commandBuffer.gpuStartTime
+        guard span > 0 else { return }
+        seconds[.moe, default: 0] += span
+        moeDetailSeconds[detail, default: 0] += span
     }
 
     mutating func recordProjection(_ family: PrefillProjectionFamily, path: String) {
@@ -104,7 +128,18 @@ struct PrefillGPUProfile {
                     .joined(separator: " ")
                 + "]"
         }
-        guard Self.isDetailed, !detailSeconds.isEmpty else { return line }
+        guard Self.isDetailed else { return line }
+        if !moeDetailSeconds.isEmpty, let moe = seconds[.moe] {
+            let split = moeDetailSeconds.values.reduce(0, +)
+            let moeParts = MoEDetail.allCases.compactMap { detail -> String? in
+                guard let value = moeDetailSeconds[detail], value > 0 else { return nil }
+                return String(format: "%@=%.3fs(%.0f%%)", detail.rawValue, value, value / moe * 100)
+            }
+            line += "\n[" + label + " moe " + moeParts.joined(separator: " ")
+                + String(format: " other=%.3fs(%.0f%%) total=%.3fs]",
+                         moe - split, (moe - split) / moe * 100, moe)
+        }
+        guard !detailSeconds.isEmpty else { return line }
         let attentionTotal = detailSeconds.values.reduce(0, +)
         let detailParts = Detail.allCases.compactMap { detail -> String? in
             guard let value = detailSeconds[detail], value > 0 else { return nil }
@@ -119,6 +154,7 @@ struct PrefillGPUProfile {
     mutating func reset() {
         seconds.removeAll(keepingCapacity: true)
         detailSeconds.removeAll(keepingCapacity: true)
+        moeDetailSeconds.removeAll(keepingCapacity: true)
         projectionDispatches.removeAll(keepingCapacity: true)
     }
 }

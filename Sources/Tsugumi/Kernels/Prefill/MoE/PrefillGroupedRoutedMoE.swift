@@ -910,7 +910,8 @@ final class PrefillGroupedRoutedMoE {
                              binding: PrefillStreamedTileBinding,
                              groups: [PrefillMoEGroup],
                              params: PrefillGroupedRoutedMoEStreamedParams,
-                             maxRowsPerBatch: Int) -> Int {
+                             maxRowsPerBatch: Int,
+                             profileCut: ((PrefillGPUProfile.MoEDetail, MTLCommandBuffer) -> MTLCommandBuffer?)? = nil) -> Int {
         guard let simdgroupGEMMPSO = gemmPSO, let geluMulPSO,
               params.liveExpertCount == UInt32(binding.views.count),
               groups.count == binding.views.count,
@@ -929,6 +930,12 @@ final class PrefillGroupedRoutedMoE {
             && hiddenOffset % 8 == 0
             && gateUpActScratchOffset % 8 == 0
         let gemmPSO = mppFits ? (gemmMPPPSO ?? simdgroupGEMMPSO) : simdgroupGEMMPSO
+        // Profile detail mode only: hand the buffer holding the group just
+        // encoded to the caller, and continue in the one it returns.
+        var commandBuffer = commandBuffer
+        func cut(_ detail: PrefillGPUProfile.MoEDetail) {
+            if let profileCut, let next = profileCut(detail, commandBuffer) { commandBuffer = next }
+        }
 
         for batch in batches {
             var p = params
@@ -971,6 +978,7 @@ final class PrefillGroupedRoutedMoE {
             }
 
             encodeGEMM(mode: 0, nTiles: nTilesGateUp, depth: 2)
+            cut(.gateUp)
 
             if let enc = commandBuffer.makeComputeCommandEncoder() {
                 enc.setComputePipelineState(geluMulPSO)
@@ -985,8 +993,10 @@ final class PrefillGroupedRoutedMoE {
                                     threadsPerThreadgroup: MTLSize(width: width, height: 1, depth: 1))
                 enc.endEncoding()
             }
+            cut(.gelu)
 
             encodeGEMM(mode: 1, nTiles: nTilesDown, depth: 1)
+            cut(.down)
         }
         return batches.count
     }
