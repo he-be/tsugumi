@@ -252,6 +252,8 @@ kernel void mpp_prefill_affine_tile64_f16(
 // (16-row A fragment, 32-column B pair, 16-wide K step).
 // Changed: Tsugumi's bf16 scales and scheme bias (w4a8_int4_bias), dequant in
 // f32 as tile64 does, fp16 activations and output, plain M/N/K arguments.
+#define NAX_UNROLL _Pragma("clang loop unroll(full)")
+#define NAX_NO_UNROLL _Pragma("clang loop unroll(disable)")
 constant constexpr uint kNAXTileM = 64;
 constant constexpr uint kNAXTileN = 64;
 constant constexpr uint kNAXTileK = 64;
@@ -282,6 +284,7 @@ static inline void nax_mma(thread nax_frag_f& c0, thread nax_frag_f& c1,
     auto ct_c = op.get_destination_cooperative_tensor<
         metal::remove_addrspace_t<decltype(ct_a)>,
         metal::remove_addrspace_t<decltype(ct_b)>, float>();
+    NAX_UNROLL
     for (short i = 0; i < 8; ++i) {
         ct_a[i] = a[i];
         ct_b[i] = b0[i];
@@ -290,6 +293,7 @@ static inline void nax_mma(thread nax_frag_f& c0, thread nax_frag_f& c1,
         ct_c[8 + i] = c1[i];
     }
     op.run(ct_a, ct_b, ct_c);
+    NAX_UNROLL
     for (short i = 0; i < 8; ++i) {
         c0[i] = ct_c[i];
         c1[i] = ct_c[8 + i];
@@ -327,7 +331,9 @@ kernel void mpp_prefill_affine_nax_f16(
     threadgroup half* bDst = Ws + bRow * kNAXLd + bCol;
 
     nax_frag_f C[2][2];
+    NAX_UNROLL
     for (short a = 0; a < 2; ++a) {
+        NAX_UNROLL
         for (short b = 0; b < 2; ++b) {
             C[a][b] = nax_frag_f(0.0f);
         }
@@ -342,6 +348,7 @@ kernel void mpp_prefill_affine_nax_f16(
             const float bias = w4a8_int4_bias(biases, group, scale);
             // Packed sub-tensor offsets are only 2-byte aligned.
             device const ushort* wPtr = (device const ushort*)(wRow + (kb >> 1));
+            NAX_UNROLL
             for (uint q = 0; q < 8u; ++q) {
                 const uint packed = uint(wPtr[q]);
                 half4 v;
@@ -352,18 +359,23 @@ kernel void mpp_prefill_affine_nax_f16(
                 *((threadgroup half4*)(bDst + q * 4u)) = v;
             }
         } else {
+            NAX_UNROLL
             for (uint q = 0; q < 8u; ++q) {
                 *((threadgroup half4*)(bDst + q * 4u)) = half4(0.0h);
             }
         }
         threadgroup_barrier(mem_flags::mem_threadgroup);
 
+        NAX_NO_UNROLL
         for (uint kk1 = 0; kk1 < kNAXTileK; kk1 += 32u) {
             nax_frag_h A[2][2];   // [m fragment][k fragment]
             nax_frag_h B[2][2];   // [n fragment][k fragment]
+            NAX_UNROLL
             for (short mm = 0; mm < 2; ++mm) {
+                NAX_UNROLL
                 for (short kk = 0; kk < 2; ++kk) {
                     const uint col = k0 + kk1 + uint(kk) * 16u + uint(sc.x);
+                    NAX_UNROLL
                     for (short i = 0; i < 2; ++i) {
                         const uint row = mBase + tm + uint(mm) * 16u + uint(sc.y) + uint(i) * 8u;
                         const half4 v = row < M
@@ -376,9 +388,12 @@ kernel void mpp_prefill_affine_nax_f16(
                     }
                 }
             }
+            NAX_UNROLL
             for (short nn = 0; nn < 2; ++nn) {
+                NAX_UNROLL
                 for (short kk = 0; kk < 2; ++kk) {
                     const uint col = kk1 + uint(kk) * 16u + uint(sc.x);
+                    NAX_UNROLL
                     for (short i = 0; i < 2; ++i) {
                         const uint row = tn + uint(nn) * 16u + uint(sc.y) + uint(i) * 8u;
                         const half4 v = *((threadgroup half4*)(Ws + row * kNAXLd + col));
@@ -390,7 +405,9 @@ kernel void mpp_prefill_affine_nax_f16(
                 }
             }
             // tile_matmad_nax, the TN % 2 == 0 branch.
+            NAX_UNROLL
             for (short mm = 0; mm < 2; ++mm) {
+                NAX_UNROLL
                 for (short kk = 0; kk < 2; ++kk) {
                     nax_mma(C[mm][0], C[mm][1], A[mm][kk], B[0][kk], B[1][kk]);
                 }
@@ -398,11 +415,15 @@ kernel void mpp_prefill_affine_nax_f16(
         }
     }
 
+    NAX_UNROLL
     for (short mm = 0; mm < 2; ++mm) {
+        NAX_UNROLL
         for (short nn = 0; nn < 2; ++nn) {
+            NAX_UNROLL
             for (short i = 0; i < 2; ++i) {
                 const uint m = mBase + tm + uint(mm) * 16u + uint(sc.y) + uint(i) * 8u;
                 if (m >= M) continue;
+                NAX_UNROLL
                 for (short j = 0; j < 4; ++j) {
                     const uint n = nBase + tn + uint(nn) * 16u + uint(sc.x) + uint(j);
                     if (n < N) {
