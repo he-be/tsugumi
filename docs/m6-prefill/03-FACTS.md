@@ -16,6 +16,7 @@
 | `recommendedMaxWorkingSetSize` | 12,124 MiB | 15,360 MiB | 同上 |
 | MPS fp16 GEMM 4096³ | **18.61 TFLOP/s** (5 本 18.58〜18.62) | 5.94 (5.93〜5.96) | [M6](../../bench/m6/results/2026-09-22-Mac18-5-gpu_peak_probe/output.txt) / [MBP](../../bench/m6/results/2026-09-22-Mac15-6-gpu_peak_probe/output.txt) |
 | MPS fp32 GEMM 4096³ | 4.85 (4.84〜4.85) | 5.13 (5.10〜5.16) | 同上 |
+| GPU の帯域 (1 GiB、GPU 時計、各 7 本の中央値) | 読み **144.4 GB/s**、書き 143.0、コピー (読み + 書き) 136.2 | (記録値なし) | [M6](../../bench/m6/results/2026-09-24-Mac18-5-gpu_bw_probe/output.txt) |
 
 **導出 (上の実測から)**: fp16 / fp32 の比は M6 が **3.84**、M3 Pro が 1.16。
 M6 の Apple 製カーネルには fp16 専用の行列経路があると読める。**自前カーネルからそこに届くかは別問題で、G2 が測る。**
@@ -35,6 +36,6 @@ fp32 は M6 のほうが 5% 遅い。fp32 累積を残す設計は M6 で得を�
 
 | 項目 | 値 | 出典 |
 | --- | --- | --- |
-| 16 GB 構成の DRAM 帯域 | 153 GB/s (24/32 GB は 170) | [Apple 技術仕様](https://www.apple.com/mac-mini/specs/) |
+| 16 GB 構成の DRAM 帯域 | 153 GB/s (24/32 GB は 170)。実測は §1 の GPU の帯域 | [Apple 技術仕様](https://www.apple.com/mac-mini/specs/) |
 | GPU コア数 / Neural Accelerator | 12 コア、各コアに搭載 | Apple newsroom |
 | `matmul2d` (MPP) が Neural Accelerator に到達する | — | BaseRT (arXiv 2607.19438)、WWDC26 330。**G2 で測る** |

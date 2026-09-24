@@ -1,0 +1,6 @@
+device: Apple M6  buffer: 1024 MiB x2  passes/buffer: 4  timed buffers: 7
+threads: 2097152
+blit copy (read+write): median 138.1 GB/s  max 138.8  min 137.7  [138.8 138.3 137.7 138.5 138.1 137.9 137.8]
+kernel read: median 144.4 GB/s  max 145.0  min 143.2  [145.0 144.6 144.8 144.4 144.3 143.2 143.5]
+kernel write: median 143.0 GB/s  max 144.7  min 141.2  [143.1 142.2 141.2 142.6 143.2 143.0 144.7]
+kernel copy (read+write): median 136.2 GB/s  max 136.3  min 135.6  [136.1 135.6 136.2 136.3 136.2 136.3 136.1]
