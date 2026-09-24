@@ -21,8 +21,11 @@ fi
 for d in "$repo"/bench/m6/results/*-"$host"-*/; do
     [ -f "$d/summary.tsv" ] && [ -f "$d/env.txt" ] && [ -f "$d/command.txt" ] || continue
     grep -q -- '--messages-file' "$d/command.txt" || continue
+    # Only prefill without the integrity check counts (docs/m6-prefill/35):
+    # a directory whose layers were opened inside prefill is not listed.
+    grep -q -- '--open-layers-before-prompt' "$d/command.txt" || continue
     tf=$(grep '^TF_' "$d/env.txt" | sort | tr '\n' ' ' | sed 's/ *$//' || true)
-    extra=$(sed 's/.*--verification full-sha256//' "$d/command.txt" | sed 's/^ *//; s/ *$//')
+    extra=$(sed 's/.*--verification full-sha256 --open-layers-before-prompt//' "$d/command.txt" | sed 's/^ *//; s/ *$//')
     if [ "$mode" != "--all" ]; then
         [ -z "$tf" ] && [ -z "$extra" ] || continue
     fi
@@ -32,7 +35,7 @@ for d in "$repo"/bench/m6/results/*-"$host"-*/; do
     # Section 1 is the ledger rows and the baseline only; a default-binary
     # control taken next to a candidate (n = 3) is not a ledger row.
     if [ "$mode" != "--all" ]; then
-        case "$label" in ledger-*|g0-baseline) ;; *) continue ;; esac
+        case "$label" in ledger-*) ;; *) continue ;; esac
     fi
     commit=$(sed -n 's/.*commit \([^ /]*\).*/\1/p' "$d/hostinfo.txt")
     failed=$(awk -F'\t' 'NR > 1 && $9 != "0" { n++ } END { print n + 0 }' "$d/summary.tsv")

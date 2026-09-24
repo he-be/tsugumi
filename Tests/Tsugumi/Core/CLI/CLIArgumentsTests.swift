@@ -74,7 +74,7 @@ import Tsugumi
             "--expert-cache-policy", "--prefill", "--prefill-chunk-tokens",
             "--rdadvise", "--verification", "--thinking", "--draft-block-size",
             "--dump-expert-trace", "--dump-tokens", "--tools", "--tool-choice",
-            "--parallel-tool-calls", "--help",
+            "--parallel-tool-calls", "--open-layers-before-prompt", "--help",
         ]
         let words = Args.usage.split { $0.isWhitespace || $0 == "(" || $0 == ")" }
         // Prose mentions flags mid-sentence ("spends --max-new."), so the
@@ -82,6 +82,15 @@ import Tsugumi
         let options = Set(words.map { String($0).trimmingCharacters(in: ["."]) }
             .filter { $0.hasPrefix("--") })
         #expect(options == expected)
+    }
+
+    @Test func openLayersBeforePromptIsOffUnlessNamed() throws {
+        let bare = try Args.parse(["--model", "m.moepack", "--messages-file", "c.json"])
+        #expect(!bare.openLayersBeforePrompt)
+        let named = try Args.parse(["--model", "m.moepack", "--messages-file", "c.json",
+                                    "--open-layers-before-prompt", "--max-new", "3"])
+        #expect(named.openLayersBeforePrompt)
+        #expect(named.maxNew == 3)
     }
 
     // MARK: - --tools (`docs/qwen35moe/25-CLI-TOOLS.md`)

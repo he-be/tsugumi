@@ -24,6 +24,11 @@ public struct Args: Equatable, Sendable {
     public var prefillChunkTokens: Int
     public var rdadvisePolicy: RDAdvicePolicyMode
     public var verification: ModelIntegrityPolicy
+    /// Open (and, under `full-sha256`, hash) every routed-expert layer file
+    /// right after load, before the prompt, so the prefill timing carries no
+    /// integrity check. The layers are otherwise opened on first touch, inside
+    /// the first prefill (docs/m6-prefill/35-PREFILL-WITHOUT-VERIFY.md).
+    public var openLayersBeforePrompt = false
     /// Mirrors the chat template's `enable_thinking`. Only affects
     /// `--messages-file`; a raw `--prompt` is passed through verbatim.
     public var thinking: Bool
@@ -202,6 +207,11 @@ extension Args {
                                  (default full-sha256). trusted-install checks sizes
                                  against verified-install.json instead of rehashing
                                  every layer file on first touch.
+      --open-layers-before-prompt
+                                 Open and verify every expert layer file after
+                                 load, before the prompt, and report it as
+                                 openLayers= in the footer instead of inside
+                                 prefill.
       --thinking on|off          Chat-template reasoning channel (default off).
                                  off closes the thought channel in the generation
                                  prompt, asking for a direct answer; on leads the
@@ -290,6 +300,7 @@ extension Args {
         var toolsFile: String?
         var toolChoice = CLIToolChoice.auto
         var parallelToolCalls = true
+        var openLayersBeforePrompt = false
 
         var index = 0
         while index < argv.count {
@@ -402,6 +413,9 @@ extension Args {
                     throw ArgsError.invalidValue(flag: flag, value: value)
                 }
                 rdadvisePolicy = parsed
+            case "--open-layers-before-prompt":
+                openLayersBeforePrompt = true
+                index += 1
             case "--verification":
                 let value = try takeValue(argv, &index, flag: flag)
                 guard let parsed = ModelIntegrityPolicy(commandLineName: value) else {
@@ -478,7 +492,7 @@ extension Args {
                 flag: "--top-p",
                 value: "\(topP) requires --top-k between 1 and 256")
         }
-        let arguments = Args(model: model,
+        var arguments = Args(model: model,
                              prompt: prompt,
                              messagesFile: messagesFile,
                              images: images,
@@ -506,6 +520,7 @@ extension Args {
                              toolsFile: toolsFile,
                              toolChoice: toolChoice,
                              parallelToolCalls: parallelToolCalls)
+        arguments.openLayersBeforePrompt = openLayersBeforePrompt
         if draftBlockSize > 0 {
             guard prefillPolicy == .chunked else {
                 throw ArgsError.invalidValue(flag: "--draft-block-size",
