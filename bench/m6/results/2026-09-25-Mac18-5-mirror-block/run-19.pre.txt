@@ -1,0 +1,40 @@
+06:43:40
+System-wide memory free percentage: 65%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   104007.
+Pages active:                                 456394.
+Pages inactive:                               144116.
+Pages speculative:                                44.
+Pages throttled:                                   0.
+Pages wired down:                             295564.
+Pages purgeable:                                   4.
+"Translation faults":                      423249925.
+Pages copy-on-write:                        85118210.
+Pages zero filled:                         287151392.
+Pages reactivated:                          13231386.
+Pages purged:                                1363642.
+File-backed pages:                            590562.
+Anonymous pages:                                9992.
+Pages stored in compressor:                    35819.
+Pages occupied by compressor:                  10943.
+Decompressions:                             20082113.
+Compressions:                               25026265.
+Pageins:                                   502818847.
+Pageouts:                                      14027.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  46212.
+Pages tagged resident:                         38730.
+Pages tagged compressed:                        7482.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1833.
+Pages tag-storage free:                        22408.
+Pages tag-storage non-tag pageable:             7620.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1216448.
+Tagged compressions:                           97122.
+Tagged decompressions:                         62701.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  366.91 22839979 8183857.46   126.14 2591740 319263.35 

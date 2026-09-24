@@ -1,0 +1,40 @@
+06:42:04
+System-wide memory free percentage: 89%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   177749.
+Pages active:                                 522405.
+Pages inactive:                               228885.
+Pages speculative:                               511.
+Pages throttled:                                   0.
+Pages wired down:                              74788.
+Pages purgeable:                                3428.
+"Translation faults":                      422644370.
+Pages copy-on-write:                        83587622.
+Pages zero filled:                         285480930.
+Pages reactivated:                          13091580.
+Pages purged:                                1354042.
+File-backed pages:                            725256.
+Anonymous pages:                               26545.
+Pages stored in compressor:                    24610.
+Pages occupied by compressor:                   6730.
+Decompressions:                             19431973.
+Compressions:                               24237504.
+Pageins:                                   489068334.
+Pageouts:                                      13798.
+Swapins:                                      221926.
+Swapouts:                                     227692.
+Pages tagged:                                  45258.
+Pages tagged resident:                         39345.
+Pages tagged compressed:                        5913.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1867.
+Pages tag-storage free:                        21591.
+Pages tag-storage non-tag pageable:             8654.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     918336.
+Tagged compressions:                           92544.
+Tagged decompressions:                         59695.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  365.48 22420165 8001990.93   126.18 2323432 286309.22 

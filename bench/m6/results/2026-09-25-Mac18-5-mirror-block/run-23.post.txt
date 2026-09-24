@@ -1,0 +1,40 @@
+06:44:09
+System-wide memory free percentage: 66%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   102065.
+Pages active:                                 409550.
+Pages inactive:                               228727.
+Pages speculative:                                27.
+Pages throttled:                                   0.
+Pages wired down:                             259829.
+Pages purgeable:                                   4.
+"Translation faults":                      423413981.
+Pages copy-on-write:                        85542388.
+Pages zero filled:                         287620984.
+Pages reactivated:                          13266035.
+Pages purged:                                1368872.
+File-backed pages:                            627739.
+Anonymous pages:                               10565.
+Pages stored in compressor:                    35454.
+Pages occupied by compressor:                  10870.
+Decompressions:                             20239614.
+Compressions:                               25206360.
+Pageins:                                   506356718.
+Pageouts:                                      14088.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45346.
+Pages tagged resident:                         37906.
+Pages tagged compressed:                        7440.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1833.
+Pages tag-storage free:                        21227.
+Pages tag-storage non-tag pageable:             7639.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1208448.
+Tagged compressions:                           97608.
+Tagged decompressions:                         63229.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  367.36 22966444 8239140.14   126.14 2591740 319263.35 

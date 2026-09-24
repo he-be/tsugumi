@@ -1,0 +1,40 @@
+06:44:02
+System-wide memory free percentage: 59%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   103517.
+Pages active:                                 415694.
+Pages inactive:                               133877.
+Pages speculative:                                48.
+Pages throttled:                                   0.
+Pages wired down:                             349149.
+Pages purgeable:                                  46.
+"Translation faults":                      423384820.
+Pages copy-on-write:                        85458468.
+Pages zero filled:                         287528845.
+Pages reactivated:                          13259259.
+Pages purged:                                1365563.
+File-backed pages:                            539067.
+Anonymous pages:                               10552.
+Pages stored in compressor:                    31343.
+Pages occupied by compressor:                   8783.
+Decompressions:                             20211326.
+Compressions:                               25167165.
+Pageins:                                   505616854.
+Pageouts:                                      14074.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45416.
+Pages tagged resident:                         37958.
+Pages tagged compressed:                        7458.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1833.
+Pages tag-storage free:                        21589.
+Pages tag-storage non-tag pageable:             7277.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1214400.
+Tagged compressions:                           97545.
+Tagged decompressions:                         63148.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  367.27 22939916 8227578.92   126.14 2591740 319263.35 

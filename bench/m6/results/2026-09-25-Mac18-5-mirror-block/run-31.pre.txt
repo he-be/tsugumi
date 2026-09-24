@@ -1,0 +1,40 @@
+06:44:47
+System-wide memory free percentage: 49%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   101623.
+Pages active:                                 348449.
+Pages inactive:                                93127.
+Pages speculative:                               122.
+Pages throttled:                                   0.
+Pages wired down:                             456815.
+Pages purgeable:                                   4.
+"Translation faults":                      423650005.
+Pages copy-on-write:                        86138788.
+Pages zero filled:                         288268229.
+Pages reactivated:                          13312372.
+Pages purged:                                1369273.
+File-backed pages:                            431301.
+Anonymous pages:                               10397.
+Pages stored in compressor:                    35455.
+Pages occupied by compressor:                  10932.
+Decompressions:                             20499477.
+Compressions:                               25523931.
+Pageins:                                   512244560.
+Pageouts:                                      14178.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45969.
+Pages tagged resident:                         38540.
+Pages tagged compressed:                        7429.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1833.
+Pages tag-storage free:                        21177.
+Pages tag-storage non-tag pageable:             7685.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1204224.
+Tagged compressions:                           98060.
+Tagged decompressions:                         63688.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  367.94 23130117 8311140.91   126.13 2754372 339263.21 

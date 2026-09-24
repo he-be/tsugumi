@@ -1,0 +1,40 @@
+06:43:29
+System-wide memory free percentage: 62%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   100053.
+Pages active:                                 409910.
+Pages inactive:                               162680.
+Pages speculative:                               105.
+Pages throttled:                                   0.
+Pages wired down:                             327288.
+Pages purgeable:                                   4.
+"Translation faults":                      423184045.
+Pages copy-on-write:                        84948168.
+Pages zero filled:                         286967230.
+Pages reactivated:                          13216658.
+Pages purged:                                1363596.
+File-backed pages:                            562663.
+Anonymous pages:                               10032.
+Pages stored in compressor:                    35767.
+Pages occupied by compressor:                  11032.
+Decompressions:                             20021014.
+Compressions:                               24954698.
+Pageins:                                   501386773.
+Pageouts:                                      13998.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45968.
+Pages tagged resident:                         38522.
+Pages tagged compressed:                        7446.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1833.
+Pages tag-storage free:                        22446.
+Pages tag-storage non-tag pageable:             7582.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1208704.
+Tagged compressions:                           96896.
+Tagged decompressions:                         62511.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  366.73 22788989 8161482.59   126.14 2591740 319263.35 

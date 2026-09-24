@@ -1,0 +1,40 @@
+06:45:05
+System-wide memory free percentage: 29%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   100621.
+Pages active:                                 153450.
+Pages inactive:                                86825.
+Pages speculative:                               260.
+Pages throttled:                                   0.
+Pages wired down:                             659170.
+Pages purgeable:                                  20.
+"Translation faults":                      423781007.
+Pages copy-on-write:                        86477692.
+Pages zero filled:                         288643002.
+Pages reactivated:                          13337250.
+Pages purged:                                1373267.
+File-backed pages:                            229455.
+Anonymous pages:                               11080.
+Pages stored in compressor:                    35091.
+Pages occupied by compressor:                  10742.
+Decompressions:                             20632828.
+Compressions:                               25681313.
+Pageins:                                   514785669.
+Pageouts:                                      14241.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45965.
+Pages tagged resident:                         38742.
+Pages tagged compressed:                        7223.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1836.
+Pages tag-storage free:                        20969.
+Pages tag-storage non-tag pageable:             7887.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1162752.
+Tagged compressions:                           98404.
+Tagged decompressions:                         64238.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  368.14 23198217 8340055.23   126.11 2842399 350055.77 
