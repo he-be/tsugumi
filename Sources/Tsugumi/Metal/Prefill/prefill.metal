@@ -1169,6 +1169,189 @@ kernel void prefill_moe_gemm_int4_mpp(
     }
 }
 
+/// `prefill_moe_gemm_int4_mpp` with the next K step's device loads issued
+/// before the current step's `matmul2d` (docs/m6-prefill/28). The mpp kernel
+/// loads, waits at the barrier, then multiplies, so every step exposes the
+/// device latency of its gather and weight reads. Here the loads for step
+/// k + 1 go into registers first and are dequantized and staged only after
+/// step k's product; one threadgroup buffer, the same two barriers. Values,
+/// roundings and K order are the mpp kernel's.
+kernel void prefill_moe_gemm_int4_mpp_pf(
+    device const half*                                   hidden         [[buffer(0)]],
+    device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
+    device const PrefillRoutedGEMMBlockMSL*              blocks         [[buffer(2)]],
+    device half*                                         route_partials [[buffer(5)]],
+    device half*                                         act            [[buffer(7)]],
+    device const PrefillStreamedRoutedBlobsMSL&          routed         [[buffer(9)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p              [[buffer(10)]],
+    constant uint&                                       mode           [[buffer(11)]],
+    uint3                                                lid3           [[thread_position_in_threadgroup]],
+    uint3                                                tgid3          [[threadgroup_position_in_grid]]
+) {
+    constexpr auto descriptor = matmul2d_descriptor(
+        kPrefillMoEMPPTileM, kPrefillMoEMPPTileN, kPrefillMoEMPPTileK,
+        false, true, false,
+        matmul2d_descriptor::mode::multiply_accumulate);
+    matmul2d<descriptor, execution_simdgroups<4>> operation;
+    using threadgroup_half_tensor =
+        tensor<threadgroup half, dextents<int32_t, 2>, tensor_inline>;
+
+    const uint lid = lid3.x;
+    const PrefillRoutedGEMMBlockMSL blk = blocks[tgid3.y];
+    const uint nBase = tgid3.x * uint(kPrefillMoEMPPTileN);
+    const bool gate_up = (mode == kPrefillMoEGEMMModeGateUp);
+    const bool is_up = gate_up && (tgid3.z == 1u);
+
+    const uint N = gate_up ? p.F : p.D;
+    const uint K = gate_up ? p.D : p.F;
+    const uint act_rows = p.pair_count;
+
+    threadgroup half As[kPrefillMoEMPPTileM * kPrefillMoEMPPTileK];
+    threadgroup half Bs[kPrefillMoEMPPTileN * kPrefillMoEMPPTileK];
+    threadgroup uint src_off[kPrefillMoEMPPTileM];
+    threadgroup uint dst_off[kPrefillMoEMPPTileM];
+
+    device const uint8_t* blob = routed.blob[blk.local_slot];
+    uint w_off = p.down_W_off;
+    uint s_off = p.down_s_off;
+    uint b_off = p.down_b_off;
+    if (gate_up) {
+        w_off = is_up ? p.up_W_off : p.gate_W_off;
+        s_off = is_up ? p.up_s_off : p.gate_s_off;
+        b_off = is_up ? p.up_b_off : p.gate_b_off;
+    }
+    device const uint8_t* W = blob + w_off;
+    device const bfloat* S = reinterpret_cast<device const bfloat*>(blob + s_off);
+    device const bfloat* B = reinterpret_cast<device const bfloat*>(blob + b_off);
+
+    device const half* X = gate_up ? hidden
+                                   : (device const half*)(act + 2u * act_rows * p.F);
+    device half* Y = gate_up ? (act + (is_up ? act_rows * p.F : 0u)) : route_partials;
+
+    if (lid < uint(kPrefillMoEMPPTileM)) {
+        uint so = 0u;
+        uint dof = 0u;
+        if (lid < blk.row_count) {
+            const PrefillTokenExpertPairMSL pr = sorted_pairs[blk.pair_start + lid];
+            if (gate_up) {
+                so = pr.token * p.hidden_stride_elements;
+                dof = (blk.local_row + lid) * p.F;
+            } else {
+                so = (blk.local_row + lid) * p.F;
+                dof = (pr.token * p.top_k + pr.rank) * p.D;
+            }
+        }
+        src_off[lid] = so;
+        dst_off[lid] = dof;
+    }
+
+    threadgroup_half_tensor tileA(
+        As,
+        dextents<int32_t, 2>(kPrefillMoEMPPTileK, kPrefillMoEMPPTileM),
+        array<int32_t, 2>({1, kPrefillMoEMPPTileK}));
+    threadgroup_half_tensor tileB(
+        Bs,
+        dextents<int32_t, 2>(kPrefillMoEMPPTileK, kPrefillMoEMPPTileN),
+        array<int32_t, 2>({1, kPrefillMoEMPPTileK}));
+    auto accumulator = operation.get_destination_cooperative_tensor<
+        decltype(tileA), decltype(tileB), float>();
+    for (int element = 0; element < accumulator.get_capacity(); ++element) {
+        accumulator[element] = 0.0f;
+    }
+
+    const uint groups = K / kPrefillGroupSize;
+    const uint row_bytes = K / 2u;
+    const uint w_n_local = lid & uint(kPrefillMoEMPPTileN - 1);
+    const uint w_k_half = (lid / uint(kPrefillMoEMPPTileN)) * 32u;
+    const uint w_n = nBase + w_n_local;
+    const bool w_live = w_n < N;
+    device const uint8_t* w_row = W + (w_live ? w_n : 0u) * row_bytes;
+    device const bfloat* s_row = S + (w_live ? w_n : 0u) * groups;
+    device const bfloat* b_row = B + (w_live ? w_n : 0u) * groups;
+    threadgroup half* b_dst = Bs + w_n_local * uint(kPrefillMoEMPPTileK) + w_k_half;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    // This thread's A units: rows and the device pointers for step 0.
+    uint a_m[8];
+    uint a_kk[8];
+    bool a_live[8];
+    for (uint i = 0; i < 8u; ++i) {
+        const uint unit = i * kPrefillMoEMPPThreads + lid;
+        a_m[i] = unit / 16u;
+        a_kk[i] = (unit % 16u) * 4u;
+        a_live[i] = a_m[i] < blk.row_count;
+    }
+    uint a_src[8];
+    for (uint i = 0; i < 8u; ++i) {
+        a_src[i] = src_off[a_m[i]] + a_kk[i];
+    }
+
+    half4 a_reg[8];
+    ushort w_reg[8];
+    float scale_reg = 0.0f;
+    float bias_reg = 0.0f;
+#define PREFILL_MOE_PF_LOAD(K0)                                                   \
+    do {                                                                      \
+        for (uint i = 0; i < 8u; ++i) {                                       \
+            a_reg[i] = a_live[i]                                              \
+                ? *((device const half4*)(X + a_src[i] + (K0)))               \
+                : half4(0.0h);                                                \
+        }                                                                     \
+        if (w_live) {                                                         \
+            const uint kb = (K0) + w_k_half;                                  \
+            const uint g = kb / kPrefillGroupSize;                            \
+            scale_reg = float(s_row[g]);                                      \
+            bias_reg = prefill_int4_bias(b_row, g, scale_reg);                \
+            device const ushort* w_ptr =                                      \
+                (device const ushort*)(w_row + (kb >> 1));                    \
+            for (uint q = 0; q < 8u; ++q) {                                   \
+                w_reg[q] = w_ptr[q];                                          \
+            }                                                                 \
+        }                                                                     \
+    } while (0)
+    PREFILL_MOE_PF_LOAD(0u);
+
+    for (uint k0 = 0; k0 < K; k0 += uint(kPrefillMoEMPPTileK)) {
+        for (uint i = 0; i < 8u; ++i) {
+            *((threadgroup half4*)(As + a_m[i] * uint(kPrefillMoEMPPTileK) + a_kk[i])) = a_reg[i];
+        }
+        if (w_live) {
+            for (uint q = 0; q < 8u; ++q) {
+                const uint packed = uint(w_reg[q]);
+                half4 v;
+                v.x = half(fma(float(packed & 0x0Fu), scale_reg, bias_reg));
+                v.y = half(fma(float((packed >> 4) & 0x0Fu), scale_reg, bias_reg));
+                v.z = half(fma(float((packed >> 8) & 0x0Fu), scale_reg, bias_reg));
+                v.w = half(fma(float((packed >> 12) & 0x0Fu), scale_reg, bias_reg));
+                *((threadgroup half4*)(b_dst + q * 4u)) = v;
+            }
+        } else {
+            for (uint q = 0; q < 8u; ++q) {
+                *((threadgroup half4*)(b_dst + q * 4u)) = half4(0.0h);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        const uint next = k0 + uint(kPrefillMoEMPPTileK);
+        if (next < K) {
+            PREFILL_MOE_PF_LOAD(next);
+        }
+        operation.run(tileA, tileB, accumulator);
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+
+    for (int element = 0; element < accumulator.get_capacity(); ++element) {
+        if (!accumulator.is_valid_element(element)) continue;
+        const auto position = accumulator.get_multidimensional_index(element);
+        const uint n = nBase + uint(position[0]);
+        const uint m = uint(position[1]);
+        if (m < blk.row_count && n < N) {
+            Y[dst_off[m] + n] = half(accumulator[element]);
+        }
+    }
+#undef PREFILL_MOE_PF_LOAD
+}
+
 /// Gate and up of `prefill_moe_gemm_int4_mpp` in one threadgroup, with the
 /// non-linearity in the epilogue (docs/m6-prefill/28). The mpp kernel runs
 /// gate and up as two threadgroups (`z`), each gathering the same 64 hidden
