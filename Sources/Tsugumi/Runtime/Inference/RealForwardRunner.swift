@@ -285,6 +285,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     /// overrides it, and 0 keeps the one-layer-at-a-time open.
     private static let prefillVerifyAhead = max(0, Int(
         ProcessInfo.processInfo.environment["TF_PREFILL_VERIFY_AHEAD"] ?? "") ?? 2)
+    /// `TF_PREFILL_ADVISE_LAYER=1`: once a prompt chunk's routing for a layer
+    /// is read, `F_RDADVISE` every routed expert of that layer at once rather
+    /// than one tile at a time (docs/m6-prefill/42). A candidate.
+    private static let prefillAdviseLayer =
+        ProcessInfo.processInfo.environment["TF_PREFILL_ADVISE_LAYER"] == "1"
+    private static let adviseLayerQueue = DispatchQueue(label: "tsugumi.prefill.advise-layer")
     /// Narrowest chunk that still uses the tiled routed-MoE GEMM. 0 keeps the
     /// pre-M4 behavior (always tiled).
     private static let groupedGEMMMinChunkTokens = Int(
@@ -2037,6 +2043,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                                                    weights: routeWeights,
                                                                    queryCount: t,
                                                                    topK: cfg.topKExperts)
+                    // The layer's routed experts are known now: ask for all of
+                    // them at once instead of one tile at a time, off this
+                    // thread (docs/m6-prefill/42). A candidate.
+                    if Self.prefillAdviseLayer {
+                        let requested = Array(Set(pairs.map { Int($0.expert) })).sorted()
+                        nonisolated(unsafe) let model = self.model
+                        Self.adviseLayerQueue.async {
+                            _ = try? model.adviseRoutedExperts(layer: L, experts: requested)
+                        }
+                    }
                     // 先読みが当たったか: 投げた本数のうち、この層が本当に
                     // 要求した数。telemetry の hit 率では判定できない
                     // (先読みの read は miss として数えられるので必ず下がる)
