@@ -195,7 +195,8 @@ final class PrefillAttention {
             && params.headDim == Self.fullMPPHeadDim
             && params.spanMaskEnabled == 0
             && kvRingCapacity == 0
-            && params.slidingWindow == 0,
+            // Full layers pass the whole prefix as the window (RealForwardRunner).
+            && (params.slidingWindow == 0 || params.slidingWindow >= params.kvValidCount),
            encodeFullUnfused(commandBuffer: commandBuffer,
                              q: q, qOffset: qOffset, k: k, kOffset: kOffset,
                              v: v, vOffset: vOffset, out: out, outOffset: outOffset,
