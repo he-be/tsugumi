@@ -3652,4 +3652,196 @@ kernel void prefill_router_gemma4_bf16_nax(
     }
 }
 
+// --- Routed-expert GEMM on the 16x16 fragments (docs/m6-prefill/40) ---
+// `prefill_moe_gemm_int4_mpp`'s bindings, grid and outputs, with the tile
+// product in the form tensorops.metal's `mpp_prefill_affine_nax_f16` copies
+// from MLX 0.32.2 (MIT, Copyright (c) 2023-2024 Apple Inc.)
+// quantized_nax.h `affine_qmm_t_nax` (BM 64, BN 64, BK 64, WM 2, WN 2): the
+// dequantized weight tile in threadgroup memory at row stride BK + 8, each
+// simdgroup's 32x32 of C in registers, the gathered activation rows read from
+// device memory straight into fragments. The weight values staged are the
+// mpp kernel's FP16 roundings, and K runs in the same order.
+constant constexpr uint kMoENaxLd = 64u + 8u;
+
+[[kernel, max_total_threads_per_threadgroup(128)]]
+kernel void prefill_moe_gemm_int4_nax(
+    device const half*                                   hidden         [[buffer(0)]],
+    device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
+    device const PrefillRoutedGEMMBlockMSL*              blocks         [[buffer(2)]],
+    device half*                                         route_partials [[buffer(5)]],
+    device half*                                         act            [[buffer(7)]],
+    device const PrefillStreamedRoutedBlobsMSL&          routed         [[buffer(9)]],
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&   p              [[buffer(10)]],
+    constant uint&                                       mode           [[buffer(11)]],
+    uint3                                                lid3           [[thread_position_in_threadgroup]],
+    uint3                                                tgid3          [[threadgroup_position_in_grid]],
+    ushort                                               sgid           [[simdgroup_index_in_threadgroup]],
+    ushort                                               lane           [[thread_index_in_simdgroup]]
+) {
+    const uint lid = lid3.x;
+    const PrefillRoutedGEMMBlockMSL blk = blocks[tgid3.y];
+    const uint nBase = tgid3.x * 64u;
+    const bool gate_up = (mode == kPrefillMoEGEMMModeGateUp);
+    const bool is_up = gate_up && (tgid3.z == 1u);
+    const uint N = gate_up ? p.F : p.D;
+    const uint K = gate_up ? p.D : p.F;
+    const uint act_rows = p.pair_count;
+
+    threadgroup half Ws[64u * kMoENaxLd];
+    threadgroup uint src_off[64];
+    threadgroup uint dst_off[64];
+
+    device const uint8_t* blob = routed.blob[blk.local_slot];
+    uint w_off = p.down_W_off;
+    uint s_off = p.down_s_off;
+    uint b_off = p.down_b_off;
+    if (gate_up) {
+        w_off = is_up ? p.up_W_off : p.gate_W_off;
+        s_off = is_up ? p.up_s_off : p.gate_s_off;
+        b_off = is_up ? p.up_b_off : p.gate_b_off;
+    }
+    device const uint8_t* W = blob + w_off;
+    device const bfloat* S = reinterpret_cast<device const bfloat*>(blob + s_off);
+    device const bfloat* B = reinterpret_cast<device const bfloat*>(blob + b_off);
+    device const half* X = gate_up ? hidden
+                                   : (device const half*)(act + 2u * act_rows * p.F);
+    device half* Y = gate_up ? (act + (is_up ? act_rows * p.F : 0u)) : route_partials;
+
+    if (lid < 64u) {
+        uint so = 0u;
+        uint dof = 0u;
+        if (lid < blk.row_count) {
+            const PrefillTokenExpertPairMSL pr = sorted_pairs[blk.pair_start + lid];
+            if (gate_up) {
+                so = pr.token * p.hidden_stride_elements;
+                dof = (blk.local_row + lid) * p.F;
+            } else {
+                so = (blk.local_row + lid) * p.F;
+                dof = (pr.token * p.top_k + pr.rank) * p.D;
+            }
+        }
+        src_off[lid] = so;
+        dst_off[lid] = dof;
+    }
+
+    const uint tm = 32u * uint(sgid / 2);
+    const uint tn = 32u * uint(sgid % 2);
+    const short2 sc = attn_frag_coord(lane);
+
+    // Loader: thread t dequantizes row t / 2, columns (t % 2) * 32 .. +31 of
+    // the 64x64 weight tile, inside one affine group at either group size.
+    const uint groups = K / kPrefillGroupSize;
+    const uint bRow = lid >> 1;
+    const uint bCol = (lid & 1u) * 32u;
+    const uint wN = nBase + bRow;
+    device const uint8_t* w_row = W + wN * (K / 2u);
+    device const bfloat* s_row = S + wN * groups;
+    device const bfloat* b_row = B + wN * groups;
+    threadgroup half* bDst = Ws + bRow * kMoENaxLd + bCol;
+
+    attn_frag_f C[2][2];
+    #pragma clang loop unroll(full)
+    for (short a = 0; a < 2; ++a) {
+        #pragma clang loop unroll(full)
+        for (short b = 0; b < 2; ++b) C[a][b] = attn_frag_f(0.0f);
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    // This lane's two rows of each 16-row A fragment, as source offsets.
+    uint aOff[2][2];
+    bool aLive[2][2];
+    #pragma clang loop unroll(full)
+    for (short mm = 0; mm < 2; ++mm) {
+        #pragma clang loop unroll(full)
+        for (short i = 0; i < 2; ++i) {
+            const uint m = tm + uint(mm) * 16u + uint(sc.y) + uint(i) * 8u;
+            aLive[mm][i] = m < blk.row_count;
+            aOff[mm][i] = src_off[m];
+        }
+    }
+
+    for (uint k0 = 0; k0 < K; k0 += 64u) {
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+        if (wN < N) {
+            const uint kb = k0 + bCol;
+            const uint g = kb / kPrefillGroupSize;
+            const float scale = float(s_row[g]);
+            const float bias = prefill_int4_bias(b_row, g, scale);
+            // Packed sub-tensor offsets are only 2-byte aligned.
+            device const ushort* w_ptr = (device const ushort*)(w_row + (kb >> 1));
+            #pragma clang loop unroll(full)
+            for (uint q = 0; q < 8u; ++q) {
+                const uint packed = uint(w_ptr[q]);
+                half4 v;
+                v.x = half(fma(float(packed & 0x0Fu), scale, bias));
+                v.y = half(fma(float((packed >> 4) & 0x0Fu), scale, bias));
+                v.z = half(fma(float((packed >> 8) & 0x0Fu), scale, bias));
+                v.w = half(fma(float((packed >> 12) & 0x0Fu), scale, bias));
+                *((threadgroup half4*)(bDst + q * 4u)) = v;
+            }
+        } else {
+            #pragma clang loop unroll(full)
+            for (uint q = 0; q < 8u; ++q) {
+                *((threadgroup half4*)(bDst + q * 4u)) = half4(0.0h);
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+
+        #pragma clang loop unroll(disable)
+        for (uint kk1 = 0; kk1 < 64u; kk1 += 32u) {
+            attn_frag_h A[2][2];   // [m fragment][k fragment]
+            attn_frag_h Bf[2][2];  // [n fragment][k fragment]
+            #pragma clang loop unroll(full)
+            for (short kk = 0; kk < 2; ++kk) {
+                const uint col = k0 + kk1 + uint(kk) * 16u + uint(sc.x);
+                #pragma clang loop unroll(full)
+                for (short mm = 0; mm < 2; ++mm) {
+                    #pragma clang loop unroll(full)
+                    for (short i = 0; i < 2; ++i) {
+                        const half4 v = aLive[mm][i]
+                            ? *((device const half4*)(X + aOff[mm][i] + col))
+                            : half4(0.0h);
+                        #pragma clang loop unroll(full)
+                        for (short j = 0; j < 4; ++j) A[mm][kk][i * 4 + j] = v[j];
+                    }
+                }
+                const uint wcol = kk1 + uint(kk) * 16u + uint(sc.x);
+                #pragma clang loop unroll(full)
+                for (short nn = 0; nn < 2; ++nn) {
+                    #pragma clang loop unroll(full)
+                    for (short i = 0; i < 2; ++i) {
+                        const uint row = tn + uint(nn) * 16u + uint(sc.y) + uint(i) * 8u;
+                        const half4 v = *((threadgroup half4*)(Ws + row * kMoENaxLd + wcol));
+                        #pragma clang loop unroll(full)
+                        for (short j = 0; j < 4; ++j) Bf[nn][kk][i * 4 + j] = v[j];
+                    }
+                }
+            }
+            #pragma clang loop unroll(full)
+            for (short mm = 0; mm < 2; ++mm) {
+                #pragma clang loop unroll(full)
+                for (short kk = 0; kk < 2; ++kk) {
+                    attn_frag_mma<true>(C[mm][0], C[mm][1], A[mm][kk], Bf[0][kk], Bf[1][kk]);
+                }
+            }
+        }
+    }
+
+    #pragma clang loop unroll(full)
+    for (short mm = 0; mm < 2; ++mm) {
+        #pragma clang loop unroll(full)
+        for (short i = 0; i < 2; ++i) {
+            const uint m = tm + uint(mm) * 16u + uint(sc.y) + uint(i) * 8u;
+            if (m >= blk.row_count) continue;
+            #pragma clang loop unroll(full)
+            for (short nn = 0; nn < 2; ++nn) {
+                const uint n = nBase + tn + uint(nn) * 16u + uint(sc.x);
+                if (n >= N) continue;
+                const half4 v = half4(float4(C[mm][nn][i * 4 + 0], C[mm][nn][i * 4 + 1],
+                                             C[mm][nn][i * 4 + 2], C[mm][nn][i * 4 + 3]));
+                *((device half4*)(Y + dst_off[m] + n)) = v;
+            }
+        }
+    }
+}
+
 #endif

@@ -83,6 +83,9 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
         kernels.append(("mpp-pf", [(pf, 64, 64, 128)]))
         kernels.append(("mpp-pf-64/32", [(pf, 64, 64, 128), (m32, 32, 64, 128)]))
     }
+    if let nax = pso("prefill_moe_gemm_int4_nax") {
+        kernels.append(("nax", [(nax, 64, 64, 128)]))
+    }
     kernels.append(("simdgroup", [(try context.pipeline("prefill_moe_gemm_int4"), 64, 64, 128)]))
 
     let perBuffer = 8

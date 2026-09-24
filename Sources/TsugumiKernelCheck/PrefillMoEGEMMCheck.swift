@@ -305,6 +305,22 @@ func checkPrefillRoutedMoEGEMM(groupSize: Int, seed: UInt64) throws -> [CaseResu
                         tolerance: Double(Tolerance.fp16ChainedReduction),
                         detail: "differing=\(differing)/\(mpp.count) maxAbs=\(maxAbs)"))
 
+    // The 16x16-fragment candidate (docs/m6-prefill/40, `TF_PREFILL_MOE_NAX=1`)
+    // stages the same FP16 weights but sums each K step in its own order.
+    if let naxPSO = try? context.pipeline("prefill_moe_gemm_int4_nax") {
+        let nax = run(naxPSO, label: name + " nax")
+        cases.append(result(name + " nax", groupSize: groupSize,
+                            rel: relativeError(actual: nax, reference: expected),
+                            tolerance: Double(Tolerance.fp16ChainedReduction), detail: detail))
+        let naxDiffering = zip(nax, mpp).filter { $0 != $1 }.count
+        cases.append(result(name + " nax vs mpp", groupSize: groupSize,
+                            rel: relativeError(actual: nax, reference: mpp),
+                            tolerance: Double(Tolerance.fp16ChainedReduction),
+                            detail: "differing=\(naxDiffering)/\(nax.count)"))
+    } else {
+        print("  SKIP  \(name) nax g=\(groupSize)  no pipeline on this device")
+    }
+
     // The prefetch candidate (docs/m6-prefill/28) moves only when loads are
     // issued and how tall a tile the short blocks get, so it has to match the
     // mpp run bit for bit. The fixture's blocks include ones of at most 32 rows.

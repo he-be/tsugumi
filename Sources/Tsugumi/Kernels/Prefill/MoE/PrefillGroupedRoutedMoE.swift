@@ -487,6 +487,11 @@ final class PrefillGroupedRoutedMoE {
     /// second dispatch (docs/m6-prefill/28). A candidate; same values and K order.
     private static let prefetchRequested =
         ProcessInfo.processInfo.environment["TF_PREFILL_MOE_PF"] == "1"
+    /// `TF_PREFILL_MOE_NAX=1`: the mpp path runs `prefill_moe_gemm_int4_nax`,
+    /// the tile product on MLX's 16x16 fragments (docs/m6-prefill/40). A
+    /// candidate; same bindings, grid and outputs.
+    static let naxRequested =
+        ProcessInfo.processInfo.environment["TF_PREFILL_MOE_NAX"] == "1"
 
     /// Reused staging, indexed the way a chunk uses it: one sorted-pair buffer
     /// per layer and one argument buffer per tile position. A layer's routed
@@ -565,7 +570,8 @@ final class PrefillGroupedRoutedMoE {
                 : nil
             // The function exists only in an MSL 4.0 build (`__HAVE_TENSOR__`),
             // so a failed lookup is the "no tensor ops here" answer, not an error.
-            let mppName = Self.prefetchRequested ? "prefill_moe_gemm_int4_mpp_pf" : "prefill_moe_gemm_int4_mpp"
+            let mppName = Self.prefetchRequested ? "prefill_moe_gemm_int4_mpp_pf"
+                : Self.naxRequested ? "prefill_moe_gemm_int4_nax" : "prefill_moe_gemm_int4_mpp"
             let mpp = (wantsMPP && usable) ? try? context.pipeline(mppName) : nil
             self.gemmMPPPSO = (mpp?.maxTotalThreadsPerThreadgroup ?? 0) >= Self.gemmThreadsPerGroup
                 ? mpp : nil
