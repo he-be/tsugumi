@@ -19,7 +19,7 @@ G0 からの比、段の秒、tensor ops に載せたか、「下限の何倍か
 | **既定の prefill 壁時計** (台帳の最新行) | 3.496 (3.442〜4.764)、commit bda6631 (ソースは cd8c26b)、2026-09-24、n = 6 | [06 §1](06-LEDGER.md) |
 | 既定でない候補 | `TF_PREFILL_MOE_PF=1` 3.705 s (同じ時間帯の既定 3.698 s、各 n = 6)。縮んでいないので既定に入れていない | [28](28-MOE-GATEUP-PREFETCH.md) |
 | 同じ M6・同じ本文の外部ランタイム (校正、進捗ではない) | llama.cpp IQ3_XXS 2.393 s (tensor API を切ると 4.494 s)、mlx_lm 3-bit 1.823 s (peak 13.3 GB、スワップあり)。暖まったプロセスの値なので (c) ではなく GPU busy 2.97〜3.00 s と並べる | [29](29-REFERENCE-RUNTIMES-ON-M6.md) |
-| 次の案 (判断待ち) | MLX の Neural Accelerator 用カーネル (`quantized_nax.h`・`steel/gemm/nax.h`・`steel/attn/nax.h`、MIT、group 32 の int4 変種あり) の GEMM の中身だけを写す。メモリの持ち方は写さない。順序は B2 のまま `moe.gateup` から | [30](30-PORT-MLX-NAX-KERNELS.md) |
+| 到達目標 (ユーザー指定) と次の段 | 同じ本文で mlx_lm の 1.823 s。MLX のカーネルを同じ形で段ごとに測ると、差は `shared`・`post.router`・`attn.full`・`rope`・`qkv` にあり `moe.gateup` にはほぼ無い。1 段目は `affine_qmm_t_nax` を `shared`・`qkv`・`oproj` に写す (`TF_PREFILL_QMM=nax`) | [31](31-MLX-KERNELS-PER-STAGE.md) |
 
 **既定は 4.584 → 3.496 s** (cd8c26b、sliding window の attention の `matmul2d` 版を既定に、[26](26-SWA-ATTN-MPP-DEFAULT.md))。その前は 7.184 → 4.584 s (5decec4、[23](23-GPU-CANDIDATES-DEFAULT.md))、 8.682 → 7.184 s (79eea8f、[20](20-VERIFY-AHEAD-ALONE.md))。基準線 9.506 s → 8.682 s がどの commit で動いたかは未確認。
 

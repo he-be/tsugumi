@@ -1,0 +1,1 @@
+/Users/mh/LLM/ref/mlx-venv/bin/python /Users/mh/dev/tsugumi/bench/m6/ref_mlx_ops.py 5 float16

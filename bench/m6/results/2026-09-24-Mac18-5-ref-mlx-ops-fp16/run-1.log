@@ -1,0 +1,18 @@
+mx.metal.device_info is deprecated and will be removed in a future version. Use mx.device_info instead.
+mlx 0.32.2 dtype mlx.core.float16 T 2478 chunks (2048, 430) layers 25+5 gs 32 bits 4 reps 5
+device {'device_name': 'Apple M6', 'max_recommended_working_set_size': 15032385536, 'memory_size': 17179869184, 'architecture': 'applegpu_g18g', 'max_buffer_length': 9534832640, 'resource_limit': 499000}
+stage	seconds	TFLOP/s	all_passes
+qkv	0.2009	17.43	0.2010,0.2005,0.2010,0.2009,0.2008
+oproj	0.1215	16.47	0.1215,0.1214,0.1217,0.1213,0.1217
+attn.swa	0.2855	2.89	0.2857,0.2851,0.2861,0.2855,0.2853
+attn.full	0.0729	6.90	0.0729,0.0728,0.0730,0.0729,0.0730
+rope	0.0227	0.00	0.0227,0.0227,0.0226,0.0226,0.0227
+post.router	0.0135	3.96	0.0136,0.0135,0.0139,0.0134,0.0135
+shared	0.1594	16.65	0.1594,0.1595,0.1593,0.1593,0.1594
+moe.sort	0.0448	0.00	0.0449,0.0448,0.0448,0.0447,0.0448
+moe.gateup	0.6784	6.95	0.6784,0.6773,0.6898,0.6776,0.6824
+moe.gelu	0.1256	0.00	0.1254,0.1256,0.1254,0.1258,0.1258
+moe.down	0.2429	9.71	0.2427,0.2432,0.2429,0.2429,0.2428
+moe.unsort	0.0879	0.00	0.0879,0.0881,0.0881,0.0879,0.0879
+sum	2.0559
+peak_gb	4.169

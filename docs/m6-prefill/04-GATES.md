@@ -72,6 +72,7 @@ B1 の順に 1 段ずつ直す。1 段ごとに次を満たして閉じる。
 | --- | ---: | ---: | --- | --- |
 | `attn.swa` | 0.872〜0.878 s (`b1s-profile-detail`) | 0.044 s | 候補 `TF_PREFILL_ATTN=mpp` で、level 2 の `attn.swa` の中央値が 0.45 s 以下。KernelCheck の新しい検査がすべて PASS。壁時計 (c) を既定と交互に各 n = 6 取り、秒の差を書く (壁時計に閾値は置かない) | **合格** (0.288 s)。候補の壁時計は既定と交互に 4.522 → 3.579 s ([25](25-SWA-ATTN-MPP.md)) |
 | `moe.gateup` | 0.734〜0.791 s (`b2-profile-detail`、[27 §1.1](27-B1-FLOOR-TABLE-ON-SWA-MPP.md)) | 0.253 s | `TF_` で切り替える候補で、level 2 の `moe.gateup` の中央値が 0.50 s 以下。KernelCheck の新しい検査がすべて PASS。壁時計 (c) を既定と交互に各 n = 6 取り、秒の差を書く (壁時計に閾値は置かない) | **不合格** (候補 `TF_PREFILL_MOE_PF=1` で 0.567 s)。壁時計は既定と交互に 3.698 → 3.705 s で、既定には入れていない ([28](28-MOE-GATEUP-PREFETCH.md)) |
+| `shared` (+ `qkv`・`oproj`、同じカーネル) | level 1 の `shared` 0.570 s (`b2-profile`、[27 §1.1](27-B1-FLOOR-TABLE-ON-SWA-MPP.md))。同じ形の MLX は 0.159 s ([31](31-MLX-KERNELS-PER-STAGE.md)) | 0.143 s | 候補 `TF_PREFILL_QMM=nax` (MLX の `affine_qmm_t_nax` を写したもの) で、level 1 の `shared` の中央値が 0.25 s 以下。KernelCheck の `mpp-qmm-nax` がすべて PASS。`qkv`・`oproj` の秒は並べて書く (閾値は置かない)。壁時計 (c) を既定と交互に各 n = 6 取り、秒の差を書く (壁時計に閾値は置かない) | 未 |
 
 ## B3. 候補を既定に入れる
 
