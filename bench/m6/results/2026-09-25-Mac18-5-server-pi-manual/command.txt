@@ -1,0 +1,3 @@
+cd ~/dev/tsugumi
+nohup caffeinate -i .build/release/TsugumiServer --model scratch/gemma4-qat-sym.gturbo --host 0.0.0.0 --port 8091 --ctx-size 65536 --verification trusted-install --draft-block-size 4 > scratch/server-20260925-073825.log 2>&1 < /dev/null &
+# クライアント: MBP の pi、プロバイダ m6-tsugumi (http://macmini-m6:8091/v1)。タスクはユーザーが手で流した。
