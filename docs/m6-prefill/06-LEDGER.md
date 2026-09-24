@@ -18,11 +18,12 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 日付 | commit | ラベル | n | prefill 壁時計 中央値 s | 最小 | 最大 | 失敗 |
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | 2026-09-23 | 837586c | g0-baseline | 6 | 9.506 | 9.188 | 9.597 | 0 |
-| 2026-09-24 | 22d7629 | ledger-head | 6 | 8.682 | 8.633 | 8.801 | 0 |
-| 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 |
 | 2026-09-24 | 5decec4 | ledger-gpu3-default | 6 | 4.584 | 4.545 | 6.110 | 0 |
+| 2026-09-24 | 22d7629 | ledger-head | 6 | 8.682 | 8.633 | 8.801 | 0 |
+| 2026-09-24 | bda6631 | ledger-swa-mpp-default | 6 | 3.496 | 3.442 | 4.764 | 0 |
+| 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 |
 
-**読み (2026-09-24)**: 既定は 5decec4 で 7.184 → 4.584 s (差 −2.600 s、導出)。変えたのは GPU 側の候補 3 つ (`mpp` / `mpp64` / `sgmm`) を既定にしたことだけ ([23](23-GPU-CANDIDATES-DEFAULT.md))。その前は 79eea8f で 8.682 → 7.184 s (層ファイルの検証の並行先読み、[20](20-VERIFY-AHEAD-ALONE.md))。基準線 (837586c) の 9.506 s から 22d7629 の 8.682 s までの −0.824 s は、どの commit で動いたか未確認。
+**読み (2026-09-24)**: 既定は cd8c26b で 4.584 → 3.496 s (差 −1.088 s、導出)。変えたのは sliding window の attention の `matmul2d` 版を既定にしたことだけ ([26](26-SWA-ATTN-MPP-DEFAULT.md))。その前は 5decec4 で 7.184 → 4.584 s (GPU 側の候補 3 つ、[23](23-GPU-CANDIDATES-DEFAULT.md))。その前は 79eea8f で 8.682 → 7.184 s (層ファイルの検証の並行先読み、[20](20-VERIFY-AHEAD-ALONE.md))。基準線 (837586c) の 9.506 s から 22d7629 の 8.682 s までの −0.824 s は、どの commit で動いたか未確認。
 
 ## 2. 既定でない構成 (候補。進捗ではない)
 
@@ -113,6 +114,7 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 22d7629 | h0-profile-detail | 3 | 8.754 | 8.646 | 8.842 | 0 | TF_PREFILL_GPU_PROFILE=2 |
 | 2026-09-24 | 5decec4 | ledger-gpu3-default | 6 | 4.584 | 4.545 | 6.110 | 0 | 既定 |
 | 2026-09-24 | 22d7629 | ledger-head | 6 | 8.682 | 8.633 | 8.801 | 0 | 既定 |
+| 2026-09-24 | bda6631 | ledger-swa-mpp-default | 6 | 3.496 | 3.442 | 4.764 | 0 | 既定 |
 | 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 | 既定 |
 | 2026-09-24 | 29948fd | s2-greedy-mpp64 | 2 | 7.409 | 7.153 | 7.664 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | 29948fd | s2-host-mpp64 | 3 | 7.342 | 7.228 | 7.357 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
@@ -128,6 +130,8 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 3f042e7 | sgmm-a | 6 | 8.829 | 8.626 | 8.957 | 0 | TF_PREFILL_ATTN=sgmm |
 | 2026-09-24 | 3f042e7 | sgmm-profile-detail-2 | 3 | 8.742 | 8.739 | 8.951 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_GPU_PROFILE=2 |
 | 2026-09-24 | 71786c5 | sgmm-profile-detail | 3 | 8.626 | 8.563 | 8.810 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_GPU_PROFILE=2 |
+| 2026-09-24 | bda6631 | swad-env-sgmm | 3 | 4.124 | 4.023 | 4.999 | 0 | TF_PREFILL_ATTN=sgmm |
+| 2026-09-24 | bda6631 | swad-greedy | 2 | 4.128 | 3.618 | 4.638 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | f603ade | va0-dec64-a | 3 | 8.910 | 8.582 | 8.910 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | f603ade | va0-dec64-b | 3 | 8.957 | 8.661 | 9.352 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | f603ade | va2p-dec64-a | 3 | 7.323 | 7.203 | 7.374 | 0 | TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=2 追加引数: --max-new 64 --temperature 0 |

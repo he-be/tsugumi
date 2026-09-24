@@ -1,6 +1,6 @@
 # 25. B2 の 1 段目 — sliding window の attention を `matmul2d` に。attn.swa 0.873 → 0.288 s、壁時計は既定 4.522 s に対して候補 3.579 s (実測、2026-09-24)
 
-**候補 (`TF_PREFILL_ATTN=mpp`)。台帳 §1 は動かない** (既定の行は [06 §1](06-LEDGER.md) の `ledger-gpu3-default` 4.584 s のまま)。既定に入れるかはユーザーが決める ([04 B3](04-GATES.md))。
+**候補 (`TF_PREFILL_ATTN=mpp`)。台帳 §1 は動かない** (既定の行は [06 §1](06-LEDGER.md) の `ledger-gpu3-default` 4.584 s のまま)。cd8c26b で既定に入れた ([26](26-SWA-ATTN-MPP-DEFAULT.md))。
 [04 B2](04-GATES.md) の順 ([24 §1.3](24-B1-FLOOR-TABLE.md)) の 1 番目 `attn.swa` (下限 0.044 s、変更前の差 0.769 s)。閾値は計測の前に 04 に置いた。
 
 証拠 (M6、この順に取った):
@@ -71,5 +71,5 @@ KernelCheck の新しい検査 (`PrefillSWAAttentionCheck.swift`) は 16/8 ヘ�
 
 ## 4. 次に渡すもの
 
-- 既定にするかは [04 B3](04-GATES.md) でユーザーが決める。既定にしたら `ledger-*` を n = 6 で取り、台帳 §1 の行で示す。
+- 既定に入れた ([26](26-SWA-ATTN-MPP-DEFAULT.md)、台帳 3.496 s)。
 - B2 の次は [24 §1.3](24-B1-FLOOR-TABLE.md) の順の 2 番目 `moe.gateup` (差 0.485 s)。

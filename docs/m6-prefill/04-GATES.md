@@ -74,7 +74,7 @@ B1 の順に 1 段ずつ直す。1 段ごとに次を満たして閉じる。
 
 ## B3. 候補を既定に入れる
 
-10〜19 で足した口は、すべて既定に入った (79eea8f、5decec4)。25 の `TF_PREFILL_ATTN=mpp` は判断待ち。台帳 ([06 §1](06-LEDGER.md)) の最新行は `ledger-gpu3-default` 4.584 s。
+10〜19 で足した口は、すべて既定に入った (79eea8f、5decec4)。25 の `TF_PREFILL_ATTN=mpp` も既定に入った (cd8c26b)。台帳 ([06 §1](06-LEDGER.md)) の最新行は `ledger-gpu3-default` 4.584 s。
 
 | 候補 | 結果文書 | 候補の (c)、秒 (台帳 §2) | 既定にするときの問い |
 | --- | --- | --- | --- |
@@ -82,7 +82,7 @@ B1 の順に 1 段ずつ直す。1 段ごとに次を満たして閉じる。
 | ~~`TF_PREFILL_QMM=mpp64`~~ | [13](13-PROJ-SHARED-MATMUL2D.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md) | 新しい既定の上で単独 6.102、mpp と併用 4.636 (3075b56) | **既定に入れた** (5decec4、[23](23-GPU-CANDIDATES-DEFAULT.md))。戻すのは `TF_PREFILL_QMM=simdgroup` |
 | ~~`TF_PREFILL_ATTN=sgmm`~~ | [19](19-SWA-ATTN-SGMM-GQA.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md) | 新しい既定の上で単独 6.776、3 つ全部 4.167 (3075b56) | **既定に入れた** (5decec4、[23](23-GPU-CANDIDATES-DEFAULT.md))。戻すのは `TF_PREFILL_ATTN=qblock`。peak_gb +0.22 GB |
 | ~~`TF_PREFILL_VERIFY_AHEAD=2` + `_PARALLEL=1`~~ | [14](14-G5-VERIFY-AHEAD.md)、[20](20-VERIFY-AHEAD-ALONE.md) | 単独で 7.229 (f603ade) | **既定に入れた** (79eea8f、`ledger-verify-ahead` 7.184 s)。Swapouts 0、decode と greedy は同じ |
-| `TF_PREFILL_ATTN=mpp` | [25](25-SWA-ATTN-MPP.md) | 同じバイナリで既定と交互に 3.579 (3.547〜4.885、2c5c0dd) | **判断待ち**。span mask と 64 の倍数でない ring では使われない。greedy は既定と同じ本文 |
+| ~~`TF_PREFILL_ATTN=mpp`~~ | [25](25-SWA-ATTN-MPP.md) | 同じバイナリで既定と交互に 3.579 (3.547〜4.885、2c5c0dd) | **既定に入れた** (cd8c26b、`ledger-swa-mpp-default` 3.496 s、[26](26-SWA-ATTN-MPP-DEFAULT.md))。範囲の速い側に 0.051 s 外れ、sgmm に戻した対照も同じ向き。戻すのは `TF_PREFILL_ATTN=sgmm` |
 
 **手順**: 原則 2 を満たした候補ごとに、既定を変えた commit で `ledger-<候補名>` を n = 6 で取る。
 **合格**: 台帳 §1 に新しい行があり、その中央値が候補の (c) のレンジに入っている。入っていなければ、既定にした結果として何かが違う (書き換えのミス、環境の違い)。理由が分かるまで次に進まない。
