@@ -37,8 +37,8 @@
 | 段の粒度 | 今の profile で取れるか |
 | --- | --- |
 | embed、norm、qkv、rope、kvcopy、attn.swa、attn.full、oproj、post | `TF_PREFILL_GPU_PROFILE=2` (膨らむので割合で読む) |
-| post の中の router と norm の分離 | **取れない**。分ける |
-| shared、routed MoE (GEMM / gelu / 待ち)、tail、head | `moe` は tile stream の待ちを含む。GEMM だけの秒は取れない。分ける |
+| post の中の router と norm の分離 | level 2 の `post.norm` / `post.router` (61619a9) |
+| shared、routed MoE (gate/up / gelu / down)、tail、head | level 1。`moe` の中は level 2 の `[prefill gpu moe ...]` (61619a9)。`moe` の GPU 秒に tile stream の待ちは入らない ([24 §1.3](24-B1-FLOOR-TABLE.md)) |
 | ホスト往復 (GPU の空き) | `TF_PREFILL_HOST_PROFILE=1` の `gpuq idle` |
 
 **作るもの**:
@@ -48,6 +48,7 @@
 - 上の「取れない」の 2 行を分ける profile。
 
 **合格**: 全段に「下限 s / 実測 s / 差 s」が並び、差の大きい順が決まっている。倍率の列は作らない (下限は導出なので、下限を動かせば倍率も動く)。数字は (b) で取る。B0 が済むまでは (c) で取り、そう書く。
+**結果**: 合格 ((c) で取った)。順は [24 §1.3](24-B1-FLOOR-TABLE.md)。
 
 ## B2. 下限から遠い段から直す
 
