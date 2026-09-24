@@ -19,8 +19,9 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | --- | --- | --- | ---: | ---: | ---: | ---: | ---: |
 | 2026-09-23 | 837586c | g0-baseline | 6 | 9.506 | 9.188 | 9.597 | 0 |
 | 2026-09-24 | 22d7629 | ledger-head | 6 | 8.682 | 8.633 | 8.801 | 0 |
+| 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 |
 
-**読み (2026-09-24)**: HEAD (22d7629) の既定は 8.682 s。基準線 (837586c) の 9.506 s から差 −0.824 s。どの commit で動いたかは未確認 (837586c..22d7629 の Sources の変更はすべて `TF_` の裏のはず)。
+**読み (2026-09-24)**: 既定は 79eea8f で 8.682 → 7.184 s (差 −1.498 s、導出)。変えたのは層ファイルの検証の並行先読み (深さ 2) を既定にしたことだけ ([20](20-VERIFY-AHEAD-ALONE.md))。基準線 (837586c) の 9.506 s から 22d7629 の 8.682 s までの −0.824 s は、どの commit で動いたか未確認。
 
 ## 2. 既定でない構成 (候補。進捗ではない)
 
@@ -66,6 +67,7 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 3c45f83 | g5c-par4-b | 3 | 4.463 | 4.418 | 4.527 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 TF_PREFILL_VERIFY_AHEAD_PARALLEL=1 TF_PREFILL_VERIFY_AHEAD=4 |
 | 2026-09-24 | 22d7629 | h0-profile-detail | 3 | 8.754 | 8.646 | 8.842 | 0 | TF_PREFILL_GPU_PROFILE=2 |
 | 2026-09-24 | 22d7629 | ledger-head | 6 | 8.682 | 8.633 | 8.801 | 0 | 既定 |
+| 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 | 既定 |
 | 2026-09-24 | 29948fd | s2-greedy-mpp64 | 2 | 7.409 | 7.153 | 7.664 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-24 | 29948fd | s2-host-mpp64 | 3 | 7.342 | 7.228 | 7.357 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
 | 2026-09-24 | 29948fd | s2-host-simdgroup | 3 | 7.298 | 7.101 | 7.319 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_MOE=mpp TF_PREFILL_QMM=simdgroup |

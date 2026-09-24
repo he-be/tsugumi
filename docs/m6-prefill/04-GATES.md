@@ -75,7 +75,7 @@ B1 の順に 1 段ずつ直す。1 段ごとに次を満たして閉じる。
 | --- | --- | --- | --- |
 | `TF_PREFILL_MOE=mpp` | [12](12-G3-MOE-MATMUL2D.md) | 7.345 / 7.450 (7c7ad7b) | greedy が 3 行目で分かれる。受け入れるか |
 | `TF_PREFILL_QMM=mpp64` | [13](13-PROJ-SHARED-MATMUL2D.md) | 7.243 / 7.211 (29948fd、mpp と併用) | 単独では壁時計を動かさない。mpp とセットか |
-| `TF_PREFILL_VERIFY_AHEAD=2` + `_PARALLEL=1` | [14](14-G5-VERIFY-AHEAD.md) | 4.443 / 4.407 (3c45f83、上 2 つと併用) | 検証を 2〜4 本同時に回す。16 GB 機のスワップと decode への影響は未確認 |
+| ~~`TF_PREFILL_VERIFY_AHEAD=2` + `_PARALLEL=1`~~ | [14](14-G5-VERIFY-AHEAD.md)、[20](20-VERIFY-AHEAD-ALONE.md) | 単独で 7.229 (f603ade) | **既定に入れた** (79eea8f、`ledger-verify-ahead` 7.184 s)。Swapouts 0、decode と greedy は同じ |
 
 **手順**: ユーザーが既定に入れると決めた候補ごとに、既定を変えた commit で `ledger-<候補名>` を n = 6 で取る。
 **合格**: 台帳 §1 に新しい行があり、その中央値が候補の (c) のレンジに入っている。入っていなければ、既定にした結果として何かが違う (書き換えのミス、環境の違い)。理由が分かるまで次に進まない。
