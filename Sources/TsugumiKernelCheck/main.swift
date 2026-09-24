@@ -2053,6 +2053,19 @@ if arguments.contains("--rows-bench") {
 // (MoERowsBench.swift), which is where `docs/mtp/28-M8-PROPOSAL.md` §2 puts the
 // remaining GPU gap. Separate flag because it reports a slope in r rather than
 // a throughput, and because gate/up and down are timed apart.
+// `--moe-gemm-bench` times the prompt-chunk routed gate/up GEMM (tiled path)
+// alone, by rows per expert (PrefillMoEGEMMBench.swift, docs/m6-prefill/28).
+if arguments.contains("--moe-gemm-bench") {
+    var iterations = 20
+    if let index = arguments.firstIndex(of: "--moe-gemm-bench-iterations"),
+       index + 1 < arguments.count,
+       let value = Int(arguments[index + 1]) {
+        iterations = value
+    }
+    try runPrefillMoEGEMMBench(groupSize: groupSizes[0], iterations: iterations)
+    exit(0)
+}
+
 if arguments.contains("--moe-rows-bench") {
     var moeBenchIterations = 50
     if let index = arguments.firstIndex(of: "--moe-rows-bench-iterations"),

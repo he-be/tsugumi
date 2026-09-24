@@ -1,0 +1,12 @@
+[prefill shared qmm kernel=mpp-tile64]
+[prefill moe tiled kernel=mpp gateup=fused]
+[prefill gpu attn=1.846s(50%) shared=0.571s(16%) moe=1.209s(33%) tail=0.044s(1%) head=0.003s(0%) total=3.673s]
+[prefill gpu proj kv:affine-tile64-f16=120 o:affine-tile64-f16=60 q:affine-tile64-f16=60]
+[prefill gpu moe gateup=0.849s(70%) gelu=0.000s(0%) down=0.361s(30%) other=0.000s(0%) total=1.209s]
+[prefill gpu attn embed=0.000s(0%) norm=0.008s(0%) qkv=0.392s(21%) rope=0.205s(11%) kvcopy=0.008s(0%) attn.swa=0.285s(15%) attn.full=0.299s(16%) oproj=0.234s(13%) post.norm=0.018s(1%) post.router=0.396s(21%) total=1.846s]
+チャン
+[stop=maxTokens prefill=2478tok new=1tok decode=0.00s tok/s=1149.439]
+[load=0.526s layerVerify=9.589s/30layers prefill=4.682s ttft=4.682s peak=1.23GB rss=0.34GB]
+[expert prefill hit=0.0% 0/5755 io=0.459s | decode hit=0.0% 0/0 io=0.000s]
+[expert mmap layers=30 mapped=12.90GB sync=749(+5755/-4795) noop=0 residency=0.361s /tok=360.54ms]
+[decode/tok io=0.00ms cb1=0.00ms cb2=0.00ms head=0.00ms]
