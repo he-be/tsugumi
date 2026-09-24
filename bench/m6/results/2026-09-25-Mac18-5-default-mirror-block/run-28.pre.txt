@@ -1,0 +1,40 @@
+07:20:26
+System-wide memory free percentage: 49%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   103190.
+Pages active:                                 334232.
+Pages inactive:                               110511.
+Pages speculative:                                69.
+Pages throttled:                                   0.
+Pages wired down:                             452207.
+Pages purgeable:                                   4.
+"Translation faults":                      433477265.
+Pages copy-on-write:                        98346609.
+Pages zero filled:                         303263577.
+Pages reactivated:                          14468112.
+Pages purged:                                1456133.
+File-backed pages:                            433998.
+Anonymous pages:                               10814.
+Pages stored in compressor:                    35404.
+Pages occupied by compressor:                  10859.
+Decompressions:                             25434573.
+Compressions:                               31618238.
+Pageins:                                   631855505.
+Pageouts:                                      16357.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45661.
+Pages tagged resident:                         38067.
+Pages tagged compressed:                        7594.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1799.
+Pages tag-storage free:                        21837.
+Pages tag-storage non-tag pageable:             8117.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1239296.
+Tagged compressions:                          106453.
+Tagged decompressions:                         71869.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  375.49 26930671 9875247.43   123.85 5400172 653113.87 

@@ -1,0 +1,40 @@
+07:19:01
+System-wide memory free percentage: 26%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   104653.
+Pages active:                                 134800.
+Pages inactive:                                73231.
+Pages speculative:                                33.
+Pages throttled:                                   0.
+Pages wired down:                             689388.
+Pages purgeable:                                   4.
+"Translation faults":                      432946470.
+Pages copy-on-write:                        96984110.
+Pages zero filled:                         301777335.
+Pages reactivated:                          14355596.
+Pages purged:                                1447016.
+File-backed pages:                            197827.
+Anonymous pages:                               10237.
+Pages stored in compressor:                    31882.
+Pages occupied by compressor:                   8963.
+Decompressions:                             24914347.
+Compressions:                               30995568.
+Pageins:                                   620138885.
+Pageouts:                                      16120.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45792.
+Pages tagged resident:                         38090.
+Pages tagged compressed:                        7702.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1799.
+Pages tag-storage free:                        22914.
+Pages tag-storage non-tag pageable:             7703.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1265536.
+Tagged compressions:                          106362.
+Tagged decompressions:                         71672.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  374.47 26560717 9713071.37   123.78 5229895 632206.64 

@@ -1,11 +1,11 @@
-# 44. 層ファイルの写しを外付け SSD に置き、エキスパートの 32% をそちらから読む — 自然文の prefill が 0.9〜1.2 s 縮む (実測、2026-09-25)
+# 44. 層ファイルの写しを外付け SSD に置き、エキスパートの 32% をそちらから読む — 既定にした。自然文の prefill が 0.5〜0.9 s 縮む (実測、2026-09-25)
 
-**候補の測定 (`TF_EXPERT_MIRROR`)。台帳 §1 は動かない。**[43](43-LEDGER-PROMPT-REPEATED-SENTENCE.md) で、自然文の prefill の大半は SSD の読み (1 run 9〜13 GiB) だと分かった。M6 の内蔵 SSD は 3.3 GB/s で頭打ち ([M6_SSD_BANDWIDTH](../investigations/M6_SSD_BANDWIDTH.md))。
+**既定に入れた (§4)。**§1〜§3 は候補 (`TF_EXPERT_MIRROR=<dir>`、5eb5238) のときの測定。[43](43-LEDGER-PROMPT-REPEATED-SENTENCE.md) で、自然文の prefill の大半は SSD の読み (1 run 9〜13 GiB) だと分かった。M6 の内蔵 SSD は 3.3 GB/s で頭打ち ([M6_SSD_BANDWIDTH](../investigations/M6_SSD_BANDWIDTH.md))。
 外付け (TB4、`SSD256`) を**内蔵と同時に読んで、帯域を足す**。
 
 - 外付けに `packed_experts/` の写しを置く (`/Volumes/SSD256/tsugumi-mirror/packed_experts`、31 本すべて manifest の SHA-256 と一致を確かめた)。
 - 各層で、エキスパート番号に均等に散らした 32% (128 個中 40 個、`ExpertMirror.evenAssignment`) を写しのマッピングから、残りを内蔵から読む。どのエキスパートも常に同じ側から読むので、同じバイトがページキャッシュに 2 度載ることは無い。`F_RDADVISE` も同じ振り分けで 2 本の fd に交互に出す。
-- 開き方は `TF_EXPERT_MIRROR=<dir>` と `TF_EXPERT_MIRROR_SHARE` (既定 0.32)。写しのファイルは manifest のサイズと照合し、`full-sha256` なら SHA-256 も検証する。mmap の腕 (既定) と pread の腕の両方に入れた。
+- 既定の形 (§4): `Scripts/make-expert-mirror.sh <model> <mirror dir> [share]` が写しを作って原本と `cmp` で照合し、モデルのディレクトリに `expert-mirror.json` (置き場・割合・manifest の SHA-256) を書く。読み込みはそれがあれば写しを使い、manifest が違う・置き場が無い (未マウント) なら警告して内蔵だけで読む。`TF_EXPERT_MIRROR=0` で外す。mmap の腕 (既定) と pread の腕の両方に入っている。
 
 証拠 (M6、`bench/m6/results/2026-09-25-Mac18-5-<ラベル>/`): `dual-ssd-probe` (帯域)、`mirror-a` (交互の並び)、`mirror-block`・`mirror-block-s25`・`mirror-block-s40` (腕ごとのまとまりの並び)。
 
@@ -17,7 +17,7 @@
 
 ```
 def: TsugumiCLI --model scratch/gemma4-qat-sym.gturbo --messages-file bench/m6/prompts/<本文>.json --expert-cache-slots 32 --prefill-chunk-tokens 2048 --max-new 1 --max-context 4096 --verification trusted-install
-mir: TF_EXPERT_MIRROR=/Volumes/SSD256/tsugumi-mirror/packed_experts TF_EXPERT_MIRROR_SHARE=0.32 <def>
+mir: TF_EXPERT_MIRROR=/Volumes/SSD256/tsugumi-mirror/packed_experts TF_EXPERT_MIRROR_SHARE=0.32 <def>   (候補のときの形。既定では expert-mirror.json)
 ```
 
 全 run exit 0、Swapouts 0。本文は 43 §3 の自然文 5 本 (`bench/m6/prompts/`)。各 run で `iostat -d -I` の累積 MB を前後に取り、disk0 (内蔵) と disk4 (外付け) が何を読んだかを差で出した。
@@ -70,11 +70,35 @@ mir: TF_EXPERT_MIRROR=/Volumes/SSD256/tsugumi-mirror/packed_experts TF_EXPERT_MI
 ## 2. 分かったこと / 外れたこと
 
 - [M6_SSD_BANDWIDTH](../investigations/M6_SSD_BANDWIDTH.md) §0-5「外付けで逃げられない」は、外付け**だけ**で読む場合の話だった。外付けは内蔵より遅い (1.57 GB/s) が、別の経路なので**足す**ことはできる。
-- [TWO_MACHINE_DEV §5](../TWO_MACHINE_DEV.md) の「測定は必ず内蔵から走らせる」は、既定の数字を外付けで汚さないための規則で、変えない。写しの腕はそれと別の構成として、`TF_EXPERT_MIRROR` を `env` に残して測る。
+- [TWO_MACHINE_DEV §5](../TWO_MACHINE_DEV.md) の「測定は必ず内蔵から走らせる」は、既定にした時点で「既定は内蔵 + 写し、写しなしは `TF_EXPERT_MIRROR=0`」に書き換えた。
 
-## 3. 次に渡すもの
+## 3. 候補のときに残した問い (§4 で答えた)
 
-- **既定に入れるかは未決。**外付けがある機械でしか効かないので、`TF_` ではなく CLI / サーバの引数 (たとえば `--expert-mirror <dir>`) と、写しを作って検証するコマンドが要る。入れるなら台帳の行は「写しあり」の構成として別に取る。
+- 既定の入れ方 → モデルのディレクトリの `expert-mirror.json` (§4)。引数は足していない。CLI・サーバ・アプリが同じ `Model.load` を通るので、どれも写しを使う。
 - 写しは 12 GB の複製である (AGENTS の「.moepack を複製しない」はテストのための複製の話で、これは構成の一部)。
-- decode は測っていない。greedy 64 トークンの decode は 33.5 → 32.2 tok/s (n = 1、解釈しない)。
 - 割合は 3 点しか測っていない。0.28〜0.36 の間はまだ測っていない。
+
+## 4. 既定にした (9d66daa)
+
+証拠: `default-mirror-block` (trusted-install)、`default-mirror-block-sha` (full-sha256)、`ledger-expert-mirror`。腕は `def` (既定のバイナリ、`TF_` なし) と `off` (`TF_EXPERT_MIRROR=0`)。並びは §1.2 と同じ、各 n = 4。全 run exit 0、Swapouts 0。
+
+```
+測定: 2026-09-25 / Mac18,5 Apple M6 16GB / macOS 27.0 (26A428) / Swift 6.4 / SDK 27.0 / CLT / APPLE SSD AP0256Z / commit 9d66daa / minos 15.0
+bench/m6/mirror_bench.sh default-mirror-block 4 block                (--verification trusted-install)
+bench/m6/mirror_bench.sh default-mirror-block-sha 4 block full-sha256
+```
+
+| 本文 | trusted: 写しなし → 既定 (差) | full-sha256: 写しなし → 既定 (差) |
+| --- | --- | --- |
+| ja-twomachine | 4.316 → 3.720 (−0.596) | 4.479 → 3.856 (−0.623) |
+| ja-m6readme | 3.790 → 3.316 (−0.474) | 4.261 → 3.622 (−0.639) |
+| en-readme | 4.111 → 3.497 (−0.614) | 4.373 → 3.875 (−0.498) |
+| en-server | 4.492 → 3.574 (−0.918) | 4.633 → 3.941 (−0.692) |
+| code-runner | 4.440 → 3.570 (−0.870) | 4.510 → 3.931 (−0.579) |
+
+- trusted の縮みは §1.2 (0.9〜1.2 s) より小さい。§1.2 の既定 (写しなし) の腕が 3.996〜4.762 s で、今回の 3.790〜4.492 s より遅かった。同じ構成の別の時間帯で 0.2〜0.3 s 動くので、差の大きさは読まない。向きは 5 本とも両方の測定で同じ。
+- greedy 64 トークンの本文は 4 本 (両腕 × 両検証) で同じ (`greedy-{def,off}.log`)。
+- **full-sha256 の検証は、各エキスパートを読む側から繋いだバイト列を manifest の SHA-256 と照合する**。写しの壊れは、そのバイトを読むときにだけ検出される (読まない側の壊れは使われない)。最初の実装 (2 本の fd を交互に 1 MB ずつ `pread`) は先読みが効かず、full-sha256 の prefill が 3.9〜5.3 → 7.2 s に伸びた (n = 1)。16 MB の窓を 2 台同時に読み、前の窓のハッシュと重ねる形にして上の表になった。peak は 1.27 → 1.34〜1.35 GB (窓 64 MB では 1.60 GB)。
+- 台帳 (繰り返し文) の行は 1.768 → 1.716 s (`ledger-expert-mirror`、1 本目 3.747 s を含む n = 6)。繰り返し文なので進捗の判定には使わない ([43](43-LEDGER-PROMPT-REPEATED-SENTENCE.md))。
+
+**運用**: M6 は再起動のたびに `diskutil mount disk5s1` が要る ([TWO_MACHINE_DEV §5](../TWO_MACHINE_DEV.md))。マウントし忘れると警告を出して内蔵だけで読む (遅いほうに戻るだけで止まらない)。写しなしの数字は `TF_EXPERT_MIRROR=0` を付けて取る。decode は測っていない。

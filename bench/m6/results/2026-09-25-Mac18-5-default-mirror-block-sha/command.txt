@@ -1,0 +1,3 @@
+bench/m6/mirror_bench.sh default-mirror-block-sha 4 block full-sha256
+def: /Users/mh/dev/tsugumi/.build/release/TsugumiCLI --model /Users/mh/dev/tsugumi/scratch/gemma4-qat-sym.gturbo --messages-file bench/m6/prompts/<prompt>.json --expert-cache-slots 32 --prefill-chunk-tokens 2048 --max-new 1 --max-context 4096 --verification full-sha256
+off: TF_EXPERT_MIRROR=0 <def>

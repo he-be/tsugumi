@@ -1,0 +1,40 @@
+07:23:05
+System-wide memory free percentage: 53%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   104332.
+Pages active:                                 370333.
+Pages inactive:                               109941.
+Pages speculative:                               290.
+Pages throttled:                                   0.
+Pages wired down:                             415443.
+Pages purgeable:                                   4.
+"Translation faults":                      434497460.
+Pages copy-on-write:                       100736889.
+Pages zero filled:                         305923060.
+Pages reactivated:                          14850117.
+Pages purged:                                1475602.
+File-backed pages:                            469210.
+Anonymous pages:                               11354.
+Pages stored in compressor:                    35304.
+Pages occupied by compressor:                  10729.
+Decompressions:                             26452387.
+Compressions:                               32840732.
+Pageins:                                   653710467.
+Pageouts:                                      16779.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45558.
+Pages tagged resident:                         38042.
+Pages tagged compressed:                        7516.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1798.
+Pages tag-storage free:                        21245.
+Pages tag-storage non-tag pageable:             8709.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1221568.
+Tagged compressions:                          106953.
+Tagged decompressions:                         72445.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  377.09 27591925 10160711.08   124.02 5920796 717111.10 

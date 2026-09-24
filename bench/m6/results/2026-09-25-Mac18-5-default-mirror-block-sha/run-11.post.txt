@@ -1,0 +1,40 @@
+07:22:55
+System-wide memory free percentage: 35%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   108277.
+Pages active:                                 182503.
+Pages inactive:                               110172.
+Pages speculative:                               351.
+Pages throttled:                                   0.
+Pages wired down:                             601175.
+Pages purgeable:                                   4.
+"Translation faults":                      434415667.
+Pages copy-on-write:                       100565323.
+Pages zero filled:                         305720596.
+Pages reactivated:                          14804912.
+Pages purged:                                1469090.
+File-backed pages:                            277475.
+Anonymous pages:                               15551.
+Pages stored in compressor:                    30974.
+Pages occupied by compressor:                   8590.
+Decompressions:                             26373046.
+Compressions:                               32743042.
+Pageins:                                   652178383.
+Pageouts:                                      16748.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45140.
+Pages tagged resident:                         37689.
+Pages tagged compressed:                        7451.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1798.
+Pages tag-storage free:                        22080.
+Pages tag-storage non-tag pageable:             7874.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1208256.
+Tagged compressions:                          106876.
+Tagged decompressions:                         72433.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  377.01 27548095 10142374.09   124.01 5862259 709913.88 

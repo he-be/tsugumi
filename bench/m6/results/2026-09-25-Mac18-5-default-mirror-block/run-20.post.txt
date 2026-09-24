@@ -1,0 +1,40 @@
+07:19:49
+System-wide memory free percentage: 35%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   103506.
+Pages active:                                 186964.
+Pages inactive:                               114324.
+Pages speculative:                                31.
+Pages throttled:                                   0.
+Pages wired down:                             595364.
+Pages purgeable:                                   4.
+"Translation faults":                      433238369.
+Pages copy-on-write:                        97749369.
+Pages zero filled:                         302607765.
+Pages reactivated:                          14418999.
+Pages purged:                                1451795.
+File-backed pages:                            290713.
+Anonymous pages:                               10606.
+Pages stored in compressor:                    35510.
+Pages occupied by compressor:                  10879.
+Decompressions:                             25194663.
+Compressions:                               31343153.
+Pageins:                                   626820031.
+Pageouts:                                      16247.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45131.
+Pages tagged resident:                         37523.
+Pages tagged compressed:                        7608.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1799.
+Pages tag-storage free:                        21883.
+Pages tag-storage non-tag pageable:             8143.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1240128.
+Tagged compressions:                          106452.
+Tagged decompressions:                         71856.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  375.06 26770608 9805327.27   123.82 5328880 644348.40 

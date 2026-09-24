@@ -1,0 +1,40 @@
+07:22:55
+System-wide memory free percentage: 52%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   108248.
+Pages active:                                 351156.
+Pages inactive:                               111286.
+Pages speculative:                               351.
+Pages throttled:                                   0.
+Pages wired down:                             431440.
+Pages purgeable:                                   4.
+"Translation faults":                      434419849.
+Pages copy-on-write:                       100566435.
+Pages zero filled:                         305721275.
+Pages reactivated:                          14804912.
+Pages purged:                                1469090.
+File-backed pages:                            447234.
+Anonymous pages:                               15559.
+Pages stored in compressor:                    30967.
+Pages occupied by compressor:                   8587.
+Decompressions:                             26373053.
+Compressions:                               32743042.
+Pageins:                                   652178393.
+Pageouts:                                      16748.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45140.
+Pages tagged resident:                         37689.
+Pages tagged compressed:                        7451.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1798.
+Pages tag-storage free:                        22034.
+Pages tag-storage non-tag pageable:             7920.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1208256.
+Tagged compressions:                          106876.
+Tagged decompressions:                         72433.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  377.01 27548104 10142374.17   124.01 5862259 709913.88 

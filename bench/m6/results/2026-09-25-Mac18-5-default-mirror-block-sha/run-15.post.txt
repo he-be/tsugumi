@@ -1,0 +1,40 @@
+07:23:15
+System-wide memory free percentage: 35%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   105956.
+Pages active:                                 186770.
+Pages inactive:                               106582.
+Pages speculative:                               183.
+Pages throttled:                                   0.
+Pages wired down:                             600888.
+Pages purgeable:                                   4.
+"Translation faults":                      434571451.
+Pages copy-on-write:                       100906205.
+Pages zero filled:                         306117980.
+Pages reactivated:                          14887747.
+Pages purged:                                1475672.
+File-backed pages:                            282304.
+Anonymous pages:                               11231.
+Pages stored in compressor:                    35000.
+Pages occupied by compressor:                  10689.
+Decompressions:                             26527683.
+Compressions:                               32935517.
+Pageins:                                   655403544.
+Pageouts:                                      16808.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45590.
+Pages tagged resident:                         38081.
+Pages tagged compressed:                        7509.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1798.
+Pages tag-storage free:                        21240.
+Pages tag-storage non-tag pageable:             8714.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1220672.
+Tagged compressions:                          106953.
+Tagged decompressions:                         72452.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  377.17 27640845 10180854.89   124.05 5986837 725233.03 

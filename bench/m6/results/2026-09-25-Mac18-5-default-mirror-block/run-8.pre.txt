@@ -1,0 +1,40 @@
+07:18:41
+System-wide memory free percentage: 55%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   101975.
+Pages active:                                 383022.
+Pages inactive:                               114146.
+Pages speculative:                                48.
+Pages throttled:                                   0.
+Pages wired down:                             400869.
+Pages purgeable:                                   4.
+"Translation faults":                      432820415.
+Pages copy-on-write:                        96645062.
+Pages zero filled:                         301404549.
+Pages reactivated:                          14325802.
+Pages purged:                                1446826.
+File-backed pages:                            486910.
+Anonymous pages:                               10306.
+Pages stored in compressor:                    35887.
+Pages occupied by compressor:                  11008.
+Decompressions:                             24762743.
+Compressions:                               30826099.
+Pageins:                                   617028479.
+Pageouts:                                      16066.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45119.
+Pages tagged resident:                         37415.
+Pages tagged compressed:                        7704.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1798.
+Pages tag-storage free:                        22491.
+Pages tag-storage non-tag pageable:             8130.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1265664.
+Tagged compressions:                          106362.
+Tagged decompressions:                         71670.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  374.26 26479970 9678123.98   123.74 5118751 618550.90 

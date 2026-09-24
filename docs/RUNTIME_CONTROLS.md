@@ -39,6 +39,18 @@ model, so an unsupported combination fails immediately with the usage text.
 | Reasoning | — | `--reasoning-budget N` | `-1` (unlimited) | Opens the chat template's thought channel, so the model reasons before it answers. `0` closes it; a positive `N` caps the thought and the server forces the closing tag when the cap is reached, so the answer is never empty. The reasoning is generated text: it spends the same token budget as the answer, and `--reasoning-format auto` (the default) returns it separately as `reasoning_content` rather than mixed into the answer. On the server this is the process default, which a request overrides with `chat_template_kwargs.enable_thinking` or `reasoning_effort`. **A request that declares tools still reasons** — see [SPEC](serving/SPEC.md) RSN-5 and MSG-6. The CLI's own `--thinking on\|off` is unrelated and unchanged; it applies to `--messages-file` only. |
 | RDADVISE | Off, Default, Bounded, Adaptive | `--rdadvise off\|default\|bounded\|adaptive` | Off | Applies experimental read advice. Its effect depends on the workload; it may help a short decode and slow a long one. |
 
+**Expert mirror.** A model directory may carry `expert-mirror.json`, written by
+`Scripts/make-expert-mirror.sh <model> <mirror dir> [share]` after it copies
+`packed_experts/` to a second SSD and compares every file with the original.
+With it, every process that loads the model (CLI, server, app) reads a fixed
+share of each layer's experts (default 0.32) from the copy while it reads the
+rest from the model directory, so the two drives' bandwidths add
+([m6-prefill/44](m6-prefill/44-EXPERT-MIRROR-EXTERNAL-SSD.md)). A copy whose
+volume is not mounted, or one made for another `manifest.json`, is skipped with
+a warning. `full-sha256` hashes each expert from the side it is read from.
+Delete the file to stop using the copy; `TF_EXPERT_MIRROR=0` skips it for one
+run.
+
 A request that asks for a repetition penalty other than 1.0 cannot be verified
 (the accept rule needs a draw that depends only on position, seed, and
 committed history), so the server answers it on the plain decode path instead

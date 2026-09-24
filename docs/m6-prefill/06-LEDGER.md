@@ -24,11 +24,13 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | c08e2de | ledger-full-attn-mpp | 6 | 2.740 | 2.722 | 3.110 | 0 |
 | 2026-09-24 | ef29110 | ledger-trusted | 6 | 2.897 | 2.880 | 3.123 | 0 |
 | 2026-09-25 | 619c515 | ledger-advise-layer | 6 | 1.768 | 1.747 | 1.922 | 0 |
+| 2026-09-25 | 9d66daa | ledger-expert-mirror | 6 | 1.716 | 1.706 | 3.747 | 0 |
 | 2026-09-25 | 084de6b | ledger-full-attn-unfused | 6 | 2.626 | 2.617 | 3.030 | 0 |
 | 2026-09-25 | 275d0f5 | ledger-moe-nax | 6 | 1.914 | 1.887 | 2.431 | 0 |
 | 2026-09-25 | 122e144 | ledger-router-nax | 6 | 2.267 | 2.252 | 2.744 | 0 |
 | 2026-09-25 | 994a0ef | ledger-swa-unfused | 6 | 2.482 | 2.471 | 2.984 | 0 |
 
+**読み (2026-09-25、[44](44-EXPERT-MIRROR-EXTERNAL-SSD.md))**: 9d66daa (1.716 s) から、M6 の既定は外付け SSD の写し (`expert-mirror.json`) からエキスパートの 32% を読む。行の証拠ディレクトリに `expert-mirror.json` が写っている。写しなしの値は `TF_EXPERT_MIRROR=0` の候補として取る。繰り返し文なので、この行の縮みは進捗の判定に使わない (自然文の比較は 44 §4)。
 **読み (2026-09-25、[43](43-LEDGER-PROMPT-REPEATED-SENTENCE.md))**: 上の行はすべて繰り返し文 `bench/l.json` の値。自然文の既定は 2.595〜4.568 s (`w1-def-*`、台帳の形ではまだ取っていない)。以下は繰り返し文の中での経緯。
 **読み (2026-09-24)**: 表は `--verification trusted-install` で取った行だけ (ef29110 から、[35](35-PREFILL-WITHOUT-VERIFY.md))。ef29110 より前の行は層ファイルの SHA-256 検証を含む量で、`ledger.sh` は載せない。ef29110 の 2.897 s が、この量の最初の行。
 c08e2de (2.740 s) と 084de6b (2.626 s) は全注意の 2 回の既定の変更 ([36](36-FULL-ATTN-UNFUSED.md))、994a0ef (2.482 s) は SWA の変更 ([37](37-SWA-ATTN-UNFUSED.md))、122e144 (2.267 s) は router の変更 ([38](38-ROUTER-NAX.md))、275d0f5 (1.914 s) は routed MoE の GEMM の変更 ([40](40-MOE-GEMM-NAX.md))、619c515 (1.768 s) は層ごとの先読みの頼み方の変更 ([42](42-ADVISE-LAYER-AT-ROUTING.md))。この測定環境では同じ構成の n = 6 の中央値が 0.05 s 程度揺れる (36 §2)。
@@ -75,6 +77,7 @@ c08e2de (2.740 s) と 084de6b (2.626 s) は全注意の 2 回の既定の変更 
 | 2026-09-25 | 6dbeba0 | l1-greedy-default | 2 | 2.034 | 1.973 | 2.096 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-25 | a229299 | l1-host-advise | 3 | 1.891 | 1.819 | 2.209 | 0 | TF_PREFILL_ADVISE_LAYER=1 TF_PREFILL_HOST_PROFILE=1 |
 | 2026-09-25 | 619c515 | ledger-advise-layer | 6 | 1.768 | 1.747 | 1.922 | 0 | 既定 |
+| 2026-09-25 | 9d66daa | ledger-expert-mirror | 6 | 1.716 | 1.706 | 3.747 | 0 | 既定 |
 | 2026-09-25 | 084de6b | ledger-full-attn-unfused | 6 | 2.626 | 2.617 | 3.030 | 0 | 既定 |
 | 2026-09-25 | 275d0f5 | ledger-moe-nax | 6 | 1.914 | 1.887 | 2.431 | 0 | 既定 |
 | 2026-09-25 | 122e144 | ledger-router-nax | 6 | 2.267 | 2.252 | 2.744 | 0 | 既定 |
@@ -110,3 +113,21 @@ c08e2de (2.740 s) と 084de6b (2.626 s) は全注意の 2 回の既定の変更 
 | 2026-09-25 | c4f33ea | v1-default-a | 3 | 1.937 | 1.909 | 2.046 | 0 | 既定 |
 | 2026-09-25 | 104af99 | v1-default-b | 3 | 1.952 | 1.926 | 2.071 | 0 | 既定 |
 | 2026-09-25 | 3537b23 | v2-host-ahead1 | 3 | 2.719 | 2.431 | 2.981 | 0 | TF_PREFILL_ADVISE_AHEAD=1 TF_PREFILL_HOST_PROFILE=1 |
+| 2026-09-25 | 6dbeba0 | w1-def-code-runner | 4 | 5.483 | 4.502 | 6.592 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/code-runner.json |
+| 2026-09-25 | 6dbeba0 | w1-def-en-readme | 4 | 4.407 | 4.375 | 4.519 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/en-readme.json |
+| 2026-09-25 | 6dbeba0 | w1-def-en-server | 4 | 4.568 | 4.496 | 5.730 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/en-server.json |
+| 2026-09-25 | 6dbeba0 | w1-def-ja-m6readme | 4 | 3.441 | 3.116 | 3.829 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/ja-m6readme.json |
+| 2026-09-25 | 6dbeba0 | w1-def-ja-twomachine | 4 | 2.595 | 2.503 | 2.618 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/ja-twomachine.json |
+| 2026-09-25 | 6dbeba0 | w1-def-l | 4 | 1.885 | 1.803 | 2.505 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/l.json |
+| 2026-09-25 | 6dbeba0 | w1-noadv-code-runner | 4 | 4.861 | 4.822 | 4.959 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/code-runner.json TF_PREFILL_ADVISE_LAYER=0 |
+| 2026-09-25 | 6dbeba0 | w1-noadv-en-readme | 4 | 4.798 | 4.791 | 4.836 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/en-readme.json TF_PREFILL_ADVISE_LAYER=0 |
+| 2026-09-25 | 6dbeba0 | w1-noadv-en-server | 4 | 4.864 | 4.803 | 4.983 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/en-server.json TF_PREFILL_ADVISE_LAYER=0 |
+| 2026-09-25 | 6dbeba0 | w1-noadv-ja-m6readme | 4 | 4.098 | 4.065 | 4.172 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/ja-m6readme.json TF_PREFILL_ADVISE_LAYER=0 |
+| 2026-09-25 | 6dbeba0 | w1-noadv-ja-twomachine | 4 | 2.794 | 2.755 | 2.964 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/ja-twomachine.json TF_PREFILL_ADVISE_LAYER=0 |
+| 2026-09-25 | 6dbeba0 | w1-noadv-l | 4 | 1.919 | 1.911 | 1.925 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/l.json TF_PREFILL_ADVISE_LAYER=0 |
+| 2026-09-25 | 6dbeba0 | w1-old-code-runner | 4 | 5.498 | 5.422 | 7.093 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/code-runner.json TF_PREFILL_ADVISE_LAYER=0 TF_PREFILL_ATTN_FULL=qblock TF_PREFILL_ATTN_SWA=mpp TF_PREFILL_MOE_NAX=0 TF_PREFILL_ROUTER=gemm |
+| 2026-09-25 | 6dbeba0 | w1-old-en-readme | 4 | 5.444 | 5.404 | 5.520 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/en-readme.json TF_PREFILL_ADVISE_LAYER=0 TF_PREFILL_ATTN_FULL=qblock TF_PREFILL_ATTN_SWA=mpp TF_PREFILL_MOE_NAX=0 TF_PREFILL_ROUTER=gemm |
+| 2026-09-25 | 6dbeba0 | w1-old-en-server | 4 | 5.444 | 5.407 | 5.458 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/en-server.json TF_PREFILL_ADVISE_LAYER=0 TF_PREFILL_ATTN_FULL=qblock TF_PREFILL_ATTN_SWA=mpp TF_PREFILL_MOE_NAX=0 TF_PREFILL_ROUTER=gemm |
+| 2026-09-25 | 6dbeba0 | w1-old-ja-m6readme | 4 | 4.878 | 4.787 | 5.018 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/ja-m6readme.json TF_PREFILL_ADVISE_LAYER=0 TF_PREFILL_ATTN_FULL=qblock TF_PREFILL_ATTN_SWA=mpp TF_PREFILL_MOE_NAX=0 TF_PREFILL_ROUTER=gemm |
+| 2026-09-25 | 6dbeba0 | w1-old-ja-twomachine | 4 | 3.859 | 3.790 | 3.951 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/ja-twomachine.json TF_PREFILL_ADVISE_LAYER=0 TF_PREFILL_ATTN_FULL=qblock TF_PREFILL_ATTN_SWA=mpp TF_PREFILL_MOE_NAX=0 TF_PREFILL_ROUTER=gemm |
+| 2026-09-25 | 6dbeba0 | w1-old-l | 4 | 2.869 | 2.855 | 2.907 | 0 | TF_BENCH_MESSAGES=/Users/mh/m6-warm-prompts/l.json TF_PREFILL_ADVISE_LAYER=0 TF_PREFILL_ATTN_FULL=qblock TF_PREFILL_ATTN_SWA=mpp TF_PREFILL_MOE_NAX=0 TF_PREFILL_ROUTER=gemm |

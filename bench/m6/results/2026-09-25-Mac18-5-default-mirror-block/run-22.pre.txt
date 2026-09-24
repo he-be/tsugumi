@@ -1,0 +1,40 @@
+07:19:54
+System-wide memory free percentage: 54%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   106497.
+Pages active:                                 390230.
+Pages inactive:                                92809.
+Pages speculative:                               139.
+Pages throttled:                                   0.
+Pages wired down:                             410519.
+Pages purgeable:                                   4.
+"Translation faults":                      433274545.
+Pages copy-on-write:                        97835588.
+Pages zero filled:                         302700406.
+Pages reactivated:                          14426819.
+Pages purged:                                1451850.
+File-backed pages:                            472547.
+Anonymous pages:                               10631.
+Pages stored in compressor:                    35498.
+Pages occupied by compressor:                  10874.
+Decompressions:                             25226277.
+Compressions:                               31376583.
+Pageins:                                   627401764.
+Pageouts:                                      16275.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45289.
+Pages tagged resident:                         37684.
+Pages tagged compressed:                        7605.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1799.
+Pages tag-storage free:                        21854.
+Pages tag-storage non-tag pageable:             8172.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1239936.
+Tagged compressions:                          106452.
+Tagged decompressions:                         71859.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  375.11 26791980 9814417.73   123.82 5328880 644348.40 

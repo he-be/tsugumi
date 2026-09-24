@@ -1,0 +1,40 @@
+07:20:04
+System-wide memory free percentage: 39%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   103952.
+Pages active:                                 202753.
+Pages inactive:                               137398.
+Pages speculative:                                46.
+Pages throttled:                                   0.
+Pages wired down:                             556030.
+Pages purgeable:                                   4.
+"Translation faults":                      433337132.
+Pages copy-on-write:                        98004603.
+Pages zero filled:                         302891595.
+Pages reactivated:                          14440469.
+Pages purged:                                1455933.
+File-backed pages:                            329479.
+Anonymous pages:                               10718.
+Pages stored in compressor:                    35639.
+Pages occupied by compressor:                  10889.
+Decompressions:                             25295465.
+Compressions:                               31454779.
+Pageins:                                   628611128.
+Pageouts:                                      16298.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45223.
+Pages tagged resident:                         37619.
+Pages tagged compressed:                        7604.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1799.
+Pages tag-storage free:                        21920.
+Pages tag-storage non-tag pageable:             8106.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1239872.
+Tagged compressions:                          106452.
+Tagged decompressions:                         71860.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  375.22 26835912 9833316.25   123.82 5328880 644348.40 

@@ -1,0 +1,40 @@
+07:23:58
+System-wide memory free percentage: 89%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   184372.
+Pages active:                                 559627.
+Pages inactive:                               182141.
+Pages speculative:                                51.
+Pages throttled:                                   0.
+Pages wired down:                              74208.
+Pages purgeable:                                   4.
+"Translation faults":                      434819074.
+Pages copy-on-write:                       101504994.
+Pages zero filled:                         306768773.
+Pages reactivated:                          15050778.
+Pages purged:                                1476133.
+File-backed pages:                            730375.
+Anonymous pages:                               11444.
+Pages stored in compressor:                    34871.
+Pages occupied by compressor:                  10669.
+Decompressions:                             26720740.
+Compressions:                               33184221.
+Pageins:                                   660532380.
+Pageouts:                                      16901.
+Swapins:                                      221950.
+Swapouts:                                     227692.
+Pages tagged:                                  45135.
+Pages tagged resident:                         37702.
+Pages tagged compressed:                        7433.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1798.
+Pages tag-storage free:                        21310.
+Pages tag-storage non-tag pageable:             8644.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1205696.
+Tagged compressions:                          106966.
+Tagged decompressions:                         72538.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  377.70 27820920 10261715.70   124.05 5986837 725233.03 

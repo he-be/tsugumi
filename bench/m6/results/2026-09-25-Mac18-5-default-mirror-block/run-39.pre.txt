@@ -1,0 +1,40 @@
+07:21:22
+System-wide memory free percentage: 53%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   103237.
+Pages active:                                 352738.
+Pages inactive:                               124673.
+Pages speculative:                                50.
+Pages throttled:                                   0.
+Pages wired down:                             419584.
+Pages purgeable:                                   4.
+"Translation faults":                      433856979.
+Pages copy-on-write:                        99285040.
+Pages zero filled:                         304288271.
+Pages reactivated:                          14538387.
+Pages purged:                                1460741.
+File-backed pages:                            466163.
+Anonymous pages:                               11298.
+Pages stored in compressor:                    34991.
+Pages occupied by compressor:                  10786.
+Decompressions:                             25830960.
+Compressions:                               32084844.
+Pageins:                                   640205271.
+Pageouts:                                      16531.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45233.
+Pages tagged resident:                         37776.
+Pages tagged compressed:                        7457.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1798.
+Pages tag-storage free:                        21701.
+Pages tag-storage non-tag pageable:             8253.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1208000.
+Tagged compressions:                          106686.
+Tagged decompressions:                         72239.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  376.11 27170732 9979541.16   123.92 5613319 679294.34 

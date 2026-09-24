@@ -1,0 +1,40 @@
+07:20:46
+System-wide memory free percentage: 30%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   104353.
+Pages active:                                 184528.
+Pages inactive:                                62113.
+Pages speculative:                                34.
+Pages throttled:                                   0.
+Pages wired down:                             649309.
+Pages purgeable:                                   4.
+"Translation faults":                      433610490.
+Pages copy-on-write:                        98686456.
+Pages zero filled:                         303633196.
+Pages reactivated:                          14493174.
+Pages purged:                                1456241.
+File-backed pages:                            235317.
+Anonymous pages:                               11358.
+Pages stored in compressor:                    34903.
+Pages occupied by compressor:                  10731.
+Decompressions:                             25574731.
+Compressions:                               31780911.
+Pageins:                                   634893801.
+Pageouts:                                      16418.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45910.
+Pages tagged resident:                         38466.
+Pages tagged compressed:                        7444.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1799.
+Pages tag-storage free:                        21808.
+Pages tag-storage non-tag pageable:             8146.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1203648.
+Tagged compressions:                          106641.
+Tagged decompressions:                         72207.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  375.68 27010020 9909382.93   123.88 5508787 666456.06 

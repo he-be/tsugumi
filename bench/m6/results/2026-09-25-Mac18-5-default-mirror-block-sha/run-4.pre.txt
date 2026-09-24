@@ -1,0 +1,40 @@
+07:22:11
+System-wide memory free percentage: 53%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   104714.
+Pages active:                                 345409.
+Pages inactive:                               136142.
+Pages speculative:                                49.
+Pages throttled:                                   0.
+Pages wired down:                             416200.
+Pages purgeable:                                   4.
+"Translation faults":                      434115396.
+Pages copy-on-write:                        99883899.
+Pages zero filled:                         304951318.
+Pages reactivated:                          14636755.
+Pages purged:                                1468461.
+File-backed pages:                            465559.
+Anonymous pages:                               16041.
+Pages stored in compressor:                    30865.
+Pages occupied by compressor:                   8554.
+Decompressions:                             26076731.
+Compressions:                               32393362.
+Pageins:                                   645593604.
+Pageouts:                                      16640.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  44962.
+Pages tagged resident:                         37538.
+Pages tagged compressed:                        7424.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1798.
+Pages tag-storage free:                        22130.
+Pages tag-storage non-tag pageable:             7824.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1204992.
+Tagged compressions:                          106763.
+Tagged decompressions:                         72347.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  376.59 27350287 10058503.65   123.94 5658819 684897.33 

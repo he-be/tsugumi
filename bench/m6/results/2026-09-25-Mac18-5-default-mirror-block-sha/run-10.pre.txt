@@ -1,0 +1,40 @@
+07:22:44
+System-wide memory free percentage: 50%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   107908.
+Pages active:                                 342118.
+Pages inactive:                               105574.
+Pages speculative:                               431.
+Pages throttled:                                   0.
+Pages wired down:                             446439.
+Pages purgeable:                                   4.
+"Translation faults":                      434340414.
+Pages copy-on-write:                       100395568.
+Pages zero filled:                         305526747.
+Pages reactivated:                          14757007.
+Pages purged:                                1469013.
+File-backed pages:                            432625.
+Anonymous pages:                               15498.
+Pages stored in compressor:                    31007.
+Pages occupied by compressor:                   8598.
+Decompressions:                             26293516.
+Compressions:                               32651373.
+Pageins:                                   650584125.
+Pageouts:                                      16719.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45057.
+Pages tagged resident:                         37597.
+Pages tagged compressed:                        7460.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1798.
+Pages tag-storage free:                        22067.
+Pages tag-storage non-tag pageable:             7887.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1210112.
+Tagged compressions:                          106876.
+Tagged decompressions:                         72424.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  376.94 27500663 10123166.84   123.99 5800551 702327.49 

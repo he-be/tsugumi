@@ -1,0 +1,40 @@
+07:24:55
+System-wide memory free percentage: 34%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   107519.
+Pages active:                                 169139.
+Pages inactive:                               113195.
+Pages speculative:                               397.
+Pages throttled:                                   0.
+Pages wired down:                             610089.
+Pages purgeable:                                   4.
+"Translation faults":                      435193269.
+Pages copy-on-write:                       102357329.
+Pages zero filled:                         307732958.
+Pages reactivated:                          15269237.
+Pages purged:                                1481741.
+File-backed pages:                            271626.
+Anonymous pages:                               11105.
+Pages stored in compressor:                    35153.
+Pages occupied by compressor:                  10729.
+Decompressions:                             27101842.
+Compressions:                               33638142.
+Pageins:                                   668802038.
+Pageouts:                                      17047.
+Swapins:                                      221950.
+Swapouts:                                     227692.
+Pages tagged:                                  45123.
+Pages tagged resident:                         37602.
+Pages tagged compressed:                        7521.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1798.
+Pages tag-storage free:                        21554.
+Pages tag-storage non-tag pageable:             8396.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1221696.
+Tagged compressions:                          107145.
+Tagged decompressions:                         72629.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  378.22 28070645 10368127.66   124.12 6231906 755378.30 

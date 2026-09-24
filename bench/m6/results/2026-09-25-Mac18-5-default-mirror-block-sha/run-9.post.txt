@@ -1,0 +1,40 @@
+07:22:44
+System-wide memory free percentage: 33%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   107960.
+Pages active:                                 171478.
+Pages inactive:                               104389.
+Pages speculative:                               416.
+Pages throttled:                                   0.
+Pages wired down:                             618227.
+Pages purgeable:                                   4.
+"Translation faults":                      434336231.
+Pages copy-on-write:                       100394463.
+Pages zero filled:                         305526069.
+Pages reactivated:                          14757007.
+Pages purged:                                1469013.
+File-backed pages:                            260793.
+Anonymous pages:                               15490.
+Pages stored in compressor:                    31014.
+Pages occupied by compressor:                   8598.
+Decompressions:                             26293509.
+Compressions:                               32651373.
+Pageins:                                   650584100.
+Pageouts:                                      16719.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45057.
+Pages tagged resident:                         37597.
+Pages tagged compressed:                        7460.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1798.
+Pages tag-storage free:                        22045.
+Pages tag-storage non-tag pageable:             7909.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1210112.
+Tagged compressions:                          106876.
+Tagged decompressions:                         72424.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  376.94 27500652 10123166.73   123.99 5800551 702327.49 

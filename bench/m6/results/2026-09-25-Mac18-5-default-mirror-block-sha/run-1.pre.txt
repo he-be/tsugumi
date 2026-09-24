@@ -1,0 +1,40 @@
+07:21:55
+System-wide memory free percentage: 88%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   181247.
+Pages active:                                 535466.
+Pages inactive:                               207700.
+Pages speculative:                              1016.
+Pages throttled:                                   0.
+Pages wired down:                              74925.
+Pages purgeable:                                   6.
+"Translation faults":                      434012550.
+Pages copy-on-write:                        99628013.
+Pages zero filled:                         304667235.
+Pages reactivated:                          14564867.
+Pages purged:                                1463667.
+File-backed pages:                            732596.
+Anonymous pages:                               11586.
+Pages stored in compressor:                    34798.
+Pages occupied by compressor:                  10714.
+Decompressions:                             25989478.
+Compressions:                               32295634.
+Pageins:                                   643620148.
+Pageouts:                                      16589.
+Swapins:                                      221946.
+Swapouts:                                     227692.
+Pages tagged:                                  45527.
+Pages tagged resident:                         38063.
+Pages tagged compressed:                        7464.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1798.
+Pages tag-storage free:                        21597.
+Pages tag-storage non-tag pageable:             8357.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1215360.
+Tagged compressions:                          106723.
+Tagged decompressions:                         72269.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  376.38 27280686 10027301.09   123.94 5658818 684897.33 

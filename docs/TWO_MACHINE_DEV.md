@@ -73,9 +73,9 @@ $ bench/hostinfo.sh .build/release/TsugumiCLI
 
 **M6 の内蔵 SSD は測定対象そのものである。**だから:
 
-- **測定は必ず内蔵から走らせる。** 外付け `SSD256` や、TB4 越しのマウント、ネットワーク共有から重みを読んで測らない。
+- **測定は必ず内蔵から走らせる。** 外付け `SSD256` や、TB4 越しのマウント、ネットワーク共有から重みを読んで測らない（下のエキスパートの写しだけが例外）。
   読んだ瞬間に [M6_SSD_BANDWIDTH](investigations/M6_SSD_BANDWIDTH.md) の 3.34 GB/s が意味を失う。
-- **例外は写しの候補**（`TF_EXPERT_MIRROR`、[m6-prefill/44](m6-prefill/44-EXPERT-MIRROR-EXTERNAL-SSD.md)）。`/Volumes/SSD256/tsugumi-mirror/packed_experts` に 12 GB の写しを置き、内蔵と同時に読む。既定の数字はこれまでどおり内蔵だけで取る。
+- **例外はエキスパートの写し**（2026-09-25 から既定、[m6-prefill/44](m6-prefill/44-EXPERT-MIRROR-EXTERNAL-SSD.md)）。`/Volumes/SSD256/tsugumi-mirror/packed_experts` に 12 GB の写しを置き、モデルの `expert-mirror.json` が指す。既定の数字は内蔵 + 写しを同時に読んだ値で、内蔵だけの値は `TF_EXPERT_MIRROR=0` を付けて取る。外付けがマウントされていないと警告を出して内蔵だけで読むので、測る前に `diskutil mount disk5s1` を確かめる。
 - **外付け `SSD256`（238 GB 空き）は、退避と受け渡しに使う。** 大きいファイルを M6 へ持ち込む / 逃がすのはこちら。
   内蔵の空きが本当に足りないときの逃がし先でもある。
 - **重みを M6 に常駐させない。** 測定対象だけ置いて、終わったら消す。
