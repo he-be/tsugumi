@@ -481,13 +481,11 @@ final class PrefillGroupedRoutedMoE {
 
     static let mppTileK = 64
 
-    /// `TF_PREFILL_MOE_GATEUP=fused`: on the mpp path, gate and up run in one
-    /// threadgroup that gathers the hidden rows once and writes only the
-    /// activation (`prefill_moe_gemm_int4_mpp_gateup`, docs/m6-prefill/28).
-    /// A candidate; unset keeps the two-threadgroup gate/up and the separate
-    /// activation pass.
-    private static let fusedGateUpRequested =
-        ProcessInfo.processInfo.environment["TF_PREFILL_MOE_GATEUP"] == "fused"
+    /// `TF_PREFILL_MOE_PF=1`: the mpp path runs `prefill_moe_gemm_int4_mpp_pf`,
+    /// which issues the next K step's device loads before the current step's
+    /// `matmul2d` (docs/m6-prefill/28). A candidate; same values and K order.
+    private static let prefetchRequested =
+        ProcessInfo.processInfo.environment["TF_PREFILL_MOE_PF"] == "1"
 
     /// Reused staging, indexed the way a chunk uses it: one sorted-pair buffer
     /// per layer and one argument buffer per tile position. A layer's routed
@@ -504,8 +502,6 @@ final class PrefillGroupedRoutedMoE {
     /// Set only when `mpp` was asked for and the device built it; nil on
     /// hardware without tensor ops, which then keeps the simdgroup kernel.
     private let gemmMPPPSO: MTLComputePipelineState?
-    /// Set only when the fused gate/up candidate was asked for and built.
-    private let gemmMPPGateUpPSO: MTLComputePipelineState?
     /// The kernel `encodeStreamedTiled` hands aligned shapes to.
     package var tiledKernel: TiledKernel { gemmMPPPSO != nil ? .mpp : .simdgroup }
     private let geluMulPSO: MTLComputePipelineState?
@@ -552,7 +548,6 @@ final class PrefillGroupedRoutedMoE {
         if Self.forcedPath == "scalar" {
             self.gemmPSO = nil
             self.gemmMPPPSO = nil
-            self.gemmMPPGateUpPSO = nil
             self.geluMulPSO = nil
         } else {
             // The tile shape fixes the threadgroup at 128 threads; a build
@@ -565,14 +560,10 @@ final class PrefillGroupedRoutedMoE {
                 : nil
             // The function exists only in an MSL 4.0 build (`__HAVE_TENSOR__`),
             // so a failed lookup is the "no tensor ops here" answer, not an error.
-            let mpp = (wantsMPP && usable) ? try? context.pipeline("prefill_moe_gemm_int4_mpp") : nil
+            let mppName = Self.prefetchRequested ? "prefill_moe_gemm_int4_mpp_pf" : "prefill_moe_gemm_int4_mpp"
+            let mpp = (wantsMPP && usable) ? try? context.pipeline(mppName) : nil
             self.gemmMPPPSO = (mpp?.maxTotalThreadsPerThreadgroup ?? 0) >= Self.gemmThreadsPerGroup
                 ? mpp : nil
-            let fused = (Self.fusedGateUpRequested && gemmMPPPSO != nil)
-                ? try? context.pipeline("prefill_moe_gemm_int4_mpp_gateup", constants: activation)
-                : nil
-            self.gemmMPPGateUpPSO = (fused?.maxTotalThreadsPerThreadgroup ?? 0) >= Self.gemmThreadsPerGroup
-                ? fused : nil
         }
 
         // The rows path is a GEMV, so it stands on its own: `TF_PREFILL_MOE=scalar`
@@ -609,10 +600,9 @@ final class PrefillGroupedRoutedMoE {
         // whether the A/B arm actually got the kernel (docs/m6-prefill/04-GATES.md G3).
         if wantsMPP {
             let note = gemmMPPPSO == nil ? " (mpp unavailable)" : ""
-            let gateUp = Self.fusedGateUpRequested
-                ? (gemmMPPGateUpPSO == nil ? " gateup=fused (unavailable)" : " gateup=fused") : ""
+            let prefetch = Self.prefetchRequested && gemmMPPPSO != nil ? " pf" : ""
             FileHandle.standardError.write(Data(
-                "[prefill moe tiled kernel=\(tiledKernel.rawValue)\(note)\(gateUp)]\n".utf8))
+                "[prefill moe tiled kernel=\(tiledKernel.rawValue)\(note)\(prefetch)]\n".utf8))
         }
     }
 
@@ -948,7 +938,6 @@ final class PrefillGroupedRoutedMoE {
             && hiddenOffset % 8 == 0
             && gateUpActScratchOffset % 8 == 0
         let gemmPSO = mppFits ? (gemmMPPPSO ?? simdgroupGEMMPSO) : simdgroupGEMMPSO
-        let fusedGateUpPSO = (mppFits && gemmMPPPSO != nil) ? gemmMPPGateUpPSO : nil
         // Profile detail mode only: hand the buffer holding the group just
         // encoded to the caller, and continue in the one it returns.
         var commandBuffer = commandBuffer
@@ -965,10 +954,9 @@ final class PrefillGroupedRoutedMoE {
             var blocks = batch.blocks
             let blockBytes = blocks.count * MemoryLayout<PrefillRoutedGEMMBlock>.stride
 
-            func encodeGEMM(mode: UInt32, nTiles: Int, depth: Int,
-                            pso: MTLComputePipelineState? = nil) {
+            func encodeGEMM(mode: UInt32, nTiles: Int, depth: Int) {
                 guard let enc = commandBuffer.makeComputeCommandEncoder() else { return }
-                enc.setComputePipelineState(pso ?? gemmPSO)
+                enc.setComputePipelineState(gemmPSO)
                 enc.setBuffer(hidden, offset: hiddenOffset,
                               index: PrefillGroupedRoutedMoEBufferIndex.hidden)
                 enc.setBuffer(sortedPairs, offset: sortedPairsOffset,
@@ -995,16 +983,6 @@ final class PrefillGroupedRoutedMoE {
                                                  depth: depth),
                                          threadsPerThreadgroup: threadgroup)
                 enc.endEncoding()
-            }
-
-            if let fusedGateUpPSO {
-                // Gate, up and the activation in one pass; only `act[2]` is written.
-                encodeGEMM(mode: 0, nTiles: nTilesGateUp, depth: 1, pso: fusedGateUpPSO)
-                cut(.gateUp)
-                cut(.gelu)
-                encodeGEMM(mode: 1, nTiles: nTilesDown, depth: 1)
-                cut(.down)
-                continue
             }
 
             encodeGEMM(mode: 0, nTiles: nTilesGateUp, depth: 2)
