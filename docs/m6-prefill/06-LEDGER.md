@@ -20,11 +20,12 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | c08e2de | ledger-full-attn-mpp | 6 | 2.740 | 2.722 | 3.110 | 0 |
 | 2026-09-24 | ef29110 | ledger-trusted | 6 | 2.897 | 2.880 | 3.123 | 0 |
 | 2026-09-25 | 084de6b | ledger-full-attn-unfused | 6 | 2.626 | 2.617 | 3.030 | 0 |
+| 2026-09-25 | 275d0f5 | ledger-moe-nax | 6 | 1.914 | 1.887 | 2.431 | 0 |
 | 2026-09-25 | 122e144 | ledger-router-nax | 6 | 2.267 | 2.252 | 2.744 | 0 |
 | 2026-09-25 | 994a0ef | ledger-swa-unfused | 6 | 2.482 | 2.471 | 2.984 | 0 |
 
 **読み (2026-09-24)**: 表は `--verification trusted-install` で取った行だけ (ef29110 から、[35](35-PREFILL-WITHOUT-VERIFY.md))。ef29110 より前の行は層ファイルの SHA-256 検証を含む量で、`ledger.sh` は載せない。ef29110 の 2.897 s が、この量の最初の行。
-c08e2de (2.740 s) と 084de6b (2.626 s) は全注意の 2 回の既定の変更 ([36](36-FULL-ATTN-UNFUSED.md))、994a0ef (2.482 s) は SWA の変更 ([37](37-SWA-ATTN-UNFUSED.md))、122e144 (2.267 s) は router の変更 ([38](38-ROUTER-NAX.md))。この測定環境では同じ構成の n = 6 の中央値が 0.05 s 程度揺れる (36 §2)。
+c08e2de (2.740 s) と 084de6b (2.626 s) は全注意の 2 回の既定の変更 ([36](36-FULL-ATTN-UNFUSED.md))、994a0ef (2.482 s) は SWA の変更 ([37](37-SWA-ATTN-UNFUSED.md))、122e144 (2.267 s) は router の変更 ([38](38-ROUTER-NAX.md))、275d0f5 (1.914 s) は routed MoE の GEMM の変更 ([40](40-MOE-GEMM-NAX.md))。この測定環境では同じ構成の n = 6 の中央値が 0.05 s 程度揺れる (36 §2)。
 
 ## 2. 既定でない構成 (候補。進捗ではない)
 
@@ -56,9 +57,21 @@ c08e2de (2.740 s) と 084de6b (2.626 s) は全注意の 2 回の既定の変更 
 | 2026-09-25 | c3c31ab | a3-greedy-unfused | 1 | 2.760 | 2.760 | 2.760 | 0 | TF_PREFILL_ATTN_FULL=unfused 追加引数: --max-new 64 --temperature 0 |
 | 2026-09-25 | 90ea97a | a3-unfused-a | 3 | 2.702 | 2.629 | 2.765 | 0 | TF_PREFILL_ATTN_FULL=unfused |
 | 2026-09-25 | a3ee85d | a3-unfused-b | 3 | 2.669 | 2.607 | 2.778 | 0 | TF_PREFILL_ATTN_FULL=unfused |
+| 2026-09-25 | 44b3c4f | e1-default-a | 3 | 2.330 | 2.322 | 2.464 | 0 | 既定 |
+| 2026-09-25 | b8c728d | e1-default-b | 3 | 2.318 | 2.253 | 2.434 | 0 | 既定 |
+| 2026-09-25 | 2993068 | e1-fused-a | 3 | 2.297 | 2.264 | 2.448 | 0 | TF_PREFILL_QKV_EPILOGUE=fused |
+| 2026-09-25 | 8de0104 | e1-fused-b | 3 | 2.283 | 2.248 | 2.389 | 0 | TF_PREFILL_QKV_EPILOGUE=fused |
+| 2026-09-25 | 5f22a7c | e1-host-fused | 3 | 2.342 | 2.286 | 2.425 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_QKV_EPILOGUE=fused |
 | 2026-09-25 | 084de6b | ledger-full-attn-unfused | 6 | 2.626 | 2.617 | 3.030 | 0 | 既定 |
+| 2026-09-25 | 275d0f5 | ledger-moe-nax | 6 | 1.914 | 1.887 | 2.431 | 0 | 既定 |
 | 2026-09-25 | 122e144 | ledger-router-nax | 6 | 2.267 | 2.252 | 2.744 | 0 | 既定 |
 | 2026-09-25 | 994a0ef | ledger-swa-unfused | 6 | 2.482 | 2.471 | 2.984 | 0 | 既定 |
+| 2026-09-25 | 2d9c7a4 | m1-default-a | 3 | 2.360 | 2.318 | 2.529 | 0 | 既定 |
+| 2026-09-25 | 629c885 | m1-default-b | 3 | 2.299 | 2.255 | 2.402 | 0 | 既定 |
+| 2026-09-25 | dd8a007 | m1-greedy-nax | 2 | 2.146 | 2.005 | 2.287 | 0 | TF_PREFILL_MOE_NAX=1 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-25 | a6d5b7c | m1-host-nax | 3 | 1.939 | 1.901 | 2.021 | 0 | TF_PREFILL_HOST_PROFILE=1 TF_PREFILL_MOE_NAX=1 |
+| 2026-09-25 | dbdbfc0 | m1-nax-a | 3 | 1.960 | 1.915 | 2.132 | 0 | TF_PREFILL_MOE_NAX=1 |
+| 2026-09-25 | 905f2de | m1-nax-b | 3 | 1.935 | 1.911 | 2.037 | 0 | TF_PREFILL_MOE_NAX=1 |
 | 2026-09-25 | f3e951b | r1-default-a | 3 | 2.541 | 2.446 | 2.676 | 0 | 既定 |
 | 2026-09-25 | 401ad5e | r1-default-b | 3 | 2.617 | 2.489 | 2.631 | 0 | 既定 |
 | 2026-09-25 | 63438f0 | r1-greedy-nax | 2 | 2.531 | 2.430 | 2.632 | 0 | TF_PREFILL_ROUTER=nax 追加引数: --max-new 64 --temperature 0 |
