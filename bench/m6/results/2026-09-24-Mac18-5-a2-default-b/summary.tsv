@@ -1,0 +1,4 @@
+run	prefill_s	pp_tok_s	prefill_io_s	layerVerify_s	load_s	ttft_s	peak_gb	exit
+1	2.863	865.5	0.983	0.000	0.518	2.864	1.24	0
+2	2.734	906.4	0.838	0.000	0.530	2.735	1.24	0
+3	2.735	906.0	0.827	0.000	0.531	2.736	1.24	0
