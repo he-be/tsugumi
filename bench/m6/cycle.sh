@@ -19,3 +19,10 @@ envs=$(env | grep '^TF_\|^PROMPT_TOKENS=\|^MODEL=' | tr '\n' ' ' || true)
 ssh "$remote" "cd $rdir && env $envs sh bench/m6/$script $*"
 rsync -a "$remote:$rdir/bench/m6/results/" "$repo/bench/m6/results/"
 echo "pulled into bench/m6/results/"
+# Left untracked on M6, the pulled directories block the next push (its checkout
+# would overwrite them once they are committed here). Park each one outside the
+# repo, only after a checksum pass finds nothing left to pull.
+if [ -z "$(rsync -a -c -n -i "$remote:$rdir/bench/m6/results/" "$repo/bench/m6/results/" | grep -v '^\.d')" ]; then
+    ssh "$remote" "mkdir -p ~/m6-evidence-pulled && cd $rdir && git status --porcelain bench/m6/results | sed -n 's#^?? ##p' | while read -r d; do mv \"\$d\" ~/m6-evidence-pulled/; done"
+    echo "parked M6 copies in ~/m6-evidence-pulled/"
+fi
