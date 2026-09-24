@@ -130,7 +130,11 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "NIOHTTP1", package: "swift-nio"),
             ],
-            path: "Sources/TsugumiServer/Core"
+            path: "Sources/TsugumiServer/Core",
+            // Swift 6.4 (the M6's CLT) rejects the decode callbacks this target
+            // hands to the nonisolated completion loops as `sending` risks;
+            // 6.3.3 accepted them. The runtime library keeps Swift 6 mode.
+            swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .executableTarget(
             name: "TsugumiServer",
