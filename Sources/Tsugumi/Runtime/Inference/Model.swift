@@ -431,22 +431,6 @@ public struct Model {
         }
     }
 
-    /// Ask the OS to read layer L's routed experts ahead (`F_RDADVISE` over
-    /// every expert of the layer) on the streamer queue, opening the layer
-    /// first if it is not open. A prompt chunk routes to nearly all of a
-    /// layer's experts, so the next layer's pages can be requested before its
-    /// routing is known (docs/m6-prefill/41). Best effort; errors are dropped.
-    public func beginAdvisingRoutedExpertLayer(layer L: Int) {
-        guard L >= 0, L < packedExpertsLayout.numLayers else { return }
-        nonisolated(unsafe) let model = self
-        let experts = Array(0..<packedExpertsLayout.layers[L].experts.count)
-        streamersQueue.async {
-            guard (try? model.openLayerLocked(L)) != nil,
-                  let streamer = model.streamersBox.streamers[L] else { return }
-            _ = streamer.adviseExperts(experts: experts)
-        }
-    }
-
     /// Hash layer L's file on a queue of its own, so the open that follows
     /// finds it verified instead of hashing in front of every expert access on
     /// `streamersQueue` (docs/m6-prefill/13-PROJ-SHARED-MATMUL2D.md §2).
