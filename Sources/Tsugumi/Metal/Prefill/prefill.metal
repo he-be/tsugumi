@@ -1176,7 +1176,8 @@ kernel void prefill_moe_gemm_int4_mpp(
 /// k + 1 go into registers first and are dequantized and staged only after
 /// step k's product; one threadgroup buffer, the same two barriers. Values,
 /// roundings and K order are the mpp kernel's.
-kernel void prefill_moe_gemm_int4_mpp_pf(
+template <int TM>
+kernel void prefill_moe_gemm_int4_mpp_pf_t(
     device const half*                                   hidden         [[buffer(0)]],
     device const PrefillTokenExpertPairMSL*              sorted_pairs   [[buffer(1)]],
     device const PrefillRoutedGEMMBlockMSL*              blocks         [[buffer(2)]],
@@ -1189,7 +1190,7 @@ kernel void prefill_moe_gemm_int4_mpp_pf(
     uint3                                                tgid3          [[threadgroup_position_in_grid]]
 ) {
     constexpr auto descriptor = matmul2d_descriptor(
-        kPrefillMoEMPPTileM, kPrefillMoEMPPTileN, kPrefillMoEMPPTileK,
+        TM, kPrefillMoEMPPTileN, kPrefillMoEMPPTileK,
         false, true, false,
         matmul2d_descriptor::mode::multiply_accumulate);
     matmul2d<descriptor, execution_simdgroups<4>> operation;
@@ -1206,10 +1207,10 @@ kernel void prefill_moe_gemm_int4_mpp_pf(
     const uint K = gate_up ? p.D : p.F;
     const uint act_rows = p.pair_count;
 
-    threadgroup half As[kPrefillMoEMPPTileM * kPrefillMoEMPPTileK];
+    threadgroup half As[TM * kPrefillMoEMPPTileK];
     threadgroup half Bs[kPrefillMoEMPPTileN * kPrefillMoEMPPTileK];
-    threadgroup uint src_off[kPrefillMoEMPPTileM];
-    threadgroup uint dst_off[kPrefillMoEMPPTileM];
+    threadgroup uint src_off[TM];
+    threadgroup uint dst_off[TM];
 
     device const uint8_t* blob = routed.blob[blk.local_slot];
     uint w_off = p.down_W_off;
@@ -1228,7 +1229,7 @@ kernel void prefill_moe_gemm_int4_mpp_pf(
                                    : (device const half*)(act + 2u * act_rows * p.F);
     device half* Y = gate_up ? (act + (is_up ? act_rows * p.F : 0u)) : route_partials;
 
-    if (lid < uint(kPrefillMoEMPPTileM)) {
+    if (lid < uint(TM)) {
         uint so = 0u;
         uint dof = 0u;
         if (lid < blk.row_count) {
@@ -1247,7 +1248,7 @@ kernel void prefill_moe_gemm_int4_mpp_pf(
 
     threadgroup_half_tensor tileA(
         As,
-        dextents<int32_t, 2>(kPrefillMoEMPPTileK, kPrefillMoEMPPTileM),
+        dextents<int32_t, 2>(kPrefillMoEMPPTileK, TM),
         array<int32_t, 2>({1, kPrefillMoEMPPTileK}));
     threadgroup_half_tensor tileB(
         Bs,
@@ -1272,27 +1273,29 @@ kernel void prefill_moe_gemm_int4_mpp_pf(
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     // This thread's A units: rows and the device pointers for step 0.
-    uint a_m[8];
-    uint a_kk[8];
-    bool a_live[8];
-    for (uint i = 0; i < 8u; ++i) {
+    // A: TM x 64 halves as TM * 16 half4, TM / 8 per thread.
+    constexpr uint kAUnits = uint(TM) / 8u;
+    uint a_m[kAUnits];
+    uint a_kk[kAUnits];
+    bool a_live[kAUnits];
+    for (uint i = 0; i < kAUnits; ++i) {
         const uint unit = i * kPrefillMoEMPPThreads + lid;
         a_m[i] = unit / 16u;
         a_kk[i] = (unit % 16u) * 4u;
         a_live[i] = a_m[i] < blk.row_count;
     }
-    uint a_src[8];
-    for (uint i = 0; i < 8u; ++i) {
+    uint a_src[kAUnits];
+    for (uint i = 0; i < kAUnits; ++i) {
         a_src[i] = src_off[a_m[i]] + a_kk[i];
     }
 
-    half4 a_reg[8];
+    half4 a_reg[kAUnits];
     ushort w_reg[8];
     float scale_reg = 0.0f;
     float bias_reg = 0.0f;
 #define PREFILL_MOE_PF_LOAD(K0)                                                   \
     do {                                                                      \
-        for (uint i = 0; i < 8u; ++i) {                                       \
+        for (uint i = 0; i < kAUnits; ++i) {                                  \
             a_reg[i] = a_live[i]                                              \
                 ? *((device const half4*)(X + a_src[i] + (K0)))               \
                 : half4(0.0h);                                                \
@@ -1312,7 +1315,7 @@ kernel void prefill_moe_gemm_int4_mpp_pf(
     PREFILL_MOE_PF_LOAD(0u);
 
     for (uint k0 = 0; k0 < K; k0 += uint(kPrefillMoEMPPTileK)) {
-        for (uint i = 0; i < 8u; ++i) {
+        for (uint i = 0; i < kAUnits; ++i) {
             *((threadgroup half4*)(As + a_m[i] * uint(kPrefillMoEMPPTileK) + a_kk[i])) = a_reg[i];
         }
         if (w_live) {
@@ -1351,6 +1354,18 @@ kernel void prefill_moe_gemm_int4_mpp_pf(
     }
 #undef PREFILL_MOE_PF_LOAD
 }
+
+#define PREFILL_MOE_GEMM_MPP_PF(NAME, TM)                                         \
+template [[host_name(NAME)]] kernel void prefill_moe_gemm_int4_mpp_pf_t<TM>(      \
+    device const half*, device const PrefillTokenExpertPairMSL*,                  \
+    device const PrefillRoutedGEMMBlockMSL*, device half*, device half*,          \
+    device const PrefillStreamedRoutedBlobsMSL&,                                  \
+    constant PrefillGroupedRoutedMoEStreamedParamsMSL&, constant uint&,           \
+    uint3, uint3);
+// 64 rows for full blocks; 32 for a block of at most 32 rows (docs/m6-prefill/28).
+PREFILL_MOE_GEMM_MPP_PF("prefill_moe_gemm_int4_mpp_pf", 64)
+PREFILL_MOE_GEMM_MPP_PF("prefill_moe_gemm_int4_mpp_pf_m32", 32)
+#undef PREFILL_MOE_GEMM_MPP_PF
 
 #endif
 

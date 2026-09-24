@@ -69,19 +69,23 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
         argumentEncoder.setBuffer(blob, offset: 0, index: index)
     }
 
-    var kernels: [(String, MTLComputePipelineState, Int)] = []
+    // (name, 64-row kernel, kernel for blocks of at most 32 rows or nil).
+    var kernels: [(String, MTLComputePipelineState, MTLComputePipelineState?)] = []
     if let mpp = try? context.pipeline("prefill_moe_gemm_int4_mpp") {
-        kernels.append(("mpp", mpp, 2))
+        kernels.append(("mpp", mpp, nil))
     }
     if let pf = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf") {
-        kernels.append(("mpp-pf", pf, 2))
+        kernels.append(("mpp-pf", pf, nil))
+        if let m32 = try? context.pipeline("prefill_moe_gemm_int4_mpp_pf_m32") {
+            kernels.append(("mpp-pf-m32tail", pf, m32))
+        }
     }
-    kernels.append(("simdgroup", try context.pipeline("prefill_moe_gemm_int4"), 2))
+    kernels.append(("simdgroup", try context.pipeline("prefill_moe_gemm_int4"), nil))
 
     let perBuffer = 8
     print("moe-gemm-bench g=\(groupSize) sym D=\(benchD) F=\(benchF) experts=\(benchExperts) iterations=\(iterations)")
     print("kernel\trows/expert\trows\tblocks\tone_us\tbatched_us\tuseful_tflops_one\tuseful_tflops_batched\tpadded_tflops_batched")
-    for rowsPerExpert in [27, 64, 96, 128, 155, 192, 256] {
+    for rowsPerExpert in [12, 27, 64, 96, 128, 140, 155, 192, 256] {
         // Pairs: expert e takes rows [e*r, (e+1)*r), tokens drawn without a
         // pattern so the gather is scattered as in production.
         var pairs: [MoEGEMMBenchPair] = []
@@ -120,8 +124,13 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
         let paddedRows = blocks.count * 64
         let paddedFlops = 2.0 * 2.0 * Double(paddedRows) * Double(benchF) * Double(benchD)
 
-        for (name, pso, depth) in kernels {
+        for (name, pso64, pso32) in kernels {
+            // With a 32-row kernel, blocks of at most 32 rows go to it in a
+            // second dispatch.
+            let narrow = pso32 == nil ? [] : blocks.filter { $0.rowCount <= 32 }
+            let wide = pso32 == nil ? blocks : blocks.filter { $0.rowCount > 32 }
             func encode(_ cmd: MTLCommandBuffer) {
+                for (pso, blocks) in [(pso64, wide), (pso32 ?? pso64, narrow)] where !blocks.isEmpty {
                 guard let enc = cmd.makeComputeCommandEncoder() else { return }
                 enc.setComputePipelineState(pso)
                 enc.setBuffer(hidden, offset: 0, index: 0)
@@ -138,9 +147,10 @@ func runPrefillMoEGEMMBench(groupSize: Int, iterations: Int) throws {
                 enc.setBytes(&mode, length: 4, index: 11)
                 for blob in blobs { enc.useResource(blob, usage: .read) }
                 enc.dispatchThreadgroups(MTLSize(width: (benchF + 63) / 64, height: blocks.count,
-                                                 depth: depth),
+                                                 depth: 2),
                                          threadsPerThreadgroup: MTLSize(width: 128, height: 1, depth: 1))
                 enc.endEncoding()
+                }
             }
             func time(dispatches: Int) -> Double {
                 var samples: [Double] = []
