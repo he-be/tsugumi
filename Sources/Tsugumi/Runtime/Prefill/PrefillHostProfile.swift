@@ -34,6 +34,12 @@ struct PrefillHostProfile {
         case waitShared = "wait.shared"
         /// Building the per-layer metadata and per-tile argument buffers.
         case meta
+        /// Opening the layer's expert file before its first fetch, including
+        /// the wait for its SHA-256 when verify-ahead has not finished it.
+        case open
+        /// `fetch` for a layer's first tile, when no tile of the layer is on
+        /// the GPU yet to hide it.
+        case fetchFirst = "fetch.first"
         /// Placing each tile's experts in the cache, including the preads a
         /// miss costs.
         case fetch

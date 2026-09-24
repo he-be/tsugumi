@@ -2399,6 +2399,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                     detail: "routed tile scheduler requested pending action without pending tile")
                             }
                         }
+                        // The first fetch of a layer opens its file, which waits
+                        // for the file's SHA-256 when verify-ahead has not got
+                        // there yet. Idempotent, and the fetch below would do
+                        // it first thing; doing it here only gives the wait a
+                        // name of its own in the host profile.
+                        if PrefillHostProfile.isEnabled, tileIndex == tileOrder.first {
+                            let openStart = PrefillHostProfile.mark()
+                            try model.ensureLayerOpened(L)
+                            prefillHostProfile.add(.open, since: openStart)
+                        }
                         let fetchStart = PrefillHostProfile.mark()
                         let fetch: PrefillStreamedTileFetchResult
                         let started = tileIndex < startedFetches.count
@@ -2432,7 +2442,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         try fetch.binding.validateCoversPairs(routes.sortedPairs,
                                                               pairStart: Int(tile.pairStart),
                                                               pairCount: Int(tile.pairCount))
-                        prefillHostProfile.add(.fetch, since: fetchStart)
+                        prefillHostProfile.add(tileIndex == tileOrder.first ? .fetchFirst : .fetch,
+                                               since: fetchStart)
                         let moeEncodeStart = PrefillHostProfile.mark()
                         if !blockPipeline, !fetch.plannedMissSlots.isEmpty {
                             try tileLifetime.begin(tileIndex: tileIndex,
