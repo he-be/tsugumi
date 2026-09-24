@@ -35,7 +35,10 @@ host=$(sysctl -n hw.model | tr ',' '-')
 out="$repo/bench/m6/results/$(date '+%Y-%m-%d')-$host-$label"
 mkdir -p "$out"
 sh "$repo/bench/hostinfo.sh" "$bin" > "$out/hostinfo.txt"
-set -- "$bin" --model "$model" --messages-file "$repo/bench/l.json" \
+# TF_BENCH_MESSAGES swaps the prompt for a measurement that is not a ledger row
+# (the ledger guard refuses any TF_ variable).
+messages="${TF_BENCH_MESSAGES:-$repo/bench/l.json}"
+set -- "$bin" --model "$model" --messages-file "$messages" \
     --expert-cache-slots 32 --prefill-chunk-tokens 2048 --max-new 1 \
     --max-context 4096 --verification trusted-install "$@"
 echo "$*" > "$out/command.txt"
