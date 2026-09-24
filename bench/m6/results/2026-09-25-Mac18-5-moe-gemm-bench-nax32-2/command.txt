@@ -1,0 +1,1 @@
+/Users/mh/dev/tsugumi/.build/release/TsugumiKernelCheck --group-size 32 --moe-gemm-bench
