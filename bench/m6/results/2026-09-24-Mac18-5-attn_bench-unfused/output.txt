@@ -1,0 +1,5 @@
+attention_prefill_causal_qblock_d512  5 layers x 2 chunks: median 0.331 s (min 0.330 max 0.333)  regs? maxThreads=256
+attention_prefill_full_mpp_d512_r64  5 layers x 2 chunks: median 0.156 s (min 0.156 max 0.157)  regs? maxThreads=256
+unfused  5 layers x 2 chunks: median 0.042 s (min 0.042 max 0.042)  regs? maxThreads=128
+maxdiff vs attention_prefill_causal_qblock_d512:256:16 (all 2478 rows): 0.00024414062  non-finite: 0
+maxdiff vs attention_prefill_causal_qblock_d512:256:16 (all 2478 rows): 0.00024414062  non-finite: 0

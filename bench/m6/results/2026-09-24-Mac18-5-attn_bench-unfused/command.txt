@@ -1,0 +1,1 @@
+swift /Users/mh/dev/tsugumi/bench/m6/attn_bench.swift Sources/Tsugumi/Metal/Prefill/prefill.metal attention_prefill_causal_qblock_d512:256:16 attention_prefill_full_mpp_d512_r64:256:64 unfused:128:64
