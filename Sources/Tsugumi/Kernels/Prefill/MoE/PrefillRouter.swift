@@ -33,10 +33,10 @@ package final class PrefillRouter {
     /// (docs/m6-prefill/33). Built for 16-bit routers only.
     private let gemmPSO: MTLComputePipelineState?
 
-    /// `TF_PREFILL_ROUTER=gemm` routes the prompt-chunk BF16 router through
-    /// `encodeGemma4BF16GEMM`; unset keeps the row-per-threadgroup kernel.
-    package static let gemmRequested =
-        ProcessInfo.processInfo.environment["TF_PREFILL_ROUTER"] == "gemm"
+    /// The prompt-chunk BF16 router goes through `encodeGemma4BF16GEMM`;
+    /// `TF_PREFILL_ROUTER=row` keeps the row-per-threadgroup kernel.
+    package static let gemmEnabled =
+        ProcessInfo.processInfo.environment["TF_PREFILL_ROUTER"] != "row"
 
     private let affineGroupSize: Int
     /// 8 for affine INT8 router weights, 16 for BF16. Only the matching kernel

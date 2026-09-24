@@ -299,8 +299,12 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private static let rowsMoEEnabled = rowsPathEnabled("MOE")
     private static let rowsHeadEnabled = rowsPathEnabled("HEAD")
     private static let rowsRouterEnabled = rowsPathEnabled("ROUTER")
+    /// A prompt chunk holds the shared expert until its front buffer is done
+    /// and checks it after the tail (docs/m6-prefill/33).
+    /// `TF_PREFILL_SHARED_LATE=0` restores the old order: submitted beside the
+    /// front buffer, waited before the expert reads.
     private static let prefillSharedLate =
-        ProcessInfo.processInfo.environment["TF_PREFILL_SHARED_LATE"] == "1"
+        ProcessInfo.processInfo.environment["TF_PREFILL_SHARED_LATE"] != "0"
     private static let rowsAttentionEnabled = rowsPathEnabled("ATTENTION")
     /// Inside the rows attention path: `1` (default) walks the KV range once
     /// for the whole block, `0` keeps M5.5's row-at-a-time decode calls, which
@@ -1859,7 +1863,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         d: UInt32(D),
                         topK: UInt32(cfg.topKExperts))
                 }
-            } else if prefillRouter.routerWeightBits == 16, PrefillRouter.gemmRequested,
+            } else if prefillRouter.routerWeightBits == 16, PrefillRouter.gemmEnabled,
                       prefillRouter.supportsGEMM(numExperts: cfg.numExperts, d: D) {
                 prefillRouter.encodeGemma4BF16GEMM(
                         commandBuffer: cb,
@@ -1981,17 +1985,18 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                            d: UInt32(D),
                                            eps: eps)
                     cb.commit()
-                    // `TF_PREFILL_SHARED_LATE=1` holds the shared expert until
-                    // the front buffer is done, so the router is not sharing
-                    // the GPU with it, and a prompt chunk runs it behind the
-                    // expert reads instead (docs/m6-prefill/33).
-                    if !Self.prefillSharedLate { sharedCB.commit() }
+                    // A prompt chunk holds the shared expert until the front
+                    // buffer is done, so the router is not sharing the GPU
+                    // with it, and runs it behind the expert reads instead
+                    // (docs/m6-prefill/33).
+                    let sharedLate = Self.prefillSharedLate && !speculativeBlock
+                    if !sharedLate { sharedCB.commit() }
                     prefillHostProfile.add(.encodeFront, since: frontStart)
                     let frontWaitStart = PrefillHostProfile.mark()
                     try waitProfiled(.attention, cb, detail: .router)
                     try flushProfiledSegments()
                     prefillHostProfile.add(.waitFront, since: frontWaitStart)
-                    if Self.prefillSharedLate { sharedCB.commit() }
+                    if sharedLate { sharedCB.commit() }
                     // The previous layer's routed buffer has to be done before
                     // this layer fetches an expert, or a fetch could land in a
                     // slot the GPU is still reading. Draining here rather than
@@ -2239,11 +2244,10 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                     // for it here; it is checked with the rest of the layer at
                     // the next drain, and until then its dispatches are GPU
                     // work the expert reads below can hide behind.
-                    // Under `TF_PREFILL_SHARED_LATE=1` a prompt chunk checks it
-                    // after the tail instead: the tail reads `h1` behind it on
-                    // the same queue, and the expert reads hide it here.
-                    if (!blockPipeline || !tileLookahead)
-                        && !(Self.prefillSharedLate && !blockPipeline) {
+                    // A prompt chunk checks it after the tail instead: the
+                    // tail reads `h1` behind it on the same queue, and the
+                    // expert reads hide it here.
+                    if (!blockPipeline || !tileLookahead) && !sharedLate {
                         let sharedWaitStart = PrefillHostProfile.mark()
                         try waitProfiled(.shared, sharedCB)
                         prefillHostProfile.add(.waitShared, since: sharedWaitStart)
@@ -2605,7 +2609,7 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                         try withExtendedLifetime(metadata) {
                             try waitProfiled(.tail, tailCB)
                         }
-                        if Self.prefillSharedLate {
+                        if sharedLate {
                             let sharedWaitStart = PrefillHostProfile.mark()
                             try waitProfiled(.shared, sharedCB)
                             prefillHostProfile.add(.waitShared, since: sharedWaitStart)
