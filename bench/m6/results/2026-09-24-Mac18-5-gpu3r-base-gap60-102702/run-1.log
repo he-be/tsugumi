@@ -1,0 +1,6 @@
+ご
+[stop=maxTokens prefill=2478tok new=1tok decode=0.00s tok/s=1160.090]
+[load=0.522s layerVerify=4.468s/30layers prefill=6.944s ttft=6.945s peak=1.21GB rss=0.34GB]
+[expert prefill hit=0.0% 0/5771 io=0.470s | decode hit=0.0% 0/0 io=0.000s]
+[expert mmap layers=30 mapped=12.90GB sync=748(+5771/-4811) noop=0 residency=0.371s /tok=371.21ms]
+[decode/tok io=0.00ms cb1=0.00ms cb2=0.00ms head=0.00ms]

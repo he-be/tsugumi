@@ -77,6 +77,21 @@ prefill について「速くなった」と言うときは、必ず §1 の行�
 | 2026-09-24 | 3075b56 | gpu3-moeqmm-b | 3 | 4.688 | 4.584 | 5.297 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
 | 2026-09-24 | 3075b56 | gpu3-qmm-a | 3 | 6.140 | 6.020 | 6.174 | 0 | TF_PREFILL_QMM=mpp64 |
 | 2026-09-24 | 3075b56 | gpu3-qmm-b | 3 | 6.064 | 5.945 | 6.145 | 0 | TF_PREFILL_QMM=mpp64 |
+| 2026-09-24 | ae4cf42 | gpu3g-all3 | 2 | 4.307 | 4.275 | 4.339 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | ae4cf42 | gpu3g-attn | 2 | 6.793 | 6.711 | 6.874 | 0 | TF_PREFILL_ATTN=sgmm 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | 60c3d33 | gpu3g-base | 2 | 7.290 | 7.186 | 7.394 | 0 | 既定 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | ae4cf42 | gpu3g-moe | 2 | 5.845 | 5.827 | 5.864 | 0 | TF_PREFILL_MOE=mpp 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | ae4cf42 | gpu3g-qmm | 2 | 6.106 | 6.085 | 6.127 | 0 | TF_PREFILL_QMM=mpp64 追加引数: --max-new 64 --temperature 0 |
+| 2026-09-24 | ae4cf42 | gpu3r-all3-a | 6 | 4.183 | 4.063 | 5.064 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
+| 2026-09-24 | ae4cf42 | gpu3r-all3-b | 3 | 4.143 | 4.089 | 5.143 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
+| 2026-09-24 | ae4cf42 | gpu3r-all3-c | 3 | 4.124 | 4.122 | 4.173 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
+| 2026-09-24 | ae4cf42 | gpu3r-base-gap60-102553 | 1 | 6.999 | 6.999 | 6.999 | 0 | 既定 |
+| 2026-09-24 | ae4cf42 | gpu3r-base-gap60-102702 | 1 | 6.944 | 6.944 | 6.944 | 0 | 既定 |
+| 2026-09-24 | ae4cf42 | gpu3r-gap5-102321 | 1 | 4.214 | 4.214 | 4.214 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
+| 2026-09-24 | ae4cf42 | gpu3r-gap5-102439 | 1 | 4.078 | 4.078 | 4.078 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
+| 2026-09-24 | ae4cf42 | gpu3r-gap60-102309 | 1 | 4.876 | 4.876 | 4.876 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
+| 2026-09-24 | ae4cf42 | gpu3r-gap60-102427 | 1 | 5.008 | 5.008 | 5.008 | 0 | TF_PREFILL_ATTN=sgmm TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
+| 2026-09-24 | ae4cf42 | gpu3r-moeqmm-a | 6 | 4.588 | 4.466 | 5.307 | 0 | TF_PREFILL_MOE=mpp TF_PREFILL_QMM=mpp64 |
 | 2026-09-24 | 22d7629 | h0-profile-detail | 3 | 8.754 | 8.646 | 8.842 | 0 | TF_PREFILL_GPU_PROFILE=2 |
 | 2026-09-24 | 22d7629 | ledger-head | 6 | 8.682 | 8.633 | 8.801 | 0 | 既定 |
 | 2026-09-24 | 79eea8f | ledger-verify-ahead | 6 | 7.184 | 7.107 | 7.275 | 0 | 既定 |

@@ -64,7 +64,7 @@ prefill 壁時計は `summary.tsv` の `prefill_s`、a と b の 6 本の中央�
 ## 2. 分かったこと / 外れたこと
 
 - [13](13-PROJ-SHARED-MATMUL2D.md) で「単独では壁時計を動かさない」とした qmm は、新しい既定の上では単独で −1.069 s。[20 §2](20-VERIFY-AHEAD-ALONE.md) の見立て (検証を裏に回すと GPU 側が律速になる) と合う。
-- moeqmm と all3 は 4 セット (a、b) すべてで 1 本目だけ遅い (4.935〜5.297 s)。その 1 本目の layerVerify は 9.498〜9.616 s で、他の run の 5.6〜5.9 s より大きい。[19 §1](19-SWA-ATTN-SGMM-GQA.md) の best4 で見えたのと同じ形。単独の 3 構成の 1 本目は layerVerify 5.269〜6.172 s、壁時計は同じ構成の他の run と 0.3 s 以内で、base では 1 本目も他と同じ。原因は調べていない。
+- moeqmm と all3 は 4 セット (a、b) すべてで 1 本目だけ遅い (4.935〜5.297 s)。条件は直前の空き (24 秒以上) だった ([22](22-GPU-CANDIDATES-GREEDY-AND-FIRST-RUN.md))。その 1 本目の layerVerify は 9.498〜9.616 s で、他の run の 5.6〜5.9 s より大きい。[19 §1](19-SWA-ATTN-SGMM-GQA.md) の best4 で見えたのと同じ形。単独の 3 構成の 1 本目は layerVerify 5.269〜6.172 s、壁時計は同じ構成の他の run と 0.3 s 以内で、base では 1 本目も他と同じ。原因は調べていない。
 - moeqmm と all3 の layerVerify 中央値は base より 1.2〜1.3 s 大きい。layerVerify は層ごとの合計なので、壁時計の成分ではない。
 - attn は peak_gb が 0.22 GB 増える (19 と同じ)。
 
@@ -74,4 +74,4 @@ prefill 壁時計は `summary.tsv` の `prefill_s`、a と b の 6 本の中央�
   - moe: greedy が 3 行目で分かれる ([12 §2](12-G3-MOE-MATMUL2D.md))。
   - attn: peak_gb が +0.22 GB 増える。
   - qmm: 13 の問い (moe とセットか) には、単独でも効くという答えが出た。
-- 組み合わせの 1 本目が遅い現象は、既定に入れたときに初回の要求の TTFT に出る量なので、未確認のまま残す。
+- 組み合わせの 1 本目が遅い現象と候補の greedy は [22](22-GPU-CANDIDATES-GREEDY-AND-FIRST-RUN.md) で測った。

@@ -73,8 +73,8 @@ B1 の順に 1 段ずつ直す。1 段ごとに次を満たして閉じる。
 
 | 候補 | 結果文書 | 候補の (c)、秒 (台帳 §2) | 既定にするときの問い |
 | --- | --- | --- | --- |
-| `TF_PREFILL_MOE=mpp` | [12](12-G3-MOE-MATMUL2D.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md) | 新しい既定の上で単独 5.692 (3075b56) | greedy が 3 行目で分かれる。受け入れるか |
-| `TF_PREFILL_QMM=mpp64` | [13](13-PROJ-SHARED-MATMUL2D.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md) | 新しい既定の上で単独 6.102、mpp と併用 4.636 (3075b56) | 新しい既定の上では単独でも縮む |
+| `TF_PREFILL_MOE=mpp` | [12](12-G3-MOE-MATMUL2D.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md) | 新しい既定の上で単独 5.692 (3075b56) | greedy が 3 行目で分かれる。候補のどれでも同じ分岐 ([22](22-GPU-CANDIDATES-GREEDY-AND-FIRST-RUN.md))。受け入れるか |
+| `TF_PREFILL_QMM=mpp64` | [13](13-PROJ-SHARED-MATMUL2D.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md) | 新しい既定の上で単独 6.102、mpp と併用 4.636 (3075b56) | 新しい既定の上では単独でも縮む。mpp と併用すると、空きのある 1 本目が遅い ([22](22-GPU-CANDIDATES-GREEDY-AND-FIRST-RUN.md)) |
 | `TF_PREFILL_ATTN=sgmm` | [19](19-SWA-ATTN-SGMM-GQA.md)、[21](21-GPU-CANDIDATES-ON-VERIFY-AHEAD.md) | 新しい既定の上で単独 6.776、3 つ全部 4.167 (3075b56) | peak_gb +0.22 GB を受け入れるか |
 | ~~`TF_PREFILL_VERIFY_AHEAD=2` + `_PARALLEL=1`~~ | [14](14-G5-VERIFY-AHEAD.md)、[20](20-VERIFY-AHEAD-ALONE.md) | 単独で 7.229 (f603ade) | **既定に入れた** (79eea8f、`ledger-verify-ahead` 7.184 s)。Swapouts 0、decode と greedy は同じ |
 
