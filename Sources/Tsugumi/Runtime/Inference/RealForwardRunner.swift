@@ -299,6 +299,8 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
     private static let rowsMoEEnabled = rowsPathEnabled("MOE")
     private static let rowsHeadEnabled = rowsPathEnabled("HEAD")
     private static let rowsRouterEnabled = rowsPathEnabled("ROUTER")
+    private static let prefillSharedLate =
+        ProcessInfo.processInfo.environment["TF_PREFILL_SHARED_LATE"] == "1"
     private static let rowsAttentionEnabled = rowsPathEnabled("ATTENTION")
     /// Inside the rows attention path: `1` (default) walks the KV range once
     /// for the whole block, `0` keeps M5.5's row-at-a-time decode calls, which
@@ -1979,12 +1981,16 @@ public final class RealForwardRunner: ChunkedPrefillRunner, ContextWindowReporti
                                            d: UInt32(D),
                                            eps: eps)
                     cb.commit()
-                    sharedCB.commit()
+                    // `TF_PREFILL_SHARED_LATE=1` holds the shared expert until
+                    // the front buffer is done, so the router is not sharing
+                    // the GPU with it (docs/m6-prefill/33).
+                    if !Self.prefillSharedLate { sharedCB.commit() }
                     prefillHostProfile.add(.encodeFront, since: frontStart)
                     let frontWaitStart = PrefillHostProfile.mark()
                     try waitProfiled(.attention, cb, detail: .router)
                     try flushProfiledSegments()
                     prefillHostProfile.add(.waitFront, since: frontWaitStart)
+                    if Self.prefillSharedLate { sharedCB.commit() }
                     // The previous layer's routed buffer has to be done before
                     // this layer fetches an expert, or a fetch could land in a
                     // slot the GPU is still reading. Draining here rather than
