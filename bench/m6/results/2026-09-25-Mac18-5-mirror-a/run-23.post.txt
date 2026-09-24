@@ -1,0 +1,40 @@
+06:40:24
+System-wide memory free percentage: 37%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   101682.
+Pages active:                                 200905.
+Pages inactive:                               113467.
+Pages speculative:                                23.
+Pages throttled:                                   0.
+Pages wired down:                             585756.
+Pages purgeable:                                   4.
+"Translation faults":                      422292715.
+Pages copy-on-write:                        82814032.
+Pages zero filled:                         284621291.
+Pages reactivated:                          13028444.
+Pages purged:                                1348226.
+File-backed pages:                            296546.
+Anonymous pages:                               17849.
+Pages stored in compressor:                    29056.
+Pages occupied by compressor:                   9235.
+Decompressions:                             19049304.
+Compressions:                               23737545.
+Pageins:                                   480075241.
+Pageouts:                                      13673.
+Swapins:                                      221926.
+Swapouts:                                     227692.
+Pages tagged:                                  45365.
+Pages tagged resident:                         39424.
+Pages tagged compressed:                        5941.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1867.
+Pages tag-storage free:                        21074.
+Pages tag-storage non-tag pageable:             9171.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     921856.
+Tagged compressions:                           92532.
+Tagged decompressions:                         59656.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  364.39 22150080 7882091.32   126.19 2155931 265687.25 

@@ -1,0 +1,40 @@
+06:39:01
+System-wide memory free percentage: 77%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    97125.
+Pages active:                                 498545.
+Pages inactive:                               234905.
+Pages speculative:                                40.
+Pages throttled:                                   0.
+Pages wired down:                             173278.
+Pages purgeable:                                2044.
+"Translation faults":                      421870379.
+Pages copy-on-write:                        81709625.
+Pages zero filled:                         283411268.
+Pages reactivated:                          12938449.
+Pages purged:                                1339918.
+File-backed pages:                            713676.
+Anonymous pages:                               19814.
+Pages stored in compressor:                    25154.
+Pages occupied by compressor:                   7175.
+Decompressions:                             18526852.
+Compressions:                               23055230.
+Pageins:                                   466910045.
+Pageouts:                                      13493.
+Swapins:                                      221926.
+Swapouts:                                     227692.
+Pages tagged:                                  45351.
+Pages tagged resident:                         39408.
+Pages tagged compressed:                        5943.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1868.
+Pages tag-storage free:                        21572.
+Pages tag-storage non-tag pageable:             8673.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     922176.
+Tagged compressions:                           92527.
+Tagged decompressions:                         59649.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  362.73 21770784 7711844.04   126.21 1867906 230217.66 

@@ -1,0 +1,28 @@
+Filesystem      Size    Used   Avail Capacity iused ifree %iused  Mounted on
+/dev/disk3s5   228Gi   123Gi    79Gi    61%    810k  830M    0%   /System/Volumes/Data
+/dev/disk5s1   238Gi    20Gi   218Gi     9%     132  2.3G    0%   /Volumes/SSD256
+/Users/mh/ssdprobe/data:
+total 41984000
+-rw-r--r--  1 mh  staff  2149580800  9月 25 06:28 layer_00.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 25 06:28 layer_01.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 25 06:28 layer_02.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 25 06:28 layer_03.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 25 06:28 layer_04.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 25 06:28 layer_05.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 25 06:28 layer_06.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 25 06:28 layer_07.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 25 06:28 layer_08.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 25 06:28 layer_09.bin
+
+/Volumes/SSD256:
+total 41984000
+-rw-r--r--  1 mh  staff  2149580800  9月 22 22:18 layer_00.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 22 22:18 layer_01.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 22 22:18 layer_02.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 22 22:18 layer_03.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 22 22:18 layer_04.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 22 22:19 layer_05.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 22 22:19 layer_06.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 22 22:19 layer_07.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 22 22:19 layer_08.bin
+-rw-r--r--  1 mh  staff  2149580800  9月 22 22:20 layer_09.bin

@@ -1,0 +1,40 @@
+06:37:58
+System-wide memory free percentage: 46%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   108458.
+Pages active:                                 284507.
+Pages inactive:                               121331.
+Pages speculative:                               195.
+Pages throttled:                                   0.
+Pages wired down:                             490697.
+Pages purgeable:                                   4.
+"Translation faults":                      421570004.
+Pages copy-on-write:                        80943158.
+Pages zero filled:                         282563750.
+Pages reactivated:                          12873602.
+Pages purged:                                1334019.
+File-backed pages:                            377145.
+Anonymous pages:                               28888.
+Pages stored in compressor:                    20912.
+Pages occupied by compressor:                   5880.
+Decompressions:                             18160369.
+Compressions:                               22564036.
+Pageins:                                   457538888.
+Pageouts:                                      13379.
+Swapins:                                      221926.
+Swapouts:                                     227692.
+Pages tagged:                                  45972.
+Pages tagged resident:                         40527.
+Pages tagged compressed:                        5445.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1871.
+Pages tag-storage free:                        19726.
+Pages tag-storage non-tag pageable:            10519.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     831616.
+Tagged compressions:                           91977.
+Tagged decompressions:                         59599.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  361.49 21489791 7586207.21   126.23 1698882 209422.67 

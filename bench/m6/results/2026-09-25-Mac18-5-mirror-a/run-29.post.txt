@@ -1,0 +1,40 @@
+06:41:03
+System-wide memory free percentage: 36%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   101081.
+Pages active:                                 198590.
+Pages inactive:                               110726.
+Pages speculative:                                25.
+Pages throttled:                                   0.
+Pages wired down:                             593473.
+Pages purgeable:                                2334.
+"Translation faults":                      422489030.
+Pages copy-on-write:                        83324193.
+Pages zero filled:                         285183852.
+Pages reactivated:                          13070959.
+Pages purged:                                1350479.
+File-backed pages:                            291380.
+Anonymous pages:                               17961.
+Pages stored in compressor:                    25041.
+Pages occupied by compressor:                   7173.
+Decompressions:                             19301531.
+Compressions:                               24062161.
+Pageins:                                   486213366.
+Pageouts:                                      13751.
+Swapins:                                      221926.
+Swapouts:                                     227692.
+Pages tagged:                                  46028.
+Pages tagged resident:                         40108.
+Pages tagged compressed:                        5920.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1867.
+Pages tag-storage free:                        21508.
+Pages tag-storage non-tag pageable:             8737.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     919040.
+Tagged compressions:                           92544.
+Tagged decompressions:                         59688.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  365.16 22330511 7963009.33   126.19 2277747 280683.03 

@@ -1,0 +1,1 @@
+bench/m6/dual_ssd_probe.sh dual-ssd-probe /Users/mh/ssdprobe/data /Volumes/SSD256 15 2

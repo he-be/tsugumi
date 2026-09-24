@@ -1,0 +1,40 @@
+06:39:01
+System-wide memory free percentage: 58%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    97175.
+Pages active:                                 303312.
+Pages inactive:                               233714.
+Pages speculative:                                23.
+Pages throttled:                                   0.
+Pages wired down:                             369668.
+Pages purgeable:                                2044.
+"Translation faults":                      421866214.
+Pages copy-on-write:                        81708521.
+Pages zero filled:                         283410576.
+Pages reactivated:                          12938449.
+Pages purged:                                1339918.
+File-backed pages:                            517242.
+Anonymous pages:                               19807.
+Pages stored in compressor:                    25157.
+Pages occupied by compressor:                   7176.
+Decompressions:                             18526849.
+Compressions:                               23055230.
+Pageins:                                   466910018.
+Pageouts:                                      13493.
+Swapins:                                      221926.
+Swapouts:                                     227692.
+Pages tagged:                                  45351.
+Pages tagged resident:                         39408.
+Pages tagged compressed:                        5943.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1868.
+Pages tag-storage free:                        21556.
+Pages tag-storage non-tag pageable:             8689.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     922176.
+Tagged compressions:                           92527.
+Tagged decompressions:                         59649.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  362.73 21770769 7711843.91   126.21 1867906 230217.66 

@@ -1,0 +1,40 @@
+06:41:03
+System-wide memory free percentage: 55%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   101048.
+Pages active:                                 381204.
+Pages inactive:                               120436.
+Pages speculative:                                42.
+Pages throttled:                                   0.
+Pages wired down:                             401165.
+Pages purgeable:                                2846.
+"Translation faults":                      422493191.
+Pages copy-on-write:                        83325299.
+Pages zero filled:                         285184532.
+Pages reactivated:                          13070959.
+Pages purged:                                1350479.
+File-backed pages:                            475513.
+Anonymous pages:                               26169.
+Pages stored in compressor:                    25038.
+Pages occupied by compressor:                   7173.
+Decompressions:                             19301534.
+Compressions:                               24062161.
+Pageins:                                   486213393.
+Pageouts:                                      13751.
+Swapins:                                      221926.
+Swapouts:                                     227692.
+Pages tagged:                                  46028.
+Pages tagged resident:                         40108.
+Pages tagged compressed:                        5920.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1867.
+Pages tag-storage free:                        21510.
+Pages tag-storage non-tag pageable:             8735.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     919040.
+Tagged compressions:                           92544.
+Tagged decompressions:                         59688.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  365.16 22330520 7963009.43   126.19 2277747 280683.03 

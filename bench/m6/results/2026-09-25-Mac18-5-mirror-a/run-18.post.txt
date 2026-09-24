@@ -1,0 +1,40 @@
+06:39:52
+System-wide memory free percentage: 48%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    98423.
+Pages active:                                 259128.
+Pages inactive:                               178030.
+Pages speculative:                                24.
+Pages throttled:                                   0.
+Pages wired down:                             466206.
+Pages purgeable:                                   4.
+"Translation faults":                      422128186.
+Pages copy-on-write:                        82388821.
+Pages zero filled:                         284151828.
+Pages reactivated:                          12993601.
+Pages purged:                                1344322.
+File-backed pages:                            419395.
+Anonymous pages:                               17787.
+Pages stored in compressor:                    29081.
+Pages occupied by compressor:                   9257.
+Decompressions:                             18841606.
+Compressions:                               23468780.
+Pageins:                                   475063403.
+Pageouts:                                      13616.
+Swapins:                                      221926.
+Swapouts:                                     227692.
+Pages tagged:                                  45881.
+Pages tagged resident:                         39939.
+Pages tagged compressed:                        5942.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1867.
+Pages tag-storage free:                        21049.
+Pages tag-storage non-tag pageable:             9196.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     921920.
+Tagged compressions:                           92532.
+Tagged decompressions:                         59655.
+iostat:
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  363.77 22008788 7818533.53   126.20 2036101 250931.25 

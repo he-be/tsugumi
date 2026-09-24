@@ -1,9 +1,13 @@
 #!/bin/sh
 # Default vs. TF_EXPERT_MIRROR (docs/m6-prefill/44), natural prompts rotated so
 # no two consecutive runs share a prompt (docs/m6-prefill/43 §3).
-#   bench/m6/mirror_bench.sh <label> <mirror dir> [rounds] [share]
-# Round r walks the five prompts; the arm alternates run by run and the
-# starting arm flips each round, so every (prompt, arm) cell gets rounds / 2 runs.
+#   bench/m6/mirror_bench.sh <label> <mirror dir> [rounds] [share] [alt|block]
+# alt (default): round r walks the five prompts; the arm alternates run by run
+# and the starting arm flips each round, so every (prompt, arm) cell gets
+# rounds / 2 runs. Neither arm finds the other's pages in the cache useful.
+# block: round r runs the five prompts in one arm, then in the other (the first
+# arm flips each round), so every cell gets `rounds` runs and the cache carries
+# over between prompts of the same arm, as it would for one user.
 # Fixed geometry as prefill_bench.sh. Each run records vm_stat and the
 # cumulative iostat MB of every disk before and after, so the bytes each SSD
 # served during the run are the difference.
@@ -12,7 +16,7 @@
 set -eu
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 label=${1:?label}; mirror=${2:?mirror dir}
-rounds=${3:-6}; share=${4:-0.32}
+rounds=${3:-6}; share=${4:-0.32}; order=${5:-alt}
 bin="$repo/.build/release/TsugumiCLI"
 model="${MODEL:-$repo/scratch/gemma4-qat-sym.gturbo}"
 [ -x "$bin" ] || { echo "no $bin"; exit 1; }
@@ -44,9 +48,15 @@ printf 'run\tround\tprompt\tarm\tprefill_s\tprefill_io_s\tpageins_MiB\tswapouts\
 run=1; r=1
 while [ "$r" -le "$rounds" ]; do
     k=0
-    for p in $prompts; do
-        if [ $(( (k + r) % 2 )) -eq 0 ]; then arm=def; else arm=mir; fi
-        k=$((k + 1))
+    if [ "$order" = block ]; then
+        cells=$(for p in $prompts; do [ $((r % 2)) -eq 1 ] && echo "def/$p" || echo "mir/$p"; done
+                for p in $prompts; do [ $((r % 2)) -eq 1 ] && echo "mir/$p" || echo "def/$p"; done)
+    else
+        cells=$(for p in $prompts; do
+            if [ $(( (k + r) % 2 )) -eq 0 ]; then echo "def/$p"; else echo "mir/$p"; fi; k=$((k + 1)); done)
+    fi
+    for cell in $cells; do
+        arm=${cell%%/*}; p=${cell#*/}
         snap > "$out/run-$run.pre.txt"
         rc=0
         if [ "$arm" = mir ]; then
