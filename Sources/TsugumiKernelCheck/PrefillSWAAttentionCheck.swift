@@ -7,10 +7,11 @@ import TsugumiValidationSupport
 
 // The sliding-window layers' prefill attention at the production head shape
 // (16 query heads over 8 KV heads, headDim 256), against a CPU softmax over
-// the FP16 inputs. `attention_prefill_causal_sgmm_gqa_d256` (the default) runs
-// as the control; `attention_prefill_swa_mpp_d256` (`matmul2d`,
-// `TF_PREFILL_ATTN=mpp`, docs/m6-prefill/25) only exists in an MSL 4.0 build
-// and is SKIPped elsewhere with the skip printed.
+// the FP16 inputs. `attention_prefill_swa_mpp_d256` (`matmul2d`, the Gemma
+// default where the library has tensor ops, docs/m6-prefill/25・26) only
+// exists in an MSL 4.0 build and is SKIPped elsewhere with the skip printed;
+// `attention_prefill_causal_sgmm_gqa_d256` (the default elsewhere, and
+// `TF_PREFILL_ATTN=sgmm`) runs everywhere.
 //
 // Shapes: a window narrower than the chunk, a chunk that ends mid-block, a
 // second chunk over the first one's keys, and the same second chunk read

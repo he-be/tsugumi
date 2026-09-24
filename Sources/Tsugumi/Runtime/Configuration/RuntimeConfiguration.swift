@@ -15,10 +15,12 @@ public enum RuntimePrefillAttentionPath: String, Codable, Sendable {
     /// path on the full layers in `docs/investigations/PREFILL_THROUGHPUT.md`
     /// §7-6.
     case causalQBlock = "causal-qblock"
-    /// The simdgroup-matrix flash kernel at headDim 256 (the sliding-window
-    /// layers), the query-blocked kernel everywhere else. The default
-    /// (docs/m6-prefill/23): `TF_PREFILL_ATTN=qblock` turns it back into
-    /// `causalQBlock`, and `TF_PREFILL_ATTN=sgmm` turns `causalQBlock` into it.
+    /// At headDim 256 (the sliding-window layers) the `matmul2d` flash kernel
+    /// where the library has tensor ops (docs/m6-prefill/26), the
+    /// simdgroup-matrix one elsewhere; the query-blocked kernel everywhere
+    /// else. The default (docs/m6-prefill/23): `TF_PREFILL_ATTN=sgmm` keeps
+    /// headDim 256 on the simdgroup-matrix kernel (and turns `causalQBlock`
+    /// into it), and `TF_PREFILL_ATTN=qblock` turns it back into `causalQBlock`.
     case causalSimdgroupMatrix = "causal-sgmm"
     case fullTensorOps2DPreferred = "full-tensorops-2d-preferred"
     case fullTensorOps2DValidityV2 = "full-tensorops-2d-validity-v2"

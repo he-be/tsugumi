@@ -72,11 +72,12 @@ final class PrefillAttention {
         ProcessInfo.processInfo.environment["TF_PREFILL_ATTN"] == "sgmm"
     private static let forcedQBlock =
         ProcessInfo.processInfo.environment["TF_PREFILL_ATTN"] == "qblock"
-    /// `TF_PREFILL_ATTN=mpp` sends the headDim-256 dispatches of either
-    /// default to the `matmul2d` kernel where the library has it and the shape
-    /// allows (docs/m6-prefill/25). A candidate: off unless asked for.
-    private static let forcedSwaMPP =
-        ProcessInfo.processInfo.environment["TF_PREFILL_ATTN"] == "mpp"
+    /// The Gemma default (`causalSimdgroupMatrix`) runs its headDim-256
+    /// dispatches on the `matmul2d` kernel where the library has it and the
+    /// shape allows, and on the simdgroup-matrix one otherwise
+    /// (docs/m6-prefill/25・26). `TF_PREFILL_ATTN=sgmm` keeps them on the
+    /// simdgroup-matrix kernel, `=qblock` on the query-blocked one.
+    private static let swaMPPDisabled = forcedSimdgroupMatrix || forcedQBlock
     private static let swaMPPRows = 64
     private static let swaMPPKeys: UInt32 = 64
     private static let swaMPPThreads = 128
@@ -104,7 +105,7 @@ final class PrefillAttention {
         // (docs/m6-prefill/05-RISKS.md §7).
         self.psoFullTensorOps2DValidityV2 =
             try? context.pipeline("attention_prefill_full_tensorops_2d_validity_v2")
-        self.hasSwaMPP = Self.forcedSwaMPP
+        self.hasSwaMPP = !Self.swaMPPDisabled
             && (try? context.pipeline("attention_prefill_swa_mpp_d256")) != nil
     }
 
@@ -147,7 +148,7 @@ final class PrefillAttention {
         // K and V are sliced a key block at a time, so a ring has to be a
         // whole number of blocks; the kernel has no span mask.
         let swaMPPShape = hasSwaMPP
-            && (path == .causalSimdgroupMatrix || path == .causalQBlock)
+            && path == .causalSimdgroupMatrix
             && params.headDim == Self.sgmmHeadDim
             && params.spanMaskEnabled == 0
             && kvRingCapacity % Self.swaMPPKeys == 0
