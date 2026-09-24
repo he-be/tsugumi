@@ -16,10 +16,10 @@ G0 からの比、段の秒、tensor ops に載せたか、「下限の何倍か
 
 | | 値 (秒) | 出所 |
 | --- | --- | --- |
-| **既定の prefill 壁時計** (台帳の最新行) | 9.506 (9.188〜9.597)、commit 837586c、2026-09-23、n = 6 | [06 §1](06-LEDGER.md) |
+| **既定の prefill 壁時計** (台帳の最新行) | 8.682 (8.633〜8.801)、commit 22d7629、2026-09-24、n = 6 | [06 §1](06-LEDGER.md) |
 | 既定でない最良 (候補、`TF_` 4 つ) | 4.407〜4.443、commit 3c45f83 | [06 §2](06-LEDGER.md) |
 
-**台帳の既定行は基準線の 1 行だけ。**10〜14 の変更はすべて `TF_` の裏にあり、既定は一度も測り直していない。
+**既定は基準線 9.506 s から 8.682 s に動いていた** (差 −0.824 s)。どの commit で動いたかは未確認。
 
 | Gate | 問い | 状態 |
 | --- | --- | --- |
@@ -30,7 +30,21 @@ G0 からの比、段の秒、tensor ops に載せたか、「下限の何倍か
 
 以前の Gate (G0〜G5) の結果と読み替えは [04 の末尾](04-GATES.md) の索引にある。
 
-**次の一手**: HEAD で `bench/m6/cycle.sh prefill_bench.sh ledger-head 6` を取り、既定が基準線から動いていないことを台帳に載せる。その後は B3 の判断と、B0 (b) の口。
+**中断中の作業 (2026-09-24)**: attn.swa (既定構成の GPU 内訳で 1.43 s、[`h0-profile-detail`](../../bench/m6/results/2026-09-24-Mac18-5-h0-profile-detail/)) を
+simdgroup_matrix の flash カーネル `attention_prefill_causal_sgmm_d256` (71786c5、`TF_PREFILL_ATTN=sgmm` の候補) に置き換える試み。
+- CPU 参照との一致: `Scripts/test.sh --filter PrefillAttentionTests` が MBP で通る。
+- M6 の本番ループ ([`sgmm-profile-detail`](../../bench/m6/results/2026-09-24-Mac18-5-sgmm-profile-detail/)、n = 3、profile): attn.swa 1.64 s。**既定の qblock の 1.43 s より遅い。**
+- カーネル単体 (`bench/m6/attn_bench.swift`、MBP、記録値ではない): qblock 1.73 s、sgmm 1.12 s。MBP と M6 で順位が逆。
+
+**再開手順**:
+1. M6 で単体ベンチを回し、M6 でも sgmm が遅いかを見る (本番ループの外で順位が逆になるかの切り分け):
+   `scp bench/m6/attn_bench.swift Sources/Tsugumi/Metal/Prefill/prefill.metal m6:/tmp/ && ssh m6 'cd /tmp && swiftc -O attn_bench.swift -o attn_bench && ./attn_bench prefill.metal attention_prefill_causal_qblock_d256:256:32 attention_prefill_causal_sgmm_d256:128:32'`
+2. M6 でも遅ければ、カーネルを直す。候補: threadgroup メモリからの読みが MMA 1 回あたり 1〜1.5 回と多い (QK は Q と Kᵀ の 2 本で 2 回の MMA)。
+   S を 2×2 の simdgroup で割る / PV を head dim で割って V の断片を 4 行ブロックで使い回す / GQA の 2 ヘッドを 1 threadgroup にまとめて K/V の読みを半分に。
+3. 単体で qblock を下回ったら `TF_PREFILL_ATTN=sgmm TF_PREFILL_GPU_PROFILE=2 bench/m6/cycle.sh prefill_bench.sh sgmm-profile-detail-2 3` → 壁時計 `TF_PREFILL_ATTN=sgmm bench/m6/cycle.sh prefill_bench.sh sgmm-a 6`。
+4. 候補のままなので台帳 §1 は動かない。既定に入れるかはユーザーの判断 ([04 B3](04-GATES.md))。結果文書は 19 番 (番号は `ls` で確かめてから)。
+
+その後は B3 の判断と、B0 (b) の口。
 
 ## 読む順
 
