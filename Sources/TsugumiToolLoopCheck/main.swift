@@ -25,7 +25,7 @@ import TsugumiAppCore
 // loaded; the context defaults to the server's slot. The `live` and `progress` checks are about this Mac's session
 // and are skipped. `--remote-direct` says the endpoint is a bare llama-server, whose `props`, `tokenize` and
 // `apply-template` sit at the root instead of under llama-swap's `/upstream/ID/`. `--max-rounds` overrides the saved
-// tool round budget for this run only.
+// tool round budget for this run only. `--mtp on|off` likewise overrides the saved MTP setting (docs/qfn-prefill/04 Q7).
 //
 // `--replay RUN_DIR` plays a recorded run back without the model (`ReplayInferenceClient`): each round returns the
 // recorded calls, the app runs them, and each round's prompt is written to `--out`/prompts/ (docs/qwen38/32). Only the
@@ -93,6 +93,7 @@ struct Options {
     var webStore: String?
     var maxRounds: Int?
     var thinking: Bool?
+    var mtp: Bool?
     var endpoint: URL?
     var remoteModel: String?
     /// `--remote-direct`: `--endpoint` is a bare llama-server, not llama-swap (`RemoteInferenceClient.Routing`).
@@ -166,6 +167,7 @@ struct Options {
             case "--web-store": webStore = value
             case "--max-rounds": maxRounds = Int(value)
             case "--thinking": thinking = value == "on"
+            case "--mtp": mtp = value == "on"
             case "--endpoint": endpoint = URL(string: value)
             case "--remote-model": remoteModel = value
             case "--replay": replay = value
@@ -513,6 +515,7 @@ func runCheck() async -> Int32 {
     }
     if let maxRounds = options.maxRounds { model.webSearchConfiguration.maxToolRounds = maxRounds }
     if let thinking = options.thinking { model.thinkingEnabled = thinking }
+    if let mtp = options.mtp { model.runtimeOptions.mtpEnabled = mtp }
     model.networkMode = options.network
     if let probe = options.gatherProbe, let gather = options.gather {
         return runGatherProbe(file: probe, gatherDirectory: gather, model: model, out: options.gatherProbeOut,

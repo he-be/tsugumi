@@ -201,8 +201,16 @@ package final class Qwen38Engine {
                 pair = try Qwen38Pair.Client(host: config.host, port: config.port, k: config.k, runner: runner)
                 pairSynced = 0
             }
+            let t = Date()
             try pair!.begin(runner: runner, tokens: prompt, startPos: position, chunks: sizes, stateAfter: stateAfter,
                             kvFrom: pairSynced)
+            if Qwen38RoundLog.enabled {
+                // The hand-over to the M6 (docs/qfn-prefill/22 §2-2 step 1): its state and the rows decode added.
+                let layers = 0..<config.k
+                Qwen38RoundLog.write(["event": "pair_begin", "s": Date().timeIntervalSince(t), "kv_from": pairSynced,
+                                      "start": position, "state_bytes": runner.recurrentBytes(layers: layers),
+                                      "kv_bytes": runner.kvRegionBytes(layers: layers, positions: pairSynced..<position)])
+            }
             return pair
         } catch let error as Qwen38Pair.Error {
             Qwen38RoundLog.write(["event": "pair_off", "error": error.description])
@@ -351,6 +359,8 @@ package final class Qwen38Engine {
         var reason: StopReason = .maxTokens
         var firstToken = 0.0
         var passes = 0, accepted = 0
+        /// Seconds of each decode step (one verify pass, or one token without MTP), for the round log (04 Q7).
+        var stepSeconds: [Double] = []
         /// Appends and reports one token; false when the run ends on it.
         func emit(_ id: Int) throws -> Bool {
             let token = Int32(id)
@@ -369,6 +379,8 @@ package final class Qwen38Engine {
                 let V = runner.vocab
                 loop: while true {
                     try Task.checkCancellation()
+                    let tStep = Date()
+                    defer { stepSeconds.append(Date().timeIntervalSince(tStep)) }
                     if checkpointBefore.contains(Int32(y)), let onCheckpoint {
                         let checkpoint = try captureCheckpoint()
                         Qwen38RoundLog.write(["event": "capture", "position": checkpoint.position,
@@ -410,6 +422,8 @@ package final class Qwen38Engine {
             } else {
                 while true {
                     try Task.checkCancellation()
+                    let tStep = Date()
+                    defer { stepSeconds.append(Date().timeIntervalSince(tStep)) }
                     if checkpointBefore.contains(Int32(y)), let onCheckpoint { onCheckpoint(try captureCheckpoint()) }
                     let l = try runner.forward(tokens: [y], startPos: position)
                     position += 1
@@ -421,7 +435,7 @@ package final class Qwen38Engine {
         Qwen38RoundLog.write(["event": "run", "prompt": prompt.count, "cached": cachedPromptTokens,
                               "generated": produced.count, "prefill_s": prefillSeconds,
                               "decode_s": Date().timeIntervalSince(decodeStart), "passes": passes,
-                              "accepted": accepted])
+                              "accepted": accepted, "step_s": stepSeconds])
         return Qwen38Run(tokens: produced,
                          promptTokens: prompt.count,
                          cachedPromptTokens: cachedPromptTokens,
