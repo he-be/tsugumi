@@ -29,7 +29,8 @@ import TsugumiAppCore
 //
 // `--replay RUN_DIR` plays a recorded run back without the model (`ReplayInferenceClient`): each round returns the
 // recorded calls, the app runs them, and each round's prompt is written to `--out`/prompts/ (docs/qwen38/32). Only the
-// first repeat's first turn of each conversation is replayed.
+// first repeat's first turn of each conversation is replayed. `--replay-model` also runs each request through the
+// app's engine with one new token (the prefill of the recorded rounds in one process, docs/qfn-prefill/04 Q0).
 //
 // Metered searches (docs/qwen38/32 §5), with `--web-store`:
 //   `--search-budget N`   at most N searches reach Serper / Brave in this run; a recorded one is not counted.
@@ -97,6 +98,8 @@ struct Options {
     /// `--remote-direct`: `--endpoint` is a bare llama-server, not llama-swap (`RemoteInferenceClient.Routing`).
     var remoteDirect = false
     var replay: String?
+    /// With `--replay`: each request also goes through the app's engine (`ReplayInferenceClient.engine`).
+    var replayModel = false
     var searchBudget: Int?
     var pinSearch = false
     var sampleForced: [String: Int] = [:]
@@ -128,6 +131,10 @@ struct Options {
         while let flag = iterator.next() {
             if flag == "--pin-search" {
                 pinSearch = true
+                continue
+            }
+            if flag == "--replay-model" {
+                replayModel = true
                 continue
             }
             if flag == "--remote-direct" {
@@ -408,7 +415,8 @@ func runCheck() async -> Int32 {
     var replay: ReplayInferenceClient?
     if let run = options.replay {
         do {
-            replay = try ReplayInferenceClient(run: URL(fileURLWithPath: run, isDirectory: true), out: outDirectory)
+            replay = try ReplayInferenceClient(run: URL(fileURLWithPath: run, isDirectory: true), out: outDirectory,
+                                               engine: options.replayModel ? RealInferenceClient() : nil)
         } catch {
             logLine("cannot replay \(run): \(error)")
             return 2
