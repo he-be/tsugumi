@@ -28,7 +28,9 @@ private final class RoutedShare {
     private let device: MTLDevice, queue: MTLCommandQueue
     private let psoGather, psoDeqGU, psoDeqDown, psoSilu, psoScatter: MTLComputePipelineState
     private let arg, partOffBuf, orderBuf, atBuf, wBuf: MTLBuffer
-    private let gBuf, uBuf, dBuf: MTLBuffer
+    /// One no-copy view per selected expert and tensor, as the runner's expert views: a view over the whole tensor makes
+    /// Metal map every expert's pages, the other machine's share included.
+    private let views: [MTLBuffer]
     private let downRow: Int
     /// Scratch shared by every layer (one layer runs at a time): gathered rows, gate|up, down rows, G experts of weights.
     struct Scratch {
@@ -101,23 +103,21 @@ private final class RoutedShare {
             }
         }
         ranges = r; bytes = r.reduce(0) { $0 + $1.byteCount }
-        let (g, gOff) = file.noCopyBuffer(device: device, tensor: gateT)!
-        let (u, uOff) = file.noCopyBuffer(device: device, tensor: upT)!
-        let (d, dOff) = file.noCopyBuffer(device: device, tensor: downT)!
-        gBuf = g; uBuf = u; dBuf = d
         let fn = lib.makeFunction(name: "moe_iq2xxs_dequant_gate_up_f32")!
         let argEnc = fn.makeArgumentEncoder(bufferIndex: 0)
         arg = device.makeBuffer(length: argEnc.encodedLength, options: .storageModeShared)!
         argEnc.setArgumentBuffer(arg, offset: 0)
         var partOff = [UInt32](repeating: 0, count: 3 * qExperts)
+        var views: [MTLBuffer] = []
         for (s, ex) in slots.enumerated() {
-            argEnc.setBuffer(g, offset: 0, index: s)
-            argEnc.setBuffer(u, offset: 0, index: qExperts + s)
-            argEnc.setBuffer(d, offset: 0, index: 2 * qExperts + s)
-            partOff[3 * s] = UInt32(gOff + ex * gateRow * qF)
-            partOff[3 * s + 1] = UInt32(uOff + ex * gateRow * qF)
-            partOff[3 * s + 2] = UInt32(dOff + ex * downRow * qD)
+            for (k, (t, per)) in [(gateT, gateRow * qF), (upT, gateRow * qF), (downT, downRow * qD)].enumerated() {
+                let (v, o) = file.noCopyBuffer(device: device, offset: t.offset + ex * per, byteCount: per)!
+                argEnc.setBuffer(v, offset: 0, index: k * qExperts + s)
+                partOff[3 * s + k] = UInt32(o)
+                views.append(v)
+            }
         }
+        self.views = views
         func shared<E>(_ a: [E]) -> MTLBuffer {
             a.withUnsafeBytes { device.makeBuffer(bytes: $0.baseAddress!, length: max($0.count, 4), options: .storageModeShared)! }
         }
@@ -157,14 +157,14 @@ private final class RoutedShare {
             var firstSlot = UInt32(g0), dV = UInt32(qD), fV = UInt32(qF)
             var enc = cb.makeComputeCommandEncoder()!
             enc.setComputePipelineState(psoDeqGU)
-            enc.setBuffer(arg, offset: 0, index: 0); enc.useResources([gBuf, uBuf], usage: .read)
+            enc.setBuffer(arg, offset: 0, index: 0); enc.useResources(views, usage: .read)
             enc.setBuffer(partOffBuf, offset: 0, index: 1); enc.setBuffer(wGU, offset: 0, index: 2)
             enc.setBytes(&dV, length: 4, index: 3); enc.setBytes(&fV, length: 4, index: 4); enc.setBytes(&firstSlot, length: 4, index: 5)
             enc.dispatchThreads(MTLSize(width: qD / 32, height: 2 * qF, depth: n), threadsPerThreadgroup: MTLSize(width: 8, height: 32, depth: 1))
             enc.endEncoding()
             enc = cb.makeComputeCommandEncoder()!
             enc.setComputePipelineState(psoDeqDown)
-            enc.setBuffer(arg, offset: 0, index: 0); enc.useResource(dBuf, usage: .read)
+            enc.setBuffer(arg, offset: 0, index: 0); enc.useResources(views, usage: .read)
             enc.setBuffer(partOffBuf, offset: 0, index: 1); enc.setBuffer(wDown, offset: 0, index: 2)
             var sV = UInt32(qActStride), cV = UInt32(qF), rbV = UInt32(downRow)
             enc.setBytes(&dV, length: 4, index: 3); enc.setBytes(&sV, length: 4, index: 4); enc.setBytes(&cV, length: 4, index: 5)
@@ -256,6 +256,25 @@ func runQFNSplitProbe(mode: String, ip: String, port: Int, gguf: String, routes:
     let yPeer = UnsafeMutableRawPointer.allocate(byteCount: rowBytes, alignment: 16)
     let assign = UnsafeMutableRawPointer.allocate(byteCount: assignBytes, alignment: 16)
     memset(assign, 0, assignBytes)
+
+    // QFN_PROBE_CHECK=1: layer 0 in full against the two shares added (the split itself, no socket), then exit.
+    if ProcessInfo.processInfo.environment["QFN_PROBE_CHECK"] != nil {
+        let route = try Data(contentsOf: URL(fileURLWithPath: "\(routes)-l0.bin"))
+        let full = try RoutedShare(file: file, layer: 0, route: route, lo: 0, hi: qExperts, device: device, queue: queue, lib: lib, scratch: scratch)
+        let a = try RoutedShare(file: file, layer: 0, route: route, lo: 0, hi: cut, device: device, queue: queue, lib: lib, scratch: scratch)
+        let b = try RoutedShare(file: file, layer: 0, route: route, lo: cut, hi: qExperts, device: device, queue: queue, lib: lib, scratch: scratch)
+        full.read(file: file)
+        let yF = device.makeBuffer(length: rowBytes, options: .storageModeShared)!
+        let yA = device.makeBuffer(length: rowBytes, options: .storageModeShared)!
+        let yB = device.makeBuffer(length: rowBytes, options: .storageModeShared)!
+        _ = full.compute(x: x, residual: zero, y: yF); _ = a.compute(x: x, residual: zero, y: yA); _ = b.compute(x: x, residual: zero, y: yB)
+        let f = yF.contents().bindMemory(to: Float.self, capacity: T * qD)
+        let pa = yA.contents().bindMemory(to: Float.self, capacity: T * qD), pb = yB.contents().bindMemory(to: Float.self, capacity: T * qD)
+        var d: Float = 0, m: Float = 0
+        for i in 0..<(T * qD) { d = max(d, abs(f[i] - pa[i] - pb[i])); m = max(m, abs(f[i])) }
+        print(String(format: "check: experts %d + %d of %d, max |full - (a + b)| / max |full| = %.2e", a.S, b.S, full.S, d / m))
+        return
+    }
 
     if serve {
         let ls = socket(AF_INET, SOCK_STREAM, 0)
