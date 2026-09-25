@@ -6,7 +6,7 @@ Gemma の M6 prefill ([m6-prefill](../m6-prefill/README.md)) に区切りが付�
 **前提は 1 つ。運用の形は「MBP 単体で QFN が動き、M6 mini を TB4 で直結すると速くなる」である。**
 MBP (Mac15,6 / M3 Pro 18 GB / 1 TB) がアプリとサーバーを持ち、M6 mini (Mac18,5 / 16 GB / 256 GB + 外付け SSD256) は TB4 直結の先で仕事の一部を引き受ける。
 この特定の 2 機に特化した分散推論として作る。**分け方は 2 つ (層で分ける A / expert で分ける B、[08](08-CANDIDATES.md)) あり、どちらを作るかは
-M6 で QFN を動かした秒と link の秒を測ってから式で決める ([07](07-EXPERIMENTS.md))。**今はどちらも測っておらず、設計を選ぶ根拠が無い。
+M6 で QFN を動かした秒と link の秒を測ってから式で決める ([07](07-EXPERIMENTS.md))。**2026-09-25 の Q1 で **B** に決めた ([10](10-Q1-SPLIT-DECISION.md))。
 
 2 機の取り決めそのものは [TWO_MACHINE_DEV.md](../TWO_MACHINE_DEV.md) だが、**§1 (性能の記録値は M6 でしか取らない) と §3 (TB4 直結は当てにしない) は
 QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
@@ -23,19 +23,19 @@ QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
 | **台帳** | まだ行が無い (`bench/qfn/` のスクリプトが未作成) | [06](06-LEDGER.md) |
 | MBP 単体の prefill (旧文書、`bench/qfn/results/` の証拠なし) | ベンチ 32K で 336.5 s (n = 1)。アプリの 1 ラウンドは prefill 秒 ≈ 6.20 + 新規 ÷ 89.6 (83 ラウンドの回帰) | [qwen38/23](../qwen38/23-KV-Q8-32K.md)、[qwen38/42 §1-1](../qwen38/42-KVA-SPEED-ON-APP-ROUND-PLAN.md)、[03 §3](03-FACTS.md) |
 | チャンク 2048 の 1 本の中身 (MBP、8K ベンチ) | 20〜22 s = pre-router 6.4〜7.2 + route 6.3〜6.5 (pread 約 5、top-10 約 1.3) + routed 6.8〜6.9 + PLE 0.1〜2.2。**GPU 11.5〜12.2 s と SSD 約 5 s が直列** | [qwen38/08 §4](../qwen38/08-ROUTED-MIXED.md)、[03 §3](03-FACTS.md) |
-| M6 で QFN を動かした実測 | **無い。**2026-09-25 に重み一式を M6 に置き、SHA-256 を照合した (本体 + down + bf16 は内蔵、PLE BF16 は外付け) | [03 §5](03-FACTS.md) |
-| TB4 直結の生 TCP | **未確認** (TWO_MACHINE_DEV §3 の 37.8 Gb/s は証拠なし)。ssh 越しは 2 GiB を 1.43 s | [03 §5](03-FACTS.md) |
-| 分け方 A / B の秒 | **未確認。**E0〜E4 の後に [08 §3](08-CANDIDATES.md) の式で出す | [07](07-EXPERIMENTS.md) |
+| M6 で QFN を動かした実測 | 今のコードで 4K を Swapouts なしで通した。GPU の秒は MBP とほぼ同じで、SSD と PLE が長い | [10 §1.2](10-Q1-SPLIT-DECISION.md) |
+| TB4 直結の生 TCP | 両方向とも 1 GiB 4.7 GB/s、84 MB 片道と 21 MB 往復 × 48 の秒は 10 §1.1 | [10 §1.1](10-Q1-SPLIT-DECISION.md) |
+| 分け方 A / B の秒 | **B に決めた** (導出、式に host の残り o を足した)。記録 12 ターンの prefill 合計は 10 §0 | [10](10-Q1-SPLIT-DECISION.md) |
 
 | Gate | 問い | 状態 |
 | --- | --- | --- |
 | **Q0** 基準線 | 今のコードの MBP 単体を `bench/qfn/` の形で取る (自然文 5 本 + 記録の再生 1 ターン)。揺れの幅を決める | 未着手 |
-| **Q1** 分け方を決める実験 | E0 link、E1 M6 で QFN の段の秒、E2 M6 の SSD、E3 B の 1 層の模擬、E4 M6 の expert GEMM (fp32 / fp16 tensor ops)。式で A か B を選ぶ | 未着手 |
+| **Q1** 分け方を決める実験 | E0 link、E1 M6 で QFN の段の秒、E2 M6 の SSD、E3 B の 1 層の模擬、E4 M6 の expert GEMM (fp32 / fp16 tensor ops)。式で A か B を選ぶ | **閉じた: B** (σ 0.40、写しあり 0.45)。E4-(b) は精度の規則で使わず、Q8 は作らない ([10](10-Q1-SPLIT-DECISION.md)) |
 | **Q2** PLE の行を先に読む | 行番号はトークンだけで決まるので、要求の頭で全チャンク分を並列に読む。A / B どちらでも効く | 未着手 |
 | **Q3** host の top-10 | チャンクごとに約 1.3 s の Swift ループを縮める。どちらでも効く | 未着手 |
 | **Q4** M6 の外付けに expert の写し | Gemma の 44 と同じ形。内蔵 3.34 + 外付け 1.57 GB/s を同時に読む。どちらでも効く | 未着手 (E2 で写しを先に作る) |
 | **Q5** 機内で読みと GPU を重ねる | 次の層の expert を固定の置き場 (2 層分) に `F_NOCACHE` で読む。**RAM の条件付き** | 未着手 (判断待ち) |
-| **Q6** 選んだ分け方を作り、正しさと秒 | 単体と logits が一致。台帳の 2 機の列 | Q1 の後 |
+| **Q6** 選んだ分け方を作り、正しさと秒 | B を作る。単体と logits が一致。台帳の 2 機の列 | 未着手 (Q1 済み) |
 | **Q7** decode と会話の機能 | 2 機で decode が単体より遅くならない。MTP・チェックポイント・prompt cache・ツール呼び出しが通る | Q6 の後 |
 | **Q8** 小さいラウンドの固定分 | 1 ラウンド 6.2 s の固定分と 8 トークンのチャンク 2.5 s | 未着手 |
 
@@ -46,7 +46,7 @@ Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q1 → (Q2、Q3�
 1. **記録値を取る機械**: QFN の記録値は「MBP が駆動する 2 機」と「MBP 単体」の 2 列で取る。TWO_MACHINE_DEV §1 の「M6 でしか取らない」は Gemma の規則として残し、QFN はこの README を正にしてよいか。
 2. **TB4 直結を常設にする**か。運用の形が 2 機なら、ケーブルは繋ぎっぱなしが前提になる (IP は link-local で変わる、[01 §3](01-ROLES.md))。
 3. **Q5 の RAM**: 2 層分 (約 1.4 GiB) の固定の置き場を取る。先読み・常駐は decode で「RAM を使えば速いというだけ」として閉じた経緯がある ([qwen38/13](../qwen38/13-KERNEL-TO-GPU-WAIT.md)、[15 §0-2](../qwen38/15-DECODE-PLAN.md))。prefill でも同じ判断なら Q5 は外す。
-4. **M6 の PLE BF16 (95 GiB)**: A なら要る、B なら要らない。決まるまで置いておく。
+4. **M6 の PLE BF16 (95 GiB)**: Q1 で B に決まったので要らない ([10 §4](10-Q1-SPLIT-DECISION.md))。消すかどうか。
 
 ## 読む順
 
@@ -61,7 +61,8 @@ Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q1 → (Q2、Q3�
 | [07-EXPERIMENTS.md](07-EXPERIMENTS.md) | **分け方を決める実験 E0〜E4 と、決め方** |
 | [08-CANDIDATES.md](08-CANDIDATES.md) | 分け方の候補 A / B の形と式。数字は書かない |
 | 10 番台〜 | 結果文書。Gate ごとに 1 本、[00-TEMPLATE-RESULT.md](00-TEMPLATE-RESULT.md) の形 |
-| `bench/qfn/` | (未作成) 計測スクリプトと証拠。`prompts/` は `bench/m6/prompts/` の自然文 5 本を共用する |
+| [10-Q1-SPLIT-DECISION.md](10-Q1-SPLIT-DECISION.md) | Q1: E0〜E4 と式。B に決めた |
+| `bench/qfn/` | 計測スクリプトと証拠。E0〜E4 の道具と `formula.py` はある。Q0 の `pair_bench.sh`・`ledger.sh` は未作成。本文は `bench/m6/prompts/` の自然文 5 本を共用する |
 
 ## 運用ルール (m6-prefill と同じ)
 

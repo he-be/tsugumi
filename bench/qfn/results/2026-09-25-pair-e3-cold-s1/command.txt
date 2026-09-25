@@ -1,0 +1,2 @@
+M6: cd dev/tsugumi && .build/release/TsugumiKernelCheck --qfn-split-probe serve 169.254.13.135 5301 $HOME/dev/tsugumi/scratch/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf scratch/qfn/routes/c2048 1
+MBP: /Users/mh/LLM/turbo-fieldfare/.build/release/TsugumiKernelCheck --qfn-split-probe run 169.254.13.135 5301 /Users/mh/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf /Users/mh/LLM/turbo-fieldfare/scratch/qfn/routes/c2048 1 1

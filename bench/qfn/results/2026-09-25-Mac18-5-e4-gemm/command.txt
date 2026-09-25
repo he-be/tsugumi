@@ -1,0 +1,3 @@
+/Users/mh/dev/tsugumi/.build/release/TsugumiKernelCheck --q2-gemm-bench /Users/mh/dev/tsugumi/scratch/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf /Users/mh/dev/tsugumi/scratch/qfn/routes/c2048-l0.bin 4 5 2048
+/Users/mh/dev/tsugumi/.build/release/TsugumiKernelCheck --q2-gemm-bench /Users/mh/dev/tsugumi/scratch/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf /Users/mh/dev/tsugumi/scratch/qfn/routes/c2048-l24.bin 4 5 2048
+/Users/mh/dev/tsugumi/.build/release/TsugumiKernelCheck --q2-gemm-bench /Users/mh/dev/tsugumi/scratch/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf /Users/mh/dev/tsugumi/scratch/qfn/routes/c2048-l47.bin 4 5 2048

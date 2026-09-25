@@ -40,7 +40,7 @@
 | PLE が冷えているとき | 1 チャンク 2.5〜5.4 s | [qwen38/03 §3](../qwen38/03-PREFILL.md)、[05 §2](../qwen38/05-EXPERT-READ.md) |
 | pread の速さ (MBP 内蔵) | 6.2〜6.6 GB/s。mmap のフォルトは 0.73〜1.48、advise 後 0.97 GB/s | [qwen38/05](../qwen38/05-EXPERT-READ.md) |
 | decode | 32K で MTP off 5.83、on 7.51 tok/s。ページインは 156〜189 MB/ステップ | [qwen38/23](../qwen38/23-KV-Q8-32K.md)、[11 §1](../qwen38/11-VERIFY-PASS-SPLIT.md)、[13 §3](../qwen38/13-KERNEL-TO-GPU-WAIT.md) |
-| M6 で QFN を動かした実測 | **無い** | `bench/m6/results/` に無い |
+| M6 で QFN を動かした実測 | 段の秒は [10 §1.2](10-Q1-SPLIT-DECISION.md) | `bench/qfn/results/2026-09-25-Mac18-5-e1-stages/` |
 
 ## 4. 2 機 (m6-prefill/03 と investigations の実測)
 
@@ -50,11 +50,11 @@
 | 内蔵 SSD (`F_NOCACHE`) | AP1024Z 6.68 GB/s | AP0256Z **3.34 GB/s** (QD を上げても伸びない) | [investigations/M6_SSD_BANDWIDTH §0](../investigations/M6_SSD_BANDWIDTH.md) |
 | 外付け `SSD256` (TB4、型番は未記載) | — | ランダム 1.57 GB/s (p50 8.5 ms @QD4)、連続 2.10。**内蔵と同時に読んで合計 4.83〜4.92 GB/s** | [m6-prefill/44 §1.1](../m6-prefill/44-EXPERT-MIRROR-EXTERNAL-SSD.md) |
 | GPU | fp16 GEMM 5.94 TFLOP/s | fp16 18.61、**fp32 4.85** TFLOP/s、帯域 144.4 GB/s | [m6-prefill/03 §1](../m6-prefill/03-FACTS.md) |
-| MBP の fp32 GEMM | **未確認** (QFN の routed / dense は fp32 sgemm なので、これが M6 との比の分母) | | |
+| QFN の routed GEMM (1 層、T = 2048) | 腕ごとの秒は [10 §1.4](10-Q1-SPLIT-DECISION.md)。f32 sgemm の腕は両機でほぼ同じ | | |
 | OS / Swift | macOS 15.7.5 / Swift 6.3.3 / Xcode 26.6 | macOS 27.0 / Swift 6.4 / CLT | TWO_MACHINE_DEV |
 | wired limit | — | `iogpu.wired_limit_mb` は再起動で 0 | [m6-prefill/29](../m6-prefill/29-REFERENCE-RUNTIMES-ON-M6.md) |
 
-## 5. TB4 直結と重みの置き場 (2026-09-25、手測り。証拠ディレクトリなし)
+## 5. TB4 直結と重みの置き場 (2026-09-25、手測り。証拠ディレクトリなし。生 TCP の実測は [10 §1.1](10-Q1-SPLIT-DECISION.md))
 
 | 項目 | 値 |
 | --- | --- |

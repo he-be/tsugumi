@@ -1,0 +1,2 @@
+bridge0 MBP 169.254.218.152 -> M6 169.254.13.135 / B sigma = 0.43
+round-trip min/avg/max/stddev = 0.322/0.470/0.603/0.097 ms

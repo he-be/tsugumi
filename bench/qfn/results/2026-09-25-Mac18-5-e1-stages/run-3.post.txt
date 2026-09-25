@@ -1,0 +1,38 @@
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    55279.
+Pages active:                                 282846.
+Pages inactive:                               549776.
+Pages speculative:                              2261.
+Pages throttled:                                   0.
+Pages wired down:                             107178.
+Pages purgeable:                                   4.
+"Translation faults":                      440536566.
+Pages copy-on-write:                       104128297.
+Pages zero filled:                         312137554.
+Pages reactivated:                          29670008.
+Pages purged:                                1573639.
+File-backed pages:                            831360.
+Anonymous pages:                                3523.
+Pages stored in compressor:                    43494.
+Pages occupied by compressor:                  13720.
+Decompressions:                             31605160.
+Compressions:                               38503887.
+Pageins:                                   707706521.
+Pageouts:                                      17530.
+Swapins:                                      222246.
+Swapouts:                                     227732.
+Pages tagged:                                  73512.
+Pages tagged resident:                         64443.
+Pages tagged compressed:                        9069.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2536.
+Pages tag-storage free:                        22835.
+Pages tag-storage non-tag pageable:             6777.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1558784.
+Tagged compressions:                          187128.
+Tagged decompressions:                        145199.
+System-wide memory free percentage: 85%
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  379.54 29390274 10893247.12   123.03 8575663 1030370.62 

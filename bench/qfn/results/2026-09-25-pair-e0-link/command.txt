@@ -1,0 +1,2 @@
+MBP->M6: ssh m6 /tmp/link_probe serve 169.254.13.135 5201 ; scratch/link_probe run 169.254.13.135 5201 5
+M6->MBP: scratch/link_probe serve 169.254.218.152 5202 ; ssh m6 /tmp/link_probe run 169.254.218.152 5202 5

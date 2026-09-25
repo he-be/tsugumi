@@ -1,0 +1,2 @@
+Pageins:                                   745428170.
+Swapouts:                                     227732.
