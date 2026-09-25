@@ -77,10 +77,11 @@ M6 は KV の写しを文脈の長さだけ持つ (32K で 541 MB)。21 の模�
 - Q7 の測り方は「本文 2 の decode の 1 ステップ中央値が単体と同じ幅」に加え、受け渡しの秒 (§2-2 の 1 と 3) をラウンドごとにログに出す。見込み (0.03〜0.04 s) と 1 割以上ずれたら、どちらの向きかを書く。
 - 開いたまま: A の M6 (常駐 + staging) の decode は測っていない (§1)。M6 の decode が MBP より速くなる根拠が出たら、decode を M6 に任せる形を別の候補として測る。
 
-## 4. 再開手順 (2026-09-25 の区切り、最新 commit はこの節を足したもの)
+## 4. 再開手順 (2026-09-26 の区切り)
 
-ここまでで済んだこと: Q0・Q2・Q1 (A)・Q4 腕 b (送り 0.59、20)・Q5 の M6 側 (`QFN_SLAB=2` 採用、21)・P6 の下書き (この文書)。
-**次は [23](23-DECODE-SPLIT-PLAN.md) の decode の判別 (道具 `--qwen38-split-decode` を作って S0・S16・S24・S32 を n = 3)。その結果で P6 を確定してから Q6 の本体 (下の 2〜4)。**
+ここまでで済んだこと: Q0・Q2・Q1 (A)・Q4 腕 b (送り 0.59、20)・Q5 の M6 側 (`QFN_SLAB=2` 採用、21)・P6 の確定 ([24](24-DECODE-SPLIT-RESULT.md))・M6 の T = 2 の幹の判別 ([26](26-M6-T2-TRUNK-RESULT.md)、split-decode の serve 側は直さない)。
+**次は Q6 の本体 (下の 2〜4)。**Q3 (host の top-10) は Q6 と並行してよい。Q7 は Q6 の後。Q8 は未着手。
+README の判断待ち 1 (記録値を取る機械)・2 (TB4 常設) は下の 4 で台帳に 2 機の列を書くまでに要る。`bench/qfn/` の 2 機の形 (`pair_bench.sh`・`ledger.sh` の 2 機の列、`results/README.md`) も 4 までに作る。
 
 1. **始める前の確認** (AGENTS.md と 01 の 1 サイクル):
    - 両機で `pgrep -fl 'TsugumiServer|TsugumiMac|TsugumiDecodeService|TsugumiCLI|TsugumiKernelCheck|mlx_lm|llama'` が空、`memory_pressure -Q`、`vm_stat | grep Swapouts` を控える。
@@ -92,7 +93,7 @@ M6 は KV の写しを文脈の長さだけ持つ (32K で 541 MB)。21 の模�
    - MBP 側: 送り手 (`F_NOCACHE`、16 MB ブロック × 4 本)、層 k〜47 (k 48 なら無し)、head、MTP の KV、decode は単体のまま。
    - 状態の受け渡し (§2-2): 状態の出入り口は `forEachRecurrentRegion` (GDN・conv・PLE 履歴、:1818) と KV の行。restore は `rollback(keep:)` (:1845) の長さを M6 に伝える。
    - 候補の名前: `Q38_EXPERT_FEED=0.59`、`Q38_EXPERT_SLAB=2`、分け方 `Q38_PAIR=<M6 の bridge0 IP>` と k (名前は作るときに決める)。link が無ければ単体に戻る。
-3. **最初の run で見るもの**: 正しさ (04 Q6: 単体との logits の差、top-1 の一致、入れ替わりが相手の top-5 に入る、greedy 64 トークンの本文) → M6 の Swapouts (§2-3。出たら常駐 12 層か KV の写しなしを測る) → 受け渡しの秒 (見込み 0.03〜0.04 s)。
+3. **最初の run で見るもの**: 正しさ (04 Q6: 単体との logits の差、top-1 の一致、入れ替わりが相手の top-5 に入る、greedy 64 トークンの本文) → M6 の Swapouts (§2-3。出たら常駐 12 層か KV の写しなしを測る) → 受け渡しの秒 (見込み 0.03〜0.04 s) → M6 の層ごとの `advise` を単体の値と並べる (26 §3。split-decode の serve では単体の 2 倍だった)。
 4. **測るもの**: k 44・46・48 を本文 1・本文 2 で n = 3 (`bench/qfn/pair_bench.sh`・`ledger.sh` の 2 機の列)。台帳 06 に 2 機の列を足す。
 5. **開いたままのもの**: 03 §1 の o_X (模擬に入っていない仕事) が M6 でどれだけ長いか (20 §2)、A の M6 の decode (22 §1)、3 口 (内蔵 + 外付け + TB4)、送りを要求より先に始めること (20 §3)、常駐層を散らす並べ方 (21 §2)。
    README の判断待ち 1〜3 はそのまま (3 は k 48 が通れば要らない)。
