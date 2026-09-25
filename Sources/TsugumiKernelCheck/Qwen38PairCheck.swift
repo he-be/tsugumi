@@ -4,9 +4,12 @@ import Tsugumi
 // MARK: - Qwen3.8 prefill split by layers over two machines (docs/qfn-prefill/22 §4, 04 Q6)
 //
 // M6:  --qwen38-pair-serve <bind ip> <port> [--q38-capacity N] [--q38-chunk C] with --q38-gguf, --q38-ple
-//      Serves `Qwen38Pair` rounds with its own runner (layers 0 ..< k, k from the MBP).
-// MBP: --qwen38-pair-check <prompt token file> --q38-pair <M6 ip>[:port] [--q38-pair-k K] [--q38-tokens N] [--q38-new 64]
-//      Three prefills of the prompt's first N tokens through the engine (MTP off), each followed by decode:
+//      Serves `Qwen38Pair` rounds with its own runner (layers 0 ..< k, k from the MBP). Defaults are the Q6 shape
+//      (docs/qfn-prefill/22 §4): P1 (Q38_P1=1), 10 resident layers (Q38_PAIR_RESIDENT; 13 and 12 swapped with the
+//      runner's own 2.9 GB of batch scratch and KV, 0 = no store), 2 slabs (Q38_EXPERT_SLAB), feed 0.59 (Q38_EXPERT_FEED).
+// MBP: --qwen38-pair-check <prompt token file | messages .json> --q38-pair <M6 ip>[:port] [--q38-pair-k K] [--q38-tokens N] [--q38-new 64]
+//      A .json (bench/m6/prompts/: [{role, content}]) is rendered with the model directory's chat template, thinking off
+//      (the server's rendering of 本文 1). Three prefills of the prompt's first N tokens through the engine (MTP off), each followed by decode:
 //        solo    the MBP alone, then greedy `--q38-new` tokens (the reference tokens)
 //        forced  the pair, then the reference tokens fed one by one: every row's logits against solo's
 //        free    the pair, then its own greedy tokens (the text is recorded; a difference does not stop the check)
@@ -25,14 +28,13 @@ private func top(_ l: ArraySlice<Float>, _ n: Int) -> [Int] {
 
 func runQwen38PairServe(ip: String, port: Int, gguf: String, ple: String, capacity: Int, chunk: Int) throws -> Never {
     setvbuf(stdout, nil, _IOLBF, 0)
+    setenv("Q38_P1", "1", 0)
     let runner = try Qwen38Runner(gguf: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath),
                                   ple: URL(fileURLWithPath: (ple as NSString).expandingTildeInPath),
                                   capacity: capacity, maxBatch: chunk)
     print("Qwen3.8 pair serve: capacity \(capacity), chunk \(chunk), KV \(runner.kvQ8 ? "q8_0" : "f32"), P1 \(runner.p1)")
-    // The layer store (docs/qfn-prefill/22 §4): Q38_PAIR_RESIDENT (13; 0 = the mapped files, no store),
-    // Q38_EXPERT_SLAB (2), Q38_EXPERT_FEED (0.59).
     let env = ProcessInfo.processInfo.environment
-    let resident = Int(env["Q38_PAIR_RESIDENT"] ?? "") ?? 13
+    let resident = Int(env["Q38_PAIR_RESIDENT"] ?? "") ?? 10
     var store: Qwen38LayerStore?
     if resident > 0 {
         store = try Qwen38LayerStore(runner: runner, resident: resident, slabs: Int(env["Q38_EXPERT_SLAB"] ?? "") ?? 2,
@@ -46,10 +48,19 @@ func runQwen38PairServe(ip: String, port: Int, gguf: String, ple: String, capaci
 }
 
 func runQwen38PairCheck(tokenFile: String, pair: String, k: Int, tokens: Int?, newTokens: Int, chunk: Int,
-                        gguf: String, ple: String) throws -> Bool {
+                        gguf: String, ple: String) async throws -> Bool {
     setvbuf(stdout, nil, _IOLBF, 0)
-    var prompt = try String(contentsOfFile: tokenFile, encoding: .utf8).split(separator: ",")
-        .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    var prompt: [Int32]
+    if tokenFile.hasSuffix(".json") {
+        let raw = try JSONSerialization.jsonObject(with: Data(contentsOf: URL(fileURLWithPath: tokenFile))) as! [[String: String]]
+        let messages = raw.map { GFTokenizer.Message(role: GFTokenizer.Role(rawValue: $0["role"]!)!, content: $0["content"]!) }
+        let directory = URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath).deletingLastPathComponent()
+        let tokenizer = try await QwenTokenizer.load(forModelDirectory: directory)
+        prompt = try tokenizer.applyChatTemplate(messages, enableThinking: false)
+    } else {
+        prompt = try String(contentsOfFile: tokenFile, encoding: .utf8).split(separator: ",")
+            .compactMap { Int32($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    }
     if let tokens { prompt = Array(prompt.prefix(tokens)) }
     let n = prompt.count
     let engine = try Qwen38Engine(gguf: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath),
