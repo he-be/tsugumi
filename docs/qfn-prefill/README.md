@@ -35,7 +35,7 @@ QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
 | **Q3** host の top-10 | チャンクごとに約 1.3 s の Swift ループを縮める。どちらでも効く | 未着手 |
 | **Q4** M6 の第二の読み口 | 腕 a: 外付けに expert の写し (内蔵 3.34 + 外付け 1.57 GB/s)。**腕 b: MBP の内蔵 SSD から TB4 で送る (内蔵 3.34 + link 4.73 GB/s)**。A の非常駐層の読みを縮める | **腕 b は模擬で通った ([20](20-Q4B-EXPERT-FEED.md))**。A k 40 常駐の 2 チャンク 18.509 → 12.916 s (比 0.59)、M6 のチャンク −3.1 s。TB ポートは別バスで競合なし。MBP の Pageins は増えた (壁時計の中) |
 | **Q5** 機内で読みと GPU を重ねる | 次の層の expert を固定の置き場 (2 層分) に `F_NOCACHE` で読む。**RAM の条件付き** | **M6 側は A に入れる ([21](21-Q5-M6-OVERLAP.md)、ユーザーの判断)**。k 48・送り 0.59 の M6 のチャンク 6.301 → 3.829 s、1 ターン (導出) 529.9 → 322.5 s。Swapouts 0、wired 14.34 GB。残りは非常駐層の読みの待ち。MBP 側は判断待ち 3 (k 48 なら対象なし) |
-| **Q6** A を作り、正しさと秒 | M6 が層 0〜k−1、常駐 13 層。正しさは ds4-metal と同じ基準 (04)。k は 1 つから (模擬では切り替えが閾値に届かない、[20 §3](20-Q4B-EXPERT-FEED.md)) | **次は k の格子 (44・46・48、SLAB 2)**。P6 は書いた ([22](22-Q6-P6-DECODE-PLACEMENT.md)): decode は MBP、M6 は状態を受け渡す。送り (比 0.59) の模擬では k 48 (M6 が全層、MBP は送るだけ) が最小で 1 ターン 529.9 s (導出、[20 §1.5](20-Q4B-EXPERT-FEED.md))。k 44・46・48 から |
+| **Q6** A を作り、正しさと秒 | M6 が層 0〜k−1、常駐 13 層。正しさは ds4-metal と同じ基準 (04)。k は 1 つから (模擬では切り替えが閾値に届かない、[20 §3](20-Q4B-EXPERT-FEED.md)) | **次は decode の判別 ([23](23-DECODE-SPLIT-PLAN.md))**: MBP 単体と、層で分けた 2 機 (j 16・24・32) を同じトークン列で n = 3。P6 ([22](22-Q6-P6-DECODE-PLACEMENT.md)) はその後で確定し、k の格子 (44・46・48、SLAB 2) へ。送り (比 0.59) の模擬では k 48 (M6 が全層、MBP は送るだけ) が最小で 1 ターン 529.9 s (導出、[20 §1.5](20-Q4B-EXPERT-FEED.md))。k 44・46・48 から |
 | **Q7** decode と会話の機能 | 2 機で decode が単体より遅くならない。MTP・チェックポイント・prompt cache・ツール呼び出しが通る | Q6 の後 |
 | **Q8** 小さいラウンドの固定分 | 1 ラウンド 6.2 s の固定分と 8 トークンのチャンク 2.5 s | 未着手 |
 
@@ -72,6 +72,7 @@ Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q2 → Q1 (済�
 | [18-Q1-F2-F3-PAIR.md](18-Q1-F2-F3-PAIR.md) | Q1 F2・F3: A と B の模擬の壁時計、12 §3 の判定 |
 | [19-AFTER-Q1-PLAN.md](19-AFTER-Q1-PLAN.md) | **Q1 の後の手順**: 待ちとチャンク幅の答え、Q4 の腕 b (MBP の SSD から TB4 で送る)、TB ポートの対称性、Q6 の k の規則 |
 | [20-Q4B-EXPERT-FEED.md](20-Q4B-EXPERT-FEED.md) | Q4 の腕 b: TB ポートの確認と、MBP の内蔵 SSD から TB4 で送る模擬 (比 0.5 / 0.59) |
+| [23-DECODE-SPLIT-PLAN.md](23-DECODE-SPLIT-PLAN.md) | **次の手**: decode を 2 機で分けるか MBP 単体かを判別する実験の計画 |
 | [22-Q6-P6-DECODE-PLACEMENT.md](22-Q6-P6-DECODE-PLACEMENT.md) | Q6 の前提 P6: decode は MBP、状態の持ち主と受け渡し、両機単体の decode の実測 |
 | [21-Q5-M6-OVERLAP.md](21-Q5-M6-OVERLAP.md) | Q5 の M6 側: 非常駐層の読みを前の層の GPU の裏に回す模擬 (staging 1 / 2 層分、k 48・送り 0.59) |
 | `bench/qfn/` | 計測スクリプトと証拠。E0〜E4 の道具と `formula.py`、Q0 の `pair_bench.sh --solo`・`ledger.sh` (13) がある。2 機の形と `results/README.md` は未作成。本文 1 は `bench/m6/prompts/` の自然文 5 本を共用する |

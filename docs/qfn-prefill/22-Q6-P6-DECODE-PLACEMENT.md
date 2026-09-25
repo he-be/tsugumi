@@ -1,4 +1,4 @@
-# 22. Q6 の前提 P6 — decode は MBP が単体の経路で回し、M6 は prefill の分の状態をラウンドごとに受け渡す (設計 + 実測、2026-09-25)
+# 22. Q6 の前提 P6 — (decode を分けるかは 23 で判別中) decode は MBP が単体の経路で回し、M6 は prefill の分の状態をラウンドごとに受け渡す (設計 + 実測、2026-09-25)
 
 証拠: [`bench/qfn/results/2026-09-25-Mac15-6-p6-decode/`](../../bench/qfn/results/2026-09-25-Mac15-6-p6-decode/) (MBP 単体)、
 [`2026-09-25-Mac18-5-p6-decode/`](../../bench/qfn/results/2026-09-25-Mac18-5-p6-decode/) (M6 単体)。各 `run-<i>.log`、`vm_stat` の前後、`generate.out`。
@@ -23,6 +23,8 @@ TsugumiKernelCheck --qwen38-generate scratch/qwen38/prompt-code.tokens --q38-new
 **逸脱**: MBP の札は `+dirty` (21 の docs の編集が未コミットだった。ランタイムとスクリプトは c54b71b と同じ)。M6 の run 1 は Swapouts 76 ページ (guard の線の下、run 2・3 は 0)。
 
 **台帳** ([06](06-LEDGER.md)): 計測と設計だけで、ランタイムは変えていない。台帳 §1 は動かない。
+
+**状態 (2026-09-25 の追記): decode の置き場は未決。**§0-2 は単体どうしの比較で、層を分けた 2 機の decode は測っていない。判別の実験は [23](23-DECODE-SPLIT-PLAN.md)。§2 の状態の受け渡しは、23 で MBP 単体が勝ったときの形。
 
 ## 0. 結論
 
@@ -77,7 +79,8 @@ M6 は KV の写しを文脈の長さだけ持つ (32K で 541 MB)。21 の模�
 
 ## 4. 再開手順 (2026-09-25 の区切り、最新 commit はこの節を足したもの)
 
-ここまでで済んだこと: Q0・Q2・Q1 (A)・Q4 腕 b (送り 0.59、20)・Q5 の M6 側 (`QFN_SLAB=2` 採用、21)・P6 (この文書)。**次は Q6 の本体 (ランタイムに A を作る)。**
+ここまでで済んだこと: Q0・Q2・Q1 (A)・Q4 腕 b (送り 0.59、20)・Q5 の M6 側 (`QFN_SLAB=2` 採用、21)・P6 の下書き (この文書)。
+**次は [23](23-DECODE-SPLIT-PLAN.md) の decode の判別 (道具 `--qwen38-split-decode` を作って S0・S16・S24・S32 を n = 3)。その結果で P6 を確定してから Q6 の本体 (下の 2〜4)。**
 
 1. **始める前の確認** (AGENTS.md と 01 の 1 サイクル):
    - 両機で `pgrep -fl 'TsugumiServer|TsugumiMac|TsugumiDecodeService|TsugumiCLI|TsugumiKernelCheck|mlx_lm|llama'` が空、`memory_pressure -Q`、`vm_stat | grep Swapouts` を控える。
