@@ -37,7 +37,7 @@ for d in "$repo"/bench/qfn/results/*/; do
     row() {  # body stats reads failed
         printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s / - / - | %s |%s\n' "$date" "$commit" "$label" "$col" \
             "$split" "$1" "$(echo "$2" | cut -f1)" "$(echo "$2" | cut -f2)" "$(echo "$2" | cut -f3)" "$(echo "$2" | cut -f4)" \
-            "$3" "$4" "$tail"
+            "${3%.*}" "$4" "$tail"
     }
     if [ -f "$d/summary-b1.tsv" ]; then
         for body in $(awk -F'\t' 'NR > 1 { print $1 }' "$d/summary-b1.tsv" | sort -u); do

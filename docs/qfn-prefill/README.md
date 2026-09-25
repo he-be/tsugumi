@@ -20,7 +20,7 @@ QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
 
 | | 値 | 出所 |
 | --- | --- | --- |
-| **台帳** | まだ行が無い (`bench/qfn/` のスクリプトが未作成) | [06](06-LEDGER.md) |
+| **台帳** | 単体: 本文 1 (自然文 5 本) 31.523〜34.110 s、本文 2 (記録の再生 1 ターン) 168.702 s。閾値 3.06 s | [06](06-LEDGER.md)、[13](13-Q0-BASELINE.md) |
 | MBP 単体の prefill (旧文書、`bench/qfn/results/` の証拠なし) | ベンチ 32K で 336.5 s (n = 1)。アプリの 1 ラウンドは prefill 秒 ≈ 6.20 + 新規 ÷ 89.6 (83 ラウンドの回帰) | [qwen38/23](../qwen38/23-KV-Q8-32K.md)、[qwen38/42 §1-1](../qwen38/42-KVA-SPEED-ON-APP-ROUND-PLAN.md)、[03 §3](03-FACTS.md) |
 | チャンク 2048 の 1 本の中身 (MBP、8K ベンチ) | 20〜22 s = pre-router 6.4〜7.2 + route 6.3〜6.5 (pread 約 5、top-10 約 1.3) + routed 6.8〜6.9 + PLE 0.1〜2.2。**GPU 11.5〜12.2 s と SSD 約 5 s が直列** | [qwen38/08 §4](../qwen38/08-ROUTED-MIXED.md)、[03 §3](03-FACTS.md) |
 | M6 で QFN を動かした実測 | 今のコードで 4K を Swapouts なしで通した。GPU の秒は MBP とほぼ同じで、SSD と PLE が長い | [10 §1.2](10-Q1-SPLIT-DECISION.md) |
@@ -29,7 +29,7 @@ QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
 
 | Gate | 問い | 状態 |
 | --- | --- | --- |
-| **Q0** 基準線 | 今のコードの MBP 単体を `bench/qfn/` の形で取る (自然文 5 本 + 記録の再生 1 ターン)。揺れの幅を決める | 未着手。**Q1 より先** (P3) |
+| **Q0** 基準線 | 今のコードの MBP 単体を `bench/qfn/` の形で取る (自然文 5 本 + 記録の再生 1 ターン)。揺れの幅を決める | **済み ([13](13-Q0-BASELINE.md))**。本文 2 の揺れ幅 1.529 s、閾値 3.06 s。段の秒の run は未 |
 | **Q1** 分け方を決める実験 | 前提 P1〜P5 ([12 §1](12-Q1-REDESIGN.md))。E0〜E2 は済み ([10](10-Q1-SPLIT-DECISION.md))。F1 M6 の 1 層を tensor ops で (冷 / 常駐)、F2 A の模擬、F3 B の模擬、F4 常駐の上限。模擬の壁時計で A か B を選ぶ | **設計し直し ([12](12-Q1-REDESIGN.md))**。F0〜F4 は未着手。Q0 と Q2 の後 |
 | **Q2** PLE の行を先に読む | 行番号はトークンだけで決まるので、要求の頭で全チャンク分を並列に読む。A / B どちらでも効く | 未着手。**Q1 の F2 / F3 より先** (P4) |
 | **Q3** host の top-10 | チャンクごとに約 1.3 s の Swift ループを縮める。どちらでも効く | 未着手 |
@@ -64,7 +64,7 @@ Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q2 → Q1 (F1〜
 | [10-Q1-SPLIT-DECISION.md](10-Q1-SPLIT-DECISION.md) | Q1: E0〜E4 の実測と式 (結論は取り下げ) |
 | [11-Q1-REOPEN-TENSOR-OPS.md](11-Q1-REOPEN-TENSOR-OPS.md) | Q1 の開け直し: 理由、ds4-metal の手本、**再開手順** (計画は 12 へ) |
 | [12-Q1-REDESIGN.md](12-Q1-REDESIGN.md) | **Q1 の設計し直し: 揺れた理由、前提 P1〜P5、F0〜F4、決め方** |
-| `bench/qfn/` | 計測スクリプトと証拠。E0〜E4 の道具と `formula.py` はある。Q0 の `pair_bench.sh`・`ledger.sh` は未作成。本文は `bench/m6/prompts/` の自然文 5 本を共用する |
+| `bench/qfn/` | 計測スクリプトと証拠。E0〜E4 の道具と `formula.py`、Q0 の `pair_bench.sh --solo`・`ledger.sh` (13) がある。2 機の形と `results/README.md` は未作成。本文 1 は `bench/m6/prompts/` の自然文 5 本を共用する |
 
 ## 運用ルール (m6-prefill と同じ)
 
