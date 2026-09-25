@@ -61,6 +61,7 @@ private func pairIO(_ fd: Int32, _ p: UnsafeRawPointer, _ n: Int, send: Bool) th
     while done < n {
         let r = send ? Darwin.send(fd, p + done, min(n - done, 64 << 20), 0)
                      : Darwin.recv(fd, UnsafeMutableRawPointer(mutating: p + done), min(n - done, 64 << 20), 0)
+        if r < 0 && (errno == EINTR || errno == EAGAIN) { continue }
         guard r > 0 else { throw Qwen38Pair.Error.link(send ? "send: \(r == 0 ? "closed" : String(cString: strerror(errno)))"
                                                              : "recv: \(r == 0 ? "closed" : String(cString: strerror(errno)))") }
         done += r
@@ -281,9 +282,18 @@ package enum Qwen38Pair {
         var cap = 0
         var buf: UnsafeMutableRawPointer?
         defer { buf?.deallocate() }
+        func note(_ why: String) { FileHandle.standardError.write("Qwen3.8 pair feed: \(why)\n".data(using: .utf8)!) }
+        if let bad = fds.firstIndex(where: { $0 < 0 }) { note("cannot open \(paths[bad])"); return }
         while true {
-            guard let n = try? pairRecv(fd, 1, as: Int64.self)[0], n >= 0,
-                  let list = try? pairRecv(fd, Int(n) * 3, as: Int64.self) else { return }
+            let n: Int64, list: [Int64]
+            do {
+                n = try pairRecv(fd, 1, as: Int64.self)[0]
+                guard n >= 0 else { note("request \(n)"); return }
+                list = try pairRecv(fd, Int(n) * 3, as: Int64.self)
+            } catch {
+                note("\(error)")
+                return
+            }
             var blocks: [(Int32, Int, Int, Int)] = [], total = 0
             for i in 0..<Int(n) {
                 let f = fds[Int(list[3 * i])], off = Int(list[3 * i + 1]), len = Int(list[3 * i + 2])
@@ -321,7 +331,7 @@ package enum Qwen38Pair {
             }
             readers.wait()
             next.deallocate()
-            if !ok { return }
+            if !ok { note("send failed"); return }
         }
     }
 

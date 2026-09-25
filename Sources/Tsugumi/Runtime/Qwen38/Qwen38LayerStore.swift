@@ -183,6 +183,7 @@ package final class Qwen38LayerStore: @unchecked Sendable {
         var done = 0
         while done < n {
             let r = send ? Darwin.send(fd, p + done, min(n - done, 16 << 20), 0) : Darwin.recv(fd, p + done, min(n - done, 16 << 20), 0)
+            if r < 0 && (errno == EINTR || errno == EAGAIN) { continue }
             if r <= 0 {
                 FileHandle.standardError.write("Qwen38LayerStore: feed link \(send ? "send" : "recv") failed (\(r), errno \(errno))\n".data(using: .utf8)!)
                 exit(1)
