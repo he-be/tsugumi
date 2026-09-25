@@ -2089,6 +2089,15 @@ if let index = arguments.firstIndex(of: "--qfn-split-probe"), index + 6 < argume
                          chunks: index + 7 < arguments.count ? Int(arguments[index + 7]) ?? 1 : 1)
     exit(0)
 }
+// `--qfn-pair-sim serve|run <ip> <port> <gguf> <down sidecar> <routes prefix> A|B <k|sigma> <resident GB|chunks>`:
+// candidates A and B of one chunk's GEMMs on two machines, the M6 on arm M with its own buffers (QFNPairSim.swift,
+// docs/qfn-prefill/12 F2 / F3).
+if let index = arguments.firstIndex(of: "--qfn-pair-sim"), index + 9 < arguments.count {
+    try runQFNPairSim(mode: arguments[index + 1], ip: arguments[index + 2], port: Int(arguments[index + 3])!,
+                      gguf: arguments[index + 4], sidecar: arguments[index + 5], routes: arguments[index + 6],
+                      shape: arguments[index + 7], param: Double(arguments[index + 8])!, last: Double(arguments[index + 9])!)
+    exit(0)
+}
 if let index = arguments.firstIndex(of: "--q8-gemm-bench"), index + 1 < arguments.count {
     let tokens = index + 2 < arguments.count ? Int(arguments[index + 2]) ?? 512 : 512
     try runQ8GemmBench(ggufPath: arguments[index + 1], tokens: tokens)
