@@ -8,7 +8,9 @@ import Metal
 /// whole (dense tensors and every expert): its selected experts are known only at its router, and a chunk of 2,048
 /// selects 286-470 of 512 per layer (median 402, the F2 route dumps). With `feed` > 0 and a feed link, the last `feed`
 /// fraction of each streamed layer's bytes comes from the MBP's SSD over that link (`Qwen38Pair`, Q4 arm b); the rest
-/// is read here. Reads are `pread` with `F_NOCACHE`, 16 MB blocks on 4 threads.
+/// is read here. Reads are `pread` with `F_NOCACHE`, 16 MB blocks on 4 threads; the file's pages are then dropped with
+/// `msync(MS_INVALIDATE)` on the runner's mapping (the mapping keeps them cached otherwise: +8.5 GB file-backed and
+/// swapping in the first resident fill without it, as the simulation's `simDrop`).
 ///
 /// Installs itself as the runner's `layerWillRun` / `layerDidFinish`. A layer's slab is released when its last GPU
 /// buffer completes, which with the runner's pipeline is after the next layer has begun: `slabs` must be 2 or more.
@@ -67,7 +69,9 @@ package final class Qwen38LayerStore: @unchecked Sendable {
             guard let b = device.makeBuffer(length: layoutBytes(il), options: .storageModeShared) else {
                 throw GGUFFile.Error.format("layer \(il): no buffer of \(layoutBytes(il)) bytes")
             }
+            Self.drop(pieces[il])
             Self.pread(pieces[il], at: layouts[il], fds: fds, into: b.contents())
+            Self.drop(pieces[il])
             try runner.install(layer: il, buffer: b, at: layouts[il])
             owned.append(b)
         }
@@ -164,6 +168,7 @@ package final class Qwen38LayerStore: @unchecked Sendable {
         }
         Self.pread(own, at: ownAt, fds: fds, into: dst)
         let ownSeconds = CFAbsoluteTimeGetCurrent() - t0
+        Self.drop(own)
         group.wait()
         let wall = CFAbsoluteTimeGetCurrent() - t0
         statsLock.lock()
@@ -183,6 +188,15 @@ package final class Qwen38LayerStore: @unchecked Sendable {
                 exit(1)
             }
             done += r
+        }
+    }
+
+    /// Drops `pieces` from the page cache through the file's mapping (no GPU view of these ranges exists).
+    package static func drop(_ pieces: [Piece]) {
+        let page = Int(getpagesize())
+        for r in pieces {
+            let a = r.offset / page * page
+            _ = msync(UnsafeMutableRawPointer(mutating: r.file.base + a), r.byteCount + (r.offset - a), MS_INVALIDATE)
         }
     }
 
