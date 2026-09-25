@@ -35,6 +35,9 @@ package final class GGMLDenseGEMV {
     /// Tensors above this many weights stay on the direct kernels (the LM head).
     package var mpsMaxWeights = 64 << 20
     private var scratch: MTLBuffer?
+    /// The half products (`encodeHalf`): conversions and the Q8_0 dequant to half, set by `useHalf`.
+    private var toHalf, toFloat, q8Half: MTLComputePipelineState?
+    private var xHalf, wHalf, yHalf: MTLBuffer?
     package var scratchBytes: Int { scratch?.length ?? 0 }
     package func dropScratch() { scratch = nil }
     private var multiplications: [[Int]: MPSMatrixMultiplication] = [:]
@@ -140,6 +143,67 @@ package final class GGMLDenseGEMV {
                                          height: tokens, depth: 1),
                                  threadsPerThreadgroup: MTLSize(width: 64, height: 1, depth: 1))
         enc.endEncoding()
+    }
+
+    /// Pipelines of `encodeHalf` (the `qwen38_nax` module: `q38_p1_f32_to_f16`, `q38_p1_f16_to_f32`, `q38_p1_q8_0_dequant_f16`).
+    package func useHalf(toHalf: MTLComputePipelineState, toFloat: MTLComputePipelineState, q8Half: MTLComputePipelineState) {
+        self.toHalf = toHalf
+        self.toFloat = toFloat
+        self.q8Half = q8Half
+    }
+
+    /// `y = W x` as `encode`, through MPS fp16 (P1 of `docs/qfn-prefill/15`, arm C): x to half, Q8_0 rows dequantized
+    /// to half (F16 rows used as they are), the half product, and the result back to float32. Q8_0 / F16 only.
+    package func encodeHalf(commandBuffer cb: MTLCommandBuffer, type: GGUFFile.GGMLType,
+                            weights: MTLBuffer, weightsOffset: Int,
+                            x: MTLBuffer, xOffset: Int = 0, y: MTLBuffer, yOffset: Int = 0,
+                            m: Int, n: Int, tokens: Int) {
+        precondition(type == .q8_0 || type == .f16, "encodeHalf: \(type)")
+        precondition(n % 32 == 0 && m % 4 == 0 && xOffset % 16 == 0 && yOffset % 16 == 0)
+        func ensure(_ b: inout MTLBuffer?, _ bytes: Int) {
+            if (b?.length ?? 0) < bytes { b = device.makeBuffer(length: bytes, options: .storageModePrivate) }
+        }
+        ensure(&xHalf, tokens * n * 2)
+        ensure(&yHalf, tokens * m * 2)
+        func convert(_ pso: MTLComputePipelineState, _ src: MTLBuffer, _ srcOffset: Int, _ dst: MTLBuffer, _ dstOffset: Int,
+                     _ count: Int) {
+            let enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(pso)
+            enc.setBuffer(src, offset: srcOffset, index: 0)
+            enc.setBuffer(dst, offset: dstOffset, index: 1)
+            var n4 = UInt32(count / 4)
+            enc.setBytes(&n4, length: 4, index: 2)
+            enc.dispatchThreads(MTLSize(width: count / 4, height: 1, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: 256, height: 1, depth: 1))
+            enc.endEncoding()
+        }
+        convert(toHalf!, x, xOffset, xHalf!, 0, tokens * n)
+        var wBuffer = weights, wOffset = weightsOffset
+        if type == .q8_0 {
+            ensure(&wHalf, m * n * 2)
+            let enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(q8Half!)
+            enc.setBuffer(weights, offset: weightsOffset, index: 0)
+            enc.setBuffer(wHalf, offset: 0, index: 1)
+            var nv = UInt32(n)
+            enc.setBytes(&nv, length: 4, index: 2)
+            enc.dispatchThreads(MTLSize(width: n / 32, height: m, depth: 1),
+                                threadsPerThreadgroup: MTLSize(width: min(32, n / 32), height: 8, depth: 1))
+            enc.endEncoding()
+            wBuffer = wHalf!
+            wOffset = 0
+        }
+        let key = [tokens, m, n, 2]
+        let mul = multiplications[key] ?? MPSMatrixMultiplication(
+            device: device, transposeLeft: false, transposeRight: true,
+            resultRows: tokens, resultColumns: m, interiorColumns: n, alpha: 1, beta: 0)
+        multiplications[key] = mul
+        func half(_ b: MTLBuffer, _ offset: Int, _ r: Int, _ c: Int) -> MPSMatrix {
+            MPSMatrix(buffer: b, offset: offset, descriptor: MPSMatrixDescriptor(rows: r, columns: c, rowBytes: c * 2, dataType: .float16))
+        }
+        mul.encode(commandBuffer: cb, leftMatrix: half(xHalf!, 0, tokens, n), rightMatrix: half(wBuffer, wOffset, m, n),
+                   resultMatrix: half(yHalf!, 0, tokens, m))
+        convert(toFloat!, yHalf!, 0, y, yOffset, tokens * m)
     }
 
     /// Rows `[m, n]` of a Q8_0 / F16 / BF16 / K / IQ tensor -> float32 `[m][n]` at `out` (the token embedding rows

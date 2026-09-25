@@ -213,6 +213,16 @@ package final class Qwen38Runner {
     package var gdnChunk = Int(ProcessInfo.processInfo.environment["Q38_GDN_CHUNK"] ?? "") ?? 32
     package var gdnMinTokens = Int(ProcessInfo.processInfo.environment["Q38_GDN_MIN_T"] ?? "") ?? 16
     private var gdnChunked: Qwen38GDNChunk?
+    /// P1 (`docs/qfn-prefill/15`, the M6's prefill path; `Q38_P1=1`): batches of at least `p1MinTokens` run the dense
+    /// Q8_0 / F16 projections (row count 64 and up, the router, shared gate, GDN alpha / beta and hc inject rows
+    /// apart) through MPS fp16, and the trunk's routed experts through the tensor-op tiles of `qwen38_nax.metal`.
+    /// Needs MSL 4.0 tensor ops (init throws without them). `Q38_P1_MIN_T` (32).
+    package let p1: Bool
+    package var p1MinTokens = Int(ProcessInfo.processInfo.environment["Q38_P1_MIN_T"] ?? "") ?? 32
+    private var psoNaxMid, psoNaxDown, psoNaxReduce, psoP1ToHalf: MTLComputePipelineState?
+    private var naxLists, naxCounts, naxXh, naxMid: MTLBuffer?
+    private static let p1Float32: Set<String> = ["ffn_gate_inp.weight", "ffn_gate_inp_shexp.weight", "ssm_alpha.weight",
+                                                  "ssm_beta.weight", "hc_attn_inject.weight", "hc_ffn_inject.weight"]
     private var gemmRows, gemmGateUp, gemmWGateUp, gemmWDown, gemmOrder, gemmAt, gemmPosSlot, gemmOnes: MTLBuffer?
     /// Checks only: batches of at least 1024 tokens write `<prefix>-l<layer>.bin` (Int32 T, then T x topK
     /// Int32 experts and T x topK Float32 routing weights), the input of `--q2-gemm-bench` (`Q38_DUMP_ROUTE`).
@@ -438,6 +448,19 @@ package final class Qwen38Runner {
         psoScatterWeighted = try pso(moeLib, "moe_scatter_weighted")
         psoDeqQ4KGateUp = try pso(moeLib, "moe_q4k_dequant_gate_up_f32")
         psoDeqMXFP4Down = try pso(moeLib, "moe_mxfp4_dequant_down_f32")
+        p1 = ProcessInfo.processInfo.environment["Q38_P1"] == "1"
+        if p1 {
+            let naxLib = try MetalContext.moduleLibrary(device: device, modules: ["moe_ggml", "qwen38_nax"])
+            guard naxLib.makeFunction(name: "qfn_moe_mid_nax") != nil else {
+                throw GGUFFile.Error.format("Q38_P1: this OS compiles no tensor ops (MSL 4.0)")
+            }
+            psoNaxMid = try pso(naxLib, "qfn_moe_mid_nax")
+            psoNaxDown = try pso(naxLib, "qfn_moe_down_nax")
+            psoNaxReduce = try pso(naxLib, "qfn_moe_reduce")
+            psoP1ToHalf = try pso(naxLib, "q38_p1_f32_to_f16")
+            dense.useHalf(toHalf: psoP1ToHalf!, toFloat: try pso(naxLib, "q38_p1_f16_to_f32"),
+                          q8Half: try pso(naxLib, "q38_p1_q8_0_dequant_f16"))
+        }
 
         func buf(_ count: Int) -> MTLBuffer {
             device.makeBuffer(length: max(count, 1) * 4, options: .storageModeShared)!
@@ -539,6 +562,13 @@ package final class Qwen38Runner {
     private func gemv(_ cb: MTLCommandBuffer, _ name: String, x: MTLBuffer, xOffset: Int = 0,
                       y: MTLBuffer, yOffset: Int = 0, tokens: Int) throws {
         let v = try view(name)
+        if p1 && tokens >= p1MinTokens && (v.tensor.type == .q8_0 || v.tensor.type == .f16) && v.tensor.rowCount >= 64
+            && !Self.p1Float32.contains(String(name.split(separator: ".", maxSplits: 2).last ?? "")) {
+            dense.encodeHalf(commandBuffer: cb, type: v.tensor.type, weights: v.buffer, weightsOffset: v.offset,
+                             x: x, xOffset: xOffset, y: y, yOffset: yOffset,
+                             m: v.tensor.rowCount, n: v.tensor.rowWidth, tokens: tokens)
+            return
+        }
         dense.encode(commandBuffer: cb, type: v.tensor.type, weights: v.buffer, weightsOffset: v.offset,
                      x: x, xOffset: xOffset, y: y, yOffset: yOffset,
                      m: v.tensor.rowCount, n: v.tensor.rowWidth, tokens: tokens)
@@ -1415,6 +1445,11 @@ package final class Qwen38Runner {
         let cb2 = queue.makeCommandBuffer()!
         // Shared expert (already computed into shY / shGate by the pre-router buffer).
         if !sharedCommitted { encodeSharedSum(cb2, T: T) }
+        if p1 && !mtpLayer && T >= p1MinTokens {
+            routedNax(cb2, T: T, slots: slots.count, pairSlot: ps, used: used,
+                      rowBytes: (UInt32(gateT.bytesPerRow), UInt32(downT.bytesPerRow)))
+            return cb2
+        }
         if gemm {
             routedGemm(cb2, T: T, slots: slots.count, bigSlots: gemmBigSlots,
                        rowBytes: (UInt32(gateT.bytesPerRow), UInt32(downT.bytesPerRow)), pairSlot: ps, used: used,
@@ -1463,6 +1498,68 @@ package final class Qwen38Runner {
             enc.endEncoding()
         }
         return cb2
+    }
+
+    /// Routed experts on the tensor-op tiles (P1) into `blk` (residual `blkShared`): `mixed` to half, per selected
+    /// expert (slot) the list of its pairs, the gate/up + SiLU tiles into a half `mid` per pair, the down tiles into
+    /// a float32 row per pair (`gemmRows`), and the weighted sum over each token's top-k. The same views, argument
+    /// buffer and part offsets as the per-pair kernels.
+    private func routedNax(_ cb: MTLCommandBuffer, T: Int, slots S: Int, pairSlot ps: UnsafeMutablePointer<UInt32>,
+                           used: [[MTLBuffer]], rowBytes: (UInt32, UInt32)) {
+        let P = T * topK
+        var count = [Int](repeating: 0, count: S)
+        for p in 0..<P { count[Int(ps[p])] += 1 }
+        let listCap = max(count.max() ?? 1, 1)
+        ensureBuffer(&naxLists, bytes: max(S, 1) * listCap * 4, shared: true)
+        ensureBuffer(&naxCounts, bytes: max(S, 1) * 4, shared: true)
+        ensureBuffer(&naxXh, bytes: batchRows * e * 2)
+        ensureBuffer(&naxMid, bytes: batchRows * topK * F * 2)
+        ensureBuffer(&gemmRows, bytes: batchRows * topK * e * 4)
+        let lists = naxLists!.contents().bindMemory(to: Int32.self, capacity: S * listCap)
+        let counts = naxCounts!.contents().bindMemory(to: Int32.self, capacity: S)
+        var fill = [Int](repeating: 0, count: S)
+        for p in 0..<P {
+            let s = Int(ps[p])
+            lists[s * listCap + fill[s]] = Int32(p)
+            fill[s] += 1
+        }
+        for s in 0..<S { counts[s] = Int32(count[s]) }
+        let tiles = min(8, (listCap + 63) / 64)
+        var n4 = UInt32(T * e / 4)
+        run(cb, psoP1ToHalf!, size(Int(n4))) { enc in
+            enc.setBuffer(mixed, offset: 0, index: 0)
+            enc.setBuffer(naxXh, offset: 0, index: 1)
+            enc.setBytes(&n4, length: 4, index: 2)
+        }
+        for (part, (inDim, outRows, rb, type, input, output)) in [(e, F, rowBytes.0, 16, naxXh!, naxMid!),
+                                                                  (F, e, rowBytes.1, 10, naxMid!, gemmRows!)].enumerated() {
+            var args = (UInt32(topK), UInt32(inDim), UInt32(outRows), rb, UInt32(listCap), UInt32(S), UInt32(tiles),
+                        UInt32(type), UInt32(2 * part))
+            let enc = cb.makeComputeCommandEncoder()!
+            enc.setComputePipelineState(part == 0 ? psoNaxMid! : psoNaxDown!)
+            enc.setBytes(&args, length: MemoryLayout.size(ofValue: args), index: 0)
+            enc.setBuffer(routedArg, offset: 0, index: 1)
+            enc.useResources(part == 0 ? used[0] + used[1] : used[2], usage: .read)
+            enc.setBuffer(partOffsets, offset: 0, index: 2)
+            enc.setBuffer(naxLists, offset: 0, index: 3)
+            enc.setBuffer(naxCounts, offset: 0, index: 4)
+            enc.setBuffer(input, offset: 0, index: 5)
+            enc.setBuffer(output, offset: 0, index: 6)
+            enc.setThreadgroupMemoryLength(16384, index: 0)
+            enc.dispatchThreadgroups(size((outRows + 63) / 64 * tiles, S), threadsPerThreadgroup: size(128))
+            enc.endEncoding()
+        }
+        var d4 = UInt32(e / 4), kV = UInt32(topK)
+        let enc = cb.makeComputeCommandEncoder()!
+        enc.setComputePipelineState(psoNaxReduce!)
+        enc.setBuffer(gemmRows, offset: 0, index: 0)
+        enc.setBuffer(routeW, offset: 0, index: 1)
+        enc.setBuffer(blkShared, offset: 0, index: 2)
+        enc.setBuffer(blk, offset: 0, index: 3)
+        enc.setBytes(&d4, length: 4, index: 4)
+        enc.setBytes(&kV, length: 4, index: 5)
+        enc.dispatchThreads(size(e / 4, T), threadsPerThreadgroup: size(64, 4))
+        enc.endEncoding()
     }
 
     /// Routed experts for T >= `gemmMinTokens` into `blk` (residual `blkShared`): the pairs' rows gathered

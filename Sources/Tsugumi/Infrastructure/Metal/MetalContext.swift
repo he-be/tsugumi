@@ -233,6 +233,7 @@ public final class MetalContext: @unchecked Sendable {
         "ggml_dense": "Metal/Quant",
         "ggml_iq": "Metal/Quant",
         "qwen38": "Metal/Qwen",
+        "qwen38_nax": "Metal/Qwen",
         "prefill": "Metal/Prefill",
         "rmsnorm": "Metal/Primitives",
         "rope": "Metal/Primitives",
@@ -327,6 +328,21 @@ public final class MetalContext: @unchecked Sendable {
                                          affineScheme: affineScheme)
             if safeMath { options.mathMode = .safe }
             return try device.makeLibrary(source: src, options: options)
+        } catch {
+            throw MetalError.libraryCompileFailed("\(error)")
+        }
+    }
+
+    /// Several modules compiled as one library, in order (a module that uses another's declarations after it).
+    public static func moduleLibrary(device: MTLDevice, modules: [String]) throws -> MTLLibrary {
+        var src = ""
+        for module in modules {
+            guard let url = shaderURL(module: module) else { throw MetalError.missingShaderResource(module) }
+            src += "\n// ==== \(module).metal ====\n" + (try String(contentsOf: url, encoding: .utf8)) + "\n"
+        }
+        do {
+            return try device.makeLibrary(source: src, options: compileOptions(affineGroupSize: Quantization.groupSize,
+                                                                               affineScheme: .affine))
         } catch {
             throw MetalError.libraryCompileFailed("\(error)")
         }
