@@ -2071,6 +2071,16 @@ if let index = arguments.firstIndex(of: "--qfn-residency"), index + 5 < argument
                              scratchGB: index + 7 < arguments.count ? Double(arguments[index + 7]) ?? 1 : 1)
     exit(0)
 }
+// `--qfn-residency-owned <gguf> <down sidecar> <routes prefix> layers|experts <share GB> <resident GB> [passes] [scratch GB]`:
+// the share held in the process's own GPU-resident buffers, the rest streamed with F_NOCACHE (docs/qfn-prefill/17).
+if let index = arguments.firstIndex(of: "--qfn-residency-owned"), index + 6 < arguments.count {
+    try runQFNResidencyOwned(gguf: arguments[index + 1], sidecar: arguments[index + 2], routes: arguments[index + 3],
+                             shape: arguments[index + 4], targetGB: Double(arguments[index + 5])!,
+                             residentGB: Double(arguments[index + 6])!,
+                             passes: index + 7 < arguments.count ? Int(arguments[index + 7]) ?? 4 : 4,
+                             scratchGB: index + 8 < arguments.count ? Double(arguments[index + 8]) ?? 1 : 1)
+    exit(0)
+}
 // `--qfn-split-probe serve|run <ip> <port> <gguf> <routes prefix> <sigma> [chunks]`: candidate B's routed step on two
 // machines (QFNSplitProbe.swift, docs/qfn-prefill/07 E3).
 if let index = arguments.firstIndex(of: "--qfn-split-probe"), index + 6 < arguments.count {
