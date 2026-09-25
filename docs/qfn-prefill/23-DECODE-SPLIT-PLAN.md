@@ -1,6 +1,6 @@
 # 23. decode の置き場を判別する実験 — MTP on (運用点) で、MBP 単体 / 層で分けた 2 機 / M6 が幹の全層 を同じトークン列で測る (2026-09-25)
 
-**状態: 計画。次の手はこれ (Q6 の実装より先)。**22 の P6 は「decode は MBP 単体」と書いたが、根拠は **MTP off** の単体どうしの比較 (MBP 192 ms・M6 207 ms、22 §1) だけで、
+**状態: 済み。結果は [24](24-DECODE-SPLIT-RESULT.md) (S0 = MBP 単体が最短、P6 はそのまま)。**22 の P6 は「decode は MBP 単体」と書いたが、根拠は **MTP off** の単体どうしの比較 (MBP 192 ms・M6 207 ms、22 §1) だけで、
 運用点は MTP on ([qwen38/17 §0](../qwen38/17-SERVER-APP-WIRING.md) の `--draft-block-size 2`、アプリは MTP 2 固定) なので、その数字ではどの置き場も選ばない。
 層を分けた 2 機の decode も測っていない。この文書は、**MTP on を前提に**、置き場の候補を同じトークン列で測って決める手順を固定する。
 **MTP で何が変わるかは推測せず、腕に入れて測る。**新しい実測は無い。
@@ -21,8 +21,8 @@
 | 項目 | 固定する値 |
 | --- | --- |
 | M6 の経路 | 今のコード (fp32、重みは page cache、常駐なし)。A の常駐 13 層 + tensor ops の上の decode は測らない (§4) |
-| RAM | M6 `iogpu.wired_limit_mb` 14336、MBP 15360 (22 と同じ)。両機 Swapouts 0 が run の有効条件 |
-| 無効な run | どちらかの機で Swapouts が 1 ページでも出た run (と、GUARD で止まった run) は判定に使わず、その腕の run を巡回の最後に 1 本足す。1 腕で足すのは 2 本まで。それでも有効が 3 本に届かない腕は、有効な run だけで中央値とレンジを取り、結果文書に本数を書く (22 の M6 は 1 本目に 76 ページ出た) |
+| RAM | M6 `iogpu.wired_limit_mb` 14336、MBP 15360 (22 と同じ)。Swapouts は両機とも run ごとにバイトで記録する |
+| 無効な run | guarded.sh が止めた run (Swapouts が 60 秒で 512 MiB か run 全体で 1 GiB を超えた) と exit が 0 でない run だけ。判定に使わず、その腕の run を巡回の最後に 1 本足す (1 腕 2 本まで)。**2026-09-25 の変更 (ユーザーの判断)**: 当初は「Swapouts 1 ページでも無効」だったが、MBP は 0.3〜53 MB の Swapouts を毎 run 出し、その閾値は過剰なので改めた |
 | 置き場 | 両機とも GGUF は内蔵 SSD、M6 の PLE BF16 は外付け SSD256 (03 §5)。22 と同じ |
 | MTP | spec、連鎖 1 (`Q38_MTP_CHAIN` 既定)、MTP ヘッドと MTP の KV は常に MBP |
 | サンプラ | instruct seed 1 は列を作る run だけ。測る run は §2 の固定列で、サンプラは呼ばない |

@@ -3,8 +3,8 @@
 #   bench/qfn/split_decode.sh <label> <runs> <arm>...        # arms S0 S16 S24 S32 S48 (S<j>: the M6 runs layers 0 .. j-1)
 # First the g run (S0, the sampler, instruct SEED (1)): if it stops at EOS before NEW tokens, the seed goes up by one
 # (up to 5 tries). Then every arm `runs` times round-robin with --q38-force <g's out>, one process per side and run,
-# both under guarded.sh with GUARD_LOG (wired max). A run with Swapouts on either side, or a non-zero exit, is invalid
-# and the arm gets one more run at the end (at most 2 more per arm, 23 §0).
+# both under guarded.sh with GUARD_LOG (wired max). A run guarded.sh stopped, or with a non-zero exit, is invalid and the
+# arm gets one more run at the end (at most 2 more per arm, 23 §0). Swapouts are recorded, not a reason to drop a run.
 # env: NEW (400), TOKENS (scratch/qwen38/prompt-code.tokens, the same relative path on the M6), SEED (1), COOL_S (20).
 set -eu
 repo=${0:A:h:h:h}
@@ -70,8 +70,8 @@ one() {  # <arm> <name>
   fi
   vmsnap > $out/$name.post.txt; m6snap > $out/$name.m6.post.txt
   local ok=1
-  grep -q 'GUARD: exit 0, Swapouts delta peak 0 pages' $out/$name.log || ok=0
-  (( j > 0 )) && { grep -q 'GUARD: exit 0, Swapouts delta peak 0 pages' $out/$name.m6.log || ok=0; }
+  { grep -q 'GUARD: exit 0,' $out/$name.log && ! grep -q 'killing' $out/$name.log; } || ok=0
+  (( j > 0 )) && { { grep -q 'GUARD: exit 0,' $out/$name.m6.log && ! grep -q 'killing' $out/$name.m6.log; } || ok=0; }
   (( ok )) && valid[$a]=$(( valid[$a] + 1 ))
   echo "$name: $(grep -E 'window tokens' $out/$name.log) | $(grep -E 'accepted' $out/$name.log) | valid $ok | $(grep -h GUARD $out/$name.log $out/$name.m6.log 2>/dev/null | tr '\n' ' ')"
   sleep ${COOL_S:-20}

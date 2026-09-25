@@ -24,7 +24,7 @@ TsugumiKernelCheck --qwen38-generate scratch/qwen38/prompt-code.tokens --q38-new
 
 **台帳** ([06](06-LEDGER.md)): 計測と設計だけで、ランタイムは変えていない。台帳 §1 は動かない。
 
-**状態 (2026-09-25 の追記): decode の置き場は未決。**§0-2 は MTP off の単体どうしの比較で、運用点 (MTP on) でも、層を分けた 2 機の decode も測っていない。判別の実験は [23](23-DECODE-SPLIT-PLAN.md) (MTP on、S0 / S16 / S24 / S32 / S48)。§2 の状態の受け渡しは、23 で MBP 単体が勝ったときの形。
+**状態 (2026-09-25 の追記): P6 は確定。**MTP on で MBP 単体・層で分けた 2 機 (j 16・24・32)・M6 が幹の全層を同じトークン列で測り、MBP 単体が最短だった ([24](24-DECODE-SPLIT-RESULT.md): 窓の s/token 中央値 S0 0.1265、最短の分けた腕 S16 0.1421)。§2 の状態の受け渡しがそのまま設計になる。
 
 ## 0. 結論
 
