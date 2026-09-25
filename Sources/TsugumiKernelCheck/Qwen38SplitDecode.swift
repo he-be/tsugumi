@@ -116,6 +116,8 @@ func runQwen38SplitDecode(mode: String, ip: String, port: Int, j: Int, tokenFile
     if serve {
         let fd = accept(listen_, nil, nil)
         sdTune(fd)
+        var ready: UInt8 = 1   // both prefills are done: the MBP starts the decode clock after this
+        sdSockAll(fd, &ready, 1, send: true)
         runner.layerRange = 0..<j
         runner.trunkOnly = true
         var header = [Int32](repeating: 0, count: 4)
@@ -181,6 +183,10 @@ func runQwen38SplitDecode(mode: String, ip: String, port: Int, j: Int, tokenFile
         guard withUnsafePointer(to: &a, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }) == 0
         else { perror("connect"); exit(1) }
         sdTune(fd)
+        var ready: UInt8 = 0
+        let tw = now()
+        sdSockAll(fd, &ready, 1, send: false)
+        print(String(format: "  waited %.1f s for the M6's prefill", now() - tw))
         runner.layerRange = j..<nTrunk
     }
     let V = runner.vocab
