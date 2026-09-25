@@ -132,6 +132,8 @@ private final class RoutedShare {
     }
 
     func read(file: GGUFFile) { if !ranges.isEmpty { file.preadRanges(ranges, threads: 4) } }
+    /// Bytes of this share not in the page cache (mincore), before `read`: a warm share reads at memory speed.
+    func coldBytes(file: GGUFFile) -> Int { ranges.reduce(0) { $0 + file.nonResidentBytes(offset: $1.offset, byteCount: $1.byteCount) } }
 
     /// y = residual + sum over this share's pairs. Returns GPU seconds.
     func compute(x: MTLBuffer, residual: MTLBuffer, y: MTLBuffer) -> Double {
@@ -286,7 +288,7 @@ func runQFNSplitProbe(mode: String, ip: String, port: Int, gguf: String, routes:
         print("listening on \(ip):\(port)")
         let fd = accept(ls, nil, nil)
         sockTune(fd)
-        print("chunk\tlayer\tbytes_MB\trecv_s\tread_s\tgemm_gpu_s\tgemm_wall_s\tsend_s")
+        print("chunk\tlayer\tbytes_MB\trecv_s\tread_s\tgemm_gpu_s\tgemm_wall_s\tsend_s\tcold_MB")
         var layerHeader = [Int32](repeating: 0, count: 2)
         while true {
             layerHeader.withUnsafeMutableBytes { sockAll(fd, $0.baseAddress!, 8, send: false) }
@@ -295,6 +297,7 @@ func runQFNSplitProbe(mode: String, ip: String, port: Int, gguf: String, routes:
             let t0 = now()
             sockAll(fd, x.contents(), rowBytes, send: false)
             sockAll(fd, assign, assignBytes, send: false)
+            let cold = shares[L].coldBytes(file: file)
             let t1 = now()
             shares[L].read(file: file)
             let t2 = now()
@@ -302,8 +305,8 @@ func runQFNSplitProbe(mode: String, ip: String, port: Int, gguf: String, routes:
             let t3 = now()
             sockAll(fd, yOwn.contents(), rowBytes, send: true)
             let t4 = now()
-            print(String(format: "%d\t%d\t%.1f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f", c, L, Double(shares[L].bytes) / 1e6,
-                         t1 - t0, t2 - t1, gpu, t3 - t2, t4 - t3))
+            print(String(format: "%d\t%d\t%.1f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.1f", c, L, Double(shares[L].bytes) / 1e6,
+                         t1 - t0, t2 - t1, gpu, t3 - t2, t4 - t3, Double(cold) / 1e6))
         }
         close(fd); close(ls)
         return
@@ -317,7 +320,7 @@ func runQFNSplitProbe(mode: String, ip: String, port: Int, gguf: String, routes:
         else { perror("connect"); exit(1) }
         sockTune(fd)
     }
-    print("chunk\tlayer\tbytes_MB\tread_s\tgemm_gpu_s\tgemm_wall_s\twait_s\tlayer_s")
+    print("chunk\tlayer\tbytes_MB\tread_s\tgemm_gpu_s\tgemm_wall_s\twait_s\tlayer_s\tcold_MB")
     let peerQueue = DispatchQueue(label: "peer")
     let sock = fd
     for c in 0..<chunks {
@@ -334,14 +337,15 @@ func runQFNSplitProbe(mode: String, ip: String, port: Int, gguf: String, routes:
                     sockAll(sock, yPeer, rowBytes, send: false)
                 }
             }
+            let cold = shares[L].coldBytes(file: file)   // mincore of a few hundred ranges: well under a millisecond
             shares[L].read(file: file)
             let t1 = now()
             let gpu = shares[L].compute(x: x, residual: zero, y: yOwn)
             let t2 = now()
             group.wait()
             let t3 = now()
-            print(String(format: "%d\t%d\t%.1f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f", c, L, Double(shares[L].bytes) / 1e6,
-                         t1 - t0, gpu, t2 - t1, t3 - t2, t3 - t0))
+            print(String(format: "%d\t%d\t%.1f\t%.4f\t%.4f\t%.4f\t%.4f\t%.4f\t%.1f", c, L, Double(shares[L].bytes) / 1e6,
+                         t1 - t0, gpu, t2 - t1, t3 - t2, t3 - t0, Double(cold) / 1e6))
         }
         print(String(format: "chunk %d: %.3f s", c, now() - tChunk))
     }
