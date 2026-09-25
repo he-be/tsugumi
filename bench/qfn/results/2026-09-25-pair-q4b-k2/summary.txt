@@ -1,0 +1,26 @@
+条件                n              t1 s (範囲)              t2 s (範囲)    1 ターン s               範囲  Swapouts
+A-44-r11.1-f0.59  3   7.084 (7.061-7.213)  12.562 (12.504-12.626)      569.4 (568.4-576.1)  0
+A-46-r11.1-f0.59  3   6.769 (6.733-7.245)  12.578 (12.565-13.103)      553.2 (551.2-586.4)  0
+A-48-r11.1-f0.59  3   6.321 (6.319-6.324)  12.574 (12.561-12.930)      529.9 (529.7-535.5)  0
+
+# M6 chunk s (c0 c1), M6 run Pageins
+A-44-r11.1-f0.59-1.m6.log 5.804 5.639 Pageins +10.94 GB
+A-44-r11.1-f0.59-2.m6.log 5.780 5.626 Pageins +10.94 GB
+A-44-r11.1-f0.59-3.m6.log 5.765 5.624 Pageins +10.94 GB
+A-46-r11.1-f0.59-1.m6.log 6.073 5.945 Pageins +11.68 GB
+A-46-r11.1-f0.59-2.m6.log 6.092 5.931 Pageins +11.68 GB
+A-46-r11.1-f0.59-3.m6.log 6.577 5.937 Pageins +11.68 GB
+A-48-r11.1-f0.59-1.m6.log 6.300 6.612 Pageins +12.37 GB
+A-48-r11.1-f0.59-2.m6.log 6.302 6.241 Pageins +12.37 GB
+A-48-r11.1-f0.59-3.m6.log 6.304 6.252 Pageins +12.37 GB
+
+# MBP: own read / GPU / layer wall per chunk, feed, Pageins
+A-44-r11.1-f0.59-1.log read c0 0.287 c1 0.108 gpu c0 0.787 c1 0.745 wall c0 1.389 c1 1.074 | 62 layer reads, 23635.9 MB, 5.092 s from the request to the last byte sent (4.64 GB/s) | MBP Pageins +2.56 GB
+A-44-r11.1-f0.59-2.log read c0 0.239 c1 0.136 gpu c0 0.762 c1 0.750 wall c0 1.260 c1 1.140 | 62 layer reads, 23635.9 MB, 5.050 s from the request to the last byte sent (4.68 GB/s) | MBP Pageins +1.28 GB
+A-44-r11.1-f0.59-3.log read c0 0.197 c1 0.111 gpu c0 0.792 c1 0.745 wall c0 1.299 c1 1.055 | 62 layer reads, 23635.9 MB, 5.053 s from the request to the last byte sent (4.68 GB/s) | MBP Pageins +1.42 GB
+A-46-r11.1-f0.59-1.log read c0 0.067 c1 0.050 gpu c0 0.366 c1 0.362 wall c0 0.640 c1 0.514 | 66 layer reads, 25204.8 MB, 5.376 s from the request to the last byte sent (4.69 GB/s) | MBP Pageins +0.99 GB
+A-46-r11.1-f0.59-2.log read c0 0.130 c1 0.050 gpu c0 0.367 c1 0.367 wall c0 0.656 c1 0.522 | 66 layer reads, 25204.8 MB, 5.373 s from the request to the last byte sent (4.69 GB/s) | MBP Pageins +1.51 GB
+A-46-r11.1-f0.59-3.log read c0 0.051 c1 0.051 gpu c0 0.367 c1 0.366 wall c0 0.648 c1 0.556 | 66 layer reads, 25204.8 MB, 5.403 s from the request to the last byte sent (4.66 GB/s) | MBP Pageins +0.91 GB
+A-48-r11.1-f0.59-1.log read c0 0.000 c1 0.000 gpu c0 0.000 c1 0.000 wall c0 0.000 c1 0.000 | 70 layer reads, 26723.6 MB, 5.722 s from the request to the last byte sent (4.67 GB/s) | MBP Pageins +0.21 GB
+A-48-r11.1-f0.59-2.log read c0 0.000 c1 0.000 gpu c0 0.000 c1 0.000 wall c0 0.000 c1 0.000 | 70 layer reads, 26723.6 MB, 5.692 s from the request to the last byte sent (4.69 GB/s) | MBP Pageins +0.29 GB
+A-48-r11.1-f0.59-3.log read c0 0.000 c1 0.000 gpu c0 0.000 c1 0.000 wall c0 0.000 c1 0.000 | 70 layer reads, 26723.6 MB, 5.706 s from the request to the last byte sent (4.68 GB/s) | MBP Pageins +0.14 GB
