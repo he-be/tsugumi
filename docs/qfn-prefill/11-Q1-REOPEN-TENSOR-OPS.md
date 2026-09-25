@@ -1,7 +1,7 @@
 # 11. Q1 を開け直す — M6 は tensor ops を使う前提。10 の「B」は fp32 のコードで M6 を測った結論 (2026-09-25)
 
 **状態: Q1 は開いている。**[10](10-Q1-SPLIT-DECISION.md) の数字 (E0〜E4) は実測としてそのまま使えるが、結論 (B、σ 0.40 / 0.45) と「E4-(b) を使わない」は取り下げる。
-この文書は、取り下げた理由・ds4-metal の手本・やり直しの計画・再開手順を置く。新しい実測はまだ無い。
+この文書は、取り下げた理由・ds4-metal の手本・再開手順を置く。**§2 の計画は [12](12-Q1-REDESIGN.md) で置き換えた** (前提 P1〜P5 を先に固定し、A・B とも模擬の壁時計で決める)。新しい実測はまだ無い。
 
 ## 0. 取り下げた理由
 
@@ -31,12 +31,11 @@
 
 10 の腕 C (展開と MPS の行列積を別パス) は M6 で展開 34〜41 ms + 行列積 37〜42 ms/層。ds4-metal は展開をタイルの中に入れているので、腕 C より速いはず (未確認)。
 
-## 2. やり直しの計画
+## 2. やり直しの計画 → [12](12-Q1-REDESIGN.md)
 
-1. **精度の基準を ds4-metal の 2 段に替える** (07 E4、04 Q1・Q6 を書き換えた): カーネル単体は今の per-pair 経路 (腕 A) との差 ≤ 2e-3 × scale、モデルは logits の top-1 一致と差の分布を記録する。
-2. **E4-(c)**: ds4-metal の mid / down カーネルを `--q2-gemm-bench` の腕 D に移植する (M6 だけ、`__HAVE_TENSOR__`)。腕 C (MPS fp16) と M6 で並べ、「MPS で同じ速さか」に答える。
-3. **E5**: M6 で dense (pre-router の射影、shared expert) を fp16 の tensor ops で回した秒 d_M6,nax を測る。
-4. 式に d_M6,nax と r_M6,nax (腕 C と D の速い方) を入れ、A と B をもう一度比べる。**測っていない量は入れない。**
+ここに置いていた計画 (E4-(c)・E5 を別々に測り、式に入れて A / B を比べる) は 12 で置き換えた。残るのは精度の基準の置き換えだけ:
+**カーネル単体は今の per-pair 経路 (腕 A) との差 ≤ 2e-3 × scale、モデルは logits の top-1 一致と差の分布を記録する** (P1、04 Q6)。
+E4-(c) の移植は 12 の F1 (1 層まとめてのベンチ) の中で行い、E5 は F1 に吸収した。式で A / B を比べることはしない (P5)。
 
 ## 3. 再開手順
 
@@ -59,11 +58,12 @@ git -C ~/LLM/ds4-metal show origin/qwen2-nax-tiles:metal/qwen4.metal | sed -n 27
 git -C ~/LLM/ds4-metal show origin/qwen2-nax-tiles:metal/qwen4.metal | sed -n 3085,3421p   # mid / down の tensor ops
 git -C ~/LLM/ds4-metal show origin/qwen2-nax-tiles:speed-bench/qwen38-m5-round5.md | less
 
-# 4. 式 (E0〜E4 の証拠から、導出)
+# 4. 式 (E0〜E4 の証拠から、導出。k / σ の格子を絞るだけに使う、P5)
 python3 bench/qfn/formula.py --turns
 ```
 
-- 腕 D は `Sources/TsugumiKernelCheck/Q2GemmBench.swift` の腕 C と同じ作り (このチェックアウトの `moe_ggml.metal` に足して KernelCheck の中でコンパイルし、ランタイムには入れない) で足す。
+- 次にやるのは 12 §2 の順: F0 (Q0) → Q2 → F1 → F4 → F2 / F3。
+- F1 の腕 D は `Sources/TsugumiKernelCheck/Q2GemmBench.swift` の腕 C と同じ作り (このチェックアウトの `moe_ggml.metal` に足して KernelCheck の中でコンパイルし、ランタイムには入れない) で足す。
   tensor ops には MSL 4.0 (`MTLCompileOptions.languageVersion = .version4_0`) と `MetalPerformancePrimitives` が要る。MBP (macOS 15) では組めないので、腕 D は M6 でだけ走らせる。
 - 置いてあるもの:
   - route の dump `scratch/qfn/routes/c2048-l<L>.bin` (両機、48 層、prompt-code の先頭 2048 トークン)。

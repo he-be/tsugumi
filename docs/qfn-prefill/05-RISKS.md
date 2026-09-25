@@ -23,7 +23,7 @@ MBP は macOS 15 / Swift 6.3.3、M6 は macOS 27 / Swift 6.4。MSL のバージ�
 
 QFN の dense のビューは全層で 5.4 GB、expert のビューは 32.8 GB ([qwen38/09 §1](../qwen38/09-12K-MEMORY-VERIFY.md))。A では M6 に層 0〜k−1 の dense・KV・GDN 状態・バッチ領域が乗り、B では担当分の expert のビューとバッチ領域だけが乗る。
 decode で wired 12〜15 GB に達した単体 ([qwen38/15 §1](../qwen38/15-DECODE-PLAN.md)) に対して M6 は 16 GB。**E1 (M6 で今のコードのまま 4K の 1 チャンク) が乗らなければ A は落ちる** ([04 Q1](04-GATES.md))。
-**対策**: 両機の run に `vm_stat` の Swapouts と `Q38_MEM_LOG` を付け、Swapouts が出た run は不合格 (Q1・Q5・Q6)。`iogpu.wired_limit_mb` を上げて逃げない (再起動で戻る上、記録値の条件が変わる)。
+**対策**: 両機の run に `vm_stat` の Swapouts と `Q38_MEM_LOG` を付け、Swapouts が出た run は不合格 (Q1・Q5・Q6)。M6 の担当分の常駐と `iogpu.wired_limit_mb` は前提 P2 ([12 §1](12-Q1-REDESIGN.md)) で許した。再起動で 0 に戻るので `cycle.sh` が起動のたびに置き、値を `hostinfo.m6.txt` に残す。MBP 側は上げない。
 
 ## 5. 外付け SSD は手動マウントで、PLE はそこにしか無い
 

@@ -44,7 +44,7 @@ bench/qfn/pair_bench.sh <label> 6 --solo              # 単体の対照 (MBP だ
 ## 4. ヘッドレス固有の注意 (m6-prefill/01 §3 と同じ、QFN で効くもの)
 
 - 外付け `SSD256` は再起動のたびに `ssh m6 'diskutil mount disk5s1'`。**PLE BF16 は外付けにしか無い**ので、未マウントなら E1 と A の M6 側は起動できない。
-- `iogpu.wired_limit_mb` は再起動で 0 に戻る (m6-prefill/29)。E1 は既定 (0) のまま取る。
+- `iogpu.wired_limit_mb` は再起動で 0 に戻る (m6-prefill/29)。E1 は既定 (0) で取った。F1〜F4 以降は必要なら上げてよい (P2、[12 §1](12-Q1-REDESIGN.md))。`cycle.sh` が起動のたびに置き、値をホスト札に残す。
 - `sudo purge` が使えず、ページキャッシュを冷やせない。run の前後の `vm_stat` を残し、外れ値は `pre.txt` で説明する。
 - 他のモデルプロセス (`TsugumiServer|TsugumiMac|TsugumiDecodeService|TsugumiCLI|...`) が動いていれば計測を拒む。**2 機では「MBP に 1 つ、M6 に 1 つ」が正常**で、同じ機械に 2 つは無い。
 

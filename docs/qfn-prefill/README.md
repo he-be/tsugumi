@@ -6,7 +6,7 @@ Gemma の M6 prefill ([m6-prefill](../m6-prefill/README.md)) に区切りが付�
 **前提は 1 つ。運用の形は「MBP 単体で QFN が動き、M6 mini を TB4 で直結すると速くなる」である。**
 MBP (Mac15,6 / M3 Pro 18 GB / 1 TB) がアプリとサーバーを持ち、M6 mini (Mac18,5 / 16 GB / 256 GB + 外付け SSD256) は TB4 直結の先で仕事の一部を引き受ける。
 この特定の 2 機に特化した分散推論として作る。**分け方は 2 つ (層で分ける A / expert で分ける B、[08](08-CANDIDATES.md)) あり、どちらを作るかは
-M6 で QFN を動かした秒と link の秒を測ってから式で決める ([07](07-EXPERIMENTS.md))。**10 で B としたが取り下げ、**M6 は tensor ops を使う前提**で測り直している ([11](11-Q1-REOPEN-TENSOR-OPS.md))。
+A・B の模擬の壁時計で決める ([07](07-EXPERIMENTS.md)、[12](12-Q1-REDESIGN.md))。**10 で B としたが取り下げ ([11](11-Q1-REOPEN-TENSOR-OPS.md))、前提 P1〜P5 を先に固定して設計し直した ([12](12-Q1-REDESIGN.md))。
 
 2 機の取り決めそのものは [TWO_MACHINE_DEV.md](../TWO_MACHINE_DEV.md) だが、**§1 (性能の記録値は M6 でしか取らない) と §3 (TB4 直結は当てにしない) は
 QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
@@ -25,13 +25,13 @@ QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
 | チャンク 2048 の 1 本の中身 (MBP、8K ベンチ) | 20〜22 s = pre-router 6.4〜7.2 + route 6.3〜6.5 (pread 約 5、top-10 約 1.3) + routed 6.8〜6.9 + PLE 0.1〜2.2。**GPU 11.5〜12.2 s と SSD 約 5 s が直列** | [qwen38/08 §4](../qwen38/08-ROUTED-MIXED.md)、[03 §3](03-FACTS.md) |
 | M6 で QFN を動かした実測 | 今のコードで 4K を Swapouts なしで通した。GPU の秒は MBP とほぼ同じで、SSD と PLE が長い | [10 §1.2](10-Q1-SPLIT-DECISION.md) |
 | TB4 直結の生 TCP | 両方向とも 1 GiB 4.7 GB/s、84 MB 片道と 21 MB 往復 × 48 の秒は 10 §1.1 | [10 §1.1](10-Q1-SPLIT-DECISION.md) |
-| 分け方 A / B の秒 | 10 の B は取り下げた。M6 を fp32 のコードで測っていた。M6 は tensor ops を使う前提で、E4-(c)・E5 を足して出し直す | [11](11-Q1-REOPEN-TENSOR-OPS.md) |
+| 分け方 A / B の秒 | 10 の B は取り下げた。式の単体 1922 s はアプリ実測 1618 s と A / B の差と同じだけ外れていて、式では選ばない。前提 P1〜P5 の下で F0〜F4 を取って模擬の壁時計で決める | [12](12-Q1-REDESIGN.md) |
 
 | Gate | 問い | 状態 |
 | --- | --- | --- |
-| **Q0** 基準線 | 今のコードの MBP 単体を `bench/qfn/` の形で取る (自然文 5 本 + 記録の再生 1 ターン)。揺れの幅を決める | 未着手 |
-| **Q1** 分け方を決める実験 | E0 link、E1 M6 で QFN の段の秒、E2 M6 の SSD、E3 B の 1 層の模擬、E4 M6 の expert GEMM (fp32 / fp16 tensor ops)。式で A か B を選ぶ | **開け直し**。E0〜E4 は済み ([10](10-Q1-SPLIT-DECISION.md))。M6 は tensor ops で測り直す: E4-(c) ds4-metal の移植、E5 dense ([11](11-Q1-REOPEN-TENSOR-OPS.md)) |
-| **Q2** PLE の行を先に読む | 行番号はトークンだけで決まるので、要求の頭で全チャンク分を並列に読む。A / B どちらでも効く | 未着手 |
+| **Q0** 基準線 | 今のコードの MBP 単体を `bench/qfn/` の形で取る (自然文 5 本 + 記録の再生 1 ターン)。揺れの幅を決める | 未着手。**Q1 より先** (P3) |
+| **Q1** 分け方を決める実験 | 前提 P1〜P5 ([12 §1](12-Q1-REDESIGN.md))。E0〜E2 は済み ([10](10-Q1-SPLIT-DECISION.md))。F1 M6 の 1 層を tensor ops で (冷 / 常駐)、F2 A の模擬、F3 B の模擬、F4 常駐の上限。模擬の壁時計で A か B を選ぶ | **設計し直し ([12](12-Q1-REDESIGN.md))**。F0〜F4 は未着手。Q0 と Q2 の後 |
+| **Q2** PLE の行を先に読む | 行番号はトークンだけで決まるので、要求の頭で全チャンク分を並列に読む。A / B どちらでも効く | 未着手。**Q1 の F2 / F3 より先** (P4) |
 | **Q3** host の top-10 | チャンクごとに約 1.3 s の Swift ループを縮める。どちらでも効く | 未着手 |
 | **Q4** M6 の外付けに expert の写し | Gemma の 44 と同じ形。内蔵 3.34 + 外付け 1.57 GB/s を同時に読む。どちらでも効く | 未着手 (E2 で写しを先に作る) |
 | **Q5** 機内で読みと GPU を重ねる | 次の層の expert を固定の置き場 (2 層分) に `F_NOCACHE` で読む。**RAM の条件付き** | 未着手 (判断待ち) |
@@ -39,13 +39,13 @@ QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
 | **Q7** decode と会話の機能 | 2 機で decode が単体より遅くならない。MTP・チェックポイント・prompt cache・ツール呼び出しが通る | Q6 の後 |
 | **Q8** 小さいラウンドの固定分 | 1 ラウンド 6.2 s の固定分と 8 トークンのチャンク 2.5 s | 未着手 |
 
-Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q1 → (Q2、Q3、Q4 は分け方に依らないので Q1 と並行可) → Q6 → Q7。Q5 は判断待ち。
+Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q2 → Q1 (F1〜F4) → Q6 → Q7。Q3・Q4 は分け方に依らないので Q1 と並行可。Q5 は判断待ち。
 
 ## 判断待ち (ユーザー)
 
 1. **記録値を取る機械**: QFN の記録値は「MBP が駆動する 2 機」と「MBP 単体」の 2 列で取る。TWO_MACHINE_DEV §1 の「M6 でしか取らない」は Gemma の規則として残し、QFN はこの README を正にしてよいか。
 2. **TB4 直結を常設にする**か。運用の形が 2 機なら、ケーブルは繋ぎっぱなしが前提になる (IP は link-local で変わる、[01 §3](01-ROLES.md))。
-3. **Q5 の RAM**: 2 層分 (約 1.4 GiB) の固定の置き場を取る。先読み・常駐は decode で「RAM を使えば速いというだけ」として閉じた経緯がある ([qwen38/13](../qwen38/13-KERNEL-TO-GPU-WAIT.md)、[15 §0-2](../qwen38/15-DECODE-PLAN.md))。prefill でも同じ判断なら Q5 は外す。
+3. **Q5 の RAM (MBP 側)**: 2 層分 (約 1.4 GiB) の固定の置き場を取る。先読み・常駐は decode で「RAM を使えば速いというだけ」として閉じた経緯がある ([qwen38/13](../qwen38/13-KERNEL-TO-GPU-WAIT.md)、[15 §0-2](../qwen38/15-DECODE-PLAN.md))。prefill でも同じ判断なら Q5 は外す。M6 側の常駐と wired limit は P2 で決まった ([12 §1](12-Q1-REDESIGN.md))。
 4. **M6 の PLE BF16 (95 GiB)**: A なら要る。Q1 のやり直しが済むまで置いておく。
 
 ## 読む順
@@ -58,11 +58,12 @@ Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q1 → (Q2、Q3�
 | [04-GATES.md](04-GATES.md) | Q0〜Q8。問い・測り方・合否 |
 | [05-RISKS.md](05-RISKS.md) | 罠。link-local の IP、2 機の OS 差、16 GB、外付けの手動マウント、ほか |
 | [06-LEDGER.md](06-LEDGER.md) | **台帳。進捗の数字はここの既定行だけ。** |
-| [07-EXPERIMENTS.md](07-EXPERIMENTS.md) | **分け方を決める実験 E0〜E4 と、決め方** |
+| [07-EXPERIMENTS.md](07-EXPERIMENTS.md) | **分け方を決める実験 (E0〜E2 済み、F0〜F4) と、決め方** |
 | [08-CANDIDATES.md](08-CANDIDATES.md) | 分け方の候補 A / B の形と式。数字は書かない |
 | 10 番台〜 | 結果文書。Gate ごとに 1 本、[00-TEMPLATE-RESULT.md](00-TEMPLATE-RESULT.md) の形 |
 | [10-Q1-SPLIT-DECISION.md](10-Q1-SPLIT-DECISION.md) | Q1: E0〜E4 の実測と式 (結論は取り下げ) |
-| [11-Q1-REOPEN-TENSOR-OPS.md](11-Q1-REOPEN-TENSOR-OPS.md) | Q1 の開け直し: 理由、ds4-metal の手本、計画、**再開手順** |
+| [11-Q1-REOPEN-TENSOR-OPS.md](11-Q1-REOPEN-TENSOR-OPS.md) | Q1 の開け直し: 理由、ds4-metal の手本、**再開手順** (計画は 12 へ) |
+| [12-Q1-REDESIGN.md](12-Q1-REDESIGN.md) | **Q1 の設計し直し: 揺れた理由、前提 P1〜P5、F0〜F4、決め方** |
 | `bench/qfn/` | 計測スクリプトと証拠。E0〜E4 の道具と `formula.py` はある。Q0 の `pair_bench.sh`・`ledger.sh` は未作成。本文は `bench/m6/prompts/` の自然文 5 本を共用する |
 
 ## 運用ルール (m6-prefill と同じ)
