@@ -1,0 +1,76 @@
+Thunderbolt/USB4:
+
+    Thunderbolt/USB4 Bus 3:
+
+      Vendor Name: Apple Inc.
+      Device Name: Mac Mini
+      UID: 0x05ACB90A05A783C3
+      Route String: 0
+      Domain UUID: E28F2239-BAE9-40C1-BF23-9FCE7CC40674
+      Port:
+          Status: No device connected
+          Link Status: 0x100
+          Speed: Up to 40 Gb/s
+          Receptacle: 4
+
+    Thunderbolt/USB4 Bus 1:
+
+      Vendor Name: Apple Inc.
+      Device Name: Mac Mini
+      UID: 0x05ACB90A05A783C1
+      Route String: 0
+      Domain UUID: 70CA3D21-9423-4CD1-BC41-52E374FB88AC
+      Port:
+          Status: Device connected
+          Link Status: 0x2
+          Speed: 40 Gb/s
+          Receptacle: 2
+          Micro Firmware Version: 0.0.0
+
+        MacBook Pro:
+
+          Vendor Name: Apple Inc.
+          Device Name: Mac15,6
+          Device ID: 0xA
+          Vendor ID: 0x0A27
+          Domain UUID: 2B5F3227-FE00-457E-BD0C-DA003242F4B5
+          Services:
+            Internet Protocol:
+              Protocol ID: 1
+              Protocol Version: 1
+              Protocol Revision: 1
+              Service UUID: FF8A3D50-AC3C-49EA-89DD-33841E855CA8
+
+    Thunderbolt/USB4 Bus 0:
+
+      Vendor Name: Apple Inc.
+      Device Name: Mac Mini
+      UID: 0x05ACB90A05A783C0
+      Route String: 0
+      Domain UUID: E8F2F371-222C-476A-A38F-CB44568C834E
+      Port:
+          Status: Device connected
+          Link Status: 0x2
+          Speed: 40 Gb/s
+          Receptacle: 1
+          Micro Firmware Version: 0.0.0
+
+        GWM.2AM-U4CC:
+
+          Vendor Name: Kuroutoshikou
+          Device Name: GWM.2AM-U4CC
+          Mode: USB4
+          Device ID: 0x2463
+          Vendor ID: 0x174C
+          Device Revision: 0x5A
+          UID: 0x174C54123371E880
+          Route String: 1
+          Firmware Version: 51.23
+          Port (Upstream):
+              Status: Device connected
+              Link Status: 0x2
+              Speed: 40 Gb/s
+              Micro Firmware Version: 0.0.0
+
+   Protocol:                  PCI-Express
+   Device Location:           External

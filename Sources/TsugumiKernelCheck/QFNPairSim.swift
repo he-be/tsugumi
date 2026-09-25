@@ -31,6 +31,10 @@ import Tsugumi
 //        known only then).
 // Inputs are random. Each side prints a line per layer; the MBP prints its wall per chunk and in total.
 // k 0 / sigma 0 runs the MBP alone (no socket). QFN_SIM_CHECK=1 checks the split and the buffers on one machine, then exits.
+// QFN_FEED=<f> (A only, set on both sides; docs/qfn-prefill/19 §2, Q4-b): the last fraction f of the bytes of every streamed
+//   M6 layer comes from the MBP's internal SSD over a second connection instead of the M6's SSD. The M6 sends the piece
+//   list (file, offset, bytes) when it starts the layer's read, reads its own part meanwhile and receives the MBP's part
+//   straight into the staging buffer; the MBP preads (F_NOCACHE, 4 threads, 16 MB blocks) and sends the blocks in order.
 
 private let sD = 2560, sF = 640, sStride = 768, sExperts = 512, sTopK = 10, sLayers = 48
 private let sMinPairs = 24, sGroup = 4, sHC = 4
@@ -538,6 +542,38 @@ private final class SimOwned {
         simDrop(l.readPieces)
         return s
     }
+
+    /// QFN_FEED: the first 1 - f of the layer's bytes from this SSD, the rest from the MBP over `feed`, at once.
+    /// Returns (wall, own read, fed wait, own MB, fed MB).
+    func readFed(_ l: SimLayer, feed: Int32, fraction f: Double, files: [GGUFFile]) -> (Double, Double, Double, Double, Double) {
+        guard let at = stagingLayout[l.il] else { return (0, 0, 0, 0, 0) }
+        let total = l.readBytes, cut = Int(Double(total) * (1 - f))
+        var own: [Piece] = [], ownAt: [Int] = [], fed: [Piece] = [], fedAt: [Int] = []
+        var o = 0
+        for (i, p) in l.readPieces.enumerated() {
+            let a = max(0, min(p.byteCount, cut - o))
+            if a > 0 { own.append((p.file, p.offset, a)); ownAt.append(at[i]) }
+            if a < p.byteCount { fed.append((p.file, p.offset + a, p.byteCount - a)); fedAt.append(at[i] + a) }
+            o += p.byteCount
+        }
+        let t0 = CFAbsoluteTimeGetCurrent()
+        var req = [Int64(fed.count)]
+        for p in fed { req += [Int64(files.firstIndex { $0 === p.file }!), Int64(p.offset), Int64(p.byteCount)] }
+        req.withUnsafeBytes { simSockAll(feed, $0.baseAddress!, $0.count, send: true) }
+        let dst = staging.contents()
+        var fedDone = 0.0
+        let group = DispatchGroup()
+        DispatchQueue.global().async(group: group) {
+            for (i, p) in fed.enumerated() { simSockAll(feed, dst + fedAt[i], p.byteCount, send: false) }
+            fedDone = CFAbsoluteTimeGetCurrent() - t0
+        }
+        simPreadNoCache(own, at: ownAt, fds: fds, into: dst, threads: 4)
+        let ownS = CFAbsoluteTimeGetCurrent() - t0
+        group.wait()
+        let wall = CFAbsoluteTimeGetCurrent() - t0
+        simDrop(own)
+        return (wall, ownS, fedDone, Double(own.reduce(0) { $0 + $1.byteCount }) / 1e6, Double(fed.reduce(0) { $0 + $1.byteCount }) / 1e6)
+    }
 }
 
 private func simSockAll(_ fd: Int32, _ p: UnsafeRawPointer, _ n: Int, send: Bool) {
@@ -561,6 +597,60 @@ private func simAddr(_ ip: String, _ port: Int) -> sockaddr_in {
     a.sin_family = sa_family_t(AF_INET); a.sin_port = in_port_t(UInt16(port).bigEndian)
     inet_pton(AF_INET, ip, &a.sin_addr)
     return a
+}
+
+/// The MBP's side of QFN_FEED: answers piece lists from the M6 until it sends -1. Blocks of 16 MB are read by 4 threads
+/// (F_NOCACHE) into one buffer and sent in order as each completes. Prints a summary at the end.
+private func simFeedServe(_ fd: Int32, paths: [String]) {
+    let fds = paths.map { path -> Int32 in
+        let f = open((path as NSString).expandingTildeInPath, O_RDONLY)
+        precondition(f >= 0 && fcntl(f, F_NOCACHE, 1) == 0, "open \(path)")
+        return f
+    }
+    var cap = 0
+    var buf: UnsafeMutableRawPointer?
+    var layers = 0, bytes = 0, busy = 0.0
+    while true {
+        var n: Int64 = 0
+        withUnsafeMutableBytes(of: &n) { simSockAll(fd, $0.baseAddress!, 8, send: false) }
+        if n < 0 { break }
+        var list = [Int64](repeating: 0, count: Int(n) * 3)
+        if n > 0 { list.withUnsafeMutableBytes { simSockAll(fd, $0.baseAddress!, $0.count, send: false) } }
+        let t0 = CFAbsoluteTimeGetCurrent()
+        var blocks: [(Int32, Int, Int, Int)] = [], total = 0
+        for i in 0..<Int(n) {
+            let f = fds[Int(list[3 * i])], off = Int(list[3 * i + 1]), len = Int(list[3 * i + 2])
+            var o = 0
+            while o < len { let b = min(16 << 20, len - o); blocks.append((f, off + o, b, total + o)); o += b }
+            total += len
+        }
+        if total > cap { buf?.deallocate(); cap = total; buf = UnsafeMutableRawPointer.allocate(byteCount: cap, alignment: 16384) }
+        let dst = buf!
+        let ready = blocks.map { _ in DispatchSemaphore(value: 0) }
+        let next = UnsafeMutablePointer<Int>.allocate(capacity: 1)
+        next.initialize(to: 0)
+        let lock = NSLock()
+        let readers = DispatchGroup()
+        for _ in 0..<4 {
+            DispatchQueue.global().async(group: readers) {
+                while true {
+                    lock.lock(); let i = next.pointee; next.pointee += 1; lock.unlock()
+                    guard i < blocks.count else { return }
+                    let (f, off, len, d) = blocks[i]
+                    var done = 0
+                    while done < len { let got = pread(f, dst + d + done, len - done, off_t(off + done)); precondition(got > 0, "pread"); done += got }
+                    ready[i].signal()
+                }
+            }
+        }
+        for (i, b) in blocks.enumerated() { ready[i].wait(); simSockAll(fd, dst + b.3, b.2, send: true) }
+        readers.wait()
+        next.deallocate()
+        busy += CFAbsoluteTimeGetCurrent() - t0; layers += 1; bytes += total
+    }
+    print(String(format: "feed (MBP): %d layer reads, %.1f MB, %.3f s from the request to the last byte sent (%.2f GB/s)",
+                 layers, Double(bytes) / 1e6, busy, busy > 0 ? Double(bytes) / busy / 1e9 : 0))
+    for f in fds { close(f) }
 }
 
 func runQFNPairSim(mode: String, ip: String, port: Int, gguf: String, sidecar: String, routes: String, shape: String,
@@ -650,6 +740,7 @@ func runQFNPairSim(mode: String, ip: String, port: Int, gguf: String, sidecar: S
         return
     }
 
+    let feedFraction = shape == "A" ? Double(ProcessInfo.processInfo.environment["QFN_FEED"] ?? "0") ?? 0 : 0
     let hcBytes = sHC * T * sD * 4, rowBytes = T * sD * 4, assignBytes = T * sTopK * 8
     let assign = UnsafeMutableRawPointer.allocate(byteCount: assignBytes, alignment: 16)
     memset(assign, 0, assignBytes)
@@ -663,12 +754,16 @@ func runQFNPairSim(mode: String, ip: String, port: Int, gguf: String, sidecar: S
         setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, 4)
         var a = simAddr(ip, port)
         guard withUnsafePointer(to: &a, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(ls, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }) == 0,
-              listen(ls, 1) == 0 else { perror("bind/listen"); exit(1) }
+              listen(ls, 2) == 0 else { perror("bind/listen"); exit(1) }
+        if feedFraction > 0 { print(String(format: "feed: the last %.3f of every streamed layer's bytes from the MBP (QFN_FEED)", feedFraction)) }
         print("listening on \(ip):\(port)")
         let fd = accept(ls, nil, nil)
         simSockTune(fd)
+        var feed: Int32 = -1
+        if feedFraction > 0 { feed = accept(ls, nil, nil); simSockTune(feed) }
         let byL = Dictionary(uniqueKeysWithValues: layers.map { ($0.il, $0) })
-        print("chunk\tlayer\tstreamed_MB\trecv_s\tread_s\tdense_gpu_s\trouted_gpu_s\tcompute_wall_s\tsend_s")
+        if feedFraction > 0 { print("chunk\tlayer\tstreamed_MB\trecv_s\tread_s\tdense_gpu_s\trouted_gpu_s\tcompute_wall_s\tsend_s\town_MB\town_s\tfed_MB\tfed_s") }
+        else { print("chunk\tlayer\tstreamed_MB\trecv_s\tread_s\tdense_gpu_s\trouted_gpu_s\tcompute_wall_s\tsend_s") }
         if shape == "A" {
             var header: Int32 = 0
             withUnsafeMutableBytes(of: &header) { simSockAll(fd, $0.baseAddress!, 4, send: false) }
@@ -678,12 +773,14 @@ func runQFNPairSim(mode: String, ip: String, port: Int, gguf: String, sidecar: S
             for c in 0..<Int(header) {
                 let tc = now()
                 for l in layers {
-                    let rd = owned!.read(l)
+                    let fedRead = feed >= 0 && owned!.stagingLayout[l.il] != nil
+                    let r = fedRead ? owned!.readFed(l, feed: feed, fraction: feedFraction, files: [file, side]) : (owned!.read(l), 0, 0, 0, 0)
                     let t1 = now()
                     let gd = l.encodeDense(kernels, scratch, nax: true)
                     let gr = l.encodeRouted(kernels, scratch, nax: true, x: scratch.x, residual: scratch.zero, y: scratch.y)
                     let streamed = owned!.stagingLayout[l.il] != nil ? Double(l.readBytes) / 1e6 : 0
-                    print(String(format: "%d\t%d\t%.1f\t0\t%.4f\t%.4f\t%.4f\t%.4f\t0", c, l.il, streamed, rd, gd, gr, now() - t1))
+                    let tail = feed >= 0 ? String(format: "\t%.1f\t%.4f\t%.1f\t%.4f", r.3, r.1, r.4, r.2) : ""
+                    print(String(format: "%d\t%d\t%.1f\t0\t%.4f\t%.4f\t%.4f\t%.4f\t0", c, l.il, streamed, r.0, gd, gr, now() - t1) + tail)
                 }
                 let buf = hcOut[c % 2]
                 sent.wait()   // the other buffer's send (18 ms) has long finished; keep one in flight
@@ -691,6 +788,11 @@ func runQFNPairSim(mode: String, ip: String, port: Int, gguf: String, sidecar: S
                 print(String(format: "chunk %d on the M6: %.3f s (layers 0..<%d)", c, now() - tc, k))
             }
             sent.wait()
+            if feed >= 0 {
+                var end: Int64 = -1
+                withUnsafeBytes(of: &end) { simSockAll(feed, $0.baseAddress!, 8, send: true) }
+                close(feed)
+            }
             let v1 = simVM()
             print(String(format: "M6 run: Pageins +%.2f GB, Swapouts +%llu; %@", Double(v1.pageins - v0.pageins) * page / 1e9, v1.swapouts - v0.swapouts, mem()))
         } else {
@@ -732,6 +834,17 @@ func runQFNPairSim(mode: String, ip: String, port: Int, gguf: String, sidecar: S
         simSockTune(fd)
     }
     let sock = fd
+    var feedThread: Thread?
+    let feedDone = DispatchSemaphore(value: 0)
+    if peer && feedFraction > 0 {
+        let ffd = socket(AF_INET, SOCK_STREAM, 0)
+        var a = simAddr(ip, port)
+        guard withUnsafePointer(to: &a, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(ffd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }) == 0
+        else { perror("connect feed"); exit(1) }
+        simSockTune(ffd)
+        feedThread = Thread { simFeedServe(ffd, paths: [gguf, sidecar]); close(ffd); feedDone.signal() }
+        feedThread!.start()
+    }
     let peerY = UnsafeMutableRawPointer.allocate(byteCount: rowBytes, alignment: 16)
     let peerQueue = DispatchQueue(label: "peer")
     print("chunk\tlayer\tread_MB\tread_s\tdense_gpu_s\trouted_gpu_s\twait_s\tlayer_s")
@@ -778,6 +891,7 @@ func runQFNPairSim(mode: String, ip: String, port: Int, gguf: String, sidecar: S
         var h: [Int32] = [-1, 0]
         h.withUnsafeMutableBytes { simSockAll(sock, $0.baseAddress!, 8, send: true) }
     }
+    if feedThread != nil { feedDone.wait() }
     if sock >= 0 { close(sock) }
     let v1 = simVM()
     print(String(format: "total: %d chunks %.3f s; MBP Pageins +%.2f GB, Swapouts +%llu; %@", chunks, total,

@@ -1,0 +1,55 @@
+Thunderbolt/USB4:
+
+    Thunderbolt/USB4 Bus 2:
+
+      Vendor Name: Apple Inc.
+      Device Name: MacBook Pro
+      UID: 0x05AC0A8B40AC3E22
+      Route String: 0
+      Domain UUID: 4C2F05D3-441F-4611-94F4-974CB3BC55BB
+      Port:
+          Status: No device connected
+          Link Status: 0x100
+          Speed: Up to 40 Gb/s
+          Receptacle: 3
+
+    Thunderbolt/USB4 Bus 1:
+
+      Vendor Name: Apple Inc.
+      Device Name: MacBook Pro
+      UID: 0x05AC0A8B40AC3E21
+      Route String: 0
+      Domain UUID: 3CE0CFB4-9B33-43EA-A424-D89118DDC1EE
+      Port:
+          Status: No device connected
+          Link Status: 0x100
+          Speed: Up to 40 Gb/s
+          Receptacle: 2
+
+    Thunderbolt/USB4 Bus 0:
+
+      Vendor Name: Apple Inc.
+      Device Name: MacBook Pro
+      UID: 0x05AC0A8B40AC3E20
+      Route String: 0
+      Domain UUID: 2B5F3227-FE00-457E-BD0C-DA003242F4B5
+      Port:
+          Status: Device connected
+          Link Status: 0x2
+          Speed: 40 Gb/s
+          Receptacle: 1
+
+        Mac:
+
+          Vendor Name: Apple Inc.
+          Device Name: Mac18,5
+          Device ID: 0xA
+          Vendor ID: 0xA27
+          Domain UUID: 70CA3D21-9423-4CD1-BC41-52E374FB88AC
+          Services:
+            Internet Protocol:
+              Protocol ID: 1
+              Protocol Version: 1
+              Protocol Revision: 1
+              Service UUID: 5D949F9C-F145-0795-6F7E-A58568C15E5D
+

@@ -1,6 +1,7 @@
 // link_probe: raw TCP over the TB4 bridge (docs/qfn-prefill/07 E0).
 //   server:  link_probe serve <bind ip> <port>
 //   client:  link_probe run <server ip> <port> <reps>
+//   client:  link_probe stream <server ip> <port> <seconds>   1 GiB acked sends back to back for <seconds> (19 §2-3-1)
 // The client measures, each rep in turn on one connection:
 //   l_1   84 MB one way (client -> server, server acks 1 byte)   = A's chunk (2048 x 4 x 2560 fp32)
 //   l_48  48 round trips of 21 MB out + 21 MB back              = B's chunk (2048 x 2560 fp32 each way)
@@ -55,6 +56,14 @@ int main(int argc, char** argv) {
   int fd = socket(AF_INET, SOCK_STREAM, 0);
   if (connect(fd, (struct sockaddr*)&a, sizeof a)) { perror("connect"); return 1; }
   tune(fd);
+  if (!strcmp(argv[1], "stream")) {
+    double secs = argc > 4 ? atof(argv[4]) : 15, t0 = now(), bytes = 0; int n = 0;
+    printf("gib\ts\tGBps\n");
+    while (now() - t0 < secs) { Hdr h = { 1, BULK }; double t = now(); sendall(fd, (char*)&h, sizeof h); sendall(fd, buf, BULK); recvall(fd, buf, 1);
+      double d = now() - t; bytes += BULK; printf("%d\t%.4f\t%.2f\n", ++n, d, BULK / d / 1e9); fflush(stdout); }
+    printf("total\t%.3f\t%.2f\n", now() - t0, bytes / (now() - t0) / 1e9);
+    Hdr h = { 0, 0 }; sendall(fd, (char*)&h, sizeof h); close(fd); return 0;
+  }
   double rtts[200];
   for (int i = 0; i < 200; i++) { Hdr h = { 3, 1 }; double t = now(); sendall(fd, (char*)&h, sizeof h); sendall(fd, buf, 1); recvall(fd, buf, 1); rtts[i] = now() - t; }
   qsort(rtts, 200, sizeof(double), cmp);
