@@ -74,3 +74,22 @@ M6 は KV の写しを文脈の長さだけ持つ (32K で 541 MB)。21 の模�
 - **Q6 の k の格子は prefill だけの k で測る** (44・46・48、送り 0.59、`QFN_SLAB=2`)。decode は MBP で固定なので、decode の k は格子に入らない。
 - Q7 の測り方は「本文 2 の decode の 1 ステップ中央値が単体と同じ幅」に加え、受け渡しの秒 (§2-2 の 1 と 3) をラウンドごとにログに出す。見込み (0.03〜0.04 s) と 1 割以上ずれたら、どちらの向きかを書く。
 - 開いたまま: A の M6 (常駐 + staging) の decode は測っていない (§1)。M6 の decode が MBP より速くなる根拠が出たら、decode を M6 に任せる形を別の候補として測る。
+
+## 4. 再開手順 (2026-09-25 の区切り、最新 commit はこの節を足したもの)
+
+ここまでで済んだこと: Q0・Q2・Q1 (A)・Q4 腕 b (送り 0.59、20)・Q5 の M6 側 (`QFN_SLAB=2` 採用、21)・P6 (この文書)。**次は Q6 の本体 (ランタイムに A を作る)。**
+
+1. **始める前の確認** (AGENTS.md と 01 の 1 サイクル):
+   - 両機で `pgrep -fl 'TsugumiServer|TsugumiMac|TsugumiDecodeService|TsugumiCLI|TsugumiKernelCheck|mlx_lm|llama'` が空、`memory_pressure -Q`、`vm_stat | grep Swapouts` を控える。
+   - M6: `sysctl -n iogpu.wired_limit_mb` が 14336 (再起動で戻る。`sudo sysctl iogpu.wired_limit_mb=14336`)、`mount | grep SSD256` (PLE BF16 は外付け)。
+   - link: 両機の `ifconfig bridge0` に 169.254.x.x (link-local で変わる)。`ping -c 3` で rtt 0.5 ms 前後。
+   - `git push m6 HEAD` → `ssh m6 'cd dev/tsugumi && swift build -c release'`。MBP も `swift build -c release`。
+2. **作るもの (04 Q6、この文書 §2)**。手本は模擬の `Sources/TsugumiKernelCheck/QFNPairSim.swift` (送り `QFN_FEED`、置き場 `QFN_SLAB`、残差の送り)。
+   - M6 側のプロセス: `Qwen38Runner` (`Sources/Tsugumi/Runtime/Qwen38/Qwen38Runner.swift`) を層 0〜k−1 の範囲で開く。常駐 13 層は自前のバッファ + `MTLResidencySet` (17)、非常駐層は staging 2 層分に `F_NOCACHE` で読み、後ろ 0.59 を MBP から受ける。M6 の層は tensor ops (P1、15)。
+   - MBP 側: 送り手 (`F_NOCACHE`、16 MB ブロック × 4 本)、層 k〜47 (k 48 なら無し)、head、MTP の KV、decode は単体のまま。
+   - 状態の受け渡し (§2-2): 状態の出入り口は `forEachRecurrentRegion` (GDN・conv・PLE 履歴、:1818) と KV の行。restore は `rollback(keep:)` (:1845) の長さを M6 に伝える。
+   - 候補の名前: `Q38_EXPERT_FEED=0.59`、`Q38_EXPERT_SLAB=2`、分け方 `Q38_PAIR=<M6 の bridge0 IP>` と k (名前は作るときに決める)。link が無ければ単体に戻る。
+3. **最初の run で見るもの**: 正しさ (04 Q6: 単体との logits の差、top-1 の一致、入れ替わりが相手の top-5 に入る、greedy 64 トークンの本文) → M6 の Swapouts (§2-3。出たら常駐 12 層か KV の写しなしを測る) → 受け渡しの秒 (見込み 0.03〜0.04 s)。
+4. **測るもの**: k 44・46・48 を本文 1・本文 2 で n = 3 (`bench/qfn/pair_bench.sh`・`ledger.sh` の 2 機の列)。台帳 06 に 2 機の列を足す。
+5. **開いたままのもの**: 03 §1 の o_X (模擬に入っていない仕事) が M6 でどれだけ長いか (20 §2)、A の M6 の decode (22 §1)、3 口 (内蔵 + 外付け + TB4)、送りを要求より先に始めること (20 §3)、常駐層を散らす並べ方 (21 §2)。
+   README の判断待ち 1〜3 はそのまま (3 は k 48 が通れば要らない)。
