@@ -1,0 +1,3 @@
+Pageins:                                   762799443.
+Swapouts:                                     227792.
+System-wide memory free percentage: 87%
