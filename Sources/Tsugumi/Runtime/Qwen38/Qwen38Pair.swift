@@ -286,9 +286,11 @@ package enum Qwen38Pair {
         if let bad = fds.firstIndex(where: { $0 < 0 }) { note("cannot open \(paths[bad])"); return }
         while true {
             let n: Int64, list: [Int64]
+            // The M6 closes the link between requests when its connection ends: the normal end, said nothing about.
+            guard let head = try? pairRecv(fd, 1, as: Int64.self) else { return }
+            n = head[0]
+            guard n >= 0 else { note("request \(n)"); return }
             do {
-                n = try pairRecv(fd, 1, as: Int64.self)[0]
-                guard n >= 0 else { note("request \(n)"); return }
                 list = try pairRecv(fd, Int(n) * 3, as: Int64.self)
             } catch {
                 note("\(error)")
