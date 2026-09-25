@@ -288,53 +288,8 @@ func runQ2GemmBench(ggufPath: String, routePath: String, group G: Int, iteration
     }
 
     // C: half variants of the dequant kernels plus half gather / silu / scatter, compiled next to moe_ggml.metal.
-    let ggmlSource = try String(contentsOfFile: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
-        .appendingPathComponent("../Tsugumi/Metal/MoE/moe_ggml.metal").standardized.path, encoding: .utf8)
-    func halfVariant(_ name: String) -> String {
-        let start = ggmlSource.range(of: "kernel void \(name)(")!.lowerBound
-        let end = ggmlSource.range(of: "\n}\n", range: start..<ggmlSource.endIndex)!.upperBound
-        return String(ggmlSource[start..<end])
-            .replacingOccurrences(of: "\(name)(", with: "\(name.replacingOccurrences(of: "_f32", with: "_f16"))(")
-            .replacingOccurrences(of: "device float* out", with: "device half* out")
-            .replacingOccurrences(of: "device float* o =", with: "device half* o =")
-            .replacingOccurrences(of: "o[8 * l + j] = db * ", with: "o[8 * l + j] = (half)(db * ")
-            .replacingOccurrences(of: "? -v : v);", with: "? -v : v));")
-            .replacingOccurrences(of: "o[l] = dl * float((q[l] >> shift) & 3) - ml;", with: "o[l] = half(dl * float((q[l] >> shift) & 3) - ml);")
-    }
-    let halfKernels = halfVariant("moe_iq2xxs_dequant_gate_up_f32") + "\n" + halfVariant("moe_q2k_dequant_down_f32") + """
-
-    kernel void qfn_gather_pair_rows_h(device const float* x [[buffer(0)]], device const uint* src [[buffer(1)]],
-                                       device half* out [[buffer(2)]], constant uint& W [[buffer(3)]],
-                                       constant uint& top_k [[buffer(4)]], uint2 pos [[thread_position_in_grid]]) {
-        device const float* xi = x + (src[pos.y] / top_k) * W + pos.x * 32;
-        device half* o = out + ulong(pos.y) * W + pos.x * 32;
-        const uint n = min(32u, W - pos.x * 32);
-        for (uint c = 0; c < n; ++c) o[c] = half(xi[c]);
-    }
-    kernel void qfn_silu_mul_halves_h(device half* gu [[buffer(0)]], constant uint& F [[buffer(1)]],
-                                      constant uint& first [[buffer(2)]], uint2 pos [[thread_position_in_grid]]) {
-        const ulong base = ulong(first + pos.y) * 2 * F;
-        const float g = float(gu[base + pos.x]);
-        gu[base + pos.x] = half(g / (1.0f + exp(-g)) * float(gu[base + F + pos.x]));
-    }
-    kernel void qfn_scatter_weighted_h(device const half* rows [[buffer(0)]], device const uint* at [[buffer(1)]],
-                                       device const float* routing_w [[buffer(2)]], device const float* residual [[buffer(3)]],
-                                       device float* y [[buffer(4)]], constant uint& D [[buffer(5)]],
-                                       constant uint& top_k [[buffer(6)]], uint2 pos [[thread_position_in_grid]]) {
-        const uint c0 = pos.x * 32;
-        const uint n = min(32u, D - c0);
-        float acc[32] = {0.f};
-        for (uint k = 0; k < top_k; ++k) {
-            const uint pair = pos.y * top_k + k;
-            const float w = routing_w[pair];
-            device const half* r = rows + ulong(at[pair]) * D + c0;
-            for (uint c = 0; c < n; ++c) acc[c] += w * float(r[c]);
-        }
-        device const float* res = residual + ulong(pos.y) * D + c0;
-        device float* o = y + ulong(pos.y) * D + c0;
-        for (uint c = 0; c < n; ++c) o[c] = res[c] + acc[c];
-    }
-    """
+    let ggmlSource = try moeGGMLSource()
+    let halfKernels = q2HalfKernelSource(ggmlSource)
     let hlib = try device.makeLibrary(source: ggmlSource + "\n" + halfKernels, options: nil)
     func hpso(_ name: String) throws -> MTLComputePipelineState {
         try device.makeComputePipelineState(function: hlib.makeFunction(name: name)!)
@@ -496,4 +451,60 @@ func runQ2GemmBench(ggufPath: String, routePath: String, group G: Int, iteration
     let splitC = runC(split: true)
     print("  C stages (separate buffers, GPU ms): " + splitC.stages.sorted { $0.value > $1.value }
         .map { String(format: "%@ %.1f", $0.key, $0.value) }.joined(separator: ", "))
+}
+
+/// moe_ggml.metal of this checkout (read from the source tree, so nothing enters the runtime library).
+func moeGGMLSource() throws -> String {
+    try String(contentsOfFile: URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+        .appendingPathComponent("../Tsugumi/Metal/MoE/moe_ggml.metal").standardized.path, encoding: .utf8)
+}
+
+/// Arm C's kernels: half variants of moe_ggml.metal's f32 dequant kernels plus half gather / silu / scatter.
+/// Compile after `moeGGMLSource()`.
+func q2HalfKernelSource(_ ggmlSource: String) -> String {
+    func halfVariant(_ name: String) -> String {
+        let start = ggmlSource.range(of: "kernel void \(name)(")!.lowerBound
+        let end = ggmlSource.range(of: "\n}\n", range: start..<ggmlSource.endIndex)!.upperBound
+        return String(ggmlSource[start..<end])
+            .replacingOccurrences(of: "\(name)(", with: "\(name.replacingOccurrences(of: "_f32", with: "_f16"))(")
+            .replacingOccurrences(of: "device float* out", with: "device half* out")
+            .replacingOccurrences(of: "device float* o =", with: "device half* o =")
+            .replacingOccurrences(of: "o[8 * l + j] = db * ", with: "o[8 * l + j] = (half)(db * ")
+            .replacingOccurrences(of: "? -v : v);", with: "? -v : v));")
+            .replacingOccurrences(of: "o[l] = dl * float((q[l] >> shift) & 3) - ml;", with: "o[l] = half(dl * float((q[l] >> shift) & 3) - ml);")
+    }
+    return halfVariant("moe_iq2xxs_dequant_gate_up_f32") + "\n" + halfVariant("moe_q2k_dequant_down_f32") + """
+
+    kernel void qfn_gather_pair_rows_h(device const float* x [[buffer(0)]], device const uint* src [[buffer(1)]],
+                                       device half* out [[buffer(2)]], constant uint& W [[buffer(3)]],
+                                       constant uint& top_k [[buffer(4)]], uint2 pos [[thread_position_in_grid]]) {
+        device const float* xi = x + (src[pos.y] / top_k) * W + pos.x * 32;
+        device half* o = out + ulong(pos.y) * W + pos.x * 32;
+        const uint n = min(32u, W - pos.x * 32);
+        for (uint c = 0; c < n; ++c) o[c] = half(xi[c]);
+    }
+    kernel void qfn_silu_mul_halves_h(device half* gu [[buffer(0)]], constant uint& F [[buffer(1)]],
+                                      constant uint& first [[buffer(2)]], uint2 pos [[thread_position_in_grid]]) {
+        const ulong base = ulong(first + pos.y) * 2 * F;
+        const float g = float(gu[base + pos.x]);
+        gu[base + pos.x] = half(g / (1.0f + exp(-g)) * float(gu[base + F + pos.x]));
+    }
+    kernel void qfn_scatter_weighted_h(device const half* rows [[buffer(0)]], device const uint* at [[buffer(1)]],
+                                       device const float* routing_w [[buffer(2)]], device const float* residual [[buffer(3)]],
+                                       device float* y [[buffer(4)]], constant uint& D [[buffer(5)]],
+                                       constant uint& top_k [[buffer(6)]], uint2 pos [[thread_position_in_grid]]) {
+        const uint c0 = pos.x * 32;
+        const uint n = min(32u, D - c0);
+        float acc[32] = {0.f};
+        for (uint k = 0; k < top_k; ++k) {
+            const uint pair = pos.y * top_k + k;
+            const float w = routing_w[pair];
+            device const half* r = rows + ulong(at[pair]) * D + c0;
+            for (uint c = 0; c < n; ++c) acc[c] += w * float(r[c]);
+        }
+        device const float* res = residual + ulong(pos.y) * D + c0;
+        device float* o = y + ulong(pos.y) * D + c0;
+        for (uint c = 0; c < n; ++c) o[c] = res[c] + acc[c];
+    }
+    """
 }

@@ -2053,6 +2053,15 @@ if let index = arguments.firstIndex(of: "--q2-gemm-bench"), index + 2 < argument
     try runQ2GemmBench(ggufPath: arguments[index + 1], routePath: arguments[index + 2], group: group, iterations: iterations, tokens: tokens)
     exit(0)
 }
+// `--qfn-layer-bench <gguf> <down sidecar> <route .bin> resident|cold [iterations] [arms]`: one layer's GEMMs through
+// today's code (A), MPS fp16 (C) and the tensor ops (D) (QFNLayerBench.swift, docs/qfn-prefill/12 F1).
+if let index = arguments.firstIndex(of: "--qfn-layer-bench"), index + 4 < arguments.count {
+    try runQFNLayerBench(ggufPath: arguments[index + 1], sidecarPath: arguments[index + 2], routePath: arguments[index + 3],
+                         mode: arguments[index + 4],
+                         iterations: index + 5 < arguments.count ? Int(arguments[index + 5]) ?? 5 : 5,
+                         arms: index + 6 < arguments.count ? arguments[index + 6] : "ACD")
+    exit(0)
+}
 // `--qfn-split-probe serve|run <ip> <port> <gguf> <routes prefix> <sigma> [chunks]`: candidate B's routed step on two
 // machines (QFNSplitProbe.swift, docs/qfn-prefill/07 E3).
 if let index = arguments.firstIndex(of: "--qfn-split-probe"), index + 6 < arguments.count {
