@@ -1,0 +1,2 @@
+14336 MiB
+iogpu.wired_limit_mb 14336

@@ -46,7 +46,7 @@
 
 | 項目 | MBP (Mac15,6) | M6 (Mac18,5) | 出所 |
 | --- | --- | --- | --- |
-| RAM / `recommendedMaxWorkingSetSize` | 18 GB / 15,360 MiB | 16 GB / 12,124 MiB | [m6-prefill/03 §1](../m6-prefill/03-FACTS.md) |
+| RAM / `recommendedMaxWorkingSetSize` | 18 GB / 15,360 MiB | 16 GB / 12,124 MiB (wired limit 14336 のとき 14336 MiB、[21](21-Q5-M6-OVERLAP.md)) | [m6-prefill/03 §1](../m6-prefill/03-FACTS.md) |
 | 内蔵 SSD (`F_NOCACHE`) | AP1024Z 6.68 GB/s | AP0256Z **3.34 GB/s** (QD を上げても伸びない) | [investigations/M6_SSD_BANDWIDTH §0](../investigations/M6_SSD_BANDWIDTH.md) |
 | 外付け `SSD256` (TB4、型番は未記載) | — | ランダム 1.57 GB/s (p50 8.5 ms @QD4)、連続 2.10。**内蔵と同時に読んで合計 4.83〜4.92 GB/s** | [m6-prefill/44 §1.1](../m6-prefill/44-EXPERT-MIRROR-EXTERNAL-SSD.md) |
 | GPU | fp16 GEMM 5.94 TFLOP/s | fp16 18.61、**fp32 4.85** TFLOP/s、帯域 144.4 GB/s | [m6-prefill/03 §1](../m6-prefill/03-FACTS.md) |
