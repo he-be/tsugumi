@@ -54,6 +54,15 @@ M, S = e1("Mac15-6"), e1("Mac18-5")
 ratio = e2_ratio()
 l1, l48 = e0()
 S_plus = dict(S, s=S["s"] * ratio)
+
+def e4_arm_c(host):
+    """E4-(b): arm C (fp16 展開 + MPS fp16) の 1 層の GPU 秒、3 層の中央値。"""
+    v = [float(re.search(r"C fp16 dequant \+ MPS fp16 GEMM \(group \d+\): GPU ([\d.]+) ms", open(f).read()).group(1)) / 1e3
+         for f in glob.glob(f"{R}/2026-09-25-{host}-e4-gemm/layer-*.log")]
+    return med(v)
+
+r_nax = e4_arm_c("Mac18-5")
+S_nax, S_plus_nax = dict(S, r=r_nax), dict(S_plus, r=r_nax)
 L = 48
 
 def w(X):   # one layer on one machine, everything
@@ -71,8 +80,9 @@ def B(sig, X6):
 
 def show():
     print("1 層あたりの量 (s、導出。E1 の 2 本目のチャンク、3 run の中央値 ÷ 48):")
-    for name, X in (("MBP", M), ("M6", S), ("M6 写しあり", S_plus)):
+    for name, X in (("MBP", M), ("M6", S), ("M6 写しあり", S_plus), ("M6 fp16", S_nax), ("M6 fp16 写し", S_plus_nax)):
         print(f"  {name:10s} d {X['d']:.4f}  r {X['r']:.4f}  t {X['t']:.4f}  s {X['s']:.4f}  o {X['o']:.4f}  | w {w(X):.4f}  p {X['p']:.2f}/チャンク")
+    print(f"  M6 fp16 の r は E4 の腕 C (MPS fp16) の 1 層の GPU 秒 {r_nax:.4f} (3 層の中央値、本番の混合ではなく単体ベンチ)")
     print(f"  E2 の比 (同時 / 内蔵だけ) {ratio:.3f}、l_1 {l1:.4f} s、l_48 {l48:.4f} s")
     print(f"  単体の式 {solo():.2f} s/チャンク (= E1 の 2 本目の壁時計 {M['wall']:.2f} - head {M['head']:.2f} - 暖かい ple + 冷えた ple {M['p']:.2f}。o はこの一致のために置いた)")
 
@@ -123,14 +133,14 @@ if __name__ == "__main__":
     print()
     print("1 チャンク (2048) の秒 (導出):")
     print(f"  単体 {solo():.2f}")
-    for lab, X6 in (("写しなし", S), ("写しあり", S_plus)):
+    for lab, X6 in (("写しなし", S), ("写しあり", S_plus), ("fp16 写しなし", S_nax), ("fp16 写しあり", S_plus_nax)):
         a1, k1 = best_A(X6, False); a2, k2 = best_A(X6, True); b, sg = best_B(X6)
         print(f"  {lab}: A 1 チャンクのラウンド {a1:.2f} (k {k1}) / A 定常 {a2:.2f} (k {k2}) / B {b:.2f} (sigma {sg:.2f})")
     if "--turns" in sys.argv:
         ts = turns()
         print()
         print(f"記録: アプリ turn-metrics.jsonl、Qwen3.8、2026-09-15/17、3 ラウンド以上のターン {len(ts)} 本、ラウンド {sum(len(t[1]) for t in ts)}")
-        for lab, X6 in (("写しなし", S), ("写しあり", S_plus)):
+        for lab, X6 in (("写しなし", S), ("写しあり", S_plus), ("fp16 写しなし", S_nax), ("fp16 写しあり", S_plus_nax)):
             def total_A(k):
                 return sum((A(k, X6, False) if c == 1 else c * A(k, X6, True)) for _, ns, _ in ts for c in [math.ceil(n / 2048) for n in ns] if c > 0)
             def total_B(sig):

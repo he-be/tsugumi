@@ -1,5 +1,7 @@
 # 07. 設計を決める実験 — 先に測り、式に入れ、それから作る
 
+**前提 (2026-09-25 ユーザー): M6 では必ず tensor ops を使う (MPS で同じ速さなら MPS でよい)。**M6 の秒は tensor ops の経路で取る。fp32 のコードで取った E1 の M6 の値は、それだけで分け方を決めない ([11](11-Q1-REOPEN-TENSOR-OPS.md))。
+
 2 機の分け方は 2 つある ([08](08-CANDIDATES.md): **A** 層で分ける / **B** expert で分ける)。どちらが速いかは、
 今は 1 つも測っていない量 (M6 で QFN の各段が何秒か、link が何秒か) で決まる。**推論で選ばない。**
 ここに置く E0〜E4 を先に取り、[08 §3](08-CANDIDATES.md) の式に入れて、記録の 1 ターンで秒の小さい方を作る。
@@ -53,15 +55,25 @@
 | 問い | (a) 今の routed の GEMM (dequant → float32 → MPS sgemm) は M6 で 1 層何秒か。(b) fp16 のタイルに展開して tensor ops (Gemma の [m6-prefill/40](../m6-prefill/40-MOE-GEMM-NAX.md) の形) にすると何秒か |
 | 道具 | (a) `TsugumiKernelCheck --q2-gemm-bench <gguf> <route.bin> 4 <iterations> 2048` を両機で。`route.bin` は MBP で `Q38_DUMP_ROUTE` を付けて 1 チャンク流して作り、M6 へ写す。(b) 同じベンチに fp16 tensor ops の腕を足す (**カーネル 1 本を書く。ランタイムには入れない**) |
 | 出す量 | **r_M6** (a)、**r_M6,nax** (b)、(b) の出力と (a) の出力の相対差 (fp16 の丸め) |
-| 決めること | M6 の GEMM が MBP の何秒に対して何秒か。(b) が (a) より縮むなら、A では k を、B では σ を上げる根拠になる。相対差が qwen38/01 の CPU 参照との幅を超えるなら (b) は使わない |
+| 決めること | M6 の GEMM が MBP の何秒に対して何秒か。M6 の r には (b) か (c) の速い方を使う。精度は ds4-metal と同じく、腕 A との差 ≤ 2e-3 × scale を合格とする (fp16 の行列積は qwen38/01 の 1.7e-6 を原理的に満たせないので、その幅は使わない、[11 §0](11-Q1-REOPEN-TENSOR-OPS.md)) |
+| (c) | ds4-metal `origin/qwen2-nax-tiles` の mid / down の tensor ops カーネル ([11 §1](11-Q1-REOPEN-TENSOR-OPS.md)) を同じベンチの腕 D に移植する。M6 だけ。(b) (MPS fp16) と並べて「MPS で同じ速さか」に答える |
 | 注意 | 単体ベンチの勝ちは本番ループで確かめるまで勝ちではない (m6-prefill/05 §2)。ここで得るのは式に入れる秒だけ |
+
+## E5. M6 の dense を tensor ops で
+
+| 項目 | 内容 |
+| --- | --- |
+| 問い | M6 で dense (pre-router の射影、shared expert) を fp16 の tensor ops で回すと 1 層何秒か (d_M6,nax)。今の d_M6 (fp32) は 0.0948 s/層 ([10 §2](10-Q1-SPLIT-DECISION.md)) |
+| 道具 | 未定。pre-router の各射影の形 (T = 2048) を KernelCheck のベンチで、MPS fp16 と、必要なら ds4-metal の dense の tensor ops の形で |
+| 出す量 | **d_M6,nax**、fp32 の出力との相対差 |
+| 決めること | A (M6 が層ごと dense も持つ) の M6 の 1 層の秒。B では MBP に残る dense が効くので、B の形そのものを見直す根拠になる |
 
 ## 決め方 (計測の前に置く。後から動かさない)
 
 1. E0〜E4 の量を [08 §3](08-CANDIDATES.md) の式に入れ、A と B の「1 チャンクのラウンド」「2 チャンク以上の定常」の秒を出す。
 2. 記録の 1 ターン ([qwen38/34](../qwen38/34-ROUND-BREAKDOWN.md) のアプリの記録、ラウンドごとの新規トークン数) を式に通し、**1 ターンの prefill 合計秒**を A と B で出す。
 3. 小さい方を作る。差が Q0 の揺れの幅の 2 倍より小さければ **B** (M6 に状態が無く、decode と prompt cache に手を入れない方) を作る。
-4. E4-(b) が縮んでいれば、選んだ方の M6 側に tensor ops の GEMM を入れる Gate (Q8) を足す。縮んでいなければ Q8 は作らない。
+4. M6 側は tensor ops の経路で作る (前提)。E4 の (b)・(c) と E5 の速い方を M6 の d・r に入れて 1〜3 をやる。
 5. 式と実測が 1 割以上ずれたら (E3)、設計の前に式を直して 1〜3 をやり直す。
 
 決めた結果は結果文書 (10 番台) に、式に入れた数字と証拠のリンク付きで書く。README の Gate の表はそこで更新する。

@@ -1,5 +1,7 @@
 # 10. Q1 分け方を決める実験 E0〜E4 — 式では B (expert で分ける、σ 0.40 / 写しあり 0.45)。E4-(b) は精度の規則で使わない (実測、2026-09-25)
 
+> **取り下げ (2026-09-25)**: 結論 (B) と「E4-(b) を使わない」は取り下げた。M6 を tensor ops を使わない fp32 のコードで測った結論で、M6 は tensor ops を使うという前提に合わない。数字 (§1) は実測としてそのまま使う。[11](11-Q1-REOPEN-TENSOR-OPS.md)。
+
 証拠 (どれも `bench/qfn/results/2026-09-25-<形>-<label>/`):
 [`pair-e0-link`](../../bench/qfn/results/2026-09-25-pair-e0-link/)、
 [`Mac15-6-e1-stages`](../../bench/qfn/results/2026-09-25-Mac15-6-e1-stages/)・[`Mac18-5-e1-stages`](../../bench/qfn/results/2026-09-25-Mac18-5-e1-stages/)、
