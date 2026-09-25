@@ -20,7 +20,7 @@ import Foundation
 private let pairMagic: Int64 = 0x5146_4E50   // "QFNP"
 private let pairVersion: Int64 = 2
 /// Doubles per chunk answer: the M6's forward and profile, then its layer store's (`Qwen38LayerStore.Stats`).
-private let pairTimes = 12
+private let pairTimes = 14
 
 private func pairFileSize(_ f: GGUFFile) -> Int64 {
     var st = stat()
