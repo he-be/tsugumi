@@ -1,7 +1,10 @@
 #!/bin/zsh
 # Q0 / ledger bench for Qwen3.8-Flash-Next (docs/qfn-prefill/04 Q0, 06). Evidence is filed automatically.
 #   bench/qfn/pair_bench.sh <label> [n] --solo [-- extra TsugumiServer args]
-# --solo is the MBP alone. The two-machine form (M6 started over bridge0) is added with Q1; without --solo this refuses.
+#   bench/qfn/pair_bench.sh <label> [n] --pair <k> [-- extra TsugumiServer args]
+# --solo is the MBP alone. --pair <k> is split A (docs/qfn-prefill/22 §4): bench/qfn/pair_serve.sh starts the M6's serve
+# (its defaults) over bridge0 for the whole invocation, and every MBP process runs with Q38_PAIR=<M6> Q38_PAIR_K=<k>.
+# A run is invalid (exit 7) when the M6 serve has ended, and (exit 8) when the MBP ran a round alone or its feed failed.
 #
 # Two bodies, the same script for both columns (06 §0):
 #   本文 1: the natural prompts of bench/m6/prompts/ (5, 2345-2499 Gemma tokens), each in a fresh TsugumiServer, one
@@ -17,16 +20,19 @@
 # QFN_APPEND=1 adds rounds to an existing directory of the same label and date (numbered after its rows), so two arms
 # can alternate with one binary: for r in 1 2 3; do pair_bench.sh x-off 1 --solo; Q38_...=1 pair_bench.sh x-on 1 --solo; done
 # Output: bench/qfn/results/<date>-Mac15-6-<label>/ (hostinfo.mbp.txt command.txt env.txt summary-b1.tsv summary-b2.tsv
-#   b1-<body>-rN.{server.log,response.json,pre.txt,post.txt,guard.txt}, b2-rN/ (ToolLoopCheck out) b2-rN.{pre,post}.txt)
+#   b1-<body>-rN.{server.log,response.json,pre.txt,post.txt,guard.txt}, b2-rN/ (ToolLoopCheck out) b2-rN.{pre,post}.txt);
+#   --pair: <date>-pair-<label>/ with hostinfo.m6.txt link.txt env.m6.txt serve.m6.{log,guard.txt} and per run
+#   <tag>.{pre,post}.m6.txt; the summaries gain the M6's MB read from disk0 (internal) and disk4 (external) and Swapouts.
 set -eu
 repo=${0:A:h:h:h}
 label=${1:?label}; shift
 n=6
 if [[ $# -ge 1 && $1 != --* ]]; then n=$1; shift; fi
-solo=0
+solo=0 pairk=0
 [[ $# -ge 1 && $1 == --solo ]] && { solo=1; shift; }
+[[ $# -ge 2 && $1 == --pair ]] && { pairk=$2; shift 2; }
 [[ $# -ge 1 && $1 == -- ]] && shift
-if (( ! solo )); then echo "only --solo exists yet (the two-machine form comes with Q1)"; exit 1; fi
+if (( ! solo && ! pairk )); then echo "--solo or --pair <k>"; exit 1; fi
 case $label in
     ledger*)
         if env | grep -qE '^(Q38_|TF_)' || [[ $# -ge 1 ]]; then
@@ -50,6 +56,7 @@ if [[ -n $(busy) ]]; then busy; echo "another model process is running; refusing
 
 host=$(sysctl -n hw.model | tr ',' '-')
 out=$repo/bench/qfn/results/$(date +%F)-$host-$label
+(( pairk )) && out=$repo/bench/qfn/results/$(date +%F)-pair-$label
 append=${QFN_APPEND:-0}
 if (( append )) && [[ -f $out/env.txt ]]; then
     { env | grep -E '^(Q38_|TF_|QFN_|COOL_S)' | grep -v '^QFN_APPEND=' || true; } | diff -q - <(grep -v '^QFN_APPEND=' $out/env.txt) > /dev/null \
@@ -74,10 +81,32 @@ snap() { { date '+%H:%M:%S'; memory_pressure -Q | tail -1; vm_stat; iostat -d -I
 swapouts() { awk '/Swapouts/ {gsub(/\./,"",$2); print $2}' $1; }
 pageins() { awk '/Pageins/ {gsub(/\./,"",$2); print $2}' $1; }
 
+pairenv=()
+if (( pairk )); then
+    trap "$repo/bench/qfn/pair_serve.sh stop $out" EXIT
+    $repo/bench/qfn/pair_serve.sh start $out
+    echo "split A k=$pairk" >> $out/link.txt
+    pairenv=(Q38_PAIR=$(awk '/-> M6/ {print $NF}' $out/link.txt) Q38_PAIR_K=$pairk)
+    echo "MBP env of each process: ${pairenv[*]}" >> $out/command.txt
+fi
+m6snap() { (( pairk )) && $repo/bench/qfn/pair_serve.sh snap $1 || true; }
+# --pair: 7 when the M6 serve has ended, 8 when the MBP ran a round alone or its feed link failed.
+pairchk() {
+    (( pairk )) || return 0
+    $repo/bench/qfn/pair_serve.sh alive || return 7
+    grep -qE 'this round runs here alone|Qwen3.8 pair feed:' $1 && return 8
+    return 0
+}
+# --pair: the M6's MB read from disk0 (internal) and disk4 (external) and its Swapouts over one run.
+m6cols() {
+    (( pairk )) || return 0
+    python3 $repo/bench/qfn/m6_cols.py $out/$1.pre.m6.txt $out/$1.post.m6.txt
+}
+
 body1() {  # body round
     local b=$1 r=$2 tag=b1-$1-r$2 gpid spid rc=0
-    snap $out/$tag.pre.txt
-    env $(rlog $tag) GUARD_LOG=$out/$tag.guard.txt caffeinate -i $repo/Scripts/qwen38/guarded.sh $out/$tag.server.log "${server_cmd[@]}" &
+    snap $out/$tag.pre.txt; m6snap $out/$tag.pre.m6.txt
+    env $(rlog $tag) $pairenv GUARD_LOG=$out/$tag.guard.txt caffeinate -i $repo/Scripts/qwen38/guarded.sh $out/$tag.server.log "${server_cmd[@]}" &
     gpid=$!
     local waited=0
     until curl -sf http://127.0.0.1:$port/health > /dev/null 2>&1; do
@@ -97,33 +126,35 @@ EOF
     spid=$(pgrep -f "^$server --model $model --host 127.0.0.1 --port $port" || true)
     if [[ -n $spid ]]; then kill $spid 2>/dev/null || true; fi
     wait $gpid 2>/dev/null || true
-    snap $out/$tag.post.txt
+    snap $out/$tag.post.txt; m6snap $out/$tag.post.m6.txt
     grep -q '^GUARD: Swapouts' $out/$tag.server.log && rc=9
+    pairchk $out/$tag.server.log || rc=$?
     python3 - $out/$tag.response.json $b $r $rc \
         $(( $(swapouts $out/$tag.post.txt) - $(swapouts $out/$tag.pre.txt) )) \
-        $(( ($(pageins $out/$tag.post.txt) - $(pageins $out/$tag.pre.txt)) * 16384 / 1048576 )) >> $out/summary-b1.tsv <<'EOF'
+        $(( ($(pageins $out/$tag.post.txt) - $(pageins $out/$tag.pre.txt)) * 16384 / 1048576 )) $(m6cols $tag) >> $out/summary-b1.tsv <<'EOF'
 import json, sys
-path, body, rnd, rc, so, pin = sys.argv[1:]
+path, body, rnd, rc, so, pin, *m6 = sys.argv[1:]
 try: t = json.load(open(path)).get("timings", {})
 except Exception: t = {}
 ms = t.get("prompt_ms")
 print("\t".join([body, rnd, str(t.get("prompt_n", "")), str(t.get("cache_n", "")),
-                 f"{ms / 1000:.3f}" if ms is not None else "", pin, so, rc]))
+                 f"{ms / 1000:.3f}" if ms is not None else "", pin, so, rc] + m6))
 EOF
     tail -1 $out/summary-b1.tsv
 }
 
 body2() {  # round
     local r=$1 tag=b2-r$1 rc=0
-    snap $out/$tag.pre.txt
+    snap $out/$tag.pre.txt; m6snap $out/$tag.pre.m6.txt
     mkdir -p $out/$tag
-    env $(rlog $tag) GUARD_LOG=$out/$tag.guard.txt caffeinate -i $repo/Scripts/qwen38/guarded.sh $out/$tag.log "${loop_cmd[@]}" --out $out/$tag || rc=$?
-    snap $out/$tag.post.txt
+    env $(rlog $tag) $pairenv GUARD_LOG=$out/$tag.guard.txt caffeinate -i $repo/Scripts/qwen38/guarded.sh $out/$tag.log "${loop_cmd[@]}" --out $out/$tag || rc=$?
+    snap $out/$tag.post.txt; m6snap $out/$tag.post.m6.txt
     grep -q '^GUARD: Swapouts' $out/$tag.log && rc=9
+    pairchk $out/$tag.log || rc=$?
     python3 - $out/$tag $r $rc $(( $(swapouts $out/$tag.post.txt) - $(swapouts $out/$tag.pre.txt) )) \
-        $(( ($(pageins $out/$tag.post.txt) - $(pageins $out/$tag.pre.txt)) * 16384 / 1048576 )) >> $out/summary-b2.tsv <<'EOF'
+        $(( ($(pageins $out/$tag.post.txt) - $(pageins $out/$tag.pre.txt)) * 16384 / 1048576 )) $(m6cols $tag) >> $out/summary-b2.tsv <<'EOF'
 import json, sys
-d, rnd, rc, so, pin = sys.argv[1:]
+d, rnd, rc, so, pin, *m6 = sys.argv[1:]
 try: rows = [json.loads(l) for l in open(d + "/rounds.jsonl")]
 except Exception: rows = []
 pre = sum(x.get("prefill_s", 0) for x in rows)
@@ -134,7 +165,7 @@ import re
 seen = [(int(m[0]), int(m[1])) for m in re.findall(r"prompt cache qwen38 \S+ agreed=(\d+) prompt=(\d+)", open(d + ".log").read())]
 new = [p - a for a, p in seen]
 per = ",".join(f"{x.get('prefill_s', 0):.3f}" for x in rows)
-print("\t".join([rnd, str(len(rows)), f"{pre:.3f}", f"{wall:.3f}", ",".join(map(str, new)), per, pin, so, rc]))
+print("\t".join([rnd, str(len(rows)), f"{pre:.3f}", f"{wall:.3f}", ",".join(map(str, new)), per, pin, so, rc] + m6))
 EOF
     tail -1 $out/summary-b2.tsv
 }
@@ -143,7 +174,7 @@ first=1
 pause() { (( first )) && first=0 || sleep $cool; }
 if [[ $bodies == *1* ]]; then
     (( append )) && [[ -f $out/summary-b1.tsv ]] ||
-        printf 'body\tround\tprompt_n\tcache_n\tprefill_s\tpageins_MB\tswapouts\texit\n' > $out/summary-b1.tsv
+        printf 'body\tround\tprompt_n\tcache_n\tprefill_s\tpageins_MB\tswapouts\texit%s\n' "$( (( pairk )) && printf '\tm6_int_MB\tm6_ext_MB\tm6_swapouts' || true )" > $out/summary-b1.tsv
     r0=$(awk -F'\t' 'NR > 1 { if ($2 > m) m = $2 } END { print m + 0 }' $out/summary-b1.tsv)
     for r in $(seq $(( r0 + 1 )) $(( r0 + n ))); do
         np=${#prompts}; k=$(( (r - 1) % np ))
@@ -152,7 +183,7 @@ if [[ $bodies == *1* ]]; then
 fi
 if [[ $bodies == *2* ]]; then
     (( append )) && [[ -f $out/summary-b2.tsv ]] ||
-        printf 'round\trounds\tprefill_sum_s\twall_sum_s\tnew_tokens\tprefill_s_by_round\tpageins_MB\tswapouts\texit\n' > $out/summary-b2.tsv
+        printf 'round\trounds\tprefill_sum_s\twall_sum_s\tnew_tokens\tprefill_s_by_round\tpageins_MB\tswapouts\texit%s\n' "$( (( pairk )) && printf '\tm6_int_MB\tm6_ext_MB\tm6_swapouts' || true )" > $out/summary-b2.tsv
     r0=$(awk -F'\t' 'NR > 1 { if ($1 > m) m = $1 } END { print m + 0 }' $out/summary-b2.tsv)
     for r in $(seq $(( r0 + 1 )) $(( r0 + n ))); do pause; body2 $r; done
 fi

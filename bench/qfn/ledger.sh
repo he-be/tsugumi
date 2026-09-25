@@ -4,8 +4,9 @@
 #   bench/qfn/ledger.sh          # §1: ledger-* directories whose env.txt has no Q38_/TF_ line
 #   bench/qfn/ledger.sh --all    # §2: every pair_bench directory, with its Q38_/TF_ column
 # One row per 本文 1 body (median of prefill_s over its runs) and one row for 本文 2 (median of the turn's prefill total).
-# Runs with exit != 0 are counted separately and never enter the median. 読み MB is the median Pageins of one run
-# (MBP only in the solo column). No ratio column exists on purpose (06 §0-3).
+# Runs with exit != 0 are counted separately and never enter the median. 読み MB is the median over runs of the MBP's
+# Pageins, and in the 2 機 column of the M6's disk0 (内) and disk4 (外) MB read (iostat). No ratio column exists on
+# purpose (06 §0-3).
 set -eu
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 mode=${1:-default}
@@ -34,23 +35,34 @@ for d in "$repo"/bench/qfn/results/*/; do
             m = (NR % 2) ? v[(NR + 1) / 2] : (v[NR / 2] + v[NR / 2 + 1]) / 2
             printf "%d\t%.3f\t%.3f\t%.3f\n", NR, m, v[1], v[NR] }'
     }
-    row() {  # body stats reads failed
-        printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s / - / - | %s |%s\n' "$date" "$commit" "$label" "$col" \
+    row() {  # body stats reads failed m6-internal m6-external
+        printf '| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s / %s / %s | %s |%s\n' "$date" "$commit" "$label" "$col" \
             "$split" "$1" "$(echo "$2" | cut -f1)" "$(echo "$2" | cut -f2)" "$(echo "$2" | cut -f3)" "$(echo "$2" | cut -f4)" \
-            "${3%.*}" "$4" "$tail"
+            "${3%.*}" "${5%.*}" "${6%.*}" "$4" "$tail"
+    }
+    m6med() {  # file exit-column value-column [body]: median of the column over valid runs, or -
+        awk -F'\t' -v e="$2" -v c="$3" -v b="${4:-}" 'NR > 1 && $e == "0" && (b == "" || $1 == b) && $c != "" { print $c }' "$1" | stats | cut -f2
     }
     if [ -f "$d/summary-b1.tsv" ]; then
         for body in $(awk -F'\t' 'NR > 1 { print $1 }' "$d/summary-b1.tsv" | sort -u); do
             s=$(awk -F'\t' -v b="$body" 'NR > 1 && $1 == b && $8 == "0" && $5 != "" { print $5 }' "$d/summary-b1.tsv" | stats)
             r=$(awk -F'\t' -v b="$body" 'NR > 1 && $1 == b && $8 == "0" { print $6 }' "$d/summary-b1.tsv" | stats | cut -f2)
             f=$(awk -F'\t' -v b="$body" 'NR > 1 && $1 == b && $8 != "0" { n++ } END { print n + 0 }' "$d/summary-b1.tsv")
-            row "本文 1 $body" "$s" "$r" "$f"
+            if head -1 "$d/summary-b1.tsv" | grep -q m6_int_MB; then
+                row "本文 1 $body" "$s" "$r" "$f" "$(m6med "$d/summary-b1.tsv" 8 9 "$body")" "$(m6med "$d/summary-b1.tsv" 8 10 "$body")"
+            else
+                row "本文 1 $body" "$s" "$r" "$f" - -
+            fi
         done
     fi
     if [ -f "$d/summary-b2.tsv" ]; then
         s=$(awk -F'\t' 'NR > 1 && $9 == "0" { print $3 }' "$d/summary-b2.tsv" | stats)
         r=$(awk -F'\t' 'NR > 1 && $9 == "0" { print $7 }' "$d/summary-b2.tsv" | stats | cut -f2)
         f=$(awk -F'\t' 'NR > 1 && $9 != "0" { n++ } END { print n + 0 }' "$d/summary-b2.tsv")
-        row "本文 2 (1 ターンの合計)" "$s" "$r" "$f"
+        if head -1 "$d/summary-b2.tsv" | grep -q m6_int_MB; then
+            row "本文 2 (1 ターンの合計)" "$s" "$r" "$f" "$(m6med "$d/summary-b2.tsv" 9 10)" "$(m6med "$d/summary-b2.tsv" 9 11)"
+        else
+            row "本文 2 (1 ターンの合計)" "$s" "$r" "$f" - -
+        fi
     fi
 done
