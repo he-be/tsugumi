@@ -12,7 +12,9 @@ import json
 import statistics
 import sys
 
-COLS = ["round", "turns", "turns_ok", "rounds", "generated", "decode_sum_s", "steps", "step_med_ms", "step_p90_ms",
+# turns_ok: every check but `progress` passed. The prefill counter is only the app's display (the user, 2026-09-26);
+# on the pair it stalls while the M6 runs its layers, so its failures are counted apart (progress_fail).
+COLS = ["round", "turns", "turns_ok", "progress_fail", "rounds", "generated", "decode_sum_s", "steps", "step_med_ms", "step_p90_ms",
         "accepted", "proposed", "prefill_sum_s", "begin_n", "begin_sum_s", "begin_max_s", "restores", "captures",
         "pageins_MB", "swapouts", "exit"]
 
@@ -42,7 +44,8 @@ for x in rounds:
     acc += int(a or 0)
     prop += int(p or 0)
 q = statistics.quantiles(steps, n=10) if len(steps) >= 2 else [0] * 9
-row = [rnd, len(turns), sum(1 for t in turns if all(t.get("checks", {}).values())), len(rounds),
+row = [rnd, len(turns), sum(1 for t in turns if all(v for k, v in t.get("checks", {}).items() if k != "progress")),
+       sum(1 for t in turns if t.get("checks", {}).get("progress") is False), len(rounds),
        sum(x.get("generated", 0) for x in rounds), f"{sum(x.get('decode_s', 0) for x in runs):.3f}", len(steps),
        f"{statistics.median(steps) * 1000:.1f}" if steps else "", f"{q[8] * 1000:.1f}" if steps else "", acc, prop,
        f"{sum(x.get('prefill_s', 0) for x in runs):.3f}", len(begins), f"{sum(begins):.3f}",
