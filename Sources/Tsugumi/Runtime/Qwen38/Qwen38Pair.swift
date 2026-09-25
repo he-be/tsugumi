@@ -10,11 +10,50 @@ import Foundation
 // indexer rows of its layers, and, after the chunks the MBP marks (checkpoint cuts and the last), the recurrent state
 // of its layers. The MBP runs layers k ..< 48, the head and the MTP head, and decodes alone.
 //
-// Raw TCP on bridge0 (link-local), one connection; both ends are arm64 (native byte order). No authentication: bind
-// only the link-local address.
+// On connecting, the M6 says how it holds its layers (`Qwen38LayerStore`: resident layers, staging slabs, the feed
+// fraction) and the sizes of its weight files, which must be the MBP's. With a feed fraction the MBP opens a second
+// connection (port + 1) and serves the M6's piece lists from its own SSD (F_NOCACHE, 16 MB blocks on 4 threads).
+//
+// Raw TCP on bridge0 (link-local); both ends are arm64 (native byte order). No authentication: bind only the
+// link-local address.
 
 private let pairMagic: Int64 = 0x5146_4E50   // "QFNP"
-private let pairVersion: Int64 = 1
+private let pairVersion: Int64 = 2
+/// Doubles per chunk answer: the M6's forward and profile, then its layer store's (`Qwen38LayerStore.Stats`).
+private let pairTimes = 12
+
+private func pairFileSize(_ f: GGUFFile) -> Int64 {
+    var st = stat()
+    return stat(f.url.path, &st) == 0 ? Int64(st.st_size) : -1
+}
+
+private func pairConnect(_ host: String, _ port: Int) throws -> Int32 {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { throw Qwen38Pair.Error.link("socket: \(String(cString: strerror(errno)))") }
+    pairTune(fd)
+    var a = try pairAddress(host, port)
+    let r = withUnsafePointer(to: &a) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    }
+    guard r == 0 else {
+        let why = String(cString: strerror(errno))
+        close(fd)
+        throw Qwen38Pair.Error.link("connect \(host):\(port): \(why)")
+    }
+    return fd
+}
+
+private func pairListen(_ host: String, _ port: Int) throws -> Int32 {
+    let ls = socket(AF_INET, SOCK_STREAM, 0)
+    var one: Int32 = 1
+    setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, 4)
+    var a = try pairAddress(host, port)
+    guard withUnsafePointer(to: &a, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+        bind(ls, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }) == 0, listen(ls, 1) == 0 else {
+        throw Qwen38Pair.Error.link("bind/listen \(host):\(port): \(String(cString: strerror(errno)))")
+    }
+    return ls
+}
 
 /// Blocking whole-buffer I/O on a socket.
 private func pairIO(_ fd: Int32, _ p: UnsafeRawPointer, _ n: Int, send: Bool) throws {
@@ -90,7 +129,8 @@ package enum Qwen38Pair {
         /// The recurrent state of layers 0 ..< k after the chunk (`forEachRecurrentRegion(layers:)` order), if asked.
         package var state: [UInt8]?
         package var plePrev: [Int] = []
-        /// The M6's forward seconds and its profile (ple, preRouter, route, routed, preGPU, routedGPU).
+        /// The M6's forward seconds, its profile (ple, preRouter, route, routed, preGPU, routedGPU, routeAdvise) and its
+        /// layer store's (slab wait, own read, fed, layer reads, own MB, fed MB) for the chunk.
         package var times: [Double] = []
         /// Seconds the MBP's receiver spent on this message after its header arrived.
         package var recvSeconds = 0.0
@@ -109,24 +149,38 @@ package enum Qwen38Pair {
         private var expected = 0
         private var receiver: Thread?
 
-        package init(host: String, port: Int, k: Int) throws {
+        /// What the M6 said on connecting: resident layers, staging slabs, feed fraction.
+        package let resident: Int, slabs: Int, feed: Double
+        private var feedFD: Int32 = -1
+
+        package init(host: String, port: Int, k: Int, runner: Qwen38Runner) throws {
             self.k = k
-            let fd = socket(AF_INET, SOCK_STREAM, 0)
-            guard fd >= 0 else { throw Error.link("socket: \(String(cString: strerror(errno)))") }
-            pairTune(fd)
-            var a = try pairAddress(host, port)
-            let r = withUnsafePointer(to: &a) {
-                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
-            }
-            guard r == 0 else {
-                let why = String(cString: strerror(errno))
-                close(fd)
-                throw Error.link("connect \(host):\(port): \(why)")
-            }
+            let fd = try pairConnect(host, port)
             self.fd = fd
+            do {
+                let hello: [Int64] = try pairRecv(fd, 4, as: Int64.self)
+                let sizes: [Int64] = try pairRecv(fd, Int(hello[3]), as: Int64.self)
+                let mine = runner.weightFiles.map(pairFileSize)
+                guard sizes == mine else { throw Error.link("weight files differ: M6 \(sizes), here \(mine)") }
+                resident = Int(hello[0]); slabs = Int(hello[1]); feed = Double(hello[2]) / 1e6
+                if feed > 0 {
+                    let ffd = try pairConnect(host, port + 1)
+                    feedFD = ffd
+                    let paths = runner.weightFiles.map { $0.url.path }
+                    let t = Thread { Qwen38Pair.feedServe(ffd, paths: paths) }
+                    t.stackSize = 1 << 20
+                    t.start()
+                }
+            } catch {
+                close(fd)
+                throw error
+            }
         }
 
-        deinit { close(fd) }
+        deinit {
+            close(fd)
+            if feedFD >= 0 { shutdown(feedFD, SHUT_RDWR) }
+        }
 
         /// Starts a round: the M6 runs layers 0 ..< k of `tokens` at `startPos` in chunks of `chunks`, and sends the
         /// recurrent state after the chunks marked in `stateAfter`. `kvFrom`: the first position whose rows the M6
@@ -164,7 +218,7 @@ package enum Qwen38Pair {
                         guard head[0] == Int64(i), head[1] == Int64(T) else { throw Error.link("chunk \(i): got \(head)") }
                         var c = Chunk()
                         c.index = i; c.T = T
-                        c.times = try pairRecv(fd, 8, as: Double.self)
+                        c.times = try pairRecv(fd, pairTimes, as: Double.self)
                         c.plePrev = try pairRecv(fd, 2, as: Int64.self).map { Int($0) }
                         c.residual = try pairRecv(fd, T * W, as: Float.self)
                         c.kv = try pairRecv(fd, kvBytes[i], as: UInt8.self)
@@ -215,36 +269,105 @@ package enum Qwen38Pair {
         }
     }
 
+    /// The MBP's side of the feed link: answers the M6's piece lists (count, then file index, offset, bytes each) until
+    /// the link closes. Blocks of 16 MB are read by 4 threads (F_NOCACHE) and sent in order as each completes.
+    fileprivate static func feedServe(_ fd: Int32, paths: [String]) {
+        let fds = paths.map { path -> Int32 in
+            let f = open(path, O_RDONLY)
+            _ = fcntl(f, F_NOCACHE, 1)
+            return f
+        }
+        defer { for f in fds { close(f) }; close(fd) }
+        var cap = 0
+        var buf: UnsafeMutableRawPointer?
+        defer { buf?.deallocate() }
+        while true {
+            guard let n = try? pairRecv(fd, 1, as: Int64.self)[0], n >= 0,
+                  let list = try? pairRecv(fd, Int(n) * 3, as: Int64.self) else { return }
+            var blocks: [(Int32, Int, Int, Int)] = [], total = 0
+            for i in 0..<Int(n) {
+                let f = fds[Int(list[3 * i])], off = Int(list[3 * i + 1]), len = Int(list[3 * i + 2])
+                var o = 0
+                while o < len { let b = min(16 << 20, len - o); blocks.append((f, off + o, b, total + o)); o += b }
+                total += len
+            }
+            if total > cap { buf?.deallocate(); cap = total; buf = UnsafeMutableRawPointer.allocate(byteCount: cap, alignment: 16384) }
+            let dst = buf!
+            let ready = blocks.map { _ in DispatchSemaphore(value: 0) }
+            let next = UnsafeMutablePointer<Int>.allocate(capacity: 1)
+            next.initialize(to: 0)
+            let lock = NSLock()
+            let readers = DispatchGroup()
+            for _ in 0..<4 {
+                DispatchQueue.global().async(group: readers) {
+                    while true {
+                        lock.lock(); let i = next.pointee; next.pointee += 1; lock.unlock()
+                        guard i < blocks.count else { return }
+                        let (f, off, len, d) = blocks[i]
+                        var done = 0
+                        while done < len {
+                            let got = pread(f, dst + d + done, len - done, off_t(off + done))
+                            precondition(got > 0, "feed pread: errno \(errno)")
+                            done += got
+                        }
+                        ready[i].signal()
+                    }
+                }
+            }
+            var ok = true
+            for (i, b) in blocks.enumerated() {
+                ready[i].wait()
+                if ok { ok = (try? pairIO(fd, dst + b.3, b.2, send: true)) != nil }
+            }
+            readers.wait()
+            next.deallocate()
+            if !ok { return }
+        }
+    }
+
     // MARK: - M6
 
     /// The M6's end: serves rounds on one connection at a time with its own runner, layers 0 ..< k (k from the request).
     /// `log` gets a line per chunk.
-    package static func serve(runner: Qwen38Runner, host: String, port: Int, log: (String) -> Void) throws -> Never {
-        let ls = socket(AF_INET, SOCK_STREAM, 0)
-        var one: Int32 = 1
-        setsockopt(ls, SOL_SOCKET, SO_REUSEADDR, &one, 4)
-        var a = try pairAddress(host, port)
-        guard withUnsafePointer(to: &a, { $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-            bind(ls, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) } }) == 0, listen(ls, 1) == 0 else {
-            throw Error.link("bind/listen \(host):\(port): \(String(cString: strerror(errno)))")
-        }
-        log("listening on \(host):\(port)")
+    /// `store`: the M6's own buffers for its layers (nil: the runner's mapped files). The feed link (port + 1) is
+    /// accepted after the main one when the store has a feed fraction.
+    package static func serve(runner: Qwen38Runner, store: Qwen38LayerStore?, host: String, port: Int,
+                              log: (String) -> Void) throws -> Never {
+        let ls = try pairListen(host, port)
+        let feedLS = (store?.feed ?? 0) > 0 ? try pairListen(host, port + 1) : -1
+        log("listening on \(host):\(port)" + (feedLS >= 0 ? " (feed \(port + 1))" : ""))
         while true {
             let fd = accept(ls, nil, nil)
             guard fd >= 0 else { continue }
             pairTune(fd)
-            log("connected")
+            var feedFD: Int32 = -1
             do {
-                while true { try serveRound(runner: runner, fd: fd, log: log) }
+                let files = runner.weightFiles.map(pairFileSize)
+                try pairSend(fd, [Int64(store?.resident ?? 0), Int64(store?.slabs ?? 0), Int64(((store?.feed ?? 0) * 1e6).rounded()),
+                                  Int64(files.count)] + files)
+                if feedLS >= 0 {
+                    feedFD = accept(feedLS, nil, nil)
+                    pairTune(feedFD)
+                }
+                log("connected" + (feedFD >= 0 ? " (feed)" : ""))
+                while true {
+                    // A link that ends between rounds is the MBP leaving; one that ends inside a round leaves the store
+                    // mid-read, and the process ends (serveRound).
+                    guard let h = try? pairRecv(fd, 8, as: Int64.self) else { break }
+                    try serveRound(runner: runner, store: store, fd: fd, feedFD: feedFD, header: h, log: log)
+                }
+                log("connection ended")
             } catch {
-                log("connection ended: \(error)")
+                log("round failed: \(error)")
+                exit(1)
             }
             close(fd)
+            if feedFD >= 0 { close(feedFD) }
         }
     }
 
-    private static func serveRound(runner: Qwen38Runner, fd: Int32, log: (String) -> Void) throws {
-        let h: [Int64] = try pairRecv(fd, 8, as: Int64.self)
+    private static func serveRound(runner: Qwen38Runner, store: Qwen38LayerStore?, fd: Int32, feedFD: Int32,
+                                   header h: [Int64], log: (String) -> Void) throws {
         guard h[0] == pairMagic, h[1] == pairVersion else { throw Error.link("bad header \(h)") }
         let k = Int(h[2]), startPos = Int(h[3]), n = Int(h[4]), nChunks = Int(h[5]), kvFrom = Int(h[6])
         guard k >= 1 && k <= runner.nTrunk, startPos + n <= runner.capacity, kvFrom <= startPos else {
@@ -263,6 +386,8 @@ package enum Qwen38Pair {
         log(String(format: "round k %d at %d: %d tokens in %d chunks, kv rows %d, request %.3f s", k, startPos, n, nChunks,
                    startPos - kvFrom, tIn))
         if runner.plePrefetch && k > runner.pleLayerIndex { try runner.prefetchPLE(tokens: tokens) }
+        store?.beginRound(chunks: nChunks, k: k, feed: feedFD)
+        var last = Qwen38LayerStore.Stats()
         runner.layerRange = layers
         runner.trunkOnly = true
         defer { runner.layerRange = nil; runner.trunkOnly = false }
@@ -275,14 +400,20 @@ package enum Qwen38Pair {
             let p = runner.lastProfile
             let ts = CFAbsoluteTimeGetCurrent()
             try pairSend(fd, [Int64(i), Int64(T), stateAfter[i] ? 1 : 0, 0])
-            try pairSend(fd, [forward, p.ple, p.preRouter, p.route, p.routed, p.preGPU, p.routedGPU, p.routeAdvise])
+            let st = store?.stats ?? Qwen38LayerStore.Stats()
+            let ls = [st.wait - last.wait, st.own - last.own, st.fed - last.fed, st.read - last.read,
+                      Double(st.ownBytes - last.ownBytes) / 1e6, Double(st.fedBytes - last.fedBytes) / 1e6]
+            last = st
+            try pairSend(fd, [forward, p.ple, p.preRouter, p.route, p.routed, p.preGPU, p.routedGPU, p.routeAdvise] + ls)
             try pairSend(fd, runner.plePrevious.map { Int64($0) })
             try pairIO(fd, runner.hidden(row: 0), T * W * 4, send: true)
             try pairRegions(fd, send: true) { try runner.forEachKVRegion(layers: layers, positions: pos..<(pos + T), $0) }
             if stateAfter[i] { try pairRegions(fd, send: true) { try runner.forEachRecurrentRegion(layers: layers, $0) } }
             log(String(format: "chunk %d at %d T %d: forward %.3f s (ple %.3f pre %.3f route %.3f advise %.3f routed %.3f, gpu %.3f + %.3f), send %.3f s",
                        i, pos, T, forward, p.ple, p.preRouter, p.route, p.routeAdvise, p.routed, p.preGPU, p.routedGPU,
-                       CFAbsoluteTimeGetCurrent() - ts))
+                       CFAbsoluteTimeGetCurrent() - ts)
+                + (store == nil ? "" : String(format: "; slabs: wait %.3f s, reads %.3f s (own %.3f s %.0f MB, fed %.3f s %.0f MB)",
+                                              ls[0], ls[3], ls[1], ls[4], ls[2], ls[5])))
             pos += T
             done += T
         }

@@ -28,8 +28,19 @@ func runQwen38PairServe(ip: String, port: Int, gguf: String, ple: String, capaci
     let runner = try Qwen38Runner(gguf: URL(fileURLWithPath: (gguf as NSString).expandingTildeInPath),
                                   ple: URL(fileURLWithPath: (ple as NSString).expandingTildeInPath),
                                   capacity: capacity, maxBatch: chunk)
-    print("Qwen3.8 pair serve: capacity \(capacity), chunk \(chunk), KV \(runner.kvQ8 ? "q8_0" : "f32")")
-    try Qwen38Pair.serve(runner: runner, host: ip, port: port) { print($0) }
+    print("Qwen3.8 pair serve: capacity \(capacity), chunk \(chunk), KV \(runner.kvQ8 ? "q8_0" : "f32"), P1 \(runner.p1)")
+    // The layer store (docs/qfn-prefill/22 §4): Q38_PAIR_RESIDENT (13; 0 = the mapped files, no store),
+    // Q38_EXPERT_SLAB (2), Q38_EXPERT_FEED (0.59).
+    let env = ProcessInfo.processInfo.environment
+    let resident = Int(env["Q38_PAIR_RESIDENT"] ?? "") ?? 13
+    var store: Qwen38LayerStore?
+    if resident > 0 {
+        store = try Qwen38LayerStore(runner: runner, resident: resident, slabs: Int(env["Q38_EXPERT_SLAB"] ?? "") ?? 2,
+                                     feed: Double(env["Q38_EXPERT_FEED"] ?? "") ?? 0.59)
+        print(String(format: "layer store: %d resident layers %.2f GB in %.1f s, %d slabs %.2f GB, feed %.2f", store!.resident,
+                     Double(store!.residentBytes) / 1e9, store!.fillSeconds, store!.slabs, Double(store!.stagingBytes) / 1e9, store!.feed))
+    }
+    try Qwen38Pair.serve(runner: runner, store: store, host: ip, port: port) { print($0) }
 }
 
 func runQwen38PairCheck(tokenFile: String, pair: String, k: Int, tokens: Int?, newTokens: Int, chunk: Int,

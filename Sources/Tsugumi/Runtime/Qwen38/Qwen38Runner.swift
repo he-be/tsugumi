@@ -58,7 +58,7 @@ package final class Qwen38Runner {
     /// element of those F32 tensors has its low 16 mantissa bits zero, so the BF16 kernels read the same float32
     /// bits (`Scripts/qwen38/bf16_sidecar.py`, docs/qwen38/15 §2 W-4). `view` takes a tensor from here when present.
     private let bf16File: GGUFFile?
-    private let device: MTLDevice
+    package let device: MTLDevice
     private let queue: MTLCommandQueue
     private let dense: GGMLDenseGEMV
 
@@ -319,6 +319,13 @@ package final class Qwen38Runner {
     /// layers before `layerRange` on the other machine. Taken (and cleared) by that forward.
     package var residualIn: [Float]?
 
+    // Layer weights in the caller's buffers (the M6 of `docs/qfn-prefill/22` §4: resident layers and staging slabs).
+    /// Layers whose weights `install` placed: their experts are not advised or read, and their views are the caller's.
+    package private(set) var installedLayers = Set<Int>()
+    /// Called before a forward runs trunk layer `il`, and when every GPU buffer of layer `il` has completed.
+    package var layerWillRun: ((Int) throws -> Void)?
+    package var layerDidFinish: ((Int) -> Void)?
+
     package static var defaultKVType: String { ProcessInfo.processInfo.environment["Q38_KV_TYPE"] ?? "q8_0" }
 
     /// `kvType`: `f32` or `q8_0` (nil: `Q38_KV_TYPE`, default `defaultKVType`).
@@ -532,6 +539,60 @@ package final class Qwen38Runner {
     }
 
     private func isLinear(_ il: Int) -> Bool { (il + 1) % fullInterval != 0 }
+
+    /// The files trunk weights come from: the GGUF, then the down and BF16 sidecars when they are open. A piece's
+    /// `file` is one of these (two machines name files by index here).
+    package var weightFiles: [GGUFFile] { [file] + [downFile, bf16File].compactMap { $0 } }
+
+    /// Every byte trunk layer `il` reads, as file ranges in a fixed order: its dense tensors (from the file `view`
+    /// takes them from) by name, then the whole gate, up and down expert tensors.
+    package func layerPieces(_ il: Int) throws -> [(file: GGUFFile, offset: Int, byteCount: Int)] {
+        let pre = "blk.\(il)."
+        var pieces: [(file: GGUFFile, offset: Int, byteCount: Int)] = []
+        for name in file.tensors.keys.filter({ $0.hasPrefix(pre) && !$0.contains("_exps") }).sorted() {
+            let src = bf16File.flatMap { $0.tensors[name] != nil ? $0 : nil } ?? file
+            let t = try src.tensor(name)
+            pieces.append((src, t.offset, t.byteCount))
+        }
+        for (f, t, _) in try expertParts(pre) { pieces.append((f, t.offset, t.byteCount)) }
+        return pieces
+    }
+
+    /// Layer `il` reads its weights from `buffer`: piece `i` of `layerPieces(il)` at byte `at[i]`. Replaces the
+    /// layer's views (dense and every expert) until `uninstall`.
+    package func install(layer il: Int, buffer: MTLBuffer, at: [Int]) throws {
+        let pre = "blk.\(il)."
+        let names = file.tensors.keys.filter { $0.hasPrefix(pre) && !$0.contains("_exps") }.sorted()
+        precondition(at.count == names.count + 3)
+        for (i, name) in names.enumerated() {
+            let src = bf16File.flatMap { $0.tensors[name] != nil ? $0 : nil } ?? file
+            views[name] = (try src.tensor(name), buffer, at[i])
+        }
+        for (part, (_, _, bytes)) in try expertParts(pre).enumerated() {
+            for ex in 0..<nExperts { expertParts[(il * nExperts + ex) * 3 + part] = (buffer, at[names.count + part] + ex * bytes) }
+        }
+        installedLayers.insert(il)
+    }
+
+    package func uninstall(layer il: Int) {
+        let pre = "blk.\(il)."
+        for name in views.keys where name.hasPrefix(pre) { views[name] = nil }
+        for key in (il * nExperts * 3)..<((il + 1) * nExperts * 3) { expertParts[key] = nil }
+        installedLayers.remove(il)
+    }
+
+    /// Keeps `buffers` GPU-resident through one residency set on the queue (`docs/qfn-prefill/17`).
+    package func makeResident(_ buffers: [MTLBuffer]) throws {
+        let d = MTLResidencySetDescriptor()
+        d.label = "q38-owned"
+        let set = try device.makeResidencySet(descriptor: d)
+        for b in buffers { set.addAllocation(b) }
+        set.commit()
+        set.requestResidency()
+        queue.addResidencySet(set)
+        ownedSets.append(set)
+    }
+    private var ownedSets: [MTLResidencySet] = []
 
     // MARK: - Encoding helpers
 
@@ -1406,7 +1467,9 @@ package final class Qwen38Runner {
         // One advise per run of experts no more than `adviseGap` apart in the tensor: a
         // 128-token batch picks ~40 % of a layer's experts, and 28K separate calls cost 1.5 s.
         let sorted = slots.sorted()
-        if adviseExperts && Double(slots.count) >= adviseWholeFraction * Double(nExperts) {
+        if installedLayers.contains(il) {
+            // The caller's buffers hold the whole layer: nothing to read.
+        } else if adviseExperts && Double(slots.count) >= adviseWholeFraction * Double(nExperts) {
             // Most of the layer is needed: one read-ahead per tensor.
             for (pf, t, _) in parts { pf.adviseRead(offset: t.offset, byteCount: t.byteCount) }
             prof.adviseCalls += parts.count
@@ -2286,7 +2349,7 @@ package final class Qwen38Runner {
         prof.ple = CFAbsoluteTimeGetCurrent() - tStep
 
         // The last routed buffer and its host commit time; with `pipeline` a later wait has completed it.
-        var pendingRouted: (cb: MTLCommandBuffer, commit: CFTimeInterval, shared: MTLCommandBuffer?)?
+        var pendingRouted: (cb: MTLCommandBuffer, commit: CFTimeInterval, shared: MTLCommandBuffer?, il: Int)?
         func settleRouted(waited: Bool) throws {
             guard let p = pendingRouted else { return }
             pendingRouted = nil
@@ -2302,12 +2365,14 @@ package final class Qwen38Runner {
                 prof.routedBehindShared += max(0, min(sh.gpuEndTime, p.cb.gpuStartTime) - p.cb.kernelStartTime)
             }
             if !waited { prof.routedAfterGPU += hostDone - p.cb.gpuEndTime }
+            layerDidFinish?(p.il)
         }
         let late = pipeline && sharedLate
         let preview = pipeline && previewTopN > 0 && T < 32   // decode and verify batches only
         var previewed: Set<Int>?     // layer il's experts named by layer il-1's preview
 
         func layer(_ il: Int, rows: Int, pos: Int, report: Bool) throws {
+            try layerWillRun?(il)
             let t0 = CFAbsoluteTimeGetCurrent()
             let pre = "blk.\(il)."
             var cb = queue.makeCommandBuffer()!
@@ -2354,7 +2419,7 @@ package final class Qwen38Runner {
             combine(cb2, block: blk, T: rows)
             let t2 = CFAbsoluteTimeGetCurrent()
             prof.route += t2 - t1
-            pendingRouted = (cb2, CACurrentMediaTime(), lastSharedBuffer)
+            pendingRouted = (cb2, CACurrentMediaTime(), lastSharedBuffer, il)
             lastSharedBuffer = nil
             cb2.commit()
             // With `pipeline` the next layer's wait (or the one below) completes it: `routed` is then only the

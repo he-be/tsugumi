@@ -198,7 +198,7 @@ package final class Qwen38Engine {
         }
         do {
             if pair == nil {
-                pair = try Qwen38Pair.Client(host: config.host, port: config.port, k: config.k)
+                pair = try Qwen38Pair.Client(host: config.host, port: config.port, k: config.k, runner: runner)
                 pairSynced = 0
             }
             try pair!.begin(runner: runner, tokens: prompt, startPos: position, chunks: sizes, stateAfter: stateAfter,
