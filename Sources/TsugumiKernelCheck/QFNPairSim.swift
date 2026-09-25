@@ -35,6 +35,9 @@ import Tsugumi
 //   M6 layer comes from the MBP's internal SSD over a second connection instead of the M6's SSD. The M6 sends the piece
 //   list (file, offset, bytes) when it starts the layer's read, reads its own part meanwhile and receives the MBP's part
 //   straight into the staging buffer; the MBP preads (F_NOCACHE, 4 threads, 16 MB blocks) and sends the blocks in order.
+// QFN_SLAB=<n> (A, the M6; docs/qfn-prefill/04 Q5): n staging buffers instead of one. Streamed layers take them in turn
+//   and a reader thread reads (and receives the fed part of) the next streamed layers while the GPU runs this one; a
+//   layer waits for its read and frees its buffer when its GPU work ends. 1 (default) reads before each layer as before.
 
 private let sD = 2560, sF = 640, sStride = 768, sExperts = 512, sTopK = 10, sLayers = 48
 private let sMinPairs = 24, sGroup = 4, sHC = 4
@@ -483,14 +486,16 @@ private func simLayout(_ pieces: [Piece]) -> ([Int], Int) {
 /// The M6's weights: resident layers in their own buffers, the rest streamed into one staging buffer.
 private final class SimOwned {
     let resident: [Int: MTLBuffer]
-    let staging: MTLBuffer
+    let staging: [MTLBuffer]
     let stagingLayout: [Int: [Int]]
+    /// The staging buffer of each streamed layer (its order among the streamed layers modulo the buffer count).
+    let slot: [Int: Int]
     private let fds: [ObjectIdentifier: Int32]
     let fillSeconds: Double, residentBytes: Int, streamedLayers: [Int]
     private let set: MTLResidencySet
 
     init(layers: [SimLayer], residentGB: Double, device: MTLDevice, queue: MTLCommandQueue, gguf: String, sidecar: String,
-         file: GGUFFile, side: GGUFFile) throws {
+         file: GGUFFile, side: GGUFFile, slabs: Int = 1) throws {
         var fds: [ObjectIdentifier: Int32] = [:]
         for (f, path) in [(file, gguf), (side, sidecar)] {
             let fd = open((path as NSString).expandingTildeInPath, O_RDONLY)
@@ -521,13 +526,16 @@ private final class SimOwned {
             layouts[l.il] = at; maxN = max(maxN, n)
         }
         stagingLayout = layouts
-        staging = device.makeBuffer(length: maxN, options: .storageModeShared)!
-        for l in layers where res[l.il] == nil { l.bindPacked(staging, pieces: l.readPieces, at: layouts[l.il]!) }
+        staging = (0..<max(slabs, 1)).map { _ in device.makeBuffer(length: maxN, options: .storageModeShared)! }
+        var slot: [Int: Int] = [:]
+        for (i, L) in streamedLayers.enumerated() { slot[L] = i % staging.count }
+        self.slot = slot
+        for l in layers where res[l.il] == nil { l.bindPacked(staging[slot[l.il]!], pieces: l.readPieces, at: layouts[l.il]!) }
         let desc = MTLResidencySetDescriptor()
         desc.label = "qfn-pair-sim"
         set = try device.makeResidencySet(descriptor: desc)
         for b in res.values { set.addAllocation(b) }
-        set.addAllocation(staging)
+        for b in staging { set.addAllocation(b) }
         set.commit()
         set.requestResidency()
         queue.addResidencySet(set)
@@ -537,7 +545,7 @@ private final class SimOwned {
     func read(_ l: SimLayer) -> Double {
         guard let at = stagingLayout[l.il] else { return 0 }
         let t0 = CFAbsoluteTimeGetCurrent()
-        simPreadNoCache(l.readPieces, at: at, fds: fds, into: staging.contents(), threads: 4)
+        simPreadNoCache(l.readPieces, at: at, fds: fds, into: staging[slot[l.il]!].contents(), threads: 4)
         let s = CFAbsoluteTimeGetCurrent() - t0
         simDrop(l.readPieces)
         return s
@@ -560,7 +568,7 @@ private final class SimOwned {
         var req = [Int64(fed.count)]
         for p in fed { req += [Int64(files.firstIndex { $0 === p.file }!), Int64(p.offset), Int64(p.byteCount)] }
         req.withUnsafeBytes { simSockAll(feed, $0.baseAddress!, $0.count, send: true) }
-        let dst = staging.contents()
+        let dst = staging[slot[l.il]!].contents()
         var fedDone = 0.0
         let group = DispatchGroup()
         DispatchQueue.global().async(group: group) {
@@ -694,14 +702,17 @@ func runQFNPairSim(mode: String, ip: String, port: Int, gguf: String, sidecar: S
                  mode, nax ? "M6 arm M" : "MBP today's code", label, T, layers.count, now() - tBuild, readMB))
 
     var owned: SimOwned?
+    let slabs = shape == "A" && serve ? max(Int(ProcessInfo.processInfo.environment["QFN_SLAB"] ?? "1") ?? 1, 1) : 1
     if nax {
         if !layers.isEmpty {
             let v0 = simVM()
-            owned = try SimOwned(layers: layers, residentGB: last, device: device, queue: queue, gguf: gguf, sidecar: sidecar, file: file, side: side)
+            owned = try SimOwned(layers: layers, residentGB: last, device: device, queue: queue, gguf: gguf, sidecar: sidecar, file: file, side: side,
+                             slabs: slabs)
             let v1 = simVM()
             print(String(format: "  resident %d layers %.2f GB (cap %.2f) filled in %.2f s, streamed %d layers; Pageins +%.2f GB, Swapouts +%llu; %@",
                          owned!.resident.count, Double(owned!.residentBytes) / 1e9, last, owned!.fillSeconds, owned!.streamedLayers.count,
                          Double(v1.pageins - v0.pageins) * page / 1e9, v1.swapouts - v0.swapouts, mem()))
+            print(String(format: "  staging %d x %.2f GB (QFN_SLAB)", owned!.staging.count, Double(owned!.staging[0].length) / 1e9))
         }
     } else {
         for l in layers { l.bindViews() }
@@ -762,25 +773,59 @@ func runQFNPairSim(mode: String, ip: String, port: Int, gguf: String, sidecar: S
         var feed: Int32 = -1
         if feedFraction > 0 { feed = accept(ls, nil, nil); simSockTune(feed) }
         let byL = Dictionary(uniqueKeysWithValues: layers.map { ($0.il, $0) })
-        if feedFraction > 0 { print("chunk\tlayer\tstreamed_MB\trecv_s\tread_s\tdense_gpu_s\trouted_gpu_s\tcompute_wall_s\tsend_s\town_MB\town_s\tfed_MB\tfed_s") }
-        else { print("chunk\tlayer\tstreamed_MB\trecv_s\tread_s\tdense_gpu_s\trouted_gpu_s\tcompute_wall_s\tsend_s") }
+        let slabCol = slabs > 1 ? "\tslab_wait_s" : ""
+        if feedFraction > 0 { print("chunk\tlayer\tstreamed_MB\trecv_s\tread_s\tdense_gpu_s\trouted_gpu_s\tcompute_wall_s\tsend_s\town_MB\town_s\tfed_MB\tfed_s" + slabCol) }
+        else { print("chunk\tlayer\tstreamed_MB\trecv_s\tread_s\tdense_gpu_s\trouted_gpu_s\tcompute_wall_s\tsend_s" + slabCol) }
         if shape == "A" {
             var header: Int32 = 0
             withUnsafeMutableBytes(of: &header) { simSockAll(fd, $0.baseAddress!, 4, send: false) }
             let sender = DispatchQueue(label: "send")
             let sent = DispatchGroup()
             let v0 = simVM()
+            let own = owned!
+            func readOne(_ l: SimLayer) -> (Double, Double, Double, Double, Double) {
+                feed >= 0 ? own.readFed(l, feed: feed, fraction: feedFraction, files: [file, side]) : (own.read(l), 0, 0, 0, 0)
+            }
+            // QFN_SLAB > 1: the reader runs ahead over (chunk, streamed layer) in order; `free[s]` / `ready[s]` hand buffer s over.
+            let streamedL = layers.filter { own.stagingLayout[$0.il] != nil }
+            let free = own.staging.map { _ in DispatchSemaphore(value: 1) }, ready = own.staging.map { _ in DispatchSemaphore(value: 0) }
+            let reads = UnsafeMutablePointer<(Double, Double, Double, Double, Double)>.allocate(capacity: max(Int(header) * sLayers, 1))
+            var reader: Thread?
+            if slabs > 1 {
+                reader = Thread {
+                    for c in 0..<Int(header) {
+                        for l in streamedL {
+                            let s = own.slot[l.il]!
+                            free[s].wait()
+                            reads[c * sLayers + l.il] = readOne(l)
+                            ready[s].signal()
+                        }
+                    }
+                }
+                reader!.start()
+            }
             for c in 0..<Int(header) {
                 let tc = now()
                 for l in layers {
-                    let fedRead = feed >= 0 && owned!.stagingLayout[l.il] != nil
-                    let r = fedRead ? owned!.readFed(l, feed: feed, fraction: feedFraction, files: [file, side]) : (owned!.read(l), 0, 0, 0, 0)
+                    let isStreamed = own.stagingLayout[l.il] != nil
+                    var r = (0.0, 0.0, 0.0, 0.0, 0.0), slabWait = 0.0
+                    if isStreamed && slabs > 1 {
+                        let tw = now()
+                        ready[own.slot[l.il]!].wait()
+                        slabWait = now() - tw
+                        r = reads[c * sLayers + l.il]
+                    } else {
+                        r = readOne(l)
+                    }
                     let t1 = now()
                     let gd = l.encodeDense(kernels, scratch, nax: true)
                     let gr = l.encodeRouted(kernels, scratch, nax: true, x: scratch.x, residual: scratch.zero, y: scratch.y)
-                    let streamed = owned!.stagingLayout[l.il] != nil ? Double(l.readBytes) / 1e6 : 0
-                    let tail = feed >= 0 ? String(format: "\t%.1f\t%.4f\t%.1f\t%.4f", r.3, r.1, r.4, r.2) : ""
-                    print(String(format: "%d\t%d\t%.1f\t0\t%.4f\t%.4f\t%.4f\t%.4f\t0", c, l.il, streamed, r.0, gd, gr, now() - t1) + tail)
+                    let tEnd = now()
+                    if isStreamed && slabs > 1 { free[own.slot[l.il]!].signal() }
+                    let streamed = isStreamed ? Double(l.readBytes) / 1e6 : 0
+                    var tail = feed >= 0 ? String(format: "\t%.1f\t%.4f\t%.1f\t%.4f", r.3, r.1, r.4, r.2) : ""
+                    if slabs > 1 { tail += String(format: "\t%.4f", slabWait) }
+                    print(String(format: "%d\t%d\t%.1f\t0\t%.4f\t%.4f\t%.4f\t%.4f\t0", c, l.il, streamed, r.0, gd, gr, tEnd - t1) + tail)
                 }
                 let buf = hcOut[c % 2]
                 sent.wait()   // the other buffer's send (18 ms) has long finished; keep one in flight
@@ -788,6 +833,7 @@ func runQFNPairSim(mode: String, ip: String, port: Int, gguf: String, sidecar: S
                 print(String(format: "chunk %d on the M6: %.3f s (layers 0..<%d)", c, now() - tc, k))
             }
             sent.wait()
+            reads.deallocate()
             if feed >= 0 {
                 var end: Int64 = -1
                 withUnsafeBytes(of: &end) { simSockAll(feed, $0.baseAddress!, 8, send: true) }

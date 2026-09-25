@@ -1,8 +1,9 @@
 #!/bin/zsh
 # F2 / F3 (docs/qfn-prefill/12): candidates A and B simulated on both machines, 48 layers x <chunks> (T = 2048).
-#   bench/qfn/f23_pair.sh <label> <runs> <shape:param:resident GB[:feed]>...    # e.g. A:32:11.1 B:0.55:11.1 A:20:0 A:0:0 A:40:11.1:0.59
+#   bench/qfn/f23_pair.sh <label> <runs> <shape:param:resident GB[:feed[:slab]]>...    # e.g. A:32:11.1 B:0.55:11.1 A:20:0 A:0:0 A:40:11.1:0.59 A:48:11.1:0.59:2
 # param is k (A) or sigma (B); resident GB 0 = the M6 streams its share every time (cold); A:0 / B:0 = the MBP alone.
 # feed (A only, docs/qfn-prefill/19 §2 Q4-b) = QFN_FEED on both sides: that fraction of the M6's streamed bytes comes from the MBP.
+# slab (A only, docs/qfn-prefill/04 Q5) = QFN_SLAB on the M6: staging buffers, the next layers read behind this one's GPU (1).
 # Runs go round-robin over the configs (run 1 of every config, then run 2, ...). One process per side and run: the M6
 # serves (`--qfn-pair-sim serve`, bound to its bridge0 address) under its own guarded.sh, the MBP drives. env: CHUNKS (2).
 set -eu
@@ -27,11 +28,13 @@ env | grep -E '^(QFN|Q38|TF)_' > $out/env.txt || true
 vmsnap() { vm_stat | grep -E 'Pageins|Swapouts'; memory_pressure -Q | tail -1; }
 for i in $(seq 1 $runs); do
   for cfg in $@; do
-    parts=(${(s/:/)cfg}); shape=$parts[1]; p=$parts[2]; res=$parts[3]; feed=${parts[4]:-0}
-    name=$shape-$p-r$res-$i
-    [[ $feed != 0 ]] && name=$shape-$p-r$res-f$feed-$i
+    parts=(${(s/:/)cfg}); shape=$parts[1]; p=$parts[2]; res=$parts[3]; feed=${parts[4]:-0}; slab=${parts[5]:-1}
+    name=$shape-$p-r$res
+    [[ $feed != 0 ]] && name=$name-f$feed
+    [[ $slab != 1 ]] && name=$name-s$slab
+    name=$name-$i
     solo=0; [[ $p == 0 ]] && solo=1
-    scmd="cd dev/tsugumi && QFN_FEED=$feed Scripts/qwen38/guarded.sh scratch/qfn-pair.m6.log .build/release/TsugumiKernelCheck --qfn-pair-sim serve $m6_ip 5302 $rm_/$gg $rm_/$sc scratch/qfn/routes/c2048 $shape $p $res"
+    scmd="cd dev/tsugumi && QFN_FEED=$feed QFN_SLAB=$slab Scripts/qwen38/guarded.sh scratch/qfn-pair.m6.log .build/release/TsugumiKernelCheck --qfn-pair-sim serve $m6_ip 5302 $rm_/$gg $rm_/$sc scratch/qfn/routes/c2048 $shape $p $res"
     ccmd=(env QFN_FEED=$feed $bin --qfn-pair-sim run $m6_ip 5302 $mm/$gg $mm/$sc $repo/scratch/qfn/routes/c2048 $shape $p $chunks)
     { echo "$name M6: $scmd"; echo "$name MBP: ${ccmd[*]}"; } >> $out/command.txt
     vmsnap > $out/$name.pre.txt; ssh m6 'vm_stat | grep -E "Pageins|Swapouts"; memory_pressure -Q | tail -1' > $out/$name.m6.pre.txt
