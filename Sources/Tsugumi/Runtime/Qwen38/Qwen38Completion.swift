@@ -128,6 +128,14 @@ package final class Qwen38Engine {
     fileprivate var mtpRows: [Float] = []
     private let mtpChunk = Int(ProcessInfo.processInfo.environment["Q38_MTP_CHUNK"] ?? "") ?? 256
 
+    /// Two machines (`Qwen38Pair`, `docs/qfn-prefill/22`): where the M6 is (`Q38_PAIR`, `Q38_PAIR_K`), its link once
+    /// made, and the positions whose layer 0 ..< k rows its copy holds. Without a link a round runs here alone.
+    package var pairConfig = Qwen38Pair.configured()
+    private var pair: Qwen38Pair.Client?
+    private var pairSynced = 0
+    /// The last prompt token's logits of the last prefill (checks).
+    package private(set) var lastPrefillLogits: [Float] = []
+
     package enum CheckpointStore {
         case ram
         case ssd(URL)
@@ -150,6 +158,7 @@ package final class Qwen38Engine {
     package func reset() {
         runner.reset()
         position = 0
+        pairSynced = 0
         pendingH = [Float](repeating: 0, count: runner.hc * runner.e)
         mtpTokens = []
         mtpRows = []
@@ -169,9 +178,39 @@ package final class Qwen38Engine {
                                       "s": Date().timeIntervalSince(t)]) }
         try checkpoint.read(into: runner)
         position = checkpoint.position
+        pairSynced = min(pairSynced, position)
         pendingH = checkpoint.pendingH
         mtpTokens = checkpoint.mtpTokens
         mtpRows = checkpoint.mtpRows
+    }
+
+    /// Starts this prefill on the M6 when a pair is configured: connects if there is no link yet and sends the round.
+    /// nil (the MBP alone) without a configuration, with LLKVApprox, or when the link fails before the round began.
+    private func pairRound(prompt: [Int], cuts: [Int]) throws -> Qwen38Pair.Client? {
+        guard let config = pairConfig, runner.llkvSplit == 0 else { return nil }
+        var sizes: [Int] = [], stateAfter: [Bool] = []
+        var p = position
+        while p < position + prompt.count {
+            let T = min(prefillChunk, position + prompt.count - p, (cuts.first { $0 > p } ?? Int.max) - p)
+            p += T
+            sizes.append(T)
+            stateAfter.append(p == position + prompt.count || cuts.contains(p))
+        }
+        do {
+            if pair == nil {
+                pair = try Qwen38Pair.Client(host: config.host, port: config.port, k: config.k)
+                pairSynced = 0
+            }
+            try pair!.begin(runner: runner, tokens: prompt, startPos: position, chunks: sizes, stateAfter: stateAfter,
+                            kvFrom: pairSynced)
+            return pair
+        } catch let error as Qwen38Pair.Error {
+            Qwen38RoundLog.write(["event": "pair_off", "error": error.description])
+            FileHandle.standardError.write("Qwen3.8 pair: \(error); this round runs here alone\n".data(using: .utf8)!)
+            pair = nil
+            pairSynced = 0
+            return nil
+        }
     }
 
     /// Prefill `promptTokens` from `position` (= `cachedPromptTokens`) and generate up to `maxNewTokens`.
@@ -223,7 +262,11 @@ package final class Qwen38Engine {
         // Report the total before the first chunk: at ~95 tok/s one chunk of 2,048 is over 20 s.
         let total = position + prompt.count
         onPrefill?(position, total)
-        if runner.plePrefetch { try runner.prefetchPLE(tokens: prompt) }
+        let link = try pairRound(prompt: prompt, cuts: cuts)
+        // A round the M6 has begun and not finished leaves the link out of step: drop it.
+        var pairOpen = link != nil
+        defer { if pairOpen { pair = nil; pairSynced = 0 } }
+        if runner.plePrefetch && (link == nil || link!.k <= runner.pleLayerIndex) { try runner.prefetchPLE(tokens: prompt) }
         while done < prompt.count {
             try Task.checkCancellation()
             let T = min(prefillChunk, prompt.count - done, (cuts.first { $0 > position } ?? Int.max) - position)
@@ -236,10 +279,28 @@ package final class Qwen38Engine {
             let exactTail = runner.llkvSplit > 0
                 ? max(0, min(T, done + T - (prompt.count - runner.llkvSuffix))) : nil
             let tChunk = Date()
-            let l = try runner.forward(tokens: chunk, startPos: position, exactTail: exactTail, onLayer: onPrefill.map { report in
-                { n in report(chunkStart + min(T * n / layers, T - 1), total) }
-            })
-            if done + T == prompt.count { lastLogits = Array(l) }
+            let progress = onPrefill.map { report in { (n: Int) in report(chunkStart + min(T * n / layers, T - 1), total) } }
+            var pairFields: [String: Any] = [:]
+            let l: UnsafeBufferPointer<Float>
+            if let link {
+                let (c, wait) = try link.next()
+                precondition(c.T == T)
+                runner.residualIn = c.residual
+                runner.layerRange = link.k..<runner.nTrunk
+                defer { runner.layerRange = nil }
+                l = try runner.forward(tokens: chunk, startPos: position, onLayer: progress)
+                let tApply = Date()
+                link.apply(c, to: runner, chunkStart: position)
+                if link.k > runner.pleLayerIndex { runner.plePrevious = c.plePrev }
+                pairFields = ["pair_k": link.k, "pair_wait_s": wait, "pair_recv_s": c.recvSeconds,
+                              "pair_apply_s": Date().timeIntervalSince(tApply), "m6_times": c.times]
+            } else {
+                l = try runner.forward(tokens: chunk, startPos: position, exactTail: exactTail, onLayer: progress)
+            }
+            if done + T == prompt.count {
+                lastLogits = Array(l)
+                lastPrefillLogits = lastLogits
+            }
             let forwardSeconds = Date().timeIntervalSince(tChunk)
             let forwardProfile = runner.lastProfile
             let tMTP = Date()
@@ -275,9 +336,13 @@ package final class Qwen38Engine {
                 Qwen38RoundLog.write(["event": "chunk", "start": chunkStart, "T": T, "exact_tail": exactTail ?? T,
                                       "wall_s": Date().timeIntervalSince(tChunk), "forward_s": forwardSeconds,
                                       "mtp_s": mtpSeconds, "checkpoint_s": captureSeconds,
-                                      "profile": Qwen38RoundLog.fields(forwardProfile)])
+                                      "profile": Qwen38RoundLog.fields(forwardProfile)].merging(pairFields) { a, _ in a })
             }
             onPrefill?(position, total)
+        }
+        if link != nil {
+            pairOpen = false
+            pairSynced = position
         }
         let prefillSeconds = Date().timeIntervalSince(started)
         let decodeStart = Date()

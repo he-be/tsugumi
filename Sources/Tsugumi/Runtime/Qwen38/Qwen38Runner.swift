@@ -1828,8 +1828,14 @@ package final class Qwen38Runner {
     /// token). Regions a checkpoint is read into are the current buffers (`rollback` swaps buffer identities), made if
     /// no forward has made them yet.
     package func forEachRecurrentRegion(_ body: (UnsafeMutableRawPointer, Int) throws -> Void) rethrows {
+        try forEachRecurrentRegion(layers: 0..<nTrunk, body)
+    }
+
+    /// The same regions of the trunk layers in `layers` only (the PLE history when it holds the PLE layer): what two
+    /// machines that split the trunk by layers hand over (`docs/qfn-prefill/22` §2).
+    package func forEachRecurrentRegion(layers: Range<Int>, _ body: (UnsafeMutableRawPointer, Int) throws -> Void) rethrows {
         let C = 2 * Hk * Dl + Hv * Dl
-        for il in 0..<nTrunk where isLinear(il) {
+        for il in layers where isLinear(il) {
             let state = linState[il] ?? device.makeBuffer(length: Hv * Dl * Dl * 4, options: .storageModeShared)!
             let hist = linHist[il] ?? device.makeBuffer(length: (convK - 1) * C * 4, options: .storageModeShared)!
             linState[il] = state
@@ -1837,7 +1843,48 @@ package final class Qwen38Runner {
             try body(state.contents(), state.length)
             try body(hist.contents(), hist.length)
         }
-        try body(pleHist.contents(), pleHist.length)
+        if layers.contains(pleLayer) { try body(pleHist.contents(), pleHist.length) }
+    }
+
+    /// Bytes `forEachRecurrentRegion(layers:)` visits.
+    package func recurrentBytes(layers: Range<Int>) -> Int {
+        var n = 0
+        forEachRecurrentRegion(layers: layers) { _, b in n += b }
+        return n
+    }
+
+    /// Bytes `forEachKVRegion(layers:positions:)` visits (arithmetic only).
+    package func kvRegionBytes(layers: Range<Int>, positions: Range<Int>) -> Int {
+        guard !positions.isEmpty else { return 0 }
+        let b0 = positions.lowerBound / 4, b1 = (positions.upperBound + 3) / 4   // <= capacity / 4 + 1
+        let attn = layers.filter { !isLinear($0) }.count
+        return attn * (2 * positions.count * kvRowBytes + positions.count * idxKeyBytes + (b1 - b0) * idxKeyBytes)
+    }
+
+    /// The trunk layer that adds the PLE rows.
+    package var pleLayerIndex: Int { pleLayer }
+
+    /// The position-indexed rows of the attention layers in `layers` for `positions`: K and V cache rows, indexer raw
+    /// keys, and the indexer block keys of the blocks the positions touch (a block's key is final once its 4th token
+    /// is in; a partial block's is rewritten by the batch that completes it). In a fixed order; buffers are made if no
+    /// forward has made them yet.
+    package func forEachKVRegion(layers: Range<Int>, positions: Range<Int>,
+                                 _ body: (UnsafeMutableRawPointer, Int) throws -> Void) rethrows {
+        guard !positions.isEmpty else { return }
+        precondition(positions.upperBound <= capacity)
+        let b0 = positions.lowerBound / 4, b1 = (positions.upperBound + 3) / 4   // <= capacity / 4 + 1
+        for il in layers where !isLinear(il) {
+            let kc = kCache[il] ?? device.makeBuffer(length: capacity * kvRowBytes, options: .storageModeShared)!
+            let vc = vCache[il] ?? device.makeBuffer(length: capacity * kvRowBytes, options: .storageModeShared)!
+            let ik = idxRawKeys[il] ?? device.makeBuffer(length: capacity * idxKeyBytes, options: .storageModeShared)!
+            let bk = idxBlockKeys[il] ?? device.makeBuffer(length: (capacity / 4 + 1) * idxKeyBytes, options: .storageModeShared)!
+            kCache[il] = kc; vCache[il] = vc; idxRawKeys[il] = ik; idxBlockKeys[il] = bk
+            let p0 = positions.lowerBound, n = positions.count
+            try body(kc.contents() + p0 * kvRowBytes, n * kvRowBytes)
+            try body(vc.contents() + p0 * kvRowBytes, n * kvRowBytes)
+            try body(ik.contents() + p0 * idxKeyBytes, n * idxKeyBytes)
+            try body(bk.contents() + b0 * idxKeyBytes, (b1 - b0) * idxKeyBytes)
+        }
     }
 
     /// The last two tokens PLE hashes with (part of a checkpoint). Setting it drops any pending rollback.

@@ -2091,6 +2091,32 @@ if let index = arguments.firstIndex(of: "--qfn-split-probe"), index + 6 < argume
 }
 // `--qwen38-split-decode serve|run <ip> <port> <j> <prompt token file>`: the MTP spec decode with layers 0 ..< j on the
 // M6 and the rest on the MBP, or the MBP alone with j 0 (Qwen38SplitDecode.swift, docs/qfn-prefill/23).
+if let index = arguments.firstIndex(of: "--qwen38-pair-serve"), index + 2 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    try runQwen38PairServe(
+        ip: arguments[index + 1], port: Int(arguments[index + 2])!,
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple-bf16/Qwen3.8-Flash-Next-PLE-BF16.gguf",
+        capacity: opt("--q38-capacity").flatMap { Int($0) } ?? 32768, chunk: opt("--q38-chunk").flatMap { Int($0) } ?? 2048)
+}
+
+if let index = arguments.firstIndex(of: "--qwen38-pair-check"), index + 1 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    let passed = try runQwen38PairCheck(
+        tokenFile: arguments[index + 1], pair: opt("--q38-pair")!, k: opt("--q38-pair-k").flatMap { Int($0) } ?? 48,
+        tokens: opt("--q38-tokens").flatMap { Int($0) }, newTokens: opt("--q38-new").flatMap { Int($0) } ?? 64,
+        chunk: opt("--q38-chunk").flatMap { Int($0) } ?? 2048,
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple-bf16/Qwen3.8-Flash-Next-PLE-BF16.gguf")
+    exit(passed ? 0 : 1)
+}
+
 if let index = arguments.firstIndex(of: "--qwen38-split-decode"), index + 5 < arguments.count {
     func opt(_ flag: String) -> String? {
         guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
