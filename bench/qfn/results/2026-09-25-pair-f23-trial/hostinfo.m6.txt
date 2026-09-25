@@ -1,0 +1,2 @@
+測定: 2026-09-25 / Mac18,5 Apple M6 16GB / macOS 27.0 (26A428) / Swift 6.4 / SDK 27.0 / CLT / APPLE SSD AP0256Z / commit 06620f5 / minos 15.0
+iogpu.wired_limit_mb 14336
