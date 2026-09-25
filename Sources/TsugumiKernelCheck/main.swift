@@ -2062,6 +2062,15 @@ if let index = arguments.firstIndex(of: "--qfn-layer-bench"), index + 4 < argume
                          arms: index + 6 < arguments.count ? arguments[index + 6] : "ACD")
     exit(0)
 }
+// `--qfn-residency <gguf> <down sidecar> <routes prefix> layers|experts <GB> [passes] [scratch GB]`: how much of an M6
+// share stays in the page cache over repeated passes (QFNResidencyProbe.swift, docs/qfn-prefill/12 F4).
+if let index = arguments.firstIndex(of: "--qfn-residency"), index + 5 < arguments.count {
+    try runQFNResidencyProbe(gguf: arguments[index + 1], sidecar: arguments[index + 2], routes: arguments[index + 3],
+                             shape: arguments[index + 4], targetGB: Double(arguments[index + 5])!,
+                             passes: index + 6 < arguments.count ? Int(arguments[index + 6]) ?? 4 : 4,
+                             scratchGB: index + 7 < arguments.count ? Double(arguments[index + 7]) ?? 1 : 1)
+    exit(0)
+}
 // `--qfn-split-probe serve|run <ip> <port> <gguf> <routes prefix> <sigma> [chunks]`: candidate B's routed step on two
 // machines (QFNSplitProbe.swift, docs/qfn-prefill/07 E3).
 if let index = arguments.firstIndex(of: "--qfn-split-probe"), index + 6 < arguments.count {
