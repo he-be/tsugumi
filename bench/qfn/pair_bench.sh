@@ -13,6 +13,9 @@
 # Operating point: 32K, KV Q8_0 and chunk 2048 (the manifest's), MTP on (--draft-block-size 2, the app's), thinking off.
 # Each process runs under Scripts/qwen38/guarded.sh with caffeinate -i; COOL_S (20) between processes.
 # QFN_BODIES=1|2|12 (12) picks the bodies. A ledger-* label refuses Q38_/TF_ variables and extra arguments.
+# QFN_ROUND_LOG=1 gives each process its own Q38_ROUND_LOG (<tag>.rounds.jsonl; the stages, 04 Q0's separate run).
+# QFN_APPEND=1 adds rounds to an existing directory of the same label and date (numbered after its rows), so two arms
+# can alternate with one binary: for r in 1 2 3; do pair_bench.sh x-off 1 --solo; Q38_...=1 pair_bench.sh x-on 1 --solo; done
 # Output: bench/qfn/results/<date>-Mac15-6-<label>/ (hostinfo.mbp.txt command.txt env.txt summary-b1.tsv summary-b2.tsv
 #   b1-<body>-rN.{server.log,response.json,pre.txt,post.txt,guard.txt}, b2-rN/ (ToolLoopCheck out) b2-rN.{pre,post}.txt)
 set -eu
@@ -47,9 +50,19 @@ if [[ -n $(busy) ]]; then busy; echo "another model process is running; refusing
 
 host=$(sysctl -n hw.model | tr ',' '-')
 out=$repo/bench/qfn/results/$(date +%F)-$host-$label
-mkdir -p $out
-sh $repo/bench/hostinfo.sh $server > $out/hostinfo.mbp.txt
-{ env | grep -E '^(Q38_|TF_|QFN_|COOL_S)' || true; } > $out/env.txt
+append=${QFN_APPEND:-0}
+if (( append )) && [[ -f $out/env.txt ]]; then
+    { env | grep -E '^(Q38_|TF_|QFN_|COOL_S)' | grep -v '^QFN_APPEND=' || true; } | diff -q - <(grep -v '^QFN_APPEND=' $out/env.txt) > /dev/null \
+        || { echo "QFN_APPEND: the environment differs from $out/env.txt"; exit 1; }
+    grep -q "commit $(git -C $repo rev-parse --short HEAD)" $out/hostinfo.mbp.txt \
+        || { echo "QFN_APPEND: $out was taken at another commit"; exit 1; }
+else
+    append=0
+    mkdir -p $out
+    sh $repo/bench/hostinfo.sh $server > $out/hostinfo.mbp.txt
+    { env | grep -E '^(Q38_|TF_|QFN_|COOL_S)' || true; } > $out/env.txt
+fi
+rlog() { (( ${QFN_ROUND_LOG:-0} )) && echo Q38_ROUND_LOG=$out/$1.rounds.jsonl || true; }
 server_cmd=($server --model $model --host 127.0.0.1 --port $port --ctx-size 32768 --draft-block-size 2 "$@")
 loop_cmd=($loop --model $model --conversations $questions --only $replay_only --network offline --max-rounds 6
           --thinking off --context 32768 --replay $replay_run --replay-model)
@@ -64,7 +77,7 @@ pageins() { awk '/Pageins/ {gsub(/\./,"",$2); print $2}' $1; }
 body1() {  # body round
     local b=$1 r=$2 tag=b1-$1-r$2 gpid spid rc=0
     snap $out/$tag.pre.txt
-    GUARD_LOG=$out/$tag.guard.txt caffeinate -i $repo/Scripts/qwen38/guarded.sh $out/$tag.server.log "${server_cmd[@]}" &
+    env $(rlog $tag) GUARD_LOG=$out/$tag.guard.txt caffeinate -i $repo/Scripts/qwen38/guarded.sh $out/$tag.server.log "${server_cmd[@]}" &
     gpid=$!
     local waited=0
     until curl -sf http://127.0.0.1:$port/health > /dev/null 2>&1; do
@@ -104,7 +117,7 @@ body2() {  # round
     local r=$1 tag=b2-r$1 rc=0
     snap $out/$tag.pre.txt
     mkdir -p $out/$tag
-    GUARD_LOG=$out/$tag.guard.txt caffeinate -i $repo/Scripts/qwen38/guarded.sh $out/$tag.log "${loop_cmd[@]}" --out $out/$tag || rc=$?
+    env $(rlog $tag) GUARD_LOG=$out/$tag.guard.txt caffeinate -i $repo/Scripts/qwen38/guarded.sh $out/$tag.log "${loop_cmd[@]}" --out $out/$tag || rc=$?
     snap $out/$tag.post.txt
     grep -q '^GUARD: Swapouts' $out/$tag.log && rc=9
     python3 - $out/$tag $r $rc $(( $(swapouts $out/$tag.post.txt) - $(swapouts $out/$tag.pre.txt) )) \
@@ -129,14 +142,18 @@ EOF
 first=1
 pause() { (( first )) && first=0 || sleep $cool; }
 if [[ $bodies == *1* ]]; then
-    printf 'body\tround\tprompt_n\tcache_n\tprefill_s\tpageins_MB\tswapouts\texit\n' > $out/summary-b1.tsv
-    for r in $(seq 1 $n); do
+    (( append )) && [[ -f $out/summary-b1.tsv ]] ||
+        printf 'body\tround\tprompt_n\tcache_n\tprefill_s\tpageins_MB\tswapouts\texit\n' > $out/summary-b1.tsv
+    r0=$(awk -F'\t' 'NR > 1 { if ($2 > m) m = $2 } END { print m + 0 }' $out/summary-b1.tsv)
+    for r in $(seq $(( r0 + 1 )) $(( r0 + n ))); do
         np=${#prompts}; k=$(( (r - 1) % np ))
         for i in $(seq 0 $(( np - 1 ))); do pause; body1 ${prompts[$(( (i + k) % np + 1 ))]} $r; done
     done
 fi
 if [[ $bodies == *2* ]]; then
-    printf 'round\trounds\tprefill_sum_s\twall_sum_s\tnew_tokens\tprefill_s_by_round\tpageins_MB\tswapouts\texit\n' > $out/summary-b2.tsv
-    for r in $(seq 1 $n); do pause; body2 $r; done
+    (( append )) && [[ -f $out/summary-b2.tsv ]] ||
+        printf 'round\trounds\tprefill_sum_s\twall_sum_s\tnew_tokens\tprefill_s_by_round\tpageins_MB\tswapouts\texit\n' > $out/summary-b2.tsv
+    r0=$(awk -F'\t' 'NR > 1 { if ($1 > m) m = $1 } END { print m + 0 }' $out/summary-b2.tsv)
+    for r in $(seq $(( r0 + 1 )) $(( r0 + n ))); do pause; body2 $r; done
 fi
 echo "evidence: ${out#$repo/}"

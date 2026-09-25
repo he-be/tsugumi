@@ -223,6 +223,7 @@ package final class Qwen38Engine {
         // Report the total before the first chunk: at ~95 tok/s one chunk of 2,048 is over 20 s.
         let total = position + prompt.count
         onPrefill?(position, total)
+        if runner.plePrefetch { try runner.prefetchPLE(tokens: prompt) }
         while done < prompt.count {
             try Task.checkCancellation()
             let T = min(prefillChunk, prompt.count - done, (cuts.first { $0 > position } ?? Int.max) - position)

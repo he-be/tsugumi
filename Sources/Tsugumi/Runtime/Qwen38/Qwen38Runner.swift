@@ -1671,22 +1671,7 @@ package final class Qwen38Runner {
         precondition((pt.type == .q4_1 || pt.type == .bf16) && pt.rowWidth == 160)
         let emb = pleEmb.contents().bindMemory(to: Float.self, capacity: tokens.count * e)
         for (ti, token) in tokens.enumerated() {
-            var ctx = [token]
-            var cut = false
-            for s in 1..<pleNgram {
-                let t = cut ? eos : plePrev[s - 1]
-                cut = cut || t == eos
-                ctx.append(cut ? eos : t)
-            }
-            var rows: [Int] = []
-            for n in 2...pleNgram {
-                var mixedHash = UInt64(ctx[0]) &* pleMult[0]
-                for j in 1..<n { mixedHash ^= UInt64(ctx[j]) &* pleMult[j] }
-                for g in 0..<plePer {
-                    let h = (n - 2) * plePer + g
-                    rows.append(Int(mixedHash % pleVocab[h] + pleOffsets[h]))
-                }
-            }
+            let rows = pleRowIndices(token: token, prev: plePrev)
             plePrev = [token] + plePrev.dropLast()
             let out = emb + ti * e
             for (h, r) in rows.enumerated() {
@@ -1711,6 +1696,54 @@ package final class Qwen38Runner {
                     }
                 }
             }
+        }
+    }
+
+    /// The hashed n-gram rows of `token` after the tokens `prev` (latest first).
+    private func pleRowIndices(token: Int, prev: [Int]) -> [Int] {
+        var ctx = [token]
+        var cut = false
+        for s in 1..<pleNgram {
+            let t = cut ? eos : prev[s - 1]
+            cut = cut || t == eos
+            ctx.append(cut ? eos : t)
+        }
+        var rows: [Int] = []
+        for n in 2...pleNgram {
+            var mixedHash = UInt64(ctx[0]) &* pleMult[0]
+            for j in 1..<n { mixedHash ^= UInt64(ctx[j]) &* pleMult[j] }
+            for g in 0..<plePer {
+                let h = (n - 2) * plePer + g
+                rows.append(Int(mixedHash % pleVocab[h] + pleOffsets[h]))
+            }
+        }
+        return rows
+    }
+
+    /// Candidate (docs/qfn-prefill/04 Q2, `Q38_PLE_PREFETCH=1`): the rows of the whole prompt depend on its tokens
+    /// only, so `Qwen38Completion` names them all before the first chunk and they are read into the page cache with
+    /// `pread` on `plePrefetchThreads` threads in the background, in prompt order, while `pleRows` walks the first
+    /// chunk. `Q38_PLE_PREFETCH_THREADS` (16).
+    package var plePrefetch = ProcessInfo.processInfo.environment["Q38_PLE_PREFETCH"] == "1"
+    package var plePrefetchThreads = Int(ProcessInfo.processInfo.environment["Q38_PLE_PREFETCH_THREADS"] ?? "") ?? 16
+
+    /// Starts reading the PLE rows of `tokens` (the prompt that follows the current state) and returns at once.
+    package func prefetchPLE(tokens: [Int]) throws {
+        let pt = try pleFile.tensor("ple.weight")
+        let page = Int(getpagesize())
+        var prev = plePrev
+        var seen = Set<Int>()
+        var ranges: [(offset: Int, byteCount: Int)] = []
+        for token in tokens {
+            for r in pleRowIndices(token: token, prev: prev) {
+                let o = pt.offset + r * pt.bytesPerRow
+                if seen.insert(o / page).inserted { ranges.append((o, pt.bytesPerRow)) }
+            }
+            prev = [token] + prev.dropLast()
+        }
+        let file = pleFile, threads = plePrefetchThreads
+        DispatchQueue.global(qos: .userInitiated).async {
+            file.preadRanges(ranges, threads: threads, blockBytes: page)
         }
     }
 
