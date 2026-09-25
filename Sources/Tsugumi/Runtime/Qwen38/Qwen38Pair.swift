@@ -417,5 +417,7 @@ package enum Qwen38Pair {
             pos += T
             done += T
         }
+        let mem = runner.memoryReport().filter { $0.1 > 0 }.map { String(format: "%@ %.2f", $0.0, Double($0.1) / 1e9) }
+        log("memory GB after the round: " + mem.joined(separator: ", "))
     }
 }

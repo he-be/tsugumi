@@ -38,6 +38,7 @@ package final class GGMLDenseGEMV {
     /// The half products (`encodeHalf`): conversions and the Q8_0 dequant to half, set by `useHalf`.
     private var toHalf, toFloat, q8Half: MTLComputePipelineState?
     private var xHalf, wHalf, yHalf: MTLBuffer?
+    package var halfBytes: Int { [xHalf, wHalf, yHalf].reduce(0) { $0 + ($1?.length ?? 0) } }
     package var scratchBytes: Int { scratch?.length ?? 0 }
     package func dropScratch() { scratch = nil }
     private var multiplications: [[Int]: MPSMatrixMultiplication] = [:]

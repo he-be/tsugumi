@@ -1822,6 +1822,7 @@ package final class Qwen38Runner {
             ("gemm", lens([gemmRows, gemmGateUp, gemmWGateUp, gemmWDown, gemmOrder, gemmAt, gemmPosSlot, gemmOnes])),
             ("hidden + mtp", lens([hiddenOut, mtpHiddenOut, mtpCat])),
             ("dense scratch", dense.scratchBytes),
+            ("P1 (nax lists, half x / mid, dense half)", lens([naxLists, naxCounts, naxXh, naxMid]) + dense.halfBytes),
             ("logits", len(logits)),
             ("KV + indexer keys", lens(Array(kCache.values) + Array(vCache.values) + Array(idxRawKeys.values) + Array(idxBlockKeys.values))),
             ("GDN hist + state", lens(Array(linHist.values) + Array(linState.values))),

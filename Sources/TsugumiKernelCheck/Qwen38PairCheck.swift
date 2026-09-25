@@ -40,6 +40,8 @@ func runQwen38PairServe(ip: String, port: Int, gguf: String, ple: String, capaci
         print(String(format: "layer store: %d resident layers %.2f GB in %.1f s, %d slabs %.2f GB, feed %.2f", store!.resident,
                      Double(store!.residentBytes) / 1e9, store!.fillSeconds, store!.slabs, Double(store!.stagingBytes) / 1e9, store!.feed))
     }
+    print("memory GB before a round: " + runner.memoryReport().filter { $0.1 > 0 }
+        .map { String(format: "%@ %.2f", $0.0, Double($0.1) / 1e9) }.joined(separator: ", "))
     try Qwen38Pair.serve(runner: runner, store: store, host: ip, port: port) { print($0) }
 }
 
