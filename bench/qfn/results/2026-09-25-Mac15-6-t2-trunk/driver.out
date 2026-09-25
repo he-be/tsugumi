@@ -1,0 +1,6 @@
+run 1:   spec chain 1, 203 steps, 399 tokens: accepted by position 196 = 0.966, tokens/step 1.97; first step 2113 ms; steady 7.77 tok/s (397 tokens in 51.1 s); median step 250 ms = draft 27 + verify 213 + rollback 0.0  | GUARD: exit 0, Swapouts delta peak 0 pages, window peak 0 pages, Swapins +327 pages
+run 2:   spec chain 1, 203 steps, 399 tokens: accepted by position 196 = 0.966, tokens/step 1.97; first step 2155 ms; steady 7.67 tok/s (397 tokens in 51.8 s); median step 250 ms = draft 27 + verify 213 + rollback 0.0  | GUARD: exit 0, Swapouts delta peak 0 pages, window peak 0 pages, Swapins +91 pages
+run 3:   spec chain 1, 203 steps, 399 tokens: accepted by position 196 = 0.966, tokens/step 1.97; first step 2088 ms; steady 7.70 tok/s (397 tokens in 51.6 s); median step 249 ms = draft 27 + verify 213 + rollback 0.0  | GUARD: exit 0, Swapouts delta peak 0 pages, window peak 0 pages, Swapins +265 pages
+evidence: bench/qfn/results/2026-09-25-Mac15-6-t2-trunk
+
+[exited with code 0]
