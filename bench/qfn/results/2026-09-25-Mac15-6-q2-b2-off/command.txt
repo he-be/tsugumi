@@ -1,0 +1,4 @@
+本文 1: /Users/mh/LLM/turbo-fieldfare/.build/release/TsugumiServer --model /Users/mh/LLM/Qwen3.8-Flash-Next-DS4-IQ2 --host 127.0.0.1 --port 8093 --ctx-size 32768 --draft-block-size 2
+本文 1 request: POST /v1/chat/completions {messages: bench/m6/prompts/<body>.json, max_completion_tokens: 1, cache_prompt: false, chat_template_kwargs: {enable_thinking: false}}
+本文 2: /Users/mh/LLM/turbo-fieldfare/.build/release/TsugumiToolLoopCheck --model /Users/mh/LLM/Qwen3.8-Flash-Next-DS4-IQ2 --conversations /Users/mh/LLM/turbo-fieldfare/docs/experiments/knowledge-sources/questions-v2-stage2.json --only N5-passport --network offline --max-rounds 6 --thinking off --context 32768 --replay /Users/mh/LLM/turbo-fieldfare/docs/experiments/knowledge-sources/ple-ab/bf16/offline/rep1 --replay-model --out <b2-rN>
+each under: caffeinate -i /Users/mh/LLM/turbo-fieldfare/Scripts/qwen38/guarded.sh <log> <cmd>

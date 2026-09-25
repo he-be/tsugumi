@@ -1720,11 +1720,11 @@ package final class Qwen38Runner {
         return rows
     }
 
-    /// Candidate (docs/qfn-prefill/04 Q2, `Q38_PLE_PREFETCH=1`): the rows of the whole prompt depend on its tokens
-    /// only, so `Qwen38Completion` names them all before the first chunk and they are read into the page cache with
-    /// `pread` on `plePrefetchThreads` threads in the background, in prompt order, while `pleRows` walks the first
-    /// chunk. `Q38_PLE_PREFETCH_THREADS` (16).
-    package var plePrefetch = ProcessInfo.processInfo.environment["Q38_PLE_PREFETCH"] == "1"
+    /// The rows of the whole prompt depend on its tokens only, so `Qwen38Completion` names them all before the first
+    /// chunk and they are read into the page cache with `pread` on `plePrefetchThreads` threads in the background, in
+    /// prompt order, while `pleRows` walks the first chunk: `ple` 1.2-2.8 -> 0.1-0.4 s per chunk of 2,048, the replayed
+    /// turn 170.0 -> 155.9 s (docs/qfn-prefill/14). `Q38_PLE_PREFETCH=0` turns it off; `Q38_PLE_PREFETCH_THREADS` (16).
+    package var plePrefetch = ProcessInfo.processInfo.environment["Q38_PLE_PREFETCH"] != "0"
     package var plePrefetchThreads = Int(ProcessInfo.processInfo.environment["Q38_PLE_PREFETCH_THREADS"] ?? "") ?? 16
 
     /// Starts reading the PLE rows of `tokens` (the prompt that follows the current state) and returns at once.
