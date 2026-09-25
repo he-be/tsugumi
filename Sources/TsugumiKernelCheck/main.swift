@@ -2053,6 +2053,14 @@ if let index = arguments.firstIndex(of: "--q2-gemm-bench"), index + 2 < argument
     try runQ2GemmBench(ggufPath: arguments[index + 1], routePath: arguments[index + 2], group: group, iterations: iterations, tokens: tokens)
     exit(0)
 }
+// `--qfn-split-probe serve|run <ip> <port> <gguf> <routes prefix> <sigma> [chunks]`: candidate B's routed step on two
+// machines (QFNSplitProbe.swift, docs/qfn-prefill/07 E3).
+if let index = arguments.firstIndex(of: "--qfn-split-probe"), index + 6 < arguments.count {
+    try runQFNSplitProbe(mode: arguments[index + 1], ip: arguments[index + 2], port: Int(arguments[index + 3])!,
+                         gguf: arguments[index + 4], routes: arguments[index + 5], sigma: Double(arguments[index + 6])!,
+                         chunks: index + 7 < arguments.count ? Int(arguments[index + 7]) ?? 1 : 1)
+    exit(0)
+}
 if let index = arguments.firstIndex(of: "--q8-gemm-bench"), index + 1 < arguments.count {
     let tokens = index + 2 < arguments.count ? Int(arguments[index + 2]) ?? 512 : 512
     try runQ8GemmBench(ggufPath: arguments[index + 1], tokens: tokens)
