@@ -1,0 +1,39 @@
+01:30:19
+System-wide memory free percentage: 81%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    40337.
+Pages active:                                 705669.
+Pages inactive:                                95250.
+Pages speculative:                               161.
+Pages throttled:                                   0.
+Pages wired down:                             121877.
+Pages purgeable:                                3536.
+"Translation faults":                      595528790.
+Pages copy-on-write:                       109535462.
+Pages zero filled:                         415984576.
+Pages reactivated:                         386827383.
+Pages purged:                                2337066.
+File-backed pages:                             83593.
+Anonymous pages:                              717487.
+Pages stored in compressor:                    70441.
+Pages occupied by compressor:                  47785.
+Decompressions:                             78175303.
+Compressions:                               89504687.
+Pageins:                                  1100575592.
+Pageouts:                                      20371.
+Swapins:                                      518867.
+Swapouts:                                     572825.
+Pages tagged:                                  70306.
+Pages tagged resident:                         60624.
+Pages tagged compressed:                        9682.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2909.
+Pages tag-storage free:                        12333.
+Pages tag-storage non-tag pageable:            16135.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1611968.
+Tagged compressions:                         1502359.
+Tagged decompressions:                       1446635.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  396.81 47690519 18480744.17   105.61 13218576 1363315.38 

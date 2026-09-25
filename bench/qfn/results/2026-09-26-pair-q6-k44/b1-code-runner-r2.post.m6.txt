@@ -1,0 +1,39 @@
+02:05:47
+System-wide memory free percentage: 81%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    41495.
+Pages active:                                 713678.
+Pages inactive:                                86604.
+Pages speculative:                               157.
+Pages throttled:                                   0.
+Pages wired down:                             122778.
+Pages purgeable:                                3507.
+"Translation faults":                      607341719.
+Pages copy-on-write:                       110326624.
+Pages zero filled:                         427258474.
+Pages reactivated:                         422064427.
+Pages purged:                                2428576.
+File-backed pages:                             82042.
+Anonymous pages:                              718397.
+Pages stored in compressor:                    66506.
+Pages occupied by compressor:                  46367.
+Decompressions:                             88260749.
+Compressions:                              101006065.
+Pageins:                                  1205493360.
+Pageouts:                                      20710.
+Swapins:                                      519301.
+Swapouts:                                     572825.
+Pages tagged:                                  66255.
+Pages tagged resident:                         59760.
+Pages tagged compressed:                        6495.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2736.
+Pages tag-storage free:                        14387.
+Pages tag-storage non-tag pageable:            14758.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1038272.
+Tagged compressions:                         1646268.
+Tagged decompressions:                       1589376.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  403.93 51462924 20300446.16    96.63 14731369 1390180.48 

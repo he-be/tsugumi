@@ -1,0 +1,39 @@
+01:40:50
+System-wide memory free percentage: 26%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   175122.
+Pages active:                                  52182.
+Pages inactive:                                61060.
+Pages speculative:                              5919.
+Pages throttled:                                   0.
+Pages wired down:                             709376.
+Pages purgeable:                                 111.
+"Translation faults":                      599190491.
+Pages copy-on-write:                       109750653.
+Pages zero filled:                         419511069.
+Pages reactivated:                         395565174.
+Pages purged:                                2358092.
+File-backed pages:                            108148.
+Anonymous pages:                               11013.
+Pages stored in compressor:                    19348.
+Pages occupied by compressor:                   7420.
+Decompressions:                             80699418.
+Compressions:                               92427671.
+Pageins:                                  1130496162.
+Pageouts:                                      20461.
+Swapins:                                      519095.
+Swapouts:                                     572825.
+Pages tagged:                                  66111.
+Pages tagged resident:                         59972.
+Pages tagged compressed:                        6139.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2739.
+Pages tag-storage free:                        22044.
+Pages tag-storage non-tag pageable:             7902.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     961024.
+Tagged compressions:                         1546233.
+Tagged decompressions:                       1489732.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  398.89 48777666 19000768.14   103.20 13591785 1369823.97 

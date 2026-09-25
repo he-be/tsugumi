@@ -1,0 +1,39 @@
+01:27:16
+System-wide memory free percentage: 26%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   165820.
+Pages active:                                  66610.
+Pages inactive:                                61949.
+Pages speculative:                              4619.
+Pages throttled:                                   0.
+Pages wired down:                             708791.
+Pages purgeable:                                1668.
+"Translation faults":                      594775789.
+Pages copy-on-write:                       109464670.
+Pages zero filled:                         415472733.
+Pages reactivated:                         383418396.
+Pages purged:                                2326508.
+File-backed pages:                            111249.
+Anonymous pages:                               21929.
+Pages stored in compressor:                    10258.
+Pages occupied by compressor:                   3290.
+Decompressions:                             77021218.
+Compressions:                               88258894.
+Pageins:                                  1093575386.
+Pageouts:                                      20338.
+Swapins:                                      518819.
+Swapouts:                                     572825.
+Pages tagged:                                  66643.
+Pages tagged resident:                         61478.
+Pages tagged compressed:                        5165.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2803.
+Pages tag-storage free:                        22662.
+Pages tag-storage non-tag pageable:             7125.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     774208.
+Tagged compressions:                         1483523.
+Tagged decompressions:                       1432822.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  396.32 47440041 18360656.56   106.34 13107743 1361208.23 

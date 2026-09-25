@@ -35,11 +35,11 @@ QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
 | **Q3** host の top-10 | チャンクごとに約 1.3 s の Swift ループを縮める。どちらでも効く | 未着手 |
 | **Q4** M6 の第二の読み口 | 腕 a: 外付けに expert の写し (内蔵 3.34 + 外付け 1.57 GB/s)。**腕 b: MBP の内蔵 SSD から TB4 で送る (内蔵 3.34 + link 4.73 GB/s)**。A の非常駐層の読みを縮める | **腕 b は模擬で通った ([20](20-Q4B-EXPERT-FEED.md))**。A k 40 常駐の 2 チャンク 18.509 → 12.916 s (比 0.59)、M6 のチャンク −3.1 s。TB ポートは別バスで競合なし。MBP の Pageins は増えた (壁時計の中) |
 | **Q5** 機内で読みと GPU を重ねる | 次の層の expert を固定の置き場 (2 層分) に `F_NOCACHE` で読む。**RAM の条件付き** | **M6 側は A に入れる ([21](21-Q5-M6-OVERLAP.md)、ユーザーの判断)**。k 48・送り 0.59 の M6 のチャンク 6.301 → 3.829 s、1 ターン (導出) 529.9 → 322.5 s。Swapouts 0、wired 14.34 GB。残りは非常駐層の読みの待ち。MBP 側は判断待ち 3 (k 48 なら対象なし) |
-| **Q6** A を作り、正しさと秒 | M6 が層 0〜k−1、常駐 13 層。正しさは ds4-metal と同じ基準 (04)。k は 1 つから (模擬では切り替えが閾値に届かない、[20 §3](20-Q4B-EXPERT-FEED.md)) | **decode は MBP 単体で確定 ([24](24-DECODE-SPLIT-RESULT.md))**: MTP on で層で分けた 2 機 (j 16・24・32)・M6 が幹の全層はどれも遅い (s/token 中央値 S0 0.1265、S16 0.1421)。P6 ([22](22-Q6-P6-DECODE-PLACEMENT.md)) のまま、**次は A の本体を作り k の格子 (44・46・48、SLAB 2) を測る (22 §4)**。24 で M6 の T = 2 の幹が長く見えたのは split-decode の serve 側で、単体では M6 の I/O 以外が MBP より短い ([26](26-M6-T2-TRUNK-RESULT.md))。serve 側は直さず、`advise` だけ Q6 の最初の run で見る。送り (比 0.59) の模擬では k 48 が最小で 1 ターン 529.9 s (導出、[20 §1.5](20-Q4B-EXPERT-FEED.md)) |
+| **Q6** A を作り、正しさと秒 | M6 が層 0〜k−1 (P1・常駐 10 層・置き場 2・送り 0.59)、MBP が層 k〜47・head・MTP・decode (P6、[22](22-Q6-P6-DECODE-PLACEMENT.md)) | **作った、k 46 を既定 ([27](27-Q6-A-BUILT.md))**。正しさは幅に入った。本文 2 は同じ commit の単体 158.788 s → 104.128 s、本文 1 は 28.6〜30.9 → 14.7〜17.0 s。2 機は `Q38_PAIR=<M6>` で開く。M6 のチャンクは読み律速 (置き場の待ち 3.5〜4.1 s) |
 | **Q7** decode と会話の機能 | 2 機で decode が単体より遅くならない。MTP・チェックポイント・prompt cache・ツール呼び出しが通る | Q6 の後 |
 | **Q8** 小さいラウンドの固定分 | 1 ラウンド 6.2 s の固定分と 8 トークンのチャンク 2.5 s | 未着手 |
 
-Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q2 → Q1 (済み) → Q4 の腕 b (模擬は済み、[20](20-Q4B-EXPERT-FEED.md)) → Q5 の M6 側 (A に入れる、[21](21-Q5-M6-OVERLAP.md)) → P6 (済み、[24](24-DECODE-SPLIT-RESULT.md)・[26](26-M6-T2-TRUNK-RESULT.md)) → **Q6 の本体 (再開手順は [22 §4](22-Q6-P6-DECODE-PLACEMENT.md)) → Q7 → Q8** ([19](19-AFTER-Q1-PLAN.md)、20 §3)。Q3 は Q6 と並行可。Q5 の MBP 側は判断待ち 3 で、k 48 が通れば対象が無い。判断待ち 1・2 と `bench/qfn/` の 2 機の形は Q6 の台帳の列を書くまでに要る。
+Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q2 → Q1 (済み) → Q4 の腕 b (模擬は済み、[20](20-Q4B-EXPERT-FEED.md)) → Q5 の M6 側 (A に入れる、[21](21-Q5-M6-OVERLAP.md)) → P6 (済み、[24](24-DECODE-SPLIT-RESULT.md)・[26](26-M6-T2-TRUNK-RESULT.md)) → Q6 (済み、[27](27-Q6-A-BUILT.md)) → **Q7 → Q8** ([19](19-AFTER-Q1-PLAN.md)、20 §3)。Q3 は Q6 と並行可。Q5 の MBP 側は判断待ち 3 で、k 48 が通れば対象が無い。判断待ち 1・2 と `bench/qfn/` の 2 機の形は Q6 の台帳の列を書くまでに要る。
 
 ## 判断待ち (ユーザー)
 
@@ -72,13 +72,14 @@ Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q2 → Q1 (済�
 | [18-Q1-F2-F3-PAIR.md](18-Q1-F2-F3-PAIR.md) | Q1 F2・F3: A と B の模擬の壁時計、12 §3 の判定 |
 | [19-AFTER-Q1-PLAN.md](19-AFTER-Q1-PLAN.md) | **Q1 の後の手順**: 待ちとチャンク幅の答え、Q4 の腕 b (MBP の SSD から TB4 で送る)、TB ポートの対称性、Q6 の k の規則 |
 | [20-Q4B-EXPERT-FEED.md](20-Q4B-EXPERT-FEED.md) | Q4 の腕 b: TB ポートの確認と、MBP の内蔵 SSD から TB4 で送る模擬 (比 0.5 / 0.59) |
+| [27-Q6-A-BUILT.md](27-Q6-A-BUILT.md) | **Q6 の結果**: A を作った (P1・常駐 10 層・置き場 2・送り 0.59)、正しさ、k 44・46・48 と同じ commit の単体、段の秒 |
 | [26-M6-T2-TRUNK-RESULT.md](26-M6-T2-TRUNK-RESULT.md) | 25 の結果: 単体・MTP on で M6 の verify の I/O 以外 96.8 ms は MBP 103.4 ms より短い。24 の S48 の 229 ms は split-decode の serve 側。step の差 (286 対 258 ms) は I/O (SSD) |
 | [25-M6-T2-TRUNK-PLAN.md](25-M6-T2-TRUNK-PLAN.md) | **計画**: M6 の T = 2 の幹の I/O 以外が MBP の層あたり 2 倍な理由 (GPU / host / フォルト / 道具) を、単体・MTP on の検証 1 行の内訳で判別する |
 | [24-DECODE-SPLIT-RESULT.md](24-DECODE-SPLIT-RESULT.md) | decode の置き場の判別の結果: MTP on で MBP 単体が最短、P6 確定 |
 | [23-DECODE-SPLIT-PLAN.md](23-DECODE-SPLIT-PLAN.md) | decode の置き場 (MBP 単体 / 層で分けた 2 機 / M6 が幹の全層) を MTP on で判別する実験の計画 |
 | [22-Q6-P6-DECODE-PLACEMENT.md](22-Q6-P6-DECODE-PLACEMENT.md) | Q6 の前提 P6: decode は MBP、状態の持ち主と受け渡し、両機単体の decode の実測 |
 | [21-Q5-M6-OVERLAP.md](21-Q5-M6-OVERLAP.md) | Q5 の M6 側: 非常駐層の読みを前の層の GPU の裏に回す模擬 (staging 1 / 2 層分、k 48・送り 0.59) |
-| `bench/qfn/` | 計測スクリプトと証拠。E0〜E4 の道具と `formula.py`、Q0 の `pair_bench.sh --solo`・`ledger.sh` (13) がある。2 機の形と `results/README.md` は未作成。本文 1 は `bench/m6/prompts/` の自然文 5 本を共用する |
+| `bench/qfn/` | 計測スクリプトと証拠。Q6 の `pair_bench.sh --pair <k>`・`pair_serve.sh` (M6 の serve)・`q6_check.sh` (正しさ) がある。E0〜E4 の道具と `formula.py`、Q0 の `pair_bench.sh --solo`・`ledger.sh` (13) がある。`results/README.md` は未作成。本文 1 は `bench/m6/prompts/` の自然文 5 本を共用する |
 
 ## 運用ルール (m6-prefill と同じ)
 

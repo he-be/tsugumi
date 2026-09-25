@@ -1,0 +1,39 @@
+01:35:06
+System-wide memory free percentage: 26%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   120616.
+Pages active:                                  84749.
+Pages inactive:                                78009.
+Pages speculative:                             13289.
+Pages throttled:                                   0.
+Pages wired down:                             710503.
+Pages purgeable:                                3025.
+"Translation faults":                      597321223.
+Pages copy-on-write:                       109618999.
+Pages zero filled:                         417658157.
+Pages reactivated:                         389581325.
+Pages purged:                                2343886.
+File-backed pages:                            153796.
+Anonymous pages:                               22251.
+Pages stored in compressor:                    11689.
+Pages occupied by compressor:                   3913.
+Decompressions:                             78953281.
+Compressions:                               90441086.
+Pageins:                                  1112058722.
+Pageouts:                                      20401.
+Swapins:                                      519019.
+Swapouts:                                     572825.
+Pages tagged:                                  67314.
+Pages tagged resident:                         62063.
+Pages tagged compressed:                        5251.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2793.
+Pages tag-storage free:                        22620.
+Pages tag-storage non-tag pageable:             7036.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     784512.
+Tagged compressions:                         1524317.
+Tagged decompressions:                       1468709.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  397.54 48119219 18680987.48   104.83 13336678 1365307.53 

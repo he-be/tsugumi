@@ -1,0 +1,39 @@
+01:43:25
+System-wide memory free percentage: 76%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    50350.
+Pages active:                                 663128.
+Pages inactive:                                84239.
+Pages speculative:                               161.
+Pages throttled:                                   0.
+Pages wired down:                             169009.
+Pages purgeable:                                1013.
+"Translation faults":                      599831060.
+Pages copy-on-write:                       109811744.
+Pages zero filled:                         419943915.
+Pages reactivated:                         398405719.
+Pages purged:                                2366111.
+File-backed pages:                             84348.
+Anonymous pages:                              663180.
+Pages stored in compressor:                    61030.
+Pages occupied by compressor:                  44192.
+Decompressions:                             81510555.
+Compressions:                               93314030.
+Pageins:                                  1135815976.
+Pageouts:                                      20481.
+Swapins:                                      519122.
+Swapouts:                                     572825.
+Pages tagged:                                  66123.
+Pages tagged resident:                         59438.
+Pages tagged compressed:                        6685.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2730.
+Pages tag-storage free:                        14493.
+Pages tag-storage non-tag pageable:            15445.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1078144.
+Tagged compressions:                         1557120.
+Tagged decompressions:                       1500068.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  399.23 48969064 19091840.27   102.50 13707070 1372012.86 

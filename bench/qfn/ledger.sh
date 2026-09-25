@@ -18,7 +18,7 @@ for d in "$repo"/bench/qfn/results/*/; do
     [ -f "$d/command.txt" ] && [ -f "$d/env.txt" ] && [ -f "$d/hostinfo.mbp.txt" ] || continue
     ls "$d"/summary-b[12].tsv > /dev/null 2>&1 || continue
     name=$(basename "$d"); date=$(echo "$name" | cut -c1-10); rest=${name#??????????-}
-    case "$rest" in pair-*) col=2 機; label=${rest#pair-} ;; *) col=単体; label=${rest#*-*-} ;; esac
+    case "$rest" in pair-*) col="2 機"; label=${rest#pair-} ;; *) col=単体; label=${rest#*-*-} ;; esac
     knobs=$(grep -E '^(Q38_|TF_)' "$d/env.txt" | sort | tr '\n' ' ' | sed 's/ *$//' || true)
     if [ "$mode" != "--all" ]; then
         case "$label" in ledger-*) ;; *) continue ;; esac

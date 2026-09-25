@@ -109,13 +109,13 @@ package enum Qwen38Pair {
         }
     }
 
-    /// `Q38_PAIR=<M6 bridge0 IPv4>[:port]` and `Q38_PAIR_K` (layers the M6 runs, default 48). Unset: the MBP alone.
+    /// `Q38_PAIR=<M6 bridge0 IPv4>[:port]` and `Q38_PAIR_K` (layers the M6 runs, default 46: the lowest median of the k grid 44 / 46 / 48, docs/qfn-prefill/27). Unset: the MBP alone.
     package static func configured() -> (host: String, port: Int, k: Int)? {
         let env = ProcessInfo.processInfo.environment
         guard let v = env["Q38_PAIR"], !v.isEmpty, v != "0" else { return nil }
         let parts = v.split(separator: ":")
         let port = parts.count > 1 ? Int(parts[1]) ?? defaultPort : defaultPort
-        let k = Int(env["Q38_PAIR_K"] ?? "") ?? 48
+        let k = Int(env["Q38_PAIR_K"] ?? "") ?? 46
         return (String(parts[0]), port, k)
     }
     package static let defaultPort = 5310

@@ -1,0 +1,39 @@
+01:30:39
+System-wide memory free percentage: 81%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    42950.
+Pages active:                                 693277.
+Pages inactive:                               105392.
+Pages speculative:                               245.
+Pages throttled:                                   0.
+Pages wired down:                             121748.
+Pages purgeable:                                  80.
+"Translation faults":                      595566014.
+Pages copy-on-write:                       109543883.
+Pages zero filled:                         415991431.
+Pages reactivated:                         386827383.
+Pages purged:                                2337276.
+File-backed pages:                             83726.
+Anonymous pages:                              715188.
+Pages stored in compressor:                    69388.
+Pages occupied by compressor:                  47467.
+Decompressions:                             78176433.
+Compressions:                               89504687.
+Pageins:                                  1100575763.
+Pageouts:                                      20371.
+Swapins:                                      518871.
+Swapouts:                                     572825.
+Pages tagged:                                  70429.
+Pages tagged resident:                         60927.
+Pages tagged compressed:                        9502.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2909.
+Pages tag-storage free:                        12050.
+Pages tag-storage non-tag pageable:            16418.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1578752.
+Tagged compressions:                         1502359.
+Tagged decompressions:                       1446815.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  396.81 47690666 18480745.90   105.61 13218576 1363315.38 

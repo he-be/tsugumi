@@ -1,0 +1,39 @@
+01:49:08
+System-wide memory free percentage: 81%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    37239.
+Pages active:                                 694681.
+Pages inactive:                               114429.
+Pages speculative:                               166.
+Pages throttled:                                   0.
+Pages wired down:                             120851.
+Pages purgeable:                                2697.
+"Translation faults":                      601705658.
+Pages copy-on-write:                       109942459.
+Pages zero filled:                         421777443.
+Pages reactivated:                         403786853.
+Pages purged:                                2383015.
+File-backed pages:                             91976.
+Anonymous pages:                              717300.
+Pages stored in compressor:                    60446.
+Pages occupied by compressor:                  43713.
+Decompressions:                             83194458.
+Compressions:                               95230251.
+Pageins:                                  1153005041.
+Pageouts:                                      20552.
+Swapins:                                      519145.
+Swapouts:                                     572825.
+Pages tagged:                                  66636.
+Pages tagged resident:                         60170.
+Pages tagged compressed:                        6466.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2741.
+Pages tag-storage free:                        13990.
+Pages tag-storage non-tag pageable:            15857.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1035392.
+Tagged compressions:                         1576132.
+Tagged decompressions:                       1519294.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  400.44 49584753 19390213.84   100.98 13957759 1376373.34 
