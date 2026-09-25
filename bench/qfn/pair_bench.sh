@@ -184,6 +184,8 @@ body3() {  # round
     env Q38_ROUND_LOG=$out/$tag.rounds.jsonl $pairenv GUARD_LOG=$out/$tag.guard.txt caffeinate -i $repo/Scripts/qwen38/guarded.sh $out/$tag.log "${live_cmd[@]}" --out $out/$tag || rc=$?
     snap $out/$tag.post.txt; m6snap $out/$tag.post.m6.txt
     grep -q '^GUARD: Swapouts' $out/$tag.log && rc=9
+    # guarded.sh exits 0 whatever its command did; ToolLoopCheck's own status (1 = a check failed) is on its last line.
+    (( rc == 0 )) && rc=$(awk '/^GUARD: exit/ {sub(",", "", $3); r = $3} END {print r + 0}' $out/$tag.log)
     pairchk $out/$tag.log || rc=$?
     python3 $repo/bench/qfn/q7_summary.py $out/$tag $r $rc $(( $(swapouts $out/$tag.post.txt) - $(swapouts $out/$tag.pre.txt) )) \
         $(( ($(pageins $out/$tag.post.txt) - $(pageins $out/$tag.pre.txt)) * 16384 / 1048576 )) $(m6cols $tag) >> $out/summary-b3.tsv
