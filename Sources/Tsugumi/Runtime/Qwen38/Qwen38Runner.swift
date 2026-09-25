@@ -296,6 +296,18 @@ package final class Qwen38Runner {
     private var pleHistBefore: [Float] = []
     private var plePrevBefore: [Int] = []
     private var snapTokens: [Int] = []
+    private var snapLayers: Range<Int> = 0..<0
+
+    // Two machines split the trunk by layers (`docs/qfn-prefill/23`).
+    /// The trunk layers a forward runs (`nil`: all of them). A range that ends before the last layer stops there: no
+    /// head, the residual rows in `hidden(row:)`, and no logits returned. The snapshot and `rollback` touch only the
+    /// GDN layers in it, and the expert preview names none past it.
+    package var layerRange: Range<Int>?
+    /// Stop after the layers even when the range reaches the last one (the other machine runs the head).
+    package var trunkOnly = false
+    /// The residual rows (T x hc x e floats) the next forward starts from instead of the embedding: the output of the
+    /// layers before `layerRange` on the other machine. Taken (and cleared) by that forward.
+    package var residualIn: [Float]?
 
     package static var defaultKVType: String { ProcessInfo.processInfo.environment["Q38_KV_TYPE"] ?? "q8_0" }
 
@@ -1846,7 +1858,7 @@ package final class Qwen38Runner {
         precondition(keep >= 1 && keep <= snapshotTaken, "rollback(keep: \(keep)) after a snapshot of \(snapshotTaken) rows")
         precondition(keep <= convK - 1)
         let C = 2 * Hk * Dl + Hv * Dl
-        for il in 0..<nTrunk where isLinear(il) {
+        for il in snapLayers where isLinear(il) {
             let snap = linStateSnap[keep - 1][il]!
             linStateSnap[keep - 1][il] = linState[il]
             linState[il] = snap
@@ -2101,7 +2113,8 @@ package final class Qwen38Runner {
             precondition(snapshotRows <= 2 && T > snapshotRows && (gdnChunk == 0 || T < gdnMinTokens),
                          "snapshotRows needs 1 or 2 rows below T and the serial GDN step")
             let C = 2 * Hk * Dl + Hv * Dl
-            for il in 0..<nTrunk where isLinear(il) {
+            snapLayers = layerRange ?? 0..<nTrunk
+            for il in snapLayers where isLinear(il) {
                 let before = linHistBefore[il] ?? device.makeBuffer(length: (convK - 1) * C * 4, options: .storageModeShared)!
                 linHistBefore[il] = before
                 if let hist = linHist[il] {
@@ -2116,8 +2129,16 @@ package final class Qwen38Runner {
             snapTokens = Array(tokens.prefix(snapshotRows))
             snapshotTaken = snapshotRows
         }
-        try embed(tokens, copies: hc, into: R)
-        try pleRows(tokens: tokens)
+        let layers = layerRange ?? 0..<nTrunk
+        precondition(layerRange == nil || llkvSplit == 0, "layerRange runs without the LLKVApprox fill")
+        if let rows = residualIn {
+            precondition(rows.count == T * hc * e)
+            rows.withUnsafeBytes { R.contents().copyMemory(from: $0.baseAddress!, byteCount: $0.count) }
+            residualIn = nil
+        } else {
+            try embed(tokens, copies: hc, into: R)
+        }
+        if layers.contains(pleLayer) { try pleRows(tokens: tokens) }
         prof.ple = CFAbsoluteTimeGetCurrent() - tStep
 
         // The last routed buffer and its host commit time; with `pipeline` a later wait has completed it.
@@ -2173,7 +2194,7 @@ package final class Qwen38Runner {
             } else {
                 try sharedAndRouter(cb, pre: pre, T: rows)
             }
-            if preview && il + 1 < nTrunk {
+            if preview && il + 1 < layers.upperBound {
                 try gemv(cb, "blk.\(il + 1).ffn_gate_inp.weight", x: mixed, y: previewLogits, tokens: rows)
             }
             cb.commit()
@@ -2196,7 +2217,7 @@ package final class Qwen38Runner {
             // commit, and its GPU and page-in time land in the next `preRouter`.
             if !pipeline { try settleRouted(waited: false) }
             prof.routed += CFAbsoluteTimeGetCurrent() - t2
-            if preview && il + 1 < nTrunk {
+            if preview && il + 1 < layers.upperBound {
                 let tp = CFAbsoluteTimeGetCurrent()
                 let named = previewExperts(T: rows, n: previewTopN)
                 if previewAdvise { try advisePreview(il: il + 1, named: named) }
@@ -2215,7 +2236,7 @@ package final class Qwen38Runner {
         let split = llkvSplit > 0 && llkvSplit < nTrunk ? llkvSplit : nTrunk
         let tail = min(exactTail ?? T, T)
         let fill = split < nTrunk && tail < T
-        for il in 0..<(fill ? split : nTrunk) {
+        for il in (fill ? 0..<split : layers) {
             try layer(il, rows: T, pos: startPos, report: true)
             if il + 1 == nTrunk / 2 {
                 prof.early = HalfProfile(preRouter: prof.preRouter, route: prof.route, routeAdvise: prof.routeAdvise,
@@ -2290,6 +2311,13 @@ package final class Qwen38Runner {
             p.cb.waitUntilCompleted()
             try settleRouted(waited: true)
             prof.routed += CFAbsoluteTimeGetCurrent() - t3
+        }
+        if layers.upperBound < nTrunk || trunkOnly {
+            ensureBuffer(&hiddenOut, bytes: T * hc * e * 4, shared: true)
+            hiddenOut!.contents().copyMemory(from: R.contents(), byteCount: T * hc * e * 4)
+            prof.total = CFAbsoluteTimeGetCurrent() - tStep
+            lastProfile = prof
+            return UnsafeBufferPointer(start: nil, count: 0)
         }
 
         let tHead = CFAbsoluteTimeGetCurrent()

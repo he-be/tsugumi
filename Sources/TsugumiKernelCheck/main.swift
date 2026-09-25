@@ -2089,6 +2089,22 @@ if let index = arguments.firstIndex(of: "--qfn-split-probe"), index + 6 < argume
                          chunks: index + 7 < arguments.count ? Int(arguments[index + 7]) ?? 1 : 1)
     exit(0)
 }
+// `--qwen38-split-decode serve|run <ip> <port> <j> <prompt token file>`: the MTP spec decode with layers 0 ..< j on the
+// M6 and the rest on the MBP, or the MBP alone with j 0 (Qwen38SplitDecode.swift, docs/qfn-prefill/23).
+if let index = arguments.firstIndex(of: "--qwen38-split-decode"), index + 5 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    try runQwen38SplitDecode(
+        mode: arguments[index + 1], ip: arguments[index + 2], port: Int(arguments[index + 3])!, j: Int(arguments[index + 4])!,
+        tokenFile: arguments[index + 5],
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple-bf16/Qwen3.8-Flash-Next-PLE-BF16.gguf",
+        newTokens: opt("--q38-new").flatMap { Int($0) } ?? 400, chunk: opt("--q38-chunk").flatMap { Int($0) } ?? 2048,
+        seed: opt("--q38-seed").flatMap { UInt64($0) } ?? 1, force: opt("--q38-force"), out: opt("--q38-out") ?? "split-decode.out")
+    exit(0)
+}
 // `--qfn-pair-sim serve|run <ip> <port> <gguf> <down sidecar> <routes prefix> A|B <k|sigma> <resident GB|chunks>`:
 // candidates A and B of one chunk's GEMMs on two machines, the M6 on arm M with its own buffers (QFNPairSim.swift,
 // docs/qfn-prefill/12 F2 / F3).
