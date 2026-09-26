@@ -8,7 +8,8 @@ import Foundation
 // rows of those layers it lacks (decode rows since the last round, or everything after a new connection). The M6 runs
 // layers 0 ..< k of every chunk and answers each with the residual rows (T x hc x e floats), the chunk's K / V and
 // indexer rows of its layers, and, after the chunks the MBP marks (checkpoint cuts and the last), the recurrent state
-// of its layers. The MBP runs layers k ..< 48, the head and the MTP head, and decodes alone.
+// of its layers; for a checkpoint cut inside a chunk (`Qwen38Runner.cutRows`, docs/qfn-prefill/29 C1) the state of
+// its layers at that row too. The MBP runs layers k ..< 48, the head and the MTP head, and decodes alone.
 //
 // On connecting, the M6 says how it holds its layers (`Qwen38LayerStore`: resident layers, staging slabs, the feed
 // fraction) and the sizes of its weight files, which must be the MBP's. With a feed fraction the MBP opens a second
@@ -18,7 +19,7 @@ import Foundation
 // link-local address.
 
 private let pairMagic: Int64 = 0x5146_4E50   // "QFNP"
-private let pairVersion: Int64 = 2
+private let pairVersion: Int64 = 3
 /// Doubles per chunk answer: the M6's forward and profile, then its layer store's (`Qwen38LayerStore.Stats`).
 private let pairTimes = 14
 
@@ -129,6 +130,8 @@ package enum Qwen38Pair {
         package var kv: [UInt8] = []
         /// The recurrent state of layers 0 ..< k after the chunk (`forEachRecurrentRegion(layers:)` order), if asked.
         package var state: [UInt8]?
+        /// The same at each of the chunk's cut rows, in order.
+        package var cutStates: [[UInt8]] = []
         package var plePrev: [Int] = []
         /// The M6's forward seconds, its profile (ple, preRouter, route, routed, preGPU, routedGPU, routeAdvise) and its
         /// layer store's (slab wait, own read, fed, layer reads, own MB, fed MB) for the chunk.
@@ -184,11 +187,12 @@ package enum Qwen38Pair {
         }
 
         /// Starts a round: the M6 runs layers 0 ..< k of `tokens` at `startPos` in chunks of `chunks`, and sends the
-        /// recurrent state after the chunks marked in `stateAfter`. `kvFrom`: the first position whose rows the M6
-        /// lacks (rows `kvFrom ..< startPos` go with the request).
+        /// recurrent state after the chunks marked in `stateAfter` and at each chunk's `cutRows`. `kvFrom`: the first
+        /// position whose rows the M6 lacks (rows `kvFrom ..< startPos` go with the request).
         package func begin(runner: Qwen38Runner, tokens: [Int], startPos: Int, chunks: [Int], stateAfter: [Bool],
-                           kvFrom: Int) throws {
-            precondition(chunks.reduce(0, +) == tokens.count && stateAfter.count == chunks.count && kvFrom <= startPos)
+                           cutRows: [[Int]], kvFrom: Int) throws {
+            precondition(chunks.reduce(0, +) == tokens.count && stateAfter.count == chunks.count
+                         && cutRows.count == chunks.count && kvFrom <= startPos)
             let layers = 0..<k
             let header: [Int64] = [pairMagic, pairVersion, Int64(k), Int64(startPos), Int64(tokens.count),
                                    Int64(chunks.count), Int64(kvFrom), Int64(runner.recurrentBytes(layers: layers))]
@@ -196,6 +200,8 @@ package enum Qwen38Pair {
             try pairSend(fd, tokens.map { Int32($0) })
             try pairSend(fd, chunks.map { Int32($0) })
             try pairSend(fd, stateAfter.map { Int32($0 ? 1 : 0) })
+            try pairSend(fd, cutRows.map { Int32($0.count) })
+            try pairSend(fd, cutRows.flatMap { $0 }.map { Int32($0) })
             try pairSend(fd, runner.plePrevious.map { Int64($0) })
             try pairRegions(fd, send: true) { try runner.forEachRecurrentRegion(layers: layers, $0) }
             try pairRegions(fd, send: true) { try runner.forEachKVRegion(layers: layers, positions: kvFrom..<startPos, $0) }
@@ -224,6 +230,8 @@ package enum Qwen38Pair {
                         c.residual = try pairRecv(fd, T * W, as: Float.self)
                         c.kv = try pairRecv(fd, kvBytes[i], as: UInt8.self)
                         if head[2] != 0 { c.state = try pairRecv(fd, stateBytes, as: UInt8.self) }
+                        guard head[3] == Int64(cutRows[i].count) else { throw Error.link("chunk \(i): \(head[3]) cut states") }
+                        for _ in 0..<cutRows[i].count { c.cutStates.append(try pairRecv(fd, stateBytes, as: UInt8.self)) }
                         c.recvSeconds = CFAbsoluteTimeGetCurrent() - t0
                         lock.lock(); queue.append(c); lock.signal(); lock.unlock()
                     }
@@ -261,6 +269,16 @@ package enum Qwen38Pair {
                 at = 0
                 s.withUnsafeBytes { src in
                     runner.forEachRecurrentRegion(layers: 0..<k) { p, n in
+                        p.copyMemory(from: src.baseAddress! + at, byteCount: n)
+                        at += n
+                    }
+                }
+                precondition(at == s.count)
+            }
+            for (j, s) in c.cutStates.enumerated() {
+                at = 0
+                s.withUnsafeBytes { src in
+                    runner.forEachCutRegion(j, layers: 0..<k) { p, n in
                         p.copyMemory(from: src.baseAddress! + at, byteCount: n)
                         at += n
                     }
@@ -391,6 +409,9 @@ package enum Qwen38Pair {
         let tokens = try pairRecv(fd, n, as: Int32.self).map { Int($0) }
         let chunks = try pairRecv(fd, nChunks, as: Int32.self).map { Int($0) }
         let stateAfter = try pairRecv(fd, nChunks, as: Int32.self).map { $0 != 0 }
+        let cutCounts = try pairRecv(fd, nChunks, as: Int32.self).map { Int($0) }
+        var cutFlat = try pairRecv(fd, cutCounts.reduce(0, +), as: Int32.self).map { Int($0) }[...]
+        let cutRows = cutCounts.map { n in defer { cutFlat = cutFlat.dropFirst(n) }; return Array(cutFlat.prefix(n)) }
         runner.plePrevious = try pairRecv(fd, 2, as: Int64.self).map { Int($0) }
         try pairRegions(fd, send: false) { try runner.forEachRecurrentRegion(layers: layers, $0) }
         try pairRegions(fd, send: false) { try runner.forEachKVRegion(layers: layers, positions: kvFrom..<startPos, $0) }
@@ -407,11 +428,13 @@ package enum Qwen38Pair {
         var pos = startPos, done = 0
         for (i, T) in chunks.enumerated() {
             let tf = CFAbsoluteTimeGetCurrent()
+            runner.cutRows = cutRows[i]
+            defer { runner.cutRows = []; runner.releaseCutBuffers() }
             _ = try runner.forward(tokens: Array(tokens[done..<(done + T)]), startPos: pos)
             let forward = CFAbsoluteTimeGetCurrent() - tf
             let p = runner.lastProfile
             let ts = CFAbsoluteTimeGetCurrent()
-            try pairSend(fd, [Int64(i), Int64(T), stateAfter[i] ? 1 : 0, 0])
+            try pairSend(fd, [Int64(i), Int64(T), stateAfter[i] ? 1 : 0, Int64(cutRows[i].count)])
             let st = store?.stats ?? Qwen38LayerStore.Stats()
             let ls = [st.wait - last.wait, st.own - last.own, st.fed - last.fed, st.read - last.read,
                       Double(st.ownBytes - last.ownBytes) / 1e6, Double(st.fedBytes - last.fedBytes) / 1e6]
@@ -421,6 +444,7 @@ package enum Qwen38Pair {
             try pairIO(fd, runner.hidden(row: 0), T * W * 4, send: true)
             try pairRegions(fd, send: true) { try runner.forEachKVRegion(layers: layers, positions: pos..<(pos + T), $0) }
             if stateAfter[i] { try pairRegions(fd, send: true) { try runner.forEachRecurrentRegion(layers: layers, $0) } }
+            for j in cutRows[i].indices { try pairRegions(fd, send: true) { try runner.forEachCutRegion(j, layers: layers, $0) } }
             log(String(format: "chunk %d at %d T %d: forward %.3f s (ple %.3f pre %.3f route %.3f advise %.3f routed %.3f, gpu %.3f + %.3f), send %.3f s",
                        i, pos, T, forward, p.ple, p.preRouter, p.route, p.routeAdvise, p.routed, p.preGPU, p.routedGPU,
                        CFAbsoluteTimeGetCurrent() - ts)

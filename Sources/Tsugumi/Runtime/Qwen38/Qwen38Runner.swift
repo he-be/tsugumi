@@ -308,6 +308,20 @@ package final class Qwen38Runner {
     private var snapTokens: [Int] = []
     private var snapLayers: Range<Int> = 0..<0
 
+    // Checkpoints inside a chunk (`docs/qfn-prefill/29` C1).
+    /// Rows c (0 < c < T, ascending) of the next forward after which the recurrent state is also kept, as it is after
+    /// the batch's first c tokens: the GDN state and conv history of each linear layer the forward runs, the PLE
+    /// history when it runs the PLE layer, and `cutPlePrev`. The GDN step runs in segments split at the rows; the conv
+    /// and PLE histories are the history kernels run on a copy with T = c. `forEachCutRegion` reads them in
+    /// `forEachRecurrentRegion` order. KV, indexer keys and the MTP KV are by position and need nothing.
+    /// Cleared by the caller; the copies stay until `releaseCutBuffers` (117.6 MiB per row for the whole trunk).
+    package var cutRows: [Int] = []
+    private var cutState: [[Int: MTLBuffer]] = []
+    private var cutHist: [[Int: MTLBuffer]] = []
+    private var cutPleHist: [MTLBuffer?] = []
+    /// `plePrevious` after each of the last forward's `cutRows`.
+    package private(set) var cutPlePrev: [[Int]] = []
+
     // Two machines split the trunk by layers (`docs/qfn-prefill/23`).
     /// The trunk layers a forward runs (`nil`: all of them). A range that ends before the last layer stops there: no
     /// head, the residual rows in `hidden(row:)`, and no logits returned. The snapshot and `rollback` touch only the
@@ -740,6 +754,16 @@ package final class Qwen38Runner {
             enc.setBuffer(conv, offset: 0, index: 3)
             enc.setBytes(&cp, length: cpLen, index: 4)
         }
+        for (j, c) in cutRows.enumerated() {
+            let h = cutBuffer(&cutHist, j, il, length: hist.length)
+            copy(cb, hist, to: h)
+            var cc = (UInt32(C), UInt32(convK), UInt32(c))
+            run(cb, psoConvHist, size(C)) { enc in
+                enc.setBuffer(qkv, offset: 0, index: 0)
+                enc.setBuffer(h, offset: 0, index: 1)
+                enc.setBytes(&cc, length: cpLen, index: 2)
+            }
+        }
         run(cb, psoConvHist, size(C)) { enc in
             enc.setBuffer(qkv, offset: 0, index: 0)
             enc.setBuffer(hist, offset: 0, index: 1)
@@ -760,11 +784,37 @@ package final class Qwen38Runner {
             try? setF32(enc, pre + "ssm_dt.bias", index: 3)
             enc.setBytes(&gp, length: gpLen, index: 4)
         }
-        if gdnChunk > 0 && T >= gdnMinTokens {
-            if gdnChunked?.chunk != gdnChunk {
-                gdnChunked = try Qwen38GDNChunk(device: device, library: qwen38Lib, keyHeads: Hk, valueHeads: Hv,
-                                                headDim: Dl, chunk: gdnChunk)
+        let chunked = gdnChunk > 0 && T >= gdnMinTokens
+        if chunked && gdnChunked?.chunk != gdnChunk {
+            gdnChunked = try Qwen38GDNChunk(device: device, library: qwen38Lib, keyHeads: Hk, valueHeads: Hv,
+                                            headDim: Dl, chunk: gdnChunk)
+        }
+        if !cutRows.isEmpty {
+            // Segments split at the cut rows, the state copied at the end of each but the last.
+            let bounds = [0] + cutRows + [T]
+            var none = UInt32(0)
+            for j in 0..<(bounds.count - 1) {
+                let lo = bounds[j], hi = bounds[j + 1]
+                if chunked {
+                    gdnChunked!.encode(cb, conv: conv, a: ga, b: gb, state: state, out: lo6144, T: T, rows: lo..<hi)
+                } else {
+                    var sp = (UInt32(Hk), UInt32(Hv), UInt32(Dl), UInt32(hi - lo))
+                    lanes(cb, psoStep, size(Dl, Hv)) { enc in
+                        enc.setBuffer(conv, offset: lo * C * 4, index: 0)
+                        enc.setBuffer(ga, offset: lo * Hv * 4, index: 1)
+                        enc.setBuffer(gb, offset: lo * Hv * 4, index: 2)
+                        enc.setBuffer(state, offset: 0, index: 5)
+                        enc.setBuffer(lo6144, offset: lo * Hv * Dl * 4, index: 6)
+                        enc.setBytes(&sp, length: gpLen, index: 7)
+                        enc.setBytes(&cV, length: 4, index: 8)
+                        enc.setBuffer(state, offset: 0, index: 9)
+                        enc.setBytes(&none, length: 4, index: 10)
+                        enc.setBuffer(state, offset: 0, index: 11)
+                    }
+                }
+                if hi < T { copy(cb, state, to: cutBuffer(&cutState, j, il, length: state.length)) }
             }
+        } else if chunked {
             gdnChunked!.encode(cb, conv: conv, a: ga, b: gb, state: state, out: lo6144, T: T)
         } else {
             var snapN = UInt32(snapshotTaken)
@@ -1954,11 +2004,67 @@ package final class Qwen38Runner {
             enc.setBuffer(cw.buffer, offset: cw.offset, index: 4)
             enc.setBytes(&cp, length: cpLen, index: 5)
         }
+        for (j, c) in cutRows.enumerated() {
+            let h = cutPleHist[j] ?? device.makeBuffer(length: pleHist.length, options: .storageModeShared)!
+            cutPleHist[j] = h
+            copy(cb, pleHist, to: h)
+            var cc = (UInt32(W), UInt32(pleNgram), UInt32((4 - 1) * pleNgram), UInt32(c))
+            run(cb, psoPleHist, size(W)) { enc in
+                enc.setBuffer(pleNormed, offset: 0, index: 0)
+                enc.setBuffer(h, offset: 0, index: 1)
+                enc.setBytes(&cc, length: cpLen, index: 2)
+            }
+        }
         run(cb, psoPleHist, size(W)) { enc in
             enc.setBuffer(pleNormed, offset: 0, index: 0)
             enc.setBuffer(pleHist, offset: 0, index: 1)
             enc.setBytes(&cp, length: cpLen, index: 2)
         }
+    }
+
+    /// A blit of all of `from` into `to` (same length).
+    private func copy(_ cb: MTLCommandBuffer, _ from: MTLBuffer, to: MTLBuffer) {
+        let blit = cb.makeBlitCommandEncoder()!
+        blit.copy(from: from, sourceOffset: 0, to: to, destinationOffset: 0, size: from.length)
+        blit.endEncoding()
+    }
+
+    /// Cut row `j`'s copy of layer `il` in `table`, made on first use.
+    private func cutBuffer(_ table: inout [[Int: MTLBuffer]], _ j: Int, _ il: Int, length: Int) -> MTLBuffer {
+        if let b = table[j][il] { return b }
+        let b = device.makeBuffer(length: length, options: .storageModeShared)!
+        table[j][il] = b
+        return b
+    }
+
+    /// Room for `n` cut rows' copies.
+    private func reserveCuts(_ n: Int) {
+        while cutState.count < n { cutState.append([:]); cutHist.append([:]); cutPleHist.append(nil) }
+    }
+
+    /// The regions of cut row `j` of the last forward (or of what a caller wrote into them), for the trunk layers in
+    /// `layers`, in `forEachRecurrentRegion(layers:)` order. Copies no forward has made are made (zeros).
+    package func forEachCutRegion(_ j: Int, layers: Range<Int>, _ body: (UnsafeMutableRawPointer, Int) throws -> Void) rethrows {
+        reserveCuts(j + 1)
+        let C = 2 * Hk * Dl + Hv * Dl
+        for il in layers where isLinear(il) {
+            let state = cutBuffer(&cutState, j, il, length: Hv * Dl * Dl * 4)
+            let hist = cutBuffer(&cutHist, j, il, length: (convK - 1) * C * 4)
+            try body(state.contents(), state.length)
+            try body(hist.contents(), hist.length)
+        }
+        if layers.contains(pleLayer) {
+            let h = cutPleHist[j] ?? device.makeBuffer(length: pleHist.length, options: .storageModeShared)!
+            cutPleHist[j] = h
+            try body(h.contents(), h.length)
+        }
+    }
+
+    /// Frees the cut rows' copies (the checkpoints made from them hold their own).
+    package func releaseCutBuffers() {
+        cutState = []
+        cutHist = []
+        cutPleHist = []
     }
 
     // MARK: - Forward
@@ -2336,6 +2442,13 @@ package final class Qwen38Runner {
             plePrevBefore = plePrev
             snapTokens = Array(tokens.prefix(snapshotRows))
             snapshotTaken = snapshotRows
+        }
+        if !cutRows.isEmpty {
+            precondition(snapshotRows == 0 && llkvSplit == 0, "cutRows runs without a snapshot or the LLKVApprox fill")
+            precondition(zip(cutRows, cutRows.dropFirst()).allSatisfy { $0 < $1 } && cutRows.first! > 0 && cutRows.last! < T,
+                         "cutRows \(cutRows) must rise inside 1 ..< \(T)")
+            reserveCuts(cutRows.count)
+            cutPlePrev = cutRows.map { c in Array((tokens.prefix(c).reversed() + plePrev).prefix(plePrev.count)) }
         }
         let layers = layerRange ?? 0..<nTrunk
         precondition(layerRange == nil || llkvSplit == 0, "layerRange runs without the LLKVApprox fill")

@@ -41,20 +41,37 @@ package final class Qwen38Checkpoint: @unchecked Sendable {
     fileprivate let mtpTokens: [Int]
     fileprivate let mtpRows: [Float]
 
-    fileprivate init(engine: Qwen38Engine) throws {
-        let t = Date()
-        position = engine.position
+    /// The live state at the engine's position.
+    fileprivate convenience init(engine: Qwen38Engine) throws {
         let runner = engine.runner
-        bytes = runner.recurrentBytes
-        plePrev = runner.plePrevious
-        pendingH = engine.pendingH
+        try self.init(engine: engine, position: engine.position, plePrev: runner.plePrevious, pendingH: engine.pendingH) {
+            try runner.forEachRecurrentRegion($0)
+        }
+    }
+
+    /// The state after cut row `cut` of the last forward (`Qwen38Runner.cutRows`), at `position`, whose MTP input is
+    /// `pendingH` (`docs/qfn-prefill/29` C1).
+    fileprivate convenience init(engine: Qwen38Engine, cut: Int, position: Int, pendingH: [Float]) throws {
+        let runner = engine.runner
+        try self.init(engine: engine, position: position, plePrev: runner.cutPlePrev[cut], pendingH: pendingH) {
+            try runner.forEachCutRegion(cut, layers: 0..<runner.nTrunk, $0)
+        }
+    }
+
+    private init(engine: Qwen38Engine, position: Int, plePrev: [Int], pendingH: [Float],
+                 regions: ((UnsafeMutableRawPointer, Int) throws -> Void) throws -> Void) throws {
+        let t = Date()
+        self.position = position
+        bytes = engine.runner.recurrentBytes
+        self.plePrev = plePrev
+        self.pendingH = pendingH
         mtpTokens = engine.mtpTokens
         mtpRows = engine.mtpRows
         switch engine.checkpointStore {
         case .ram:
             let m = UnsafeMutableRawPointer.allocate(byteCount: bytes, alignment: 16)
             var at = 0
-            runner.forEachRecurrentRegion { p, n in (m + at).copyMemory(from: p, byteCount: n); at += n }
+            try regions { p, n in (m + at).copyMemory(from: p, byteCount: n); at += n }
             memory = m
             fd = -1
         case .ssd(let directory):
@@ -66,7 +83,7 @@ package final class Qwen38Checkpoint: @unchecked Sendable {
             var ok = false
             defer { if !ok { close(fd) } }
             var at = 0
-            try runner.forEachRecurrentRegion { p, n in
+            try regions { p, n in
                 var done = 0
                 while done < n {
                     let w = pwrite(fd, p + done, n - done, off_t(at + done))
@@ -184,16 +201,34 @@ package final class Qwen38Engine {
         mtpRows = checkpoint.mtpRows
     }
 
+    /// `Q38_CUT_INCHUNK=1` (candidate, `docs/qfn-prefill/29` C1): a checkpoint position inside a prefill chunk is taken
+    /// from the runner's `cutRows` copies instead of ending the chunk there. The chunk after a cut was 1 or 8 tokens
+    /// that read the dense weights and experts again (1.7-2.9 s each on the MBP alone).
+    package var cutInChunk = ProcessInfo.processInfo.environment["Q38_CUT_INCHUNK"] == "1"
+
+    /// The prefill chunks of `count` tokens from `position`: each chunk's size and the checkpoint positions inside it
+    /// as rows. Without `cutInChunk` a chunk ends at every cut and holds none.
+    private func chunkPlan(count: Int, cuts: [Int]) -> [(T: Int, cutRows: [Int])] {
+        var plan: [(T: Int, cutRows: [Int])] = []
+        var p = position
+        while p < position + count {
+            let T = cutInChunk ? min(prefillChunk, position + count - p)
+                               : min(prefillChunk, position + count - p, (cuts.first { $0 > p } ?? Int.max) - p)
+            plan.append((T, cutInChunk ? cuts.filter { $0 > p && $0 < p + T }.map { $0 - p } : []))
+            p += T
+        }
+        return plan
+    }
+
     /// Starts this prefill on the M6 when a pair is configured: connects if there is no link yet and sends the round.
     /// nil (the MBP alone) without a configuration, with LLKVApprox, or when the link fails before the round began.
-    private func pairRound(prompt: [Int], cuts: [Int]) throws -> Qwen38Pair.Client? {
+    private func pairRound(prompt: [Int], plan: [(T: Int, cutRows: [Int])], cuts: [Int]) throws -> Qwen38Pair.Client? {
         guard let config = pairConfig, runner.llkvSplit == 0 else { return nil }
-        var sizes: [Int] = [], stateAfter: [Bool] = []
+        let sizes = plan.map(\.T)
+        var stateAfter: [Bool] = []
         var p = position
-        while p < position + prompt.count {
-            let T = min(prefillChunk, position + prompt.count - p, (cuts.first { $0 > p } ?? Int.max) - p)
+        for T in sizes {
             p += T
-            sizes.append(T)
             stateAfter.append(p == position + prompt.count || cuts.contains(p))
         }
         do {
@@ -203,7 +238,7 @@ package final class Qwen38Engine {
             }
             let t = Date()
             try pair!.begin(runner: runner, tokens: prompt, startPos: position, chunks: sizes, stateAfter: stateAfter,
-                            kvFrom: pairSynced)
+                            cutRows: plan.map(\.cutRows), kvFrom: pairSynced)
             if Qwen38RoundLog.enabled {
                 // The hand-over to the M6 (docs/qfn-prefill/22 §2-2 step 1): its state and the rows decode added.
                 let layers = 0..<config.k
@@ -270,14 +305,17 @@ package final class Qwen38Engine {
         // Report the total before the first chunk: at ~95 tok/s one chunk of 2,048 is over 20 s.
         let total = position + prompt.count
         onPrefill?(position, total)
-        let link = try pairRound(prompt: prompt, cuts: cuts)
+        let plan = chunkPlan(count: prompt.count, cuts: cuts)
+        var planIndex = 0
+        let link = try pairRound(prompt: prompt, plan: plan, cuts: cuts)
         // A round the M6 has begun and not finished leaves the link out of step: drop it.
         var pairOpen = link != nil
         defer { if pairOpen { pair = nil; pairSynced = 0 } }
         if runner.plePrefetch && (link == nil || link!.k <= runner.pleLayerIndex) { try runner.prefetchPLE(tokens: prompt) }
         while done < prompt.count {
             try Task.checkCancellation()
-            let T = min(prefillChunk, prompt.count - done, (cuts.first { $0 > position } ?? Int.max) - position)
+            let (T, cutRows) = plan[planIndex]
+            planIndex += 1
             let chunk = Array(prompt[done..<(done + T)])
             let chunkStart = position
             let layers = runner.nTrunk
@@ -290,6 +328,8 @@ package final class Qwen38Engine {
             let progress = onPrefill.map { report in { (n: Int) in report(chunkStart + min(T * n / layers, T - 1), total) } }
             var pairFields: [String: Any] = [:]
             let l: UnsafeBufferPointer<Float>
+            runner.cutRows = cutRows
+            defer { runner.cutRows = []; runner.releaseCutBuffers() }
             if let link {
                 let (c, wait) = try link.next()
                 precondition(c.T == T)
@@ -311,6 +351,17 @@ package final class Qwen38Engine {
             }
             let forwardSeconds = Date().timeIntervalSince(tChunk)
             let forwardProfile = runner.lastProfile
+            // The checkpoints inside the chunk (cutInChunk), before the MTP head: each one's MTP input is the trunk
+            // residual of the row before it.
+            var captureSeconds = 0.0
+            if let onCheckpoint {
+                for (j, c) in cutRows.enumerated() {
+                    let h = speculative ? Array(UnsafeBufferPointer(start: runner.hidden(row: c - 1), count: W)) : pendingH
+                    let checkpoint = try Qwen38Checkpoint(engine: self, cut: j, position: chunkStart + c, pendingH: h)
+                    captureSeconds += checkpoint.captureSeconds
+                    onCheckpoint(checkpoint)
+                }
+            }
             let tMTP = Date()
             if speculative {
                 var s = 0
@@ -334,14 +385,13 @@ package final class Qwen38Engine {
             let mtpSeconds = speculative ? Date().timeIntervalSince(tMTP) : 0
             position += T
             done += T
-            var captureSeconds = 0.0
             if cuts.contains(position), let onCheckpoint {
                 let checkpoint = try captureCheckpoint()
-                captureSeconds = checkpoint.captureSeconds
+                captureSeconds += checkpoint.captureSeconds
                 onCheckpoint(checkpoint)
             }
             if Qwen38RoundLog.enabled {
-                Qwen38RoundLog.write(["event": "chunk", "start": chunkStart, "T": T, "exact_tail": exactTail ?? T,
+                Qwen38RoundLog.write(["event": "chunk", "start": chunkStart, "T": T, "exact_tail": exactTail ?? T, "cut_rows": cutRows,
                                       "wall_s": Date().timeIntervalSince(tChunk), "forward_s": forwardSeconds,
                                       "mtp_s": mtpSeconds, "checkpoint_s": captureSeconds,
                                       "profile": Qwen38RoundLog.fields(forwardProfile)].merging(pairFields) { a, _ in a })

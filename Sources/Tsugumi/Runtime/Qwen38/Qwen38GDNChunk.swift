@@ -60,16 +60,20 @@ package final class Qwen38GDNChunk {
                                                              rowBytes: cols * 4, matrixBytes: rows * cols * 4, dataType: .float32))
     }
 
-    /// `section` (benches only) commits the work so far under a label and returns the buffer to continue in.
+    /// `rows` (default all T): step only through those tokens of the batch, from `state` as it is (the runner's
+    /// segments between checkpoint cuts). `section` (benches only) commits the work so far under a label and returns
+    /// the buffer to continue in.
     package func encode(_ cb0: MTLCommandBuffer, conv: MTLBuffer, a: MTLBuffer, b: MTLBuffer,
-                        state: MTLBuffer, out: MTLBuffer, T: Int,
+                        state: MTLBuffer, out: MTLBuffer, T: Int, rows: Range<Int>? = nil,
                         section: ((String, MTLCommandBuffer) -> MTLCommandBuffer)? = nil) {
         var cb = cb0
         func mark(_ label: String) { if let section { cb = section(label, cb) } }
         let C = (2 * hk + hv) * d
-        for t0 in stride(from: 0, to: T, by: chunk) {
+        let span = rows ?? 0..<T
+        precondition(span.upperBound <= T)
+        for t0 in stride(from: span.lowerBound, to: span.upperBound, by: chunk) {
             autoreleasepool {
-                let L = min(chunk, T - t0)
+                let L = min(chunk, span.upperBound - t0)
                 var p = (UInt32(hk), UInt32(hv), UInt32(d), UInt32(L), UInt32(t0), UInt32(C))
                 let pLen = MemoryLayout.size(ofValue: p)
                 let grid = MTLSize(width: d, height: L, depth: hv)

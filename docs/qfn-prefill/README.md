@@ -37,7 +37,7 @@ QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
 | **Q5** 機内で読みと GPU を重ねる | 次の層の expert を固定の置き場 (2 層分) に `F_NOCACHE` で読む。**RAM の条件付き** | **M6 側は A に入れる ([21](21-Q5-M6-OVERLAP.md)、ユーザーの判断)**。k 48・送り 0.59 の M6 のチャンク 6.301 → 3.829 s、1 ターン (導出) 529.9 → 322.5 s。Swapouts 0、wired 14.34 GB。残りは非常駐層の読みの待ち。MBP 側は判断待ち 3 (k 48 なら対象なし) |
 | **Q6** A を作り、正しさと秒 | M6 が層 0〜k−1 (P1・常駐 10 層・置き場 2・送り 0.59)、MBP が層 k〜47・head・MTP・decode (P6、[22](22-Q6-P6-DECODE-PLACEMENT.md)) | **作った、k 46 を既定 ([27](27-Q6-A-BUILT.md))**。正しさは幅に入った。本文 2 は同じ commit の単体 158.788 s → 104.128 s、本文 1 は 28.6〜30.9 → 14.7〜17.0 s。2 機は `Q38_PAIR=<M6>` で開く。M6 のチャンクは読み律速 (置き場の待ち 3.5〜4.1 s) |
 | **Q7** decode と会話の機能 | 2 機で decode が単体より遅くならない。MTP・チェックポイント・prompt cache・ツール呼び出しが通る | **測った ([28](28-Q7-DECODE-AND-LOOP.md)、n = 2)**。チェックは progress 以外通り、受理率は同じ幅。decode の 1 ステップの中央値は 2 機の 4 セットとも単体より長い (MTP on 232.2〜234.3 対 221.3〜230.4 ms) |
-| **Q8** 小さいラウンドの固定分 | 1 ラウンド 6.2 s の固定分と 8 トークンのチャンク 2.5 s | 未着手 |
+| **Q8** 小さいラウンドの固定分 | 1 ラウンド 6.2 s の固定分と 8 トークンのチャンク 2.5 s | **在処を数えた ([29](29-Q8-FIXED-COST-WHERE.md)、既存の round log)**。チェックポイントの切れ目の末尾のチャンク (1・8 トークン) が単体で 1 本 1.7〜2.9 s、切片の約 2 s。消しても切片は 4〜5 s で 3 s に届かない (導出) |
 
 Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q2 → Q1 (済み) → Q4 の腕 b (模擬は済み、[20](20-Q4B-EXPERT-FEED.md)) → Q5 の M6 側 (A に入れる、[21](21-Q5-M6-OVERLAP.md)) → P6 (済み、[24](24-DECODE-SPLIT-RESULT.md)・[26](26-M6-T2-TRUNK-RESULT.md)) → Q6 (済み、[27](27-Q6-A-BUILT.md)) → Q7 (測った、[28](28-Q7-DECODE-AND-LOOP.md)) → **Q8** ([19](19-AFTER-Q1-PLAN.md)、20 §3)。Q3 は Q6 と並行可。Q5 の MBP 側は判断待ち 3 で、k 48 が通れば対象が無い。判断待ち 1・2 と `bench/qfn/` の 2 機の形は Q6 の台帳の列を書くまでに要る。
 
@@ -72,6 +72,7 @@ Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q2 → Q1 (済�
 | [18-Q1-F2-F3-PAIR.md](18-Q1-F2-F3-PAIR.md) | Q1 F2・F3: A と B の模擬の壁時計、12 §3 の判定 |
 | [19-AFTER-Q1-PLAN.md](19-AFTER-Q1-PLAN.md) | **Q1 の後の手順**: 待ちとチャンク幅の答え、Q4 の腕 b (MBP の SSD から TB4 で送る)、TB ポートの対称性、Q6 の k の規則 |
 | [20-Q4B-EXPERT-FEED.md](20-Q4B-EXPERT-FEED.md) | Q4 の腕 b: TB ポートの確認と、MBP の内蔵 SSD から TB4 で送る模擬 (比 0.5 / 0.59) |
+| [29-Q8-FIXED-COST-WHERE.md](29-Q8-FIXED-COST-WHERE.md) | **Q8 の在処**: チャンクの大きさ別の段の秒と読み、ラウンドの回帰 (末尾のチャンクあり / なし)、候補 C1 (チャンクを切らずにチェックポイント) |
 | [28-Q7-DECODE-AND-LOOP.md](28-Q7-DECODE-AND-LOOP.md) | **Q7 の結果**: Offline 5 問を実際に生成、単体 / 2 機 k 46 × MTP on/off、チェック・受理率・decode の 1 ステップと読み・受け渡しの秒 |
 | [27-Q6-A-BUILT.md](27-Q6-A-BUILT.md) | **Q6 の結果**: A を作った (P1・常駐 10 層・置き場 2・送り 0.59)、正しさ、k 44・46・48 と同じ commit の単体、段の秒 |
 | [26-M6-T2-TRUNK-RESULT.md](26-M6-T2-TRUNK-RESULT.md) | 25 の結果: 単体・MTP on で M6 の verify の I/O 以外 96.8 ms は MBP 103.4 ms より短い。24 の S48 の 229 ms は split-decode の serve 側。step の差 (286 対 258 ms) は I/O (SSD) |
