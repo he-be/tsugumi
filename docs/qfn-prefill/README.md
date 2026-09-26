@@ -5,11 +5,12 @@ Gemma の M6 prefill ([m6-prefill](../m6-prefill/README.md)) に区切りが付�
 
 **前提は 1 つ。運用の形は「MBP 単体で QFN が動き、M6 mini を TB4 で直結すると速くなる」である。**
 MBP (Mac15,6 / M3 Pro 18 GB / 1 TB) がアプリとサーバーを持ち、M6 mini (Mac18,5 / 16 GB / 256 GB + 外付け SSD256) は TB4 直結の先で仕事の一部を引き受ける。
+**M6 が繋がっていれば 2 機、繋がっていなければ単体。切り替えはユーザーがボタンで明示する (2026-09-26 の判断、[33](33-OPERATING-FORM-PLAN.md))。**
 この特定の 2 機に特化した分散推論として作る。**分け方は 2 つ (層で分ける A / expert で分ける B、[08](08-CANDIDATES.md)) あり、どちらを作るかは
 A・B の模擬の壁時計で決める ([07](07-EXPERIMENTS.md)、[12](12-Q1-REDESIGN.md))。**10 で B としたが取り下げ ([11](11-Q1-REOPEN-TENSOR-OPS.md))、前提 P1〜P5 を先に固定して設計し直した ([12](12-Q1-REDESIGN.md))。
 
 2 機の取り決めそのものは [TWO_MACHINE_DEV.md](../TWO_MACHINE_DEV.md) だが、**§1 (性能の記録値は M6 でしか取らない) と §3 (TB4 直結は当てにしない) は
-QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
+QFN では当てはまらない** ([01 §1](01-ROLES.md))。QFN の記録値は MBP の壁時計で単体・2 機の 2 列、TB4 は「居れば使う」(判断済み、[33](33-OPERATING-FORM-PLAN.md))。
 
 **約束は m6-prefill と同じ。実測の数字は `bench/qfn/results/` の証拠ディレクトリを指す。**指せない数字は「公称」「導出」「未確認」の
 札を付けるか、書かない。規則は [02](02-EVIDENCE.md)。
@@ -41,11 +42,14 @@ QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
 
 Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q2 → Q1 (済み) → Q4 の腕 b (模擬は済み、[20](20-Q4B-EXPERT-FEED.md)) → Q5 の M6 側 (A に入れる、[21](21-Q5-M6-OVERLAP.md)) → P6 (済み、[24](24-DECODE-SPLIT-RESULT.md)・[26](26-M6-T2-TRUNK-RESULT.md)) → Q6 (済み、[27](27-Q6-A-BUILT.md)) → Q7 (測った、[28](28-Q7-DECODE-AND-LOOP.md)) → **Q8** ([19](19-AFTER-Q1-PLAN.md)、20 §3)。Q3 は Q6 と並行可。Q5 の MBP 側は判断待ち 3 で、k 48 が通れば対象が無い。判断待ち 1・2 と `bench/qfn/` の 2 機の形は Q6 の台帳の列を書くまでに要る。
 
-## 判断待ち (ユーザー)
+## 残り作業と判断待ち
 
-1. **記録値を取る機械**: QFN の記録値は「MBP が駆動する 2 機」と「MBP 単体」の 2 列で取る。TWO_MACHINE_DEV §1 の「M6 でしか取らない」は Gemma の規則として残し、QFN はこの README を正にしてよいか。
-2. **TB4 直結を常設にする**か。運用の形が 2 機なら、ケーブルは繋ぎっぱなしが前提になる (IP は link-local で変わる、[01 §3](01-ROLES.md))。
-3. **Q5 の RAM (MBP 側)**: 2 層分 (約 1.4 GiB) の固定の置き場を取る。先読み・常駐は decode で「RAM を使えば速いというだけ」として閉じた経緯がある ([qwen38/13](../qwen38/13-KERNEL-TO-GPU-WAIT.md)、[15 §0-2](../qwen38/15-DECODE-PLAN.md))。prefill でも同じ判断なら Q5 の MBP 側は外す。M6 側の常駐と wired limit は P2 で決まった ([12 §1](12-Q1-REDESIGN.md)) ので、M6 側はこの判断を待たずに測る (04 Q5)。k 48 が Q6 で通れば MBP に prefill の層は無く、この判断は要らなくなる。
+**残り作業の本体はボタンの実装 ([33 §1](33-OPERATING-FORM-PLAN.md))。**設定の経路、実行中の切り替え、M6 の居場所の発見、M6 の serve の常駐 (IP の変動・SSD256・wired limit)、状態の表示、M6 のビルドと配備。
+Gate で残るのは Q8 の合格判定・Q7 の decode の判別・Q3 で、判断は 33 §3。
+
+1. (決まった、2026-09-26) **記録値を取る機械**: QFN の記録値は MBP の壁時計で「2 機」と「単体」の 2 列。TWO_MACHINE_DEV §1 は Gemma の規則として残す。
+2. (決まった、2026-09-26) **TB4 直結**は常設でなく「居れば使う」。切り替えはボタンで明示、自動で切り替えない ([33 §0](33-OPERATING-FORM-PLAN.md))。
+3. **Q5 の RAM (MBP 側)**: k 46 で MBP に prefill の層が 2 層あり、2 層分 (約 1.4 GiB) の固定の置き場を取るか。先読み・常駐は decode で「RAM を使えば速いというだけ」として閉じた経緯がある ([qwen38/13](../qwen38/13-KERNEL-TO-GPU-WAIT.md)、[15 §0-2](../qwen38/15-DECODE-PLAN.md))。prefill でも同じ判断なら Q5 の MBP 側は外す。
 4. (閉じた) M6 の PLE BF16 は外付けにしか置けず、置いてある ([03 §5](03-FACTS.md))。A では Q2 の先読みが外付けから読む。決めることは無い ([19 §3](19-AFTER-Q1-PLAN.md))。
 
 ## 読む順
@@ -72,6 +76,7 @@ Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q2 → Q1 (済�
 | [18-Q1-F2-F3-PAIR.md](18-Q1-F2-F3-PAIR.md) | Q1 F2・F3: A と B の模擬の壁時計、12 §3 の判定 |
 | [19-AFTER-Q1-PLAN.md](19-AFTER-Q1-PLAN.md) | **Q1 の後の手順**: 待ちとチャンク幅の答え、Q4 の腕 b (MBP の SSD から TB4 で送る)、TB ポートの対称性、Q6 の k の規則 |
 | [20-Q4B-EXPERT-FEED.md](20-Q4B-EXPERT-FEED.md) | Q4 の腕 b: TB ポートの確認と、MBP の内蔵 SSD から TB4 で送る模擬 (比 0.5 / 0.59) |
+| [33-OPERATING-FORM-PLAN.md](33-OPERATING-FORM-PLAN.md) | **運用の形の確定 (2026-09-26) と残り作業**: MBP が UI、M6 が居れば 2 機・居なければ単体、ボタンで明示切り替え。ボタンのために作るもの 6 件と、この判断で変わらない Gate (Q8・Q7・Q3) |
 | [31-Q8-C1-PAIR-SCRATCH-SHRINK.md](31-Q8-C1-PAIR-SCRATCH-SHRINK.md) | **Q8 C1 の 2 機**: M6 が溢れた原因の 1 つ (バッチのスクラッチ) と、serve がラウンドの終わりで縮める変更。測定は 32 |
 | [32-Q8-C1-CUT-COPY-LEAK.md](32-Q8-C1-CUT-COPY-LEAK.md) | **Q8 C1**: 31 §3 の測定、C1 の既定化、M6 で切れ目の写しが解放されなかったバグ (autorelease) の修正と回帰検査 `--qwen38-cut-leak`。台帳 ledger-c1b |
 | [30-Q8-C1-CUT-IN-CHUNK.md](30-Q8-C1-CUT-IN-CHUNK.md) | **Q8 C1**: チャンクを切らずにチェックポイント (`Q38_CUT_INCHUNK=1`)。単体・2 機の秒と正しさ、2 機の M6 のスワップ |

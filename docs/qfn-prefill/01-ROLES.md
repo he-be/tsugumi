@@ -13,7 +13,7 @@
 | GUI が要る作業 | Instruments、GPU キャプチャ、Mac アプリ | できない |
 
 **TWO_MACHINE_DEV §1 の「性能の記録値は M6 でしか取らない」は Gemma (M6 が対象機) の規則。**QFN では MBP が駆動側で、
-記録値は MBP の壁時計で取る。M6 の秒は M6 側のログから「層 0〜k−1 の秒」として添える。この読み替えは README の判断待ち 1。
+記録値は MBP の壁時計で取る。M6 の秒は M6 側のログから「層 0〜k−1 の秒」として添える。この読み替えは 2026-09-26 に決まった ([33](33-OPERATING-FORM-PLAN.md))。
 
 ## 2. 1 サイクル (MBP から)
 
@@ -38,8 +38,8 @@ bench/qfn/pair_bench.sh <label> 6 --solo              # 単体の対照 (MBP だ
   MBP 側は `ifconfig bridge0`、M6 側は `ssh m6 'ifconfig bridge0'` (Tailscale 経由) で読む。`~/.ssh/config` の `m6-tb` の `HostName` は古くなる (この日 169.254.24.129 → 169.254.13.135)。
 - ssh は `Ciphers aes128-gcm@openssh.com` を指定する (既定の chacha20 は 0.39 GB/s、TWO_MACHINE_DEV §3)。この日 2 GiB を 1.43 s (起動込み)。
 - M6 側のプロセスは **`bridge0` の link-local アドレスにだけ bind する** (Tailscale・LAN には出さない。認証も TLS も無いので、サーバーの 127.0.0.1 と同じ扱い)。
-- MBP のアプリから M6 側のプロセスを ssh で起動する形は後回し。当面は `cycle.sh` / 手動で起動する。
-- 常設にするかどうかは README の判断待ち 2。常設でないなら「M6 が居なければ単体で動く」が既定の形になる (A / B どちらでも、[08](08-CANDIDATES.md))。
+- MBP のアプリから M6 側のプロセスを起動する形はまだ無い。当面は `pair_serve.sh` / 手動で起動する。運用ではアプリのボタンで切り替え、M6 の serve は常駐させる ([33 §1](33-OPERATING-FORM-PLAN.md))。
+- 常設にしない (2026-09-26 の判断、[33](33-OPERATING-FORM-PLAN.md))。「M6 が居なければ単体で動く」が既定の形で、runtime は link が失敗したラウンドを単体で回す (`pair_off`)。
 
 ## 4. ヘッドレス固有の注意 (m6-prefill/01 §3 と同じ、QFN で効くもの)
 
