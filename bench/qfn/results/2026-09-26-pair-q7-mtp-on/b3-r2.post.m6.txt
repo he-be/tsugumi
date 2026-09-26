@@ -1,0 +1,39 @@
+08:42:17
+System-wide memory free percentage: 84%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   110458.
+Pages active:                                 602453.
+Pages inactive:                               155500.
+Pages speculative:                              3439.
+Pages throttled:                                   0.
+Pages wired down:                             120792.
+Pages purgeable:                                1934.
+"Translation faults":                      631174733.
+Pages copy-on-write:                       111931757.
+Pages zero filled:                         452612560.
+Pages reactivated:                         468703027.
+Pages purged:                                2692903.
+File-backed pages:                             93962.
+Anonymous pages:                              667430.
+Pages stored in compressor:                    33187.
+Pages occupied by compressor:                  18437.
+Decompressions:                             99923904.
+Compressions:                              115870574.
+Pageins:                                  1383319420.
+Pageouts:                                      21038.
+Swapins:                                      520376.
+Swapouts:                                     572825.
+Pages tagged:                                  67600.
+Pages tagged resident:                         60762.
+Pages tagged compressed:                        6838.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2766.
+Pages tag-storage free:                        17069.
+Pages tag-storage non-tag pageable:            12847.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1048576.
+Tagged compressions:                         1821382.
+Tagged decompressions:                       1754681.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  413.73 57868412 23380776.02    88.58 16410405 1419573.74 

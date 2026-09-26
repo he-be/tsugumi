@@ -1,0 +1,3 @@
+round	turns	turns_ok	progress_fail	rounds	generated	decode_sum_s	steps	step_med_ms	step_p90_ms	accepted	proposed	prefill_sum_s	begin_n	begin_sum_s	begin_max_s	restores	captures	pageins_MB	swapouts	exit	m6_int_MB	m6_ext_MB	m6_swapouts
+1	5	5	5	23	1857	289.221	998	232.2	323.8	836	998	300.738	23	0.932	0.043	0	18	1356741	15560	1	590826	3600	0
+2	5	4	5	25	2364	364.647	1280	234.3	313.0	1059	1280	350.314	25	0.998	0.042	1	21	1591101	32012	1	659084	5533	0

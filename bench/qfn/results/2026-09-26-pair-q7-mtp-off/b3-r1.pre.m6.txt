@@ -1,0 +1,39 @@
+08:04:29
+System-wide memory free percentage: 26%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   146221.
+Pages active:                                  64631.
+Pages inactive:                                73331.
+Pages speculative:                             11037.
+Pages throttled:                                   0.
+Pages wired down:                             711003.
+Pages purgeable:                                2773.
+"Translation faults":                      626579617.
+Pages copy-on-write:                       111434149.
+Pages zero filled:                         444867997.
+Pages reactivated:                         452041665.
+Pages purged:                                2637488.
+File-backed pages:                            125757.
+Anonymous pages:                               23242.
+Pages stored in compressor:                    15751.
+Pages occupied by compressor:                   4856.
+Decompressions:                             96121764.
+Compressions:                              110548956.
+Pageins:                                  1309170449.
+Pageouts:                                      20968.
+Swapins:                                      520369.
+Swapouts:                                     572825.
+Pages tagged:                                  66785.
+Pages tagged resident:                         61849.
+Pages tagged compressed:                        4936.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2832.
+Pages tag-storage free:                        20490.
+Pages tag-storage non-tag pageable:             7669.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     721024.
+Tagged compressions:                         1765933.
+Tagged decompressions:                       1702146.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  409.62 55248499 22100308.56    90.97 15875280 1410259.10 
