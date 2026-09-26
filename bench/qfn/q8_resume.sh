@@ -1,6 +1,6 @@
 #!/bin/zsh
 # Q8 C1 correctness (docs/qfn-prefill/29 §3): TsugumiKernelCheck --qwen38-resume (checkpoints against a whole recompute,
-# docs/qwen38/18 §2) with the chunks cut at the checkpoints (the default) and with Q38_CUT_INCHUNK=1, MBP alone.
+# docs/qwen38/18 §2) with the chunks cut at the checkpoints (Q38_CUT_INCHUNK=0) and cut inside a chunk (the default since 31), MBP alone.
 #   bench/qfn/q8_resume.sh <label> [mtp:chunk ...]      # default off:2048 spec:2048 off:12
 # A chunk under Q38_GDN_MIN_T (16) runs the serial GDN step, so chunk 12 checks that path's segments.
 # QFN_PAIR_K=<k>: the pair (the M6 serve with its defaults, bench/qfn/pair_serve.sh), both arms with Q38_PAIR / Q38_PAIR_K.
@@ -40,7 +40,7 @@ for c in $cases; do
     mtp=${c%%:*} chunk=${c##*:}
     for arm in split inchunk; do
         armenv=($pairenv)
-        [[ $arm == inchunk ]] && armenv+=(Q38_CUT_INCHUNK=1)
+        [[ $arm == split ]] && armenv+=(Q38_CUT_INCHUNK=0)
         tag=$arm-$mtp-c$chunk
         check=($bin --qwen38-resume $a $b --q38-mtp $mtp --q38-chunk $chunk --q38-new $new
                --q38-gguf $model/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf

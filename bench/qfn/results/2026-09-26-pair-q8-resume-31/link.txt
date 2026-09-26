@@ -1,0 +1,2 @@
+bridge0 MBP 169.254.218.152 -> M6 169.254.13.135
+round-trip min/avg/max/stddev = 0.466/0.557/0.653/0.066 ms

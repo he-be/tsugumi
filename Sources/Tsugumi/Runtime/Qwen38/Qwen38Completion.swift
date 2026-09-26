@@ -201,10 +201,11 @@ package final class Qwen38Engine {
         mtpRows = checkpoint.mtpRows
     }
 
-    /// `Q38_CUT_INCHUNK=1` (candidate, `docs/qfn-prefill/29` C1): a checkpoint position inside a prefill chunk is taken
-    /// from the runner's `cutRows` copies instead of ending the chunk there. The chunk after a cut was 1 or 8 tokens
-    /// that read the dense weights and experts again (1.7-2.9 s each on the MBP alone).
-    package var cutInChunk = ProcessInfo.processInfo.environment["Q38_CUT_INCHUNK"] == "1"
+    /// Default on (`docs/qfn-prefill/31`; `Q38_CUT_INCHUNK=0` turns it off, `docs/qfn-prefill/29` C1): a checkpoint
+    /// position inside a prefill chunk is taken from the runner's `cutRows` copies instead of ending the chunk there.
+    /// The chunk after a cut was 1 or 8 tokens that read the dense weights and experts again (1.7-2.9 s each on the
+    /// MBP alone).
+    package var cutInChunk = ProcessInfo.processInfo.environment["Q38_CUT_INCHUNK"] != "0"
 
     /// The prefill chunks of `count` tokens from `position`: each chunk's size and the checkpoint positions inside it
     /// as rows. Without `cutInChunk` a chunk ends at every cut and holds none.

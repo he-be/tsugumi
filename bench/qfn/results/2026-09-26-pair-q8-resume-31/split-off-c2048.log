@@ -1,0 +1,16 @@
+Qwen3.8 resume: A 468 tokens, B 475, LCP 459, mtp off, chunk 2048, new 64
+  whole prompt_n   468 from     0,  64 tokens, kv   531, prefill 6.39 s, total 18.26 s
+  cut prompt_n   468 from     0,  64 tokens, kv   531, prefill 14.68 s, total 26.81 s
+  checkpoints at 459 (43 ms), 467 (74 ms), 468 (33 ms), 508 (45 ms) (112.6 MiB each, cut run 26.82 s)
+  cut == whole: same
+  P-1 prompt_n     1 from   467,  64 tokens, kv   531, prefill 4.78 s, total 17.18 s
+  P-1 == whole: same
+  neg prompt_n     1 from   467,  64 tokens, kv   531, prefill 4.86 s, total 17.58 s
+  neg != whole: same  <-- FAIL
+  L->B prompt_n    16 from   459,  40 tokens, kv   514, prefill 5.29 s, total 14.29 s
+  B prompt_n   475 from     0,  64 tokens, kv   538, prefill 6.36 s, total 18.58 s
+  L->B == B whole: DIFFERENT (first 39 agree, 40 vs 64)  <-- FAIL
+  call prompt_n     1 from   468,  63 tokens, kv   531, prefill 6.72 s, total 18.66 s
+  call == whole after <tool_call>: same
+  FAIL
+GUARD: exit 1, Swapouts delta peak 28 pages, window peak 28 pages, Swapins +52 pages

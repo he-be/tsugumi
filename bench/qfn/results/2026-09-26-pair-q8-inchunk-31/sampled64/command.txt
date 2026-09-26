@@ -1,0 +1,1 @@
+cmd: [Q38_CUT_INCHUNK=0] .build/release/TsugumiServer --model /Users/mh/LLM/Qwen3.8-Flash-Next-DS4-IQ2 --host 127.0.0.1 --port 8093 --ctx-size 32768 --draft-block-size 2; POST request.json

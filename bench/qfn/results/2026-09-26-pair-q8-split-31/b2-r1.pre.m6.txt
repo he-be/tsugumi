@@ -1,0 +1,39 @@
+12:46:20
+System-wide memory free percentage: 26%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   193256.
+Pages active:                                  51467.
+Pages inactive:                                50402.
+Pages speculative:                              1604.
+Pages throttled:                                   0.
+Pages wired down:                             709221.
+Pages purgeable:                                2046.
+"Translation faults":                      658771397.
+Pages copy-on-write:                       113625706.
+Pages zero filled:                         475452192.
+Pages reactivated:                         499346268.
+Pages purged:                                2908712.
+File-backed pages:                             76167.
+Anonymous pages:                               27306.
+Pages stored in compressor:                    13798.
+Pages occupied by compressor:                   5129.
+Decompressions:                            108069678.
+Compressions:                              126491402.
+Pageins:                                  1669498316.
+Pageouts:                                      21342.
+Swapins:                                      541594.
+Swapouts:                                     726347.
+Pages tagged:                                  67141.
+Pages tagged resident:                         62968.
+Pages tagged compressed:                        4173.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2864.
+Pages tag-storage free:                        20992.
+Pages tag-storage non-tag pageable:             8815.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     590720.
+Tagged compressions:                         1951630.
+Tagged decompressions:                       1878684.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  425.87 68143418 28340300.43    84.85 17319411 1435185.67 

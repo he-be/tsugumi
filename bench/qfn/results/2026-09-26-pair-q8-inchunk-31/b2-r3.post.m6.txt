@@ -1,0 +1,39 @@
+12:57:21
+System-wide memory free percentage: 80%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   125359.
+Pages active:                                 592035.
+Pages inactive:                               107846.
+Pages speculative:                              2908.
+Pages throttled:                                   0.
+Pages wired down:                             122273.
+Pages purgeable:                                1942.
+"Translation faults":                      665840859.
+Pages copy-on-write:                       113919172.
+Pages zero filled:                         484412055.
+Pages reactivated:                         516409567.
+Pages purged:                                2958810.
+File-backed pages:                             57022.
+Anonymous pages:                              645767.
+Pages stored in compressor:                    66577.
+Pages occupied by compressor:                  60658.
+Decompressions:                            111577582.
+Compressions:                              131687933.
+Pageins:                                  1718679377.
+Pageouts:                                      21613.
+Swapins:                                      547093.
+Swapouts:                                     781279.
+Pages tagged:                                  68144.
+Pages tagged resident:                         63464.
+Pages tagged compressed:                        4680.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2835.
+Pages tag-storage free:                         5705.
+Pages tag-storage non-tag pageable:            24157.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     652608.
+Tagged compressions:                         2050458.
+Tagged decompressions:                       1972909.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  427.21 69991979 29200139.46    82.15 18042704 1447521.45 
