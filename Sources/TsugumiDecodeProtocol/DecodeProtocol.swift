@@ -165,6 +165,9 @@ public struct DecodeGenerationRequest: Codable, Sendable {
     public var enableThinking: Bool
     public var imagePaths: [String]
     public var runtimeOptions: DecodeRuntimeOptions
+    /// Qwen3.8 only: the M6 that takes the prefill's first layers (`<bridge0 IPv4>[:port]`), or nil for this Mac
+    /// alone. Per request, not in `runtimeOptions`: switching it does not reload the model (docs/qfn-prefill/33).
+    public var qwen38PairAddress: String?
     public var generationID: UUID
 
     public init(history: [DecodeChatTurn] = [],
@@ -180,6 +183,7 @@ public struct DecodeGenerationRequest: Codable, Sendable {
                 enableThinking: Bool = false,
                 imagePaths: [String] = [],
                 runtimeOptions: DecodeRuntimeOptions = DecodeRuntimeOptions(),
+                qwen38PairAddress: String? = nil,
                 generationID: UUID = UUID()) {
         self.history = history
         self.prompt = prompt
@@ -197,6 +201,7 @@ public struct DecodeGenerationRequest: Codable, Sendable {
         self.enableThinking = enableThinking
         self.imagePaths = imagePaths
         self.runtimeOptions = runtimeOptions
+        self.qwen38PairAddress = qwen38PairAddress
         self.generationID = generationID
     }
 
@@ -205,7 +210,7 @@ public struct DecodeGenerationRequest: Codable, Sendable {
         case reasoningBudgetTokens
         case maxNewTokens, maxContextTokens, temperature, topK, topP
         case repetitionPenalty, enableThinking, imagePaths
-        case runtimeOptions, generationID
+        case runtimeOptions, qwen38PairAddress, generationID
     }
 
     public init(from decoder: Decoder) throws {
@@ -227,6 +232,7 @@ public struct DecodeGenerationRequest: Codable, Sendable {
         enableThinking = try container.decodeIfPresent(Bool.self, forKey: .enableThinking) ?? false
         imagePaths = try container.decodeIfPresent([String].self, forKey: .imagePaths) ?? []
         runtimeOptions = try container.decode(DecodeRuntimeOptions.self, forKey: .runtimeOptions)
+        qwen38PairAddress = try container.decodeIfPresent(String.self, forKey: .qwen38PairAddress)
         generationID = try container.decode(UUID.self, forKey: .generationID)
     }
 }
@@ -300,6 +306,18 @@ public struct DecodePrefillDiagnostics: Codable, Sendable, Equatable {
     }
 }
 
+/// Where a Qwen3.8 prefill ran when the request named an M6: `k` when the M6 took layers 0 ..< k, `fallback` (the
+/// link error) when it ran on this Mac alone instead. Both nil: alone for another reason (LLKVApprox).
+public struct DecodePairRound: Codable, Sendable, Equatable {
+    public var k: Int?
+    public var fallback: String?
+
+    public init(k: Int? = nil, fallback: String? = nil) {
+        self.k = k
+        self.fallback = fallback
+    }
+}
+
 public struct DecodeServiceEvent: Codable, Sendable {
     public var kind: DecodeServiceEventKind
     public var generationID: UUID
@@ -340,6 +358,8 @@ public struct DecodeServiceEvent: Codable, Sendable {
     /// event (the stop reason is then `toolCalls`). Optional for wire
     /// compatibility.
     public var toolCalls: [DecodeToolCall]?
+    /// On a terminal event of a request that named an M6. Optional for wire compatibility.
+    public var pairRound: DecodePairRound?
 
     public init(kind: DecodeServiceEventKind, generationID: UUID,
                 sequence: UInt64 = 0, textDelta: String = "",
@@ -360,7 +380,8 @@ public struct DecodeServiceEvent: Codable, Sendable {
                 runner: DecodeRunnerDiagnostics? = nil,
                 prefillDiskReadBytes: UInt64? = nil,
                 decodeDiskReadBytes: UInt64? = nil,
-                toolCalls: [DecodeToolCall]? = nil) {
+                toolCalls: [DecodeToolCall]? = nil,
+                pairRound: DecodePairRound? = nil) {
         self.kind = kind
         self.generationID = generationID
         self.sequence = sequence
@@ -388,6 +409,7 @@ public struct DecodeServiceEvent: Codable, Sendable {
         self.prefillDiskReadBytes = prefillDiskReadBytes
         self.decodeDiskReadBytes = decodeDiskReadBytes
         self.toolCalls = toolCalls
+        self.pairRound = pairRound
     }
 }
 

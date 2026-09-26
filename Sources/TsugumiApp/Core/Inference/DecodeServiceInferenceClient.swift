@@ -108,6 +108,7 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
                         enableThinking: request.enableThinking,
                         imagePaths: request.imagePaths,
                         runtimeOptions: Self.decodeRuntimeOptions(request.runtimeOptions),
+                        qwen38PairAddress: request.qwen38PairAddress,
                         generationID: generationID)
                     try handles.input.write(contentsOf: DecodeFrameCodec.encode(
                         DecodeServiceCommand.generate(command)))
@@ -336,6 +337,11 @@ public final class DecodeServiceInferenceClient: AppModelLifecycleClient,
             diskRead: event.decodeDiskReadBytes.map {
                 AppDiskReadDiagnostics(prefillBytes: event.prefillDiskReadBytes ?? 0,
                                        decodeBytes: $0)
+            },
+            pairRound: event.pairRound.map { round in
+                if let k = round.k { return .pair(k: k) }
+                if let why = round.fallback { return .fellBack(why) }
+                return .alone
             })
     }
 

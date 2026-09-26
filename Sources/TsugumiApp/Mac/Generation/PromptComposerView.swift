@@ -82,6 +82,9 @@ struct PromptComposerView: View {
                 webSearchControl
             }
             thinkingControl
+            if model.selectedModelKind == .qwen38 {
+                pairControl
+            }
             Spacer()
             clearAction
             GenerateControl(model: model)
@@ -168,6 +171,40 @@ struct PromptComposerView: View {
         .help(help)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityValue(on ? L("On") : L("Off"))
+    }
+
+    /// The M6 switch (docs/qfn-prefill/33): enabled only while the M6's pair serve is advertised on bridge0. The
+    /// app never turns it on; it goes off when the M6 leaves or a round falls back to this Mac.
+    private var pairControl: some View {
+        modeToggle(on: model.pairEnabled,
+                   systemImage: "macmini",
+                   title: L("M6"),
+                   help: pairHelp,
+                   accessibilityLabel: L("M6")) {
+            model.pairEnabled.toggle()
+        }
+        .disabled(model.pairPeer == nil)
+        .task { model.startPairBrowsing() }
+    }
+
+    private var pairHelp: String {
+        guard let peer = model.pairPeer else {
+            return L("No M6 on the Thunderbolt link (its pair serve is not advertised). This Mac runs alone.")
+        }
+        var text = model.pairEnabled
+            ? L("Two machines: the next prefill's first layers run on \(peer.name) (\(peer.address)).")
+            : L("\(peer.name) is on the Thunderbolt link (\(peer.address)). Press to share the next prefill with it.")
+        switch model.lastPairRound {
+        case .pair(let k)?:
+            text += "\n" + L("Last prefill: two machines (the M6 ran layers 0-\(k - 1)).")
+        case .fellBack(let why)?:
+            text += "\n" + L("Last prefill: this Mac alone, the link failed (\(why)).")
+        case .alone?:
+            text += "\n" + L("Last prefill: this Mac alone.")
+        case nil:
+            break
+        }
+        return text
     }
 
     /// The thought channel, on or off for the next turn. The same value as

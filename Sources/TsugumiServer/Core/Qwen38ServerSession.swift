@@ -77,6 +77,29 @@ public actor Qwen38ServerSession: ServerInferenceBackend {
         self.markers = QwenToolCallMarkers(tokenizer: tokenizer)
     }
 
+    // MARK: - Two machines
+
+    /// Where the last prefill ran (`Qwen38Engine.PairRound`), for the app's display.
+    public enum PairRound: Equatable, Sendable {
+        case alone
+        case pair(k: Int)
+        case fellBack(String)
+    }
+
+    /// The app's M6 switch (docs/qfn-prefill/33 §1 #1-#2): `<bridge0 IPv4>[:port]`, or nil for this Mac alone. Takes
+    /// effect at the next prefill; a change drops the open link.
+    public func setPair(address: String?) {
+        engine.setPair(address.flatMap(Qwen38Pair.parse))
+    }
+
+    public var lastPairRound: PairRound {
+        switch engine.lastPairRound {
+        case .alone: .alone
+        case .pair(let k): .pair(k: k)
+        case .fellBack(let why): .fellBack(why)
+        }
+    }
+
     // MARK: - Prompt
 
     /// The checkpoint's own `chat_template.jinja`, rendered and encoded (no server variant yet: INV-1 is G-1's

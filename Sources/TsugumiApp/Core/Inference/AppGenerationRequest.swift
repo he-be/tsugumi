@@ -36,6 +36,9 @@ public struct AppGenerationRequest: Equatable, Sendable {
     public var minP: Float?
     public var presencePenalty: Float?
     public var runtimeOptions: AppRuntimeOptions
+    /// Qwen3.8 only: the M6 that takes the prefill's first layers (`<bridge0 IPv4>[:port]`), or nil for this Mac
+    /// alone. Not part of the load key: the switch takes effect at the next prefill without a reload.
+    public var qwen38PairAddress: String?
     /// Whether the chat template renders the thought channel open. The
     /// default follows the model kind (`AppModelKind.thinkingDefault`); this
     /// carries what the toggle chose for one request.
@@ -61,6 +64,7 @@ public struct AppGenerationRequest: Equatable, Sendable {
                 minP: Float? = nil,
                 presencePenalty: Float? = nil,
                 runtimeOptions: AppRuntimeOptions = AppRuntimeOptions(),
+                qwen38PairAddress: String? = nil,
                 enableThinking: Bool = false,
                 imagePaths: [String] = []) {
         self.modelDirectory = modelDirectory
@@ -80,6 +84,7 @@ public struct AppGenerationRequest: Equatable, Sendable {
         self.minP = minP
         self.presencePenalty = presencePenalty
         self.runtimeOptions = runtimeOptions
+        self.qwen38PairAddress = qwen38PairAddress
         self.enableThinking = enableThinking
         self.imagePaths = imagePaths
     }

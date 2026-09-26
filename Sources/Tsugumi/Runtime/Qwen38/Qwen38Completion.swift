@@ -150,6 +150,25 @@ package final class Qwen38Engine {
     package var pairConfig = Qwen38Pair.configured()
     private var pair: Qwen38Pair.Client?
     private var pairSynced = 0
+
+    /// Where the last prefill ran: `alone` without a configuration (or with LLKVApprox), `pair(k)` when the M6 took
+    /// layers 0 ..< k, `fellBack` when a configuration was set and the link failed before the round began.
+    package enum PairRound: Equatable, Sendable {
+        case alone
+        case pair(k: Int)
+        case fellBack(String)
+    }
+    package private(set) var lastPairRound = PairRound.alone
+
+    /// The switch the app turns between rounds (docs/qfn-prefill/33 §1 #2). A different configuration drops the link;
+    /// the next round then connects anew and sends layers 0 ..< k from position 0, as after a failed link.
+    package func setPair(_ config: (host: String, port: Int, k: Int)?) {
+        guard config?.host != pairConfig?.host || config?.port != pairConfig?.port || config?.k != pairConfig?.k
+        else { return }
+        pairConfig = config
+        pair = nil
+        pairSynced = 0
+    }
     /// The last prompt token's logits of the last prefill (checks).
     package private(set) var lastPrefillLogits: [Float] = []
 
@@ -224,6 +243,7 @@ package final class Qwen38Engine {
     /// Starts this prefill on the M6 when a pair is configured: connects if there is no link yet and sends the round.
     /// nil (the MBP alone) without a configuration, with LLKVApprox, or when the link fails before the round began.
     private func pairRound(prompt: [Int], plan: [(T: Int, cutRows: [Int])], cuts: [Int]) throws -> Qwen38Pair.Client? {
+        lastPairRound = .alone
         guard let config = pairConfig, runner.llkvSplit == 0 else { return nil }
         let sizes = plan.map(\.T)
         var stateAfter: [Bool] = []
@@ -247,8 +267,10 @@ package final class Qwen38Engine {
                                       "start": position, "state_bytes": runner.recurrentBytes(layers: layers),
                                       "kv_bytes": runner.kvRegionBytes(layers: layers, positions: pairSynced..<position)])
             }
+            lastPairRound = .pair(k: config.k)
             return pair
         } catch let error as Qwen38Pair.Error {
+            lastPairRound = .fellBack(error.description)
             Qwen38RoundLog.write(["event": "pair_off", "error": error.description])
             FileHandle.standardError.write("Qwen3.8 pair: \(error); this round runs here alone\n".data(using: .utf8)!)
             pair = nil

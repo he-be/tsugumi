@@ -62,6 +62,17 @@ public struct AppSpeculativeDiagnostics: Equatable, Sendable {
     }
 }
 
+/// Where a Qwen3.8 prefill ran when the request named an M6 (docs/qfn-prefill/33 §1 #5): what happened, not what
+/// the switch asked for.
+public enum AppPairRound: Equatable, Sendable {
+    /// The M6 took layers 0 ..< k.
+    case pair(k: Int)
+    /// The link failed before the round began; this Mac ran it alone.
+    case fellBack(String)
+    /// This Mac alone for another reason (LLKVApprox).
+    case alone
+}
+
 public struct AppDiagnostics: Equatable, Sendable {
     public var generatedTokens: Int
     public var stopReason: AppStopReason
@@ -82,6 +93,8 @@ public struct AppDiagnostics: Equatable, Sendable {
     /// Bytes the round read from the SSD, prefill and decode apart. Present
     /// when the decode service measured them.
     public var diskRead: AppDiskReadDiagnostics?
+    /// Present when the request named an M6.
+    public var pairRound: AppPairRound?
 
     public var requestStartTimeToFirstTokenSeconds: Double? {
         guard let prefillSeconds, let timeToFirstTokenSeconds else { return nil }
@@ -113,7 +126,8 @@ public struct AppDiagnostics: Equatable, Sendable {
                 runtimeOptions: AppRuntimeOptions,
                 prefill: PrefillExecutionDiagnostics? = nil,
                 runner: AppRunnerDiagnostics? = nil,
-                diskRead: AppDiskReadDiagnostics? = nil) {
+                diskRead: AppDiskReadDiagnostics? = nil,
+                pairRound: AppPairRound? = nil) {
         self.generatedTokens = generatedTokens
         self.stopReason = stopReason
         self.promptTokenCount = promptTokenCount
@@ -128,6 +142,7 @@ public struct AppDiagnostics: Equatable, Sendable {
         self.prefill = prefill
         self.runner = runner
         self.diskRead = diskRead
+        self.pairRound = pairRound
     }
 }
 

@@ -434,10 +434,18 @@ actor RealInferenceSession {
                 completion = try await session.generate(
                     prepared, monitor: monitor, onPrefill: onPrefill, onEvent: onEvent)
             case .qwen38(let session):
+                await session.setPair(address: request.qwen38PairAddress)
                 let prepared = try await session.prepare(validated)
                 progress.promptTokenCount = prepared.promptTokenCount
                 completion = try await session.generate(
                     prepared, monitor: monitor, onPrefill: onPrefill, onEvent: onEvent)
+                if request.qwen38PairAddress != nil {
+                    progress.pairRound = switch await session.lastPairRound {
+                    case .pair(let k): .pair(k: k)
+                    case .fellBack(let why): .fellBack(why)
+                    case .alone: .alone
+                    }
+                }
             }
 
             let cancelled = Task.isCancelled
@@ -671,7 +679,8 @@ actor RealInferenceSession {
                 config: request.runtimeOptions.prefillConfig,
                 executedMode: request.runtimeOptions.prefillConfig.mode == .chunked
                     ? .chunked : .off,
-                kvStorageMode: .fp16))
+                kvStorageMode: .fp16),
+            pairRound: progress.pairRound)
     }
 
     private static func partialDiagnostics(request: AppGenerationRequest,
@@ -710,6 +719,12 @@ private final class ProgressState: @unchecked Sendable {
         var prefillStart: Date?
         var decodeStart: Date?
         var firstTokenDate: Date?
+        var pairRound: AppPairRound?
+    }
+
+    var pairRound: AppPairRound? {
+        get { state.withLock { $0.pairRound } }
+        set { state.withLock { $0.pairRound = newValue } }
     }
 
     var generated: Int { state.withLock { $0.generated } }

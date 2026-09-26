@@ -173,7 +173,14 @@ final class DecodeServiceOutbox: @unchecked Sendable {
             runner: diagnostics?.runner.map(Self.runnerDiagnostics),
             prefillDiskReadBytes: diskRead?.prefillBytes,
             decodeDiskReadBytes: diskRead?.decodeBytes,
-            toolCalls: state.toolCalls.isEmpty ? nil : state.toolCalls)
+            toolCalls: state.toolCalls.isEmpty ? nil : state.toolCalls,
+            pairRound: diagnostics?.pairRound.map {
+                switch $0 {
+                case .pair(let k): DecodePairRound(k: k)
+                case .fellBack(let why): DecodePairRound(fallback: why)
+                case .alone: DecodePairRound()
+                }
+            })
     }
 
     private static func prefillDiagnostics(_ value: PrefillExecutionDiagnostics)

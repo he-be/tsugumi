@@ -142,6 +142,8 @@ cat > "$CONTENTS/Info.plist" <<PLIST
     <key>NSHumanReadableCopyright</key><string>Apache License 2.0</string>
     <key>NSSupportsAutomaticTermination</key><false/>
     <key>NSSupportsSuddenTermination</key><false/>
+    <key>NSLocalNetworkUsageDescription</key><string>Tsugumi finds a second Mac on the Thunderbolt link and shares the prompt processing with it.</string>
+    <key>NSBonjourServices</key><array><string>_tsugumi-pair._tcp</string></array>
 </dict>
 </plist>
 PLIST

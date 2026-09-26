@@ -4,6 +4,26 @@ import Testing
 
 @Suite struct AppModelTests {
     @MainActor
+    @Test func pairSwitchNeedsTheM6AndFollowsTheRound() throws {
+        let model = AppModel()
+        model.pairEnabled = true
+        #expect(!model.pairEnabled)
+
+        model.pairPeerChanged(AppPairPeer(host: "169.254.13.135", port: 5310, name: "macmini-m6"))
+        model.pairEnabled = true
+        #expect(model.pairEnabled)
+        model.notePairRound(.pair(k: 46))
+        #expect(model.pairEnabled)
+        model.notePairRound(.fellBack("pair link: connect refused"))
+        #expect(!model.pairEnabled)
+        #expect(model.lastPairRound == .fellBack("pair link: connect refused"))
+
+        model.pairEnabled = true
+        model.pairPeerChanged(nil)
+        #expect(!model.pairEnabled)
+    }
+
+    @MainActor
     @Test func defaultsUseSampledRequest() throws {
         let model = AppModel()
         model.modelPathText = FileManager.default.temporaryDirectory.path

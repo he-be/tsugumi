@@ -32,6 +32,22 @@ import TsugumiDecodeProtocol
         #expect(event.error == "first")
     }
 
+    @Test func terminalCarriesWherePrefillRan() throws {
+        for (round, wire) in [(AppPairRound.pair(k: 46), DecodePairRound(k: 46)),
+                              (.fellBack("pair link: closed"), DecodePairRound(fallback: "pair link: closed")),
+                              (.alone, DecodePairRound())] {
+            var finished = diagnostics(stopReason: .eos)
+            finished.pairRound = round
+            let event = try firstTerminal(from: DecodeServiceOutbox(generationID: UUID()),
+                                          published: .finished(finished), finishError: AppInferenceError.cancelled)
+            #expect(event.pairRound == wire)
+        }
+        let plain = try firstTerminal(from: DecodeServiceOutbox(generationID: UUID()),
+                                      published: .finished(diagnostics(stopReason: .eos)),
+                                      finishError: AppInferenceError.cancelled)
+        #expect(plain.pairRound == nil)
+    }
+
     private func firstTerminal(
         from outbox: DecodeServiceOutbox,
         published event: AppInferenceEvent,

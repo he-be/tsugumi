@@ -133,6 +133,7 @@ import TsugumiDecodeProtocol
                         topP: request.topP,
                         repetitionPenalty: request.repetitionPenalty,
                         runtimeOptions: options,
+                        qwen38PairAddress: request.qwen38PairAddress,
                         enableThinking: request.enableThinking,
                         imagePaths: request.imagePaths)
                     for try await event in client.generate(generation) {

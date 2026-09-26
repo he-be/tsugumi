@@ -20,6 +20,16 @@ struct RunnerDiagnosticsSection: View {
                         "\(speculative.accepted)/\(speculative.proposed) (\(MetricFormat.percent(speculative.acceptanceRate * 100)))")
                 }
                 DiagnosticRow(L("Stop"), diagnostics.stopReason.rawValue)
+                if let round = diagnostics.pairRound {
+                    switch round {
+                    case .pair(let k):
+                        DiagnosticRow(L("Prefill machines"), L("MBP + M6 (M6 layers 0-\(k - 1))"))
+                    case .fellBack(let why):
+                        DiagnosticRow(L("Prefill machines"), L("MBP alone (link failed: \(why))"), multiline: true)
+                    case .alone:
+                        DiagnosticRow(L("Prefill machines"), L("MBP alone"))
+                    }
+                }
 
                 groupLabel(L("Performance"))
                 DiagnosticRow(L("Prompt prefill"), MetricFormat.seconds(diagnostics.prefillSeconds))

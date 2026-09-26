@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import dnssd
 
 // Two machines split the prefill by layers (`docs/qfn-prefill/22` §2, split A of `08` §1).
 //
@@ -22,6 +23,7 @@ private let pairMagic: Int64 = 0x5146_4E50   // "QFNP"
 private let pairVersion: Int64 = 3
 /// Doubles per chunk answer: the M6's forward and profile, then its layer store's (`Qwen38LayerStore.Stats`).
 private let pairTimes = 14
+private let pairConnectTimeoutMs: Int32 = 3_000
 
 private func pairFileSize(_ f: GGUFFile) -> Int64 {
     var st = stat()
@@ -32,15 +34,31 @@ private func pairConnect(_ host: String, _ port: Int) throws -> Int32 {
     let fd = socket(AF_INET, SOCK_STREAM, 0)
     guard fd >= 0 else { throw Qwen38Pair.Error.link("socket: \(String(cString: strerror(errno)))") }
     pairTune(fd)
-    var a = try pairAddress(host, port)
-    let r = withUnsafePointer(to: &a) {
+    var a: sockaddr_in
+    do { a = try pairAddress(host, port) } catch { close(fd); throw error }
+    // Non-blocking for the connect only: a link-local peer that is gone would otherwise hold the round for the
+    // system's connect timeout (about 75 s) before it falls back to the MBP alone.
+    let flags = fcntl(fd, F_GETFL)
+    _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+    var r = withUnsafePointer(to: &a) {
         $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
     }
-    guard r == 0 else {
-        let why = String(cString: strerror(errno))
-        close(fd)
-        throw Qwen38Pair.Error.link("connect \(host):\(port): \(why)")
+    var err = r == 0 ? 0 : errno
+    if r != 0 && errno == EINPROGRESS {
+        var p = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+        r = poll(&p, 1, pairConnectTimeoutMs)
+        if r == 1 {
+            var len = socklen_t(4)
+            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len)
+        } else {
+            err = r == 0 ? ETIMEDOUT : errno
+        }
     }
+    guard err == 0 else {
+        close(fd)
+        throw Qwen38Pair.Error.link("connect \(host):\(port): \(String(cString: strerror(err)))")
+    }
+    _ = fcntl(fd, F_SETFL, flags)
     return fd
 }
 
@@ -112,14 +130,22 @@ package enum Qwen38Pair {
 
     /// `Q38_PAIR=<M6 bridge0 IPv4>[:port]` and `Q38_PAIR_K` (layers the M6 runs, default 46: the lowest median of the k grid 44 / 46 / 48, docs/qfn-prefill/27). Unset: the MBP alone.
     package static func configured() -> (host: String, port: Int, k: Int)? {
-        let env = ProcessInfo.processInfo.environment
-        guard let v = env["Q38_PAIR"], !v.isEmpty, v != "0" else { return nil }
-        let parts = v.split(separator: ":")
+        guard let v = ProcessInfo.processInfo.environment["Q38_PAIR"], v != "0" else { return nil }
+        return parse(v)
+    }
+
+    /// `<IPv4>[:port]` with the k of `Q38_PAIR_K` (default 46); nil for an empty address.
+    package static func parse(_ address: String) -> (host: String, port: Int, k: Int)? {
+        let parts = address.split(separator: ":")
+        guard let host = parts.first, !host.isEmpty else { return nil }
         let port = parts.count > 1 ? Int(parts[1]) ?? defaultPort : defaultPort
-        let k = Int(env["Q38_PAIR_K"] ?? "") ?? 46
-        return (String(parts[0]), port, k)
+        let k = Int(ProcessInfo.processInfo.environment["Q38_PAIR_K"] ?? "") ?? 46
+        return (String(host), port, k)
     }
     package static let defaultPort = 5310
+    /// The serve's Bonjour type, registered only on the interface of the address it binds (bridge0), with that address
+    /// and port in the TXT record (`ip`, `port`). The app browses it to know the M6 is there before a round (docs/qfn-prefill/33 §1 #3).
+    package static let bonjourType = "_tsugumi-pair._tcp"
 
     /// One chunk's answer from the M6.
     package struct Chunk {
@@ -366,6 +392,8 @@ package enum Qwen38Pair {
         let ls = try pairListen(host, port)
         let feedLS = (store?.feed ?? 0) > 0 ? try pairListen(host, port + 1) : -1
         log("listening on \(host):\(port)" + (feedLS >= 0 ? " (feed \(port + 1))" : ""))
+        let advert = advertise(host: host, port: port)
+        log(advert.map { "advertised \(bonjourType) on \($0)" } ?? "not advertised (no interface holds \(host))")
         while true {
             let fd = accept(ls, nil, nil)
             guard fd >= 0 else { continue }
@@ -394,6 +422,33 @@ package enum Qwen38Pair {
             close(fd)
             if feedFD >= 0 { close(feedFD) }
         }
+    }
+
+    /// Registers `bonjourType` on the interface that holds `host`; the registration lives as long as the process.
+    /// Returns the interface's name, or nil when no interface holds the address or the registration failed.
+    private static func advertise(host: String, port: Int) -> String? {
+        var list: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&list) == 0, let first = list else { return nil }
+        defer { freeifaddrs(list) }
+        var name: String?
+        for p in sequence(first: first, next: { $0.pointee.ifa_next }) {
+            guard let a = p.pointee.ifa_addr, a.pointee.sa_family == sa_family_t(AF_INET) else { continue }
+            var text = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            var sin = a.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr }
+            guard inet_ntop(AF_INET, &sin, &text, socklen_t(INET_ADDRSTRLEN)) != nil,
+                  String(cString: text) == host else { continue }
+            name = String(cString: p.pointee.ifa_name)
+        }
+        guard let name else { return nil }
+        // The address and port in the TXT record: the app's browser (NWBrowser) does not resolve the SRV.
+        var txt: [UInt8] = []
+        for entry in ["ip=\(host)", "port=\(port)"].map({ Array($0.utf8) }) { txt += [UInt8(entry.count)] + entry }
+        var ref: DNSServiceRef?
+        let err = DNSServiceRegister(&ref, 0, if_nametoindex(name), nil, bonjourType, nil, nil,
+                                     UInt16(port).bigEndian, UInt16(txt.count), &txt, nil, nil)
+        guard err == kDNSServiceErr_NoError, let ref else { return nil }
+        DNSServiceSetDispatchQueue(ref, DispatchQueue.global(qos: .utility))
+        return name
     }
 
     private static func serveRound(runner: Qwen38Runner, store: Qwen38LayerStore?, fd: Int32, feedFD: Int32,

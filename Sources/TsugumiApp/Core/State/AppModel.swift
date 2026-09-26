@@ -36,6 +36,16 @@ public final class AppModel {
     /// Qwen3.8 declare tools (`toolsAvailable`); for Ornith the switch is
     /// kept but ignored.
     public var networkMode: AppNetworkMode = .offline
+    /// Qwen3.8's M6 switch (docs/qfn-prefill/33): the next prefill's first layers run on the M6. Off at every launch
+    /// and never turned on by the app; it turns itself off when the M6 stops advertising or a round falls back.
+    public var pairEnabled = false {
+        didSet { if pairEnabled && pairPeer == nil { pairEnabled = false } }
+    }
+    /// The M6's pair serve as Bonjour shows it on bridge0; nil while none is advertised.
+    public private(set) var pairPeer: AppPairPeer?
+    /// Where the last Qwen3.8 prefill that named the M6 ran.
+    public private(set) var lastPairRound: AppPairRound?
+    private var pairBrowser: AppPairBrowser?
     /// Keys and limits for the web tools, one file for the app. Edited in
     /// the Inspector; `saveWebSearchConfiguration` writes it back.
     public var webSearchConfiguration: WebSearchConfiguration
@@ -1698,6 +1708,7 @@ public final class AppModel {
             minP: kind.samplingIsLocked ? official.minP.map(Float.init) : nil,
             presencePenalty: kind.samplingIsLocked ? official.presencePenalty.map(Float.init) : nil,
             runtimeOptions: runtimeOptions,
+            qwen38PairAddress: kind == .qwen38 && pairEnabled ? pairPeer?.address : nil,
             enableThinking: thinking,
             imagePaths: imagePaths ?? (kind.supportsVision ? attachedImagePaths : []))
         try request.validate(requireModelDirectory: true)
@@ -1735,6 +1746,7 @@ public final class AppModel {
                 name: call.name,
                 subject: activeToolExecutor?.subject(of: call) ?? call.argumentsJSON))
         case .finished(let diagnostics):
+            notePairRound(diagnostics.pairRound)
             if !pendingToolCalls.isEmpty, activeToolExecutor != nil {
                 continueToolLoop(after: diagnostics)
             } else {
@@ -1750,6 +1762,24 @@ public final class AppModel {
             materializeServiceTranscript()
             finishWithError(appError)
         }
+    }
+
+    /// Starts watching for the M6 (once). The view calls it while Qwen3.8 is selected.
+    public func startPairBrowsing() {
+        guard pairBrowser == nil else { return }
+        pairBrowser = AppPairBrowser { [weak self] in self?.pairPeerChanged($0) }
+    }
+
+    func pairPeerChanged(_ peer: AppPairPeer?) {
+        pairPeer = peer
+        if peer == nil { pairEnabled = false }
+    }
+
+    /// The display follows what the round did: a round that fell back turns the switch off.
+    func notePairRound(_ round: AppPairRound?) {
+        guard let round else { return }
+        lastPairRound = round
+        if case .fellBack = round { pairEnabled = false }
     }
 
     private func finishSuccessfully(_ diagnostics: AppDiagnostics) {

@@ -188,3 +188,14 @@
 "Nothing leaves this Mac. Wikipedia is read from the local index when one is set." = "この Mac から何も送信しません。Wikipedia はローカルの索引があればそれを読みます。";
 "Search queries go to Serper or Brave; pages are fetched from their sites, thin ones through Jina Reader." = "検索クエリは Serper か Brave へ、ページは相手のサイトから取得します (薄いページは Jina Reader 経由)。";
 "Online needs a Serper or Brave API key. Add one in the Inspector, or switch to Offline." = "オンラインには Serper か Brave の API キーが要ります。Inspector で設定するか、オフラインに切り替えてください。";
+"M6" = "M6";
+"No M6 on the Thunderbolt link (its pair serve is not advertised). This Mac runs alone." = "Thunderbolt の先に M6 が見つかりません (pair serve の広告がありません)。この Mac 単体で動きます。";
+"Two machines: the next prefill's first layers run on %@ (%@)." = "2 機: 次のプリフィルの前半の層を %@ (%@) が受け持ちます。";
+"%@ is on the Thunderbolt link (%@). Press to share the next prefill with it." = "%@ が Thunderbolt の先に居ます (%@)。押すと次のプリフィルから 2 機で分担します。";
+"Last prefill: two machines (the M6 ran layers 0-%lld)." = "直前のプリフィル: 2 機 (M6 が層 0〜%lld)。";
+"Last prefill: this Mac alone, the link failed (%@)." = "直前のプリフィル: この Mac 単体。接続に失敗 (%@)。";
+"Last prefill: this Mac alone." = "直前のプリフィル: この Mac 単体。";
+"Prefill machines" = "プリフィルの機体";
+"MBP + M6 (M6 layers 0-%lld)" = "MBP + M6 (M6 は層 0〜%lld)";
+"MBP alone (link failed: %@)" = "MBP 単体 (接続に失敗: %@)";
+"MBP alone" = "MBP 単体";

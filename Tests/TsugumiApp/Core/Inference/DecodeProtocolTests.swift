@@ -57,6 +57,19 @@ import TsugumiDecodeProtocol
         #expect(decoded.prompt == "q2")
     }
 
+    @Test func pairAddressAndRoundRoundTrip() throws {
+        let request = DecodeGenerationRequest(prompt: "q", maxNewTokens: 8, maxContextTokens: 1024,
+                                              temperature: 1, qwen38PairAddress: "169.254.13.135:5310")
+        let decoded = try JSONDecoder().decode(DecodeGenerationRequest.self,
+                                               from: JSONEncoder().encode(request))
+        #expect(decoded.qwen38PairAddress == "169.254.13.135:5310")
+
+        let event = DecodeServiceEvent(kind: .finished, generationID: UUID(),
+                                       pairRound: DecodePairRound(fallback: "pair link: connect refused"))
+        let back = try JSONDecoder().decode(DecodeServiceEvent.self, from: JSONEncoder().encode(event))
+        #expect(back.pairRound == DecodePairRound(fallback: "pair link: connect refused"))
+    }
+
     @Test func generationRequestWithoutHistoryKeyDecodesAsEmpty() throws {
         let json = """
         {"prompt":"solo","maxNewTokens":8,"maxContextTokens":1024,
