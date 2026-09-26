@@ -1,0 +1,39 @@
+13:53:22
+System-wide memory free percentage: 83%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   154520.
+Pages active:                                 622625.
+Pages inactive:                                98650.
+Pages speculative:                               119.
+Pages throttled:                                   0.
+Pages wired down:                             122713.
+Pages purgeable:                                2867.
+"Translation faults":                      669136389.
+Pages copy-on-write:                       114121002.
+Pages zero filled:                         487407730.
+Pages reactivated:                         521495701.
+Pages purged:                                2996017.
+File-backed pages:                             88901.
+Anonymous pages:                              632493.
+Pages stored in compressor:                    29705.
+Pages occupied by compressor:                  12452.
+Decompressions:                            112696727.
+Compressions:                              133179107.
+Pageins:                                  1729657839.
+Pageouts:                                      21666.
+Swapins:                                      548913.
+Swapouts:                                     781279.
+Pages tagged:                                  66306.
+Pages tagged resident:                         59364.
+Pages tagged compressed:                        6942.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2785.
+Pages tag-storage free:                        20877.
+Pages tag-storage non-tag pageable:             8971.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1124352.
+Tagged compressions:                         2069447.
+Tagged decompressions:                       1989594.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  427.36 70423090 29390953.11    81.39 18261237 1451456.69 

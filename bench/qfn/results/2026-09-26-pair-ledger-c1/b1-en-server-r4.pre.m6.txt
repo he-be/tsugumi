@@ -1,0 +1,39 @@
+13:58:15
+System-wide memory free percentage: 84%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   151791.
+Pages active:                                 598079.
+Pages inactive:                               129680.
+Pages speculative:                               717.
+Pages throttled:                                   0.
+Pages wired down:                             120979.
+Pages purgeable:                                2018.
+"Translation faults":                      670111781.
+Pages copy-on-write:                       114236584.
+Pages zero filled:                         488662518.
+Pages reactivated:                         525885424.
+Pages purged:                                3009917.
+File-backed pages:                             85312.
+Anonymous pages:                              643164.
+Pages stored in compressor:                    24157.
+Pages occupied by compressor:                   9833.
+Decompressions:                            113743510.
+Compressions:                              134501633.
+Pageins:                                  1738945777.
+Pageouts:                                      21703.
+Swapins:                                      548941.
+Swapouts:                                     781279.
+Pages tagged:                                  66426.
+Pages tagged resident:                         59730.
+Pages tagged compressed:                        6696.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2778.
+Pages tag-storage free:                        21713.
+Pages tag-storage non-tag pageable:             8065.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1073536.
+Tagged compressions:                         2085656.
+Tagged decompressions:                       2006045.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  427.67 70754978 29550234.75    80.75 18451630 1454981.74 

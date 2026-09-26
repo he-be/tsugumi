@@ -2044,19 +2044,23 @@ package final class Qwen38Runner {
 
     /// The regions of cut row `j` of the last forward (or of what a caller wrote into them), for the trunk layers in
     /// `layers`, in `forEachRecurrentRegion(layers:)` order. Copies no forward has made are made (zeros).
+    /// Reading a copy puts it in the autorelease pool; the M6's pair serve never drains one, so without this pool
+    /// `releaseCutBuffers` freed nothing and every round kept a cut row's copies (docs/qfn-prefill/32).
     package func forEachCutRegion(_ j: Int, layers: Range<Int>, _ body: (UnsafeMutableRawPointer, Int) throws -> Void) rethrows {
-        reserveCuts(j + 1)
-        let C = 2 * Hk * Dl + Hv * Dl
-        for il in layers where isLinear(il) {
-            let state = cutBuffer(&cutState, j, il, length: Hv * Dl * Dl * 4)
-            let hist = cutBuffer(&cutHist, j, il, length: (convK - 1) * C * 4)
-            try body(state.contents(), state.length)
-            try body(hist.contents(), hist.length)
-        }
-        if layers.contains(pleLayer) {
-            let h = cutPleHist[j] ?? device.makeBuffer(length: pleHist.length, options: .storageModeShared)!
-            cutPleHist[j] = h
-            try body(h.contents(), h.length)
+        try autoreleasepool {
+            reserveCuts(j + 1)
+            let C = 2 * Hk * Dl + Hv * Dl
+            for il in layers where isLinear(il) {
+                let state = cutBuffer(&cutState, j, il, length: Hv * Dl * Dl * 4)
+                let hist = cutBuffer(&cutHist, j, il, length: (convK - 1) * C * 4)
+                try body(state.contents(), state.length)
+                try body(hist.contents(), hist.length)
+            }
+            if layers.contains(pleLayer) {
+                let h = cutPleHist[j] ?? device.makeBuffer(length: pleHist.length, options: .storageModeShared)!
+                cutPleHist[j] = h
+                try body(h.contents(), h.length)
+            }
         }
     }
 

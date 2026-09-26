@@ -1962,6 +1962,21 @@ if let index = arguments.firstIndex(of: "--qwen38-resume"), index + 2 < argument
     exit(passed ? 0 : 1)
 }
 
+// `--qwen38-cut-leak <prompt>`: the pair serve's cut copies across rounds on one runner (Qwen38CutLeakCheck.swift).
+if let index = arguments.firstIndex(of: "--qwen38-cut-leak"), index + 1 < arguments.count {
+    func opt(_ flag: String) -> String? {
+        guard let i = arguments.firstIndex(of: flag), i + 1 < arguments.count else { return nil }
+        return arguments[i + 1]
+    }
+    let passed = try runQwen38CutLeak(
+        prompt: arguments[index + 1],
+        rounds: opt("--q38-rounds").flatMap { Int($0) } ?? 8,
+        layers: opt("--q38-layers").flatMap { Int($0) } ?? 46,
+        gguf: opt("--q38-gguf") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/Qwen3.8-Flash-Next-IQ2XXSImatrix-Q2KDownPad768-MTP.gguf",
+        ple: opt("--q38-ple") ?? "~/LLM/Qwen3.8-Flash-Next-DS4-IQ2/ple-bf16/Qwen3.8-Flash-Next-PLE-BF16.gguf")
+    exit(passed ? 0 : 1)
+}
+
 // `--qwen38-residency-probe`: the routed buffer's kernel -> GPU start by view count, bytes and reuse (`--q38-rounds N`,
 // Qwen38ResidencyProbe.swift, docs/qwen38/13).
 if arguments.contains("--qwen38-residency-probe") {

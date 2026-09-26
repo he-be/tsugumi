@@ -1,0 +1,39 @@
+13:56:19
+System-wide memory free percentage: 84%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   146817.
+Pages active:                                 603363.
+Pages inactive:                               128133.
+Pages speculative:                               973.
+Pages throttled:                                   0.
+Pages wired down:                             121196.
+Pages purgeable:                                2041.
+"Translation faults":                      669717475.
+Pages copy-on-write:                       114190548.
+Pages zero filled:                         488129442.
+Pages reactivated:                         524058987.
+Pages purged:                                3004228.
+File-backed pages:                             92835.
+Anonymous pages:                              639634.
+Pages stored in compressor:                    24861.
+Pages occupied by compressor:                  10597.
+Decompressions:                            113304366.
+Compressions:                              133941818.
+Pageins:                                  1734965023.
+Pageouts:                                      21688.
+Swapins:                                      548929.
+Swapouts:                                     781279.
+Pages tagged:                                  66666.
+Pages tagged resident:                         59899.
+Pages tagged compressed:                        6767.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2785.
+Pages tag-storage free:                        21295.
+Pages tag-storage non-tag pageable:             8573.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1085824.
+Tagged compressions:                         2079259.
+Tagged decompressions:                       1999578.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  427.54 70612984 29481980.03    81.01 18373301 1453516.58 

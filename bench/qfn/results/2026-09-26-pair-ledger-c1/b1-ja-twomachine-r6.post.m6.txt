@@ -1,0 +1,39 @@
+14:04:58
+System-wide memory free percentage: 84%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   154908.
+Pages active:                                 623980.
+Pages inactive:                                98770.
+Pages speculative:                               200.
+Pages throttled:                                   0.
+Pages wired down:                             120411.
+Pages purgeable:                                3519.
+"Translation faults":                      671530258.
+Pages copy-on-write:                       114393866.
+Pages zero filled:                         490598933.
+Pages reactivated:                         533366528.
+Pages purged:                                3029143.
+File-backed pages:                             90307.
+Anonymous pages:                              632643.
+Pages stored in compressor:                    31005.
+Pages occupied by compressor:                  12810.
+Decompressions:                            115338633.
+Compressions:                              136561419.
+Pageins:                                  1753515988.
+Pageouts:                                      21768.
+Swapins:                                      548980.
+Swapouts:                                     781279.
+Pages tagged:                                  66185.
+Pages tagged resident:                         59618.
+Pages tagged compressed:                        6567.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2779.
+Pages tag-storage free:                        21658.
+Pages tag-storage non-tag pageable:             8118.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1033344.
+Tagged compressions:                         2107647.
+Tagged decompressions:                       2028160.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  428.14 71275744 29800526.46    79.77 18745311 1460218.36 
