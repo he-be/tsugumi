@@ -1,0 +1,328 @@
+Qwen3.8 pair serve: capacity 32768, chunk 2048, KV q8_0, P1 true
+layer store: 10 resident layers 8.09 GB in 2.5 s, 2 slabs 1.61 GB, feed 0.59
+memory GB before a round: metal allocated 9.73, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, logits 0.00, dense views (resident) 8.09, expert views (15360) 8.09
+listening on 169.254.13.135:5310 (feed 5311)
+connected (feed)
+round k 46 at 0: 2316 tokens in 2 chunks, kv rows 0, request 0.039 s
+chunk 0 at 0 T 2048: forward 8.637 s (ple 1.199 pre 3.283 route 0.576 advise 0.001 routed 0.046, gpu 2.630 + 2.008), send 0.050 s; slabs: wait 3.513 s, reads 4.166 s (own 3.683 s 11879 MB, fed 4.165 s 17095 MB)
+chunk 1 at 2048 T 268: forward 5.393 s (ple 0.030 pre 0.985 route 0.085 advise 0.000 routed 0.016, gpu 0.641 + 0.716), send 0.026 s; slabs: wait 4.271 s, reads 4.812 s (own 3.623 s 11879 MB, fed 4.812 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2347 tokens in 2 chunks, kv rows 0, request 0.040 s
+chunk 0 at 0 T 2048: forward 8.346 s (ple 0.942 pre 3.272 route 0.559 advise 0.001 routed 0.046, gpu 2.675 + 1.984), send 0.045 s; slabs: wait 3.496 s, reads 4.142 s (own 3.655 s 11879 MB, fed 4.141 s 17095 MB)
+chunk 1 at 2048 T 299: forward 5.464 s (ple 0.111 pre 1.005 route 0.086 advise 0.000 routed 0.017, gpu 0.652 + 0.772), send 0.035 s; slabs: wait 4.242 s, reads 4.534 s (own 3.612 s 11879 MB, fed 4.534 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2408 tokens in 2 chunks, kv rows 0, request 0.041 s
+chunk 0 at 0 T 2048: forward 8.501 s (ple 1.114 pre 3.265 route 0.564 advise 0.001 routed 0.047, gpu 2.668 + 2.017), send 0.046 s; slabs: wait 3.479 s, reads 4.129 s (own 3.681 s 11879 MB, fed 4.124 s 17095 MB)
+chunk 1 at 2048 T 360: forward 5.539 s (ple 0.132 pre 1.078 route 0.101 advise 0.000 routed 0.019, gpu 0.705 + 0.816), send 0.028 s; slabs: wait 4.203 s, reads 4.507 s (own 3.633 s 11879 MB, fed 4.506 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2412 tokens in 2 chunks, kv rows 0, request 0.044 s
+chunk 0 at 0 T 2048: forward 8.564 s (ple 1.205 pre 3.269 route 0.566 advise 0.001 routed 0.046, gpu 2.673 + 1.989), send 0.044 s; slabs: wait 3.444 s, reads 4.095 s (own 3.675 s 11879 MB, fed 4.089 s 17095 MB)
+chunk 1 at 2048 T 364: forward 5.401 s (ple 0.125 pre 1.002 route 0.104 advise 0.001 routed 0.020, gpu 0.633 + 0.902), send 0.028 s; slabs: wait 4.144 s, reads 4.452 s (own 3.633 s 11879 MB, fed 4.452 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2442 tokens in 2 chunks, kv rows 0, request 0.045 s
+chunk 0 at 0 T 2048: forward 8.307 s (ple 0.940 pre 3.265 route 0.566 advise 0.001 routed 0.046, gpu 2.671 + 2.001), send 0.046 s; slabs: wait 3.470 s, reads 4.120 s (own 3.665 s 11879 MB, fed 4.118 s 17095 MB)
+chunk 1 at 2048 T 394: forward 5.413 s (ple 0.111 pre 1.117 route 0.109 advise 0.000 routed 0.018, gpu 0.767 + 0.754), send 0.027 s; slabs: wait 4.053 s, reads 4.372 s (own 3.600 s 11879 MB, fed 4.371 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2347 tokens in 2 chunks, kv rows 0, request 0.043 s
+chunk 0 at 0 T 2048: forward 8.472 s (ple 1.005 pre 3.268 route 0.566 advise 0.001 routed 0.046, gpu 2.674 + 1.988), send 0.044 s; slabs: wait 3.552 s, reads 4.204 s (own 3.668 s 11879 MB, fed 4.201 s 17095 MB)
+chunk 1 at 2048 T 299: forward 6.016 s (ple 0.726 pre 1.023 route 0.086 advise 0.000 routed 0.017, gpu 0.671 + 0.773), send 0.027 s; slabs: wait 4.158 s, reads 4.451 s (own 3.624 s 11879 MB, fed 4.451 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2408 tokens in 2 chunks, kv rows 0, request 0.044 s
+chunk 0 at 0 T 2048: forward 8.565 s (ple 1.171 pre 3.278 route 0.559 advise 0.001 routed 0.046, gpu 2.675 + 2.017), send 0.044 s; slabs: wait 3.491 s, reads 4.140 s (own 3.670 s 11879 MB, fed 4.138 s 17095 MB)
+chunk 1 at 2048 T 360: forward 5.475 s (ple 0.156 pre 1.027 route 0.102 advise 0.000 routed 0.019, gpu 0.667 + 0.818), send 0.028 s; slabs: wait 4.166 s, reads 4.473 s (own 3.643 s 11879 MB, fed 4.470 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2412 tokens in 2 chunks, kv rows 0, request 0.042 s
+chunk 0 at 0 T 2048: forward 8.724 s (ple 1.217 pre 3.261 route 0.565 advise 0.001 routed 0.046, gpu 2.670 + 1.980), send 0.284 s; slabs: wait 3.608 s, reads 4.261 s (own 3.664 s 11879 MB, fed 4.260 s 17095 MB)
+chunk 1 at 2048 T 364: forward 5.783 s (ple 0.033 pre 1.119 route 0.108 advise 0.001 routed 0.020, gpu 0.727 + 0.898), send 0.029 s; slabs: wait 4.496 s, reads 5.056 s (own 3.628 s 11879 MB, fed 5.055 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2442 tokens in 2 chunks, kv rows 0, request 0.042 s
+chunk 0 at 0 T 2048: forward 8.308 s (ple 0.942 pre 3.271 route 0.563 advise 0.001 routed 0.046, gpu 2.676 + 2.004), send 0.047 s; slabs: wait 3.464 s, reads 4.109 s (own 3.650 s 11879 MB, fed 4.108 s 17095 MB)
+chunk 1 at 2048 T 394: forward 5.633 s (ple 0.135 pre 1.106 route 0.109 advise 0.000 routed 0.017, gpu 0.759 + 0.755), send 0.028 s; slabs: wait 4.261 s, reads 4.611 s (own 3.617 s 11879 MB, fed 4.610 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2316 tokens in 2 chunks, kv rows 0, request 0.042 s
+chunk 0 at 0 T 2048: forward 8.593 s (ple 1.151 pre 3.276 route 0.560 advise 0.001 routed 0.047, gpu 2.675 + 1.999), send 0.371 s; slabs: wait 3.527 s, reads 4.171 s (own 3.672 s 11879 MB, fed 4.170 s 17095 MB)
+chunk 1 at 2048 T 268: forward 5.239 s (ple 0.051 pre 0.966 route 0.078 advise 0.000 routed 0.017, gpu 0.621 + 0.711), send 0.026 s; slabs: wait 4.121 s, reads 4.645 s (own 3.619 s 11879 MB, fed 4.644 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2408 tokens in 2 chunks, kv rows 0, request 0.043 s
+chunk 0 at 0 T 2048: forward 8.529 s (ple 1.133 pre 3.265 route 0.567 advise 0.001 routed 0.047, gpu 2.669 + 2.017), send 0.045 s; slabs: wait 3.486 s, reads 4.137 s (own 3.679 s 11879 MB, fed 4.130 s 17095 MB)
+chunk 1 at 2048 T 360: forward 5.591 s (ple 0.163 pre 1.078 route 0.100 advise 0.000 routed 0.019, gpu 0.713 + 0.813), send 0.028 s; slabs: wait 4.227 s, reads 4.530 s (own 3.842 s 11879 MB, fed 4.507 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2412 tokens in 2 chunks, kv rows 0, request 0.042 s
+chunk 0 at 0 T 2048: forward 8.602 s (ple 1.222 pre 3.264 route 0.565 advise 0.001 routed 0.046, gpu 2.669 + 1.985), send 0.042 s; slabs: wait 3.472 s, reads 4.122 s (own 3.679 s 11879 MB, fed 4.119 s 17095 MB)
+chunk 1 at 2048 T 364: forward 6.502 s (ple 1.067 pre 1.147 route 0.102 advise 0.001 routed 0.020, gpu 0.735 + 0.898), send 0.028 s; slabs: wait 4.160 s, reads 4.465 s (own 3.739 s 11879 MB, fed 4.447 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2442 tokens in 2 chunks, kv rows 0, request 0.042 s
+chunk 0 at 0 T 2048: forward 8.337 s (ple 0.947 pre 3.271 route 0.570 advise 0.001 routed 0.046, gpu 2.673 + 2.011), send 0.043 s; slabs: wait 3.479 s, reads 4.139 s (own 3.660 s 11879 MB, fed 4.137 s 17095 MB)
+chunk 1 at 2048 T 394: forward 5.351 s (ple 0.110 pre 1.095 route 0.110 advise 0.000 routed 0.018, gpu 0.755 + 0.754), send 0.028 s; slabs: wait 4.013 s, reads 4.323 s (own 3.623 s 11879 MB, fed 4.322 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2316 tokens in 2 chunks, kv rows 0, request 0.039 s
+chunk 0 at 0 T 2048: forward 8.596 s (ple 1.146 pre 3.278 route 0.565 advise 0.001 routed 0.047, gpu 2.679 + 2.000), send 0.050 s; slabs: wait 3.526 s, reads 4.178 s (own 3.763 s 11879 MB, fed 4.167 s 17095 MB)
+chunk 1 at 2048 T 268: forward 5.455 s (ple 0.123 pre 0.976 route 0.076 advise 0.000 routed 0.016, gpu 0.641 + 0.710), send 0.026 s; slabs: wait 4.259 s, reads 4.551 s (own 3.880 s 11879 MB, fed 4.537 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2347 tokens in 2 chunks, kv rows 0, request 0.043 s
+chunk 0 at 0 T 2048: forward 8.441 s (ple 0.915 pre 3.260 route 0.558 advise 0.001 routed 0.046, gpu 2.666 + 1.989), send 0.046 s; slabs: wait 3.629 s, reads 4.274 s (own 3.668 s 11879 MB, fed 4.273 s 17095 MB)
+chunk 1 at 2048 T 299: forward 5.445 s (ple 0.141 pre 1.016 route 0.086 advise 0.000 routed 0.017, gpu 0.665 + 0.772), send 0.027 s; slabs: wait 4.181 s, reads 4.487 s (own 3.610 s 11879 MB, fed 4.487 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2412 tokens in 2 chunks, kv rows 0, request 0.040 s
+chunk 0 at 0 T 2048: forward 8.671 s (ple 1.231 pre 3.273 route 0.572 advise 0.001 routed 0.046, gpu 2.677 + 1.985), send 0.047 s; slabs: wait 3.530 s, reads 4.189 s (own 3.667 s 11879 MB, fed 4.189 s 17095 MB)
+chunk 1 at 2048 T 364: forward 5.557 s (ple 0.113 pre 1.107 route 0.104 advise 0.001 routed 0.020, gpu 0.719 + 0.899), send 0.027 s; slabs: wait 4.207 s, reads 4.517 s (own 3.622 s 11879 MB, fed 4.516 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2442 tokens in 2 chunks, kv rows 0, request 0.044 s
+chunk 0 at 0 T 2048: forward 8.449 s (ple 0.951 pre 3.271 route 0.561 advise 0.001 routed 0.046, gpu 2.677 + 2.008), send 0.046 s; slabs: wait 3.588 s, reads 4.237 s (own 3.669 s 11879 MB, fed 4.236 s 17095 MB)
+chunk 1 at 2048 T 394: forward 5.514 s (ple 0.121 pre 1.108 route 0.110 advise 0.000 routed 0.017, gpu 0.766 + 0.756), send 0.027 s; slabs: wait 4.153 s, reads 4.466 s (own 3.620 s 11879 MB, fed 4.466 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2316 tokens in 2 chunks, kv rows 0, request 0.042 s
+chunk 0 at 0 T 2048: forward 8.566 s (ple 1.157 pre 3.265 route 0.567 advise 0.001 routed 0.046, gpu 2.669 + 2.001), send 0.048 s; slabs: wait 3.509 s, reads 4.164 s (own 3.675 s 11879 MB, fed 4.162 s 17095 MB)
+chunk 1 at 2048 T 268: forward 5.431 s (ple 0.140 pre 0.967 route 0.077 advise 0.000 routed 0.016, gpu 0.636 + 0.710), send 0.026 s; slabs: wait 4.225 s, reads 4.530 s (own 3.617 s 11879 MB, fed 4.530 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2347 tokens in 2 chunks, kv rows 0, request 0.041 s
+chunk 0 at 0 T 2048: forward 8.359 s (ple 0.933 pre 3.268 route 0.568 advise 0.001 routed 0.045, gpu 2.674 + 1.993), send 0.047 s; slabs: wait 3.512 s, reads 4.171 s (own 3.674 s 11879 MB, fed 4.170 s 17095 MB)
+chunk 1 at 2048 T 299: forward 5.479 s (ple 0.108 pre 1.006 route 0.086 advise 0.000 routed 0.017, gpu 0.657 + 0.773), send 0.027 s; slabs: wait 4.258 s, reads 4.565 s (own 3.620 s 11879 MB, fed 4.564 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2408 tokens in 2 chunks, kv rows 0, request 0.043 s
+chunk 0 at 0 T 2048: forward 8.498 s (ple 1.104 pre 3.268 route 0.565 advise 0.001 routed 0.047, gpu 2.674 + 2.017), send 0.043 s; slabs: wait 3.492 s, reads 4.144 s (own 3.690 s 11879 MB, fed 4.144 s 17095 MB)
+chunk 1 at 2048 T 360: forward 5.520 s (ple 0.150 pre 1.080 route 0.102 advise 0.000 routed 0.019, gpu 0.712 + 0.817), send 0.029 s; slabs: wait 4.165 s, reads 4.469 s (own 3.617 s 11879 MB, fed 4.468 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2442 tokens in 2 chunks, kv rows 0, request 0.044 s
+chunk 0 at 0 T 2048: forward 8.159 s (ple 0.735 pre 3.269 route 0.566 advise 0.001 routed 0.046, gpu 2.671 + 2.011), send 0.045 s; slabs: wait 3.510 s, reads 4.162 s (own 3.663 s 11879 MB, fed 4.160 s 17095 MB)
+chunk 1 at 2048 T 394: forward 5.945 s (ple 0.588 pre 1.105 route 0.110 advise 0.000 routed 0.018, gpu 0.765 + 0.755), send 0.027 s; slabs: wait 4.119 s, reads 4.675 s (own 3.613 s 11879 MB, fed 4.674 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2316 tokens in 2 chunks, kv rows 0, request 0.043 s
+chunk 0 at 0 T 2048: forward 8.569 s (ple 1.165 pre 3.276 route 0.566 advise 0.001 routed 0.047, gpu 2.675 + 2.003), send 0.046 s; slabs: wait 3.494 s, reads 4.145 s (own 3.681 s 11879 MB, fed 4.141 s 17095 MB)
+chunk 1 at 2048 T 268: forward 5.405 s (ple 0.156 pre 0.968 route 0.078 advise 0.000 routed 0.016, gpu 0.636 + 0.711), send 0.028 s; slabs: wait 4.182 s, reads 4.482 s (own 3.611 s 11879 MB, fed 4.482 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2347 tokens in 2 chunks, kv rows 0, request 0.045 s
+chunk 0 at 0 T 2048: forward 8.325 s (ple 0.918 pre 3.264 route 0.559 advise 0.001 routed 0.046, gpu 2.670 + 1.992), send 0.047 s; slabs: wait 3.499 s, reads 4.145 s (own 3.678 s 11879 MB, fed 4.141 s 17095 MB)
+chunk 1 at 2048 T 299: forward 5.362 s (ple 0.154 pre 1.013 route 0.087 advise 0.000 routed 0.017, gpu 0.664 + 0.773), send 0.027 s; slabs: wait 4.085 s, reads 4.383 s (own 3.596 s 11879 MB, fed 4.383 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2408 tokens in 2 chunks, kv rows 0, request 0.040 s
+chunk 0 at 0 T 2048: forward 8.548 s (ple 1.142 pre 3.272 route 0.569 advise 0.001 routed 0.046, gpu 2.673 + 2.016), send 0.044 s; slabs: wait 3.483 s, reads 4.136 s (own 3.666 s 11879 MB, fed 4.133 s 17095 MB)
+chunk 1 at 2048 T 360: forward 5.685 s (ple 0.371 pre 1.080 route 0.101 advise 0.000 routed 0.019, gpu 0.715 + 0.817), send 0.027 s; slabs: wait 4.110 s, reads 4.424 s (own 3.620 s 11879 MB, fed 4.423 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2412 tokens in 2 chunks, kv rows 0, request 0.040 s
+chunk 0 at 0 T 2048: forward 8.550 s (ple 1.199 pre 3.256 route 0.559 advise 0.001 routed 0.046, gpu 2.666 + 1.987), send 0.045 s; slabs: wait 3.466 s, reads 4.111 s (own 3.679 s 11879 MB, fed 4.107 s 17095 MB)
+chunk 1 at 2048 T 364: forward 5.485 s (ple 0.124 pre 1.101 route 0.104 advise 0.001 routed 0.020, gpu 0.718 + 0.899), send 0.027 s; slabs: wait 4.131 s, reads 4.437 s (own 3.615 s 11879 MB, fed 4.436 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2316 tokens in 2 chunks, kv rows 0, request 0.044 s
+chunk 0 at 0 T 2048: forward 8.088 s (ple 0.708 pre 3.272 route 0.561 advise 0.001 routed 0.047, gpu 2.671 + 2.005), send 0.043 s; slabs: wait 3.471 s, reads 4.117 s (own 3.679 s 11879 MB, fed 4.113 s 17095 MB)
+chunk 1 at 2048 T 268: forward 5.863 s (ple 0.726 pre 0.964 route 0.078 advise 0.000 routed 0.016, gpu 0.628 + 0.711), send 0.027 s; slabs: wait 4.074 s, reads 4.360 s (own 3.614 s 11879 MB, fed 4.360 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2347 tokens in 2 chunks, kv rows 0, request 0.035 s
+chunk 0 at 0 T 2048: forward 8.379 s (ple 0.924 pre 3.315 route 0.567 advise 0.001 routed 0.046, gpu 2.693 + 2.005), send 0.047 s; slabs: wait 3.498 s, reads 4.152 s (own 3.671 s 11879 MB, fed 4.152 s 17095 MB)
+chunk 1 at 2048 T 299: forward 5.392 s (ple 0.110 pre 1.008 route 0.087 advise 0.000 routed 0.017, gpu 0.655 + 0.774), send 0.028 s; slabs: wait 4.166 s, reads 4.466 s (own 3.628 s 11879 MB, fed 4.465 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2408 tokens in 2 chunks, kv rows 0, request 0.043 s
+chunk 0 at 0 T 2048: forward 8.474 s (ple 1.115 pre 3.275 route 0.565 advise 0.001 routed 0.047, gpu 2.675 + 2.016), send 0.045 s; slabs: wait 3.445 s, reads 4.094 s (own 3.678 s 11879 MB, fed 4.089 s 17095 MB)
+chunk 1 at 2048 T 360: forward 5.475 s (ple 0.114 pre 1.074 route 0.103 advise 0.000 routed 0.019, gpu 0.710 + 0.816), send 0.027 s; slabs: wait 4.161 s, reads 4.465 s (own 3.614 s 11879 MB, fed 4.465 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2412 tokens in 2 chunks, kv rows 0, request 0.043 s
+chunk 0 at 0 T 2048: forward 8.660 s (ple 1.208 pre 3.262 route 0.568 advise 0.001 routed 0.046, gpu 2.673 + 1.982), send 0.045 s; slabs: wait 3.547 s, reads 4.200 s (own 3.663 s 11879 MB, fed 4.199 s 17095 MB)
+chunk 1 at 2048 T 364: forward 5.473 s (ple 0.107 pre 1.095 route 0.104 advise 0.001 routed 0.020, gpu 0.713 + 0.903), send 0.027 s; slabs: wait 4.141 s, reads 4.448 s (own 3.614 s 11879 MB, fed 4.446 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 2442 tokens in 2 chunks, kv rows 0, request 0.040 s
+chunk 0 at 0 T 2048: forward 8.309 s (ple 0.937 pre 3.226 route 0.573 advise 0.001 routed 0.046, gpu 2.624 + 2.012), send 0.046 s; slabs: wait 3.500 s, reads 4.157 s (own 3.659 s 11879 MB, fed 4.155 s 17095 MB)
+chunk 1 at 2048 T 394: forward 5.487 s (ple 0.105 pre 1.111 route 0.111 advise 0.000 routed 0.018, gpu 0.768 + 0.755), send 0.028 s; slabs: wait 4.137 s, reads 4.449 s (own 3.625 s 11879 MB, fed 4.449 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 1225 tokens in 1 chunks, kv rows 0, request 0.041 s
+chunk 0 at 0 T 1225: forward 6.833 s (ple 0.582 pre 2.229 route 0.327 advise 0.001 routed 0.033, gpu 1.851 + 1.538), send 0.091 s; slabs: wait 3.650 s, reads 4.119 s (own 3.659 s 11879 MB, fed 4.118 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 1225: 719 tokens in 1 chunks, kv rows 0, request 0.043 s
+chunk 0 at 1225 T 719: forward 5.835 s (ple 0.297 pre 1.564 route 0.200 advise 0.001 routed 0.024, gpu 1.284 + 1.116), send 0.056 s; slabs: wait 3.746 s, reads 4.123 s (own 3.599 s 11879 MB, fed 4.121 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 1944: 1583 tokens in 1 chunks, kv rows 0, request 0.040 s
+chunk 0 at 1944 T 1583: forward 7.733 s (ple 0.639 pre 2.971 route 0.426 advise 0.001 routed 0.038, gpu 2.308 + 1.714), send 0.068 s; slabs: wait 3.646 s, reads 4.188 s (own 3.660 s 11879 MB, fed 4.188 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 3527: 2021 tokens in 1 chunks, kv rows 0, request 0.040 s
+chunk 0 at 3527 T 2021: forward 8.896 s (ple 0.874 pre 3.878 route 0.573 advise 0.001 routed 0.043, gpu 3.099 + 2.023), send 0.101 s; slabs: wait 3.509 s, reads 4.188 s (own 3.675 s 11879 MB, fed 4.186 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 5548: 2130 tokens in 2 chunks, kv rows 0, request 0.041 s
+chunk 0 at 5548 T 2048: forward 9.229 s (ple 0.696 pre 4.297 route 0.564 advise 0.001 routed 0.046, gpu 3.355 + 2.027), send 0.035 s; slabs: wait 3.590 s, reads 4.279 s (own 3.753 s 11879 MB, fed 4.269 s 17095 MB)
+chunk 1 at 7596 T 82: forward 5.090 s (ple 0.136 pre 0.709 route 0.030 advise 0.000 routed 0.012, gpu 0.506 + 0.533), send 0.052 s; slabs: wait 4.199 s, reads 4.466 s (own 3.937 s 11879 MB, fed 4.450 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 7678: 1962 tokens in 1 chunks, kv rows 0, request 0.042 s
+chunk 0 at 7678 T 1962: forward 9.437 s (ple 0.765 pre 4.384 route 0.537 advise 0.001 routed 0.042, gpu 3.614 + 1.962), send 0.080 s; slabs: wait 3.694 s, reads 4.321 s (own 3.868 s 11879 MB, fed 4.285 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 9640: 1948 tokens in 1 chunks, kv rows 0, request 0.046 s
+chunk 0 at 9640 T 1948: forward 9.861 s (ple 0.862 pre 4.724 route 0.543 advise 0.001 routed 0.042, gpu 3.914 + 1.979), send 0.074 s; slabs: wait 3.672 s, reads 4.300 s (own 3.664 s 11879 MB, fed 4.298 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 1225 tokens in 1 chunks, kv rows 0, request 0.043 s
+chunk 0 at 0 T 1225: forward 6.770 s (ple 0.555 pre 2.202 route 0.336 advise 0.001 routed 0.033, gpu 1.842 + 1.538), send 0.089 s; slabs: wait 3.635 s, reads 4.109 s (own 3.636 s 11879 MB, fed 4.106 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 1225: 719 tokens in 1 chunks, kv rows 0, request 0.041 s
+chunk 0 at 1225 T 719: forward 5.836 s (ple 0.278 pre 1.563 route 0.202 advise 0.001 routed 0.024, gpu 1.282 + 1.116), send 0.060 s; slabs: wait 3.763 s, reads 4.138 s (own 3.600 s 11879 MB, fed 4.137 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 1944: 1583 tokens in 1 chunks, kv rows 0, request 0.042 s
+chunk 0 at 1944 T 1583: forward 7.549 s (ple 0.458 pre 2.983 route 0.430 advise 0.001 routed 0.038, gpu 2.331 + 1.715), send 0.070 s; slabs: wait 3.629 s, reads 4.188 s (own 3.674 s 11879 MB, fed 4.187 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 3527: 2021 tokens in 1 chunks, kv rows 0, request 0.044 s
+chunk 0 at 3527 T 2021: forward 8.825 s (ple 0.812 pre 3.859 route 0.567 advise 0.001 routed 0.043, gpu 3.109 + 2.025), send 0.081 s; slabs: wait 3.526 s, reads 4.213 s (own 3.663 s 11879 MB, fed 4.212 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 5548: 2130 tokens in 2 chunks, kv rows 0, request 0.042 s
+chunk 0 at 5548 T 2048: forward 9.187 s (ple 0.707 pre 4.300 route 0.570 advise 0.001 routed 0.047, gpu 3.349 + 2.039), send 0.025 s; slabs: wait 3.526 s, reads 4.178 s (own 3.664 s 11879 MB, fed 4.176 s 17095 MB)
+chunk 1 at 7596 T 82: forward 5.160 s (ple 0.039 pre 0.719 route 0.034 advise 0.000 routed 0.013, gpu 0.526 + 0.534), send 0.051 s; slabs: wait 4.351 s, reads 4.628 s (own 3.622 s 11879 MB, fed 4.627 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 7678: 1962 tokens in 1 chunks, kv rows 0, request 0.043 s
+chunk 0 at 7678 T 1962: forward 9.356 s (ple 0.756 pre 4.371 route 0.545 advise 0.001 routed 0.042, gpu 3.581 + 1.979), send 0.077 s; slabs: wait 3.626 s, reads 4.259 s (own 3.678 s 11879 MB, fed 4.254 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 9640: 1948 tokens in 1 chunks, kv rows 0, request 0.044 s
+chunk 0 at 9640 T 1948: forward 9.919 s (ple 0.892 pre 4.715 route 0.538 advise 0.001 routed 0.042, gpu 3.909 + 1.968), send 0.075 s; slabs: wait 3.711 s, reads 4.337 s (own 3.672 s 11879 MB, fed 4.335 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 1225 tokens in 1 chunks, kv rows 0, request 0.041 s
+chunk 0 at 0 T 1225: forward 6.776 s (ple 0.560 pre 2.196 route 0.337 advise 0.001 routed 0.033, gpu 1.836 + 1.537), send 0.088 s; slabs: wait 3.640 s, reads 4.116 s (own 3.639 s 11879 MB, fed 4.113 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 1225: 719 tokens in 1 chunks, kv rows 0, request 0.042 s
+chunk 0 at 1225 T 719: forward 5.900 s (ple 0.266 pre 1.563 route 0.203 advise 0.001 routed 0.024, gpu 1.294 + 1.117), send 0.064 s; slabs: wait 3.837 s, reads 4.231 s (own 3.608 s 11879 MB, fed 4.230 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 1944: 1583 tokens in 1 chunks, kv rows 0, request 0.041 s
+chunk 0 at 1944 T 1583: forward 7.530 s (ple 0.450 pre 2.982 route 0.432 advise 0.001 routed 0.037, gpu 2.330 + 1.712), send 0.072 s; slabs: wait 3.616 s, reads 4.161 s (own 3.666 s 11879 MB, fed 4.158 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 3527: 2021 tokens in 1 chunks, kv rows 0, request 0.042 s
+chunk 0 at 3527 T 2021: forward 8.827 s (ple 0.838 pre 3.861 route 0.564 advise 0.001 routed 0.043, gpu 3.113 + 2.027), send 0.084 s; slabs: wait 3.504 s, reads 4.153 s (own 3.674 s 11879 MB, fed 4.151 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 5548: 2130 tokens in 2 chunks, kv rows 0, request 0.041 s
+chunk 0 at 5548 T 2048: forward 9.225 s (ple 0.703 pre 4.298 route 0.572 advise 0.001 routed 0.047, gpu 3.332 + 2.037), send 0.025 s; slabs: wait 3.565 s, reads 4.226 s (own 3.666 s 11879 MB, fed 4.226 s 17095 MB)
+chunk 1 at 7596 T 82: forward 5.083 s (ple 0.009 pre 0.717 route 0.034 advise 0.000 routed 0.012, gpu 0.518 + 0.530), send 0.062 s; slabs: wait 4.306 s, reads 4.572 s (own 3.619 s 11879 MB, fed 4.572 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 7678: 1962 tokens in 1 chunks, kv rows 0, request 0.043 s
+chunk 0 at 7678 T 1962: forward 9.377 s (ple 0.761 pre 4.409 route 0.540 advise 0.001 routed 0.042, gpu 3.603 + 1.978), send 0.106 s; slabs: wait 3.611 s, reads 4.240 s (own 3.667 s 11879 MB, fed 4.240 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 9640: 1948 tokens in 1 chunks, kv rows 0, request 0.040 s
+chunk 0 at 9640 T 1948: forward 9.879 s (ple 0.886 pre 4.732 route 0.537 advise 0.001 routed 0.042, gpu 3.938 + 1.977), send 0.085 s; slabs: wait 3.662 s, reads 4.309 s (own 3.677 s 11879 MB, fed 4.309 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 1225 tokens in 1 chunks, kv rows 0, request 0.043 s
+chunk 0 at 0 T 1225: forward 6.841 s (ple 0.557 pre 2.206 route 0.336 advise 0.001 routed 0.033, gpu 1.861 + 1.540), send 0.088 s; slabs: wait 3.699 s, reads 4.177 s (own 3.643 s 11879 MB, fed 4.175 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 1225: 719 tokens in 1 chunks, kv rows 0, request 0.040 s
+chunk 0 at 1225 T 719: forward 5.816 s (ple 0.266 pre 1.563 route 0.202 advise 0.001 routed 0.024, gpu 1.300 + 1.116), send 0.058 s; slabs: wait 3.754 s, reads 4.134 s (own 3.603 s 11879 MB, fed 4.133 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 1944: 1583 tokens in 1 chunks, kv rows 0, request 0.040 s
+chunk 0 at 1944 T 1583: forward 7.497 s (ple 0.445 pre 2.974 route 0.431 advise 0.001 routed 0.037, gpu 2.307 + 1.710), send 0.072 s; slabs: wait 3.597 s, reads 4.145 s (own 3.667 s 11879 MB, fed 4.144 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 3527: 2021 tokens in 1 chunks, kv rows 0, request 0.041 s
+chunk 0 at 3527 T 2021: forward 8.801 s (ple 0.778 pre 3.863 route 0.566 advise 0.001 routed 0.043, gpu 3.093 + 2.031), send 0.077 s; slabs: wait 3.531 s, reads 4.182 s (own 3.668 s 11879 MB, fed 4.180 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 5548: 2130 tokens in 2 chunks, kv rows 0, request 0.045 s
+chunk 0 at 5548 T 2048: forward 9.214 s (ple 0.708 pre 4.289 route 0.573 advise 0.001 routed 0.046, gpu 3.345 + 2.040), send 0.025 s; slabs: wait 3.561 s, reads 4.232 s (own 3.655 s 11879 MB, fed 4.230 s 17095 MB)
+chunk 1 at 7596 T 82: forward 5.066 s (ple 0.009 pre 0.712 route 0.034 advise 0.000 routed 0.010, gpu 0.522 + 0.533), send 0.061 s; slabs: wait 4.298 s, reads 4.559 s (own 3.613 s 11879 MB, fed 4.559 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 7678: 1962 tokens in 1 chunks, kv rows 0, request 0.042 s
+chunk 0 at 7678 T 1962: forward 9.436 s (ple 0.768 pre 4.392 route 0.543 advise 0.001 routed 0.041, gpu 3.578 + 1.979), send 0.078 s; slabs: wait 3.676 s, reads 4.326 s (own 3.668 s 11879 MB, fed 4.326 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 9640: 1948 tokens in 1 chunks, kv rows 0, request 0.043 s
+chunk 0 at 9640 T 1948: forward 9.976 s (ple 0.882 pre 4.745 route 0.535 advise 0.001 routed 0.042, gpu 3.922 + 1.974), send 0.083 s; slabs: wait 3.752 s, reads 4.385 s (own 3.708 s 11879 MB, fed 4.370 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 1225 tokens in 1 chunks, kv rows 0, request 0.041 s
+chunk 0 at 0 T 1225: forward 6.875 s (ple 0.556 pre 2.208 route 0.336 advise 0.001 routed 0.034, gpu 1.847 + 1.536), send 0.089 s; slabs: wait 3.730 s, reads 4.206 s (own 3.665 s 11879 MB, fed 4.203 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 1225: 719 tokens in 1 chunks, kv rows 0, request 0.042 s
+chunk 0 at 1225 T 719: forward 5.730 s (ple 0.284 pre 1.468 route 0.204 advise 0.001 routed 0.024, gpu 1.184 + 1.122), send 0.058 s; slabs: wait 3.743 s, reads 4.123 s (own 3.622 s 11879 MB, fed 4.123 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 1944: 1583 tokens in 1 chunks, kv rows 0, request 0.041 s
+chunk 0 at 1944 T 1583: forward 7.621 s (ple 0.545 pre 2.977 route 0.432 advise 0.001 routed 0.037, gpu 2.325 + 1.714), send 0.079 s; slabs: wait 3.618 s, reads 4.162 s (own 3.652 s 11879 MB, fed 4.159 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 3527: 2021 tokens in 1 chunks, kv rows 0, request 0.042 s
+chunk 0 at 3527 T 2021: forward 9.052 s (ple 0.872 pre 3.879 route 0.565 advise 0.001 routed 0.043, gpu 3.115 + 2.025), send 0.088 s; slabs: wait 3.673 s, reads 4.323 s (own 3.673 s 11879 MB, fed 4.321 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 5548: 2130 tokens in 2 chunks, kv rows 0, request 0.045 s
+chunk 0 at 5548 T 2048: forward 9.234 s (ple 0.704 pre 4.298 route 0.564 advise 0.001 routed 0.047, gpu 3.353 + 2.026), send 0.026 s; slabs: wait 3.585 s, reads 4.232 s (own 3.663 s 11879 MB, fed 4.232 s 17095 MB)
+chunk 1 at 7596 T 82: forward 5.022 s (ple 0.106 pre 0.682 route 0.031 advise 0.000 routed 0.012, gpu 0.494 + 0.530), send 0.055 s; slabs: wait 4.187 s, reads 4.445 s (own 3.618 s 11879 MB, fed 4.444 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 7678: 1962 tokens in 1 chunks, kv rows 0, request 0.029 s
+chunk 0 at 7678 T 1962: forward 9.446 s (ple 0.772 pre 4.397 route 0.538 advise 0.001 routed 0.042, gpu 3.625 + 1.965), send 0.077 s; slabs: wait 3.682 s, reads 4.308 s (own 3.667 s 11879 MB, fed 4.307 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 9640: 1948 tokens in 1 chunks, kv rows 0, request 0.042 s
+chunk 0 at 9640 T 1948: forward 9.948 s (ple 0.887 pre 4.786 route 0.539 advise 0.001 routed 0.042, gpu 3.882 + 1.982), send 0.090 s; slabs: wait 3.674 s, reads 4.301 s (own 3.659 s 11879 MB, fed 4.301 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended
+connected (feed)
+round k 46 at 0: 1225 tokens in 1 chunks, kv rows 0, request 0.042 s
+chunk 0 at 0 T 1225: forward 6.896 s (ple 0.582 pre 2.212 route 0.332 advise 0.001 routed 0.033, gpu 1.849 + 1.536), send 0.099 s; slabs: wait 3.727 s, reads 4.198 s (own 3.838 s 11879 MB, fed 4.163 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 1225: 719 tokens in 1 chunks, kv rows 0, request 0.041 s
+chunk 0 at 1225 T 719: forward 5.895 s (ple 0.293 pre 1.563 route 0.203 advise 0.001 routed 0.024, gpu 1.297 + 1.117), send 0.056 s; slabs: wait 3.808 s, reads 4.187 s (own 3.613 s 11879 MB, fed 4.186 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 1944: 1583 tokens in 1 chunks, kv rows 0, request 0.042 s
+chunk 0 at 1944 T 1583: forward 7.589 s (ple 0.553 pre 2.917 route 0.433 advise 0.001 routed 0.038, gpu 2.260 + 1.718), send 0.087 s; slabs: wait 3.636 s, reads 4.181 s (own 3.674 s 11879 MB, fed 4.180 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 3527: 2021 tokens in 1 chunks, kv rows 0, request 0.042 s
+chunk 0 at 3527 T 2021: forward 8.923 s (ple 0.869 pre 3.884 route 0.559 advise 0.001 routed 0.043, gpu 3.104 + 2.030), send 0.080 s; slabs: wait 3.549 s, reads 4.195 s (own 3.693 s 11879 MB, fed 4.193 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 5548: 2130 tokens in 2 chunks, kv rows 0, request 0.044 s
+chunk 0 at 5548 T 2048: forward 9.231 s (ple 0.713 pre 4.315 route 0.570 advise 0.001 routed 0.047, gpu 3.363 + 2.046), send 0.025 s; slabs: wait 3.550 s, reads 4.208 s (own 3.656 s 11879 MB, fed 4.207 s 17095 MB)
+chunk 1 at 7596 T 82: forward 5.043 s (ple 0.007 pre 0.743 route 0.034 advise 0.000 routed 0.012, gpu 0.533 + 0.532), send 0.054 s; slabs: wait 4.243 s, reads 4.502 s (own 3.837 s 11879 MB, fed 4.490 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 7678: 1962 tokens in 1 chunks, kv rows 0, request 0.042 s
+chunk 0 at 7678 T 1962: forward 9.537 s (ple 0.788 pre 4.416 route 0.545 advise 0.001 routed 0.041, gpu 3.622 + 1.977), send 0.076 s; slabs: wait 3.729 s, reads 4.362 s (own 3.669 s 11879 MB, fed 4.360 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+round k 46 at 9640: 1948 tokens in 1 chunks, kv rows 0, request 0.041 s
+chunk 0 at 9640 T 1948: forward 9.962 s (ple 0.882 pre 4.739 route 0.535 advise 0.001 routed 0.042, gpu 3.918 + 1.974), send 0.076 s; slabs: wait 3.745 s, reads 4.381 s (own 3.671 s 11879 MB, fed 4.379 s 17095 MB)
+memory GB after the round: metal allocated 10.64, fixed per-batch 0.02, attnScores+selection 0.00, idxDots+selAny+selList 0.00, hidden + mtp 0.08, P1 (nax lists, half x / mid, dense half) 0.19, logits 0.00, KV + indexer keys 0.51, GDN hist + state 0.11, dense views (resident) 8.09, expert views (15360) 8.09
+connection ended

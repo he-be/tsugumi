@@ -1,0 +1,39 @@
+15:01:53
+System-wide memory free percentage: 84%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   151317.
+Pages active:                                 617186.
+Pages inactive:                               107737.
+Pages speculative:                              1223.
+Pages throttled:                                   0.
+Pages wired down:                             120597.
+Pages purgeable:                                  91.
+"Translation faults":                      680152880.
+Pages copy-on-write:                       115061249.
+Pages zero filled:                         500179419.
+Pages reactivated:                         559697581.
+Pages purged:                                3126687.
+File-backed pages:                             96943.
+Anonymous pages:                              629203.
+Pages stored in compressor:                    28210.
+Pages occupied by compressor:                  13019.
+Decompressions:                            120964453.
+Compressions:                              144060693.
+Pageins:                                  1805726011.
+Pageouts:                                      22032.
+Swapins:                                      552942.
+Swapouts:                                     823947.
+Pages tagged:                                  66200.
+Pages tagged resident:                         60303.
+Pages tagged compressed:                        5897.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2783.
+Pages tag-storage free:                        19700.
+Pages tag-storage non-tag pageable:            10085.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     913920.
+Tagged compressions:                         2204483.
+Tagged decompressions:                       2124234.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  429.30 73229646 30700401.05    76.38 19828110 1478888.95 

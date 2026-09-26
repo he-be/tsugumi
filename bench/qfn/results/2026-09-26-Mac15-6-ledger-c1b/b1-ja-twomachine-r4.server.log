@@ -1,0 +1,9 @@
+TsugumiServer listening at http://127.0.0.1:8093 loading model=gemma-4-26b-a4b-it
+TsugumiServer ready at http://127.0.0.1:8093 model=gemma-4-26b-a4b-it family=qwen4exp context=32768 slots=32 expert_io=mmap mtp=2 reasoning_budget=-1 reasoning_format=auto
+[2026-09-26T06:28:27Z] request chatcmpl-3c6fae575380468cacc6f4e5730c0390 accepted streaming=false thinking=off
+[2026-09-26T06:28:27Z] request chatcmpl-3c6fae575380468cacc6f4e5730c0390 prepared prompt=2316
+[2026-09-26T06:28:27Z] request chatcmpl-3c6fae575380468cacc6f4e5730c0390 generating
+[2026-09-26T06:28:27Z] prompt cache qwen38 miss agreed=0 prompt=2316 held=0 take=[2307, 2315] checkpoints=[]
+[2026-09-26T06:28:56Z] prompt cache qwen38 took=[] capture_ms=0 held=[] kv=2316
+[2026-09-26T06:28:56Z] request chatcmpl-3c6fae575380468cacc6f4e5730c0390 completed in 28.531s prompt=2316 cached=0 completion=1 finish=length prompt_n=2316 prompt_ms=28506.6 mtp=2 rounds=0 accept=0.000 approx="sampling/official-override: temperature=1.0→0.7 top_k=none→20 top_p=none→0.8"
+GUARD: exit 0, Swapouts delta peak 0 pages, window peak 0 pages, Swapins +0 pages

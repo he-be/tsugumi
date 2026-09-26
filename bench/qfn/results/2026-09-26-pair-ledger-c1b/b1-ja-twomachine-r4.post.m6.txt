@@ -1,0 +1,39 @@
+14:54:21
+System-wide memory free percentage: 84%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   153087.
+Pages active:                                 624731.
+Pages inactive:                               101316.
+Pages speculative:                               157.
+Pages throttled:                                   0.
+Pages wired down:                             120443.
+Pages purgeable:                                2865.
+"Translation faults":                      678675993.
+Pages copy-on-write:                       114883305.
+Pages zero filled:                         498224004.
+Pages reactivated:                         552682266.
+Pages purged:                                3105710.
+File-backed pages:                             85468.
+Anonymous pages:                              640736.
+Pages stored in compressor:                    28043.
+Pages occupied by compressor:                  11345.
+Decompressions:                            119514969.
+Compressions:                              142152343.
+Pageins:                                  1791155994.
+Pageouts:                                      21978.
+Swapins:                                      552832.
+Swapouts:                                     823947.
+Pages tagged:                                  66004.
+Pages tagged resident:                         59416.
+Pages tagged compressed:                        6588.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2777.
+Pages tag-storage free:                        20693.
+Pages tag-storage non-tag pageable:             9148.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1046016.
+Tagged compressions:                         2184605.
+Tagged decompressions:                       2103674.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  428.86 72705634 30450026.89    77.22 19546029 1473992.03 

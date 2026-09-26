@@ -1,0 +1,39 @@
+15:01:32
+System-wide memory free percentage: 84%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   150631.
+Pages active:                                 629940.
+Pages inactive:                                95540.
+Pages speculative:                               404.
+Pages throttled:                                   0.
+Pages wired down:                             120753.
+Pages purgeable:                                3507.
+"Translation faults":                      680112590.
+Pages copy-on-write:                       115052842.
+Pages zero filled:                         500172259.
+Pages reactivated:                         559697581.
+Pages purged:                                3126547.
+File-backed pages:                             95815.
+Anonymous pages:                              630069.
+Pages stored in compressor:                    30529.
+Pages occupied by compressor:                  13811.
+Decompressions:                            120962017.
+Compressions:                              144060693.
+Pageins:                                  1805725184.
+Pageouts:                                      22032.
+Swapins:                                      552926.
+Swapouts:                                     823947.
+Pages tagged:                                  66100.
+Pages tagged resident:                         59352.
+Pages tagged compressed:                        6748.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2757.
+Pages tag-storage free:                        19889.
+Pages tag-storage non-tag pageable:             9896.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1089024.
+Tagged compressions:                         2204483.
+Tagged decompressions:                       2123384.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  429.30 73229263 30700392.02    76.38 19828110 1478888.95 

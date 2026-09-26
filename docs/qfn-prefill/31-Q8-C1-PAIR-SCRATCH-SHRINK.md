@@ -5,6 +5,7 @@
 `serve.m6.log` (ラウンド後の `memory GB after the round`)、`serve.m6.guard.txt` (M6 の wired / file / compressor GB と Swapouts、2 秒ごと)、`b2-rN.rounds.jsonl`。
 
 **この文書は変更の理由と形だけ。秒は別セッションで測る (§3)。**
+**→ 測定は [32](32-Q8-C1-CUT-COPY-LEAK.md)。スクラッチは縮んだが、M6 には切れ目の写しの解放漏れ (autorelease) も残っていて、それも直した。§0 の 4 (既定に入れていない) は 32 で既定に入れた。**
 
 ## 0. 結論
 

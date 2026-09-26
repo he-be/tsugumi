@@ -1,0 +1,39 @@
+14:42:51
+System-wide memory free percentage: 26%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    92385.
+Pages active:                                 100187.
+Pages inactive:                                82282.
+Pages speculative:                             24506.
+Pages throttled:                                   0.
+Pages wired down:                             709377.
+Pages purgeable:                                2124.
+"Translation faults":                      676188031.
+Pages copy-on-write:                       114611230.
+Pages zero filled:                         494962407.
+Pages reactivated:                         540982625.
+Pages purged:                                3063587.
+File-backed pages:                            174352.
+Anonymous pages:                               32623.
+Pages stored in compressor:                     6100.
+Pages occupied by compressor:                   2342.
+Decompressions:                            117094370.
+Compressions:                              138957068.
+Pageins:                                  1767321589.
+Pageouts:                                      21875.
+Swapins:                                      552676.
+Swapouts:                                     823947.
+Pages tagged:                                  67643.
+Pages tagged resident:                         64020.
+Pages tagged compressed:                        3623.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2868.
+Pages tag-storage free:                        23209.
+Pages tag-storage non-tag pageable:             6688.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     475136.
+Tagged compressions:                         2145350.
+Tagged decompressions:                       2067401.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  428.13 71851355 30040417.30    78.74 19060048 1465585.49 

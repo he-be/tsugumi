@@ -20,7 +20,7 @@ QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
 
 | | 値 | 出所 |
 | --- | --- | --- |
-| **台帳** | 単体: 本文 1 (自然文 5 本) 28.384〜30.540 s、本文 2 (記録の再生 1 ターン) 156.233 s (Q2 の後)。閾値 3.06 s | [06](06-LEDGER.md)、[13](13-Q0-BASELINE.md)、[14](14-Q2-PLE-PREFETCH.md) |
+| **台帳** | 単体: 本文 1 (自然文 5 本) 28.416〜30.530 s、本文 2 (記録の再生 1 ターン) 141.854 s。2 機 (A k = 46): 本文 1 14.821〜15.323 s、本文 2 82.587 s (Q8 C1 の後、ledger-c1b)。閾値 3.06 s | [06](06-LEDGER.md)、[13](13-Q0-BASELINE.md)、[14](14-Q2-PLE-PREFETCH.md)、[32](32-Q8-C1-CUT-COPY-LEAK.md) |
 | MBP 単体の prefill (旧文書、`bench/qfn/results/` の証拠なし) | ベンチ 32K で 336.5 s (n = 1)。アプリの 1 ラウンドは prefill 秒 ≈ 6.20 + 新規 ÷ 89.6 (83 ラウンドの回帰) | [qwen38/23](../qwen38/23-KV-Q8-32K.md)、[qwen38/42 §1-1](../qwen38/42-KVA-SPEED-ON-APP-ROUND-PLAN.md)、[03 §3](03-FACTS.md) |
 | チャンク 2048 の 1 本の中身 (MBP、8K ベンチ) | 20〜22 s = pre-router 6.4〜7.2 + route 6.3〜6.5 (pread 約 5、top-10 約 1.3) + routed 6.8〜6.9 + PLE 0.1〜2.2。**GPU 11.5〜12.2 s と SSD 約 5 s が直列** | [qwen38/08 §4](../qwen38/08-ROUTED-MIXED.md)、[03 §3](03-FACTS.md) |
 | M6 で QFN を動かした実測 | 今のコードで 4K を Swapouts なしで通した。GPU の秒は MBP とほぼ同じで、SSD と PLE が長い | [10 §1.2](10-Q1-SPLIT-DECISION.md) |
@@ -37,7 +37,7 @@ QFN では当てはまらない** ([01 §1](01-ROLES.md)、判断待ち)。
 | **Q5** 機内で読みと GPU を重ねる | 次の層の expert を固定の置き場 (2 層分) に `F_NOCACHE` で読む。**RAM の条件付き** | **M6 側は A に入れる ([21](21-Q5-M6-OVERLAP.md)、ユーザーの判断)**。k 48・送り 0.59 の M6 のチャンク 6.301 → 3.829 s、1 ターン (導出) 529.9 → 322.5 s。Swapouts 0、wired 14.34 GB。残りは非常駐層の読みの待ち。MBP 側は判断待ち 3 (k 48 なら対象なし) |
 | **Q6** A を作り、正しさと秒 | M6 が層 0〜k−1 (P1・常駐 10 層・置き場 2・送り 0.59)、MBP が層 k〜47・head・MTP・decode (P6、[22](22-Q6-P6-DECODE-PLACEMENT.md)) | **作った、k 46 を既定 ([27](27-Q6-A-BUILT.md))**。正しさは幅に入った。本文 2 は同じ commit の単体 158.788 s → 104.128 s、本文 1 は 28.6〜30.9 → 14.7〜17.0 s。2 機は `Q38_PAIR=<M6>` で開く。M6 のチャンクは読み律速 (置き場の待ち 3.5〜4.1 s) |
 | **Q7** decode と会話の機能 | 2 機で decode が単体より遅くならない。MTP・チェックポイント・prompt cache・ツール呼び出しが通る | **測った ([28](28-Q7-DECODE-AND-LOOP.md)、n = 2)**。チェックは progress 以外通り、受理率は同じ幅。decode の 1 ステップの中央値は 2 機の 4 セットとも単体より長い (MTP on 232.2〜234.3 対 221.3〜230.4 ms) |
-| **Q8** 小さいラウンドの固定分 | 1 ラウンド 6.2 s の固定分と 8 トークンのチャンク 2.5 s | **在処は末尾のチャンク ([29](29-Q8-FIXED-COST-WHERE.md))、C1 を候補で作った ([30](30-Q8-C1-CUT-IN-CHUNK.md))**。単体の本文 2 は 157.019 → 141.555 s。2 機は M6 がスワップして 3 本中 2 本が止まり、既定に入れていない。原因は末尾チャンクが消えて縮まなくなった M6 のスクラッチで、serve がラウンドの終わりで縮める形に変えた ([31](31-Q8-C1-PAIR-SCRATCH-SHRINK.md)、未測定) |
+| **Q8** 小さいラウンドの固定分 | 1 ラウンド 6.2 s の固定分と 8 トークンのチャンク 2.5 s | **在処は末尾のチャンク ([29](29-Q8-FIXED-COST-WHERE.md))、C1 を候補で作った ([30](30-Q8-C1-CUT-IN-CHUNK.md))**。単体の本文 2 は 157.019 → 141.555 s。2 機の M6 のスワップは、縮まなくなったスクラッチ ([31](31-Q8-C1-PAIR-SCRATCH-SHRINK.md)) と、切れ目の写しの解放漏れ (autorelease、[32](32-Q8-C1-CUT-COPY-LEAK.md)) を直して消えた。**C1 を既定に入れた** (`Q38_CUT_INCHUNK=0` で切る)。台帳 ledger-c1b: 単体 141.854 s、2 機 82.587 s。切片 3 s の合格は未判定 |
 
 Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q2 → Q1 (済み) → Q4 の腕 b (模擬は済み、[20](20-Q4B-EXPERT-FEED.md)) → Q5 の M6 側 (A に入れる、[21](21-Q5-M6-OVERLAP.md)) → P6 (済み、[24](24-DECODE-SPLIT-RESULT.md)・[26](26-M6-T2-TRUNK-RESULT.md)) → Q6 (済み、[27](27-Q6-A-BUILT.md)) → Q7 (測った、[28](28-Q7-DECODE-AND-LOOP.md)) → **Q8** ([19](19-AFTER-Q1-PLAN.md)、20 §3)。Q3 は Q6 と並行可。Q5 の MBP 側は判断待ち 3 で、k 48 が通れば対象が無い。判断待ち 1・2 と `bench/qfn/` の 2 機の形は Q6 の台帳の列を書くまでに要る。
 
@@ -72,7 +72,8 @@ Gate の測り方と合否は [04](04-GATES.md)。順は Q0 → Q2 → Q1 (済�
 | [18-Q1-F2-F3-PAIR.md](18-Q1-F2-F3-PAIR.md) | Q1 F2・F3: A と B の模擬の壁時計、12 §3 の判定 |
 | [19-AFTER-Q1-PLAN.md](19-AFTER-Q1-PLAN.md) | **Q1 の後の手順**: 待ちとチャンク幅の答え、Q4 の腕 b (MBP の SSD から TB4 で送る)、TB ポートの対称性、Q6 の k の規則 |
 | [20-Q4B-EXPERT-FEED.md](20-Q4B-EXPERT-FEED.md) | Q4 の腕 b: TB ポートの確認と、MBP の内蔵 SSD から TB4 で送る模擬 (比 0.5 / 0.59) |
-| [31-Q8-C1-PAIR-SCRATCH-SHRINK.md](31-Q8-C1-PAIR-SCRATCH-SHRINK.md) | **Q8 C1 の 2 機**: M6 が溢れた原因 (写しではなくバッチのスクラッチ) と、serve がラウンドの終わりで縮める変更。測り方は §3、未測定 |
+| [31-Q8-C1-PAIR-SCRATCH-SHRINK.md](31-Q8-C1-PAIR-SCRATCH-SHRINK.md) | **Q8 C1 の 2 機**: M6 が溢れた原因の 1 つ (バッチのスクラッチ) と、serve がラウンドの終わりで縮める変更。測定は 32 |
+| [32-Q8-C1-CUT-COPY-LEAK.md](32-Q8-C1-CUT-COPY-LEAK.md) | **Q8 C1**: 31 §3 の測定、C1 の既定化、M6 で切れ目の写しが解放されなかったバグ (autorelease) の修正と回帰検査 `--qwen38-cut-leak`。台帳 ledger-c1b |
 | [30-Q8-C1-CUT-IN-CHUNK.md](30-Q8-C1-CUT-IN-CHUNK.md) | **Q8 C1**: チャンクを切らずにチェックポイント (`Q38_CUT_INCHUNK=1`)。単体・2 機の秒と正しさ、2 機の M6 のスワップ |
 | [29-Q8-FIXED-COST-WHERE.md](29-Q8-FIXED-COST-WHERE.md) | **Q8 の在処**: チャンクの大きさ別の段の秒と読み、ラウンドの回帰 (末尾のチャンクあり / なし)、候補 C1 (チャンクを切らずにチェックポイント) |
 | [28-Q7-DECODE-AND-LOOP.md](28-Q7-DECODE-AND-LOOP.md) | **Q7 の結果**: Offline 5 問を実際に生成、単体 / 2 機 k 46 × MTP on/off、チェック・受理率・decode の 1 ステップと読み・受け渡しの秒 |

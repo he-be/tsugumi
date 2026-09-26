@@ -1,0 +1,28 @@
+14:51:21
+System-wide memory free percentage: 64%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                              134420.
+Pages active:                            298923.
+Pages inactive:                          210418.
+Pages speculative:                        88126.
+Pages throttled:                              0.
+Pages wired down:                        257760.
+Pages purgeable:                           5350.
+"Translation faults":                1974313782.
+Pages copy-on-write:                  110076429.
+Pages zero filled:                   1263606294.
+Pages reactivated:                   1257090406.
+Pages purged:                          30075235.
+File-backed pages:                       503462.
+Anonymous pages:                          94005.
+Pages stored in compressor:              465050.
+Pages occupied by compressor:            136661.
+Decompressions:                       334146257.
+Compressions:                         410416696.
+Pageins:                             3523835439.
+Pageouts:                               1155012.
+Swapins:                                1889979.
+Swapouts:                               3308359.
+              disk0 
+    KB/t xfrs   MB 
+  288.99 225943216 63765250.90 

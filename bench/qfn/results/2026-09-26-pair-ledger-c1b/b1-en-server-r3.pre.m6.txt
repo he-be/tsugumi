@@ -1,0 +1,39 @@
+14:50:03
+System-wide memory free percentage: 83%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   147748.
+Pages active:                                 609949.
+Pages inactive:                               118494.
+Pages speculative:                               139.
+Pages throttled:                                   0.
+Pages wired down:                             124624.
+Pages purgeable:                                4437.
+"Translation faults":                      677772197.
+Pages copy-on-write:                       114782984.
+Pages zero filled:                         496989386.
+Pages reactivated:                         548075427.
+Pages purged:                                3087504.
+File-backed pages:                             87575.
+Anonymous pages:                              641007.
+Pages stored in compressor:                    23389.
+Pages occupied by compressor:                  10125.
+Decompressions:                            118581399.
+Compressions:                              140933506.
+Pageins:                                  1781885548.
+Pageouts:                                      21941.
+Swapins:                                      552760.
+Swapouts:                                     823947.
+Pages tagged:                                  66038.
+Pages tagged resident:                         59585.
+Pages tagged compressed:                        6453.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 2764.
+Pages tag-storage free:                        21762.
+Pages tag-storage non-tag pageable:             8080.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    1022080.
+Tagged compressions:                         2169428.
+Tagged decompressions:                       2088638.
+              disk0               disk4 
+    KB/t xfrs   MB     KB/t xfrs   MB 
+  428.57 72374394 30290762.52    77.80 19356651 1470689.15 
