@@ -1,0 +1,31 @@
+[2026-09-26T11:41:33Z] prompt cache qwen38 miss agreed=0 prompt=1815 held=0 take=[1806, 1814] checkpoints=[]
+Qwen3.8 pair: pair link: connect 169.254.13.135:5310: No route to host; this round runs here alone
+[2026-09-26T11:42:00Z] prompt cache qwen38 took=[1806, 1814, 1815] capture_ms=167 held=[1806, 1814, 1815] kv=1853
+[2026-09-26T11:42:02Z] prompt cache qwen38 live(1853) agreed=1853 prompt=2790 held=1853 take=[2789] checkpoints=[1806, 1814, 1815]
+[2026-09-26T11:42:31Z] prompt cache qwen38 took=[2789, 2790, 2833] capture_ms=215 held=[2789, 2790, 2833] kv=2879
+[2026-09-26T11:42:32Z] prompt cache qwen38 restore(2789) agreed=2789 prompt=5954 held=2879 take=[5953] checkpoints=[2789] restore_ms=35
+[2026-09-26T11:42:32Z] prompt cache qwen38 diverged at=2789 live=2879 held=[248045, 74455, 198, 248068, 271, 248069, 271, 248058, 198, 27, 1628, 28] "<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=" prompt=[248045, 74455, 198, 248068, 271, 248069, 1358, 248058, 198, 27, 1628, 28] "<|im_start|>assistant\n<think>\n\n</think>\n\n\n<tool_call>\n<function="
+[2026-09-26T11:44:07Z] prompt cache qwen38 took=[5953] capture_ms=81 held=[2789, 5953] kv=6404
+[2026-09-26T11:44:28Z] prompt cache qwen38 miss agreed=1815 prompt=1815 held=0 take=[1806, 1814] checkpoints=[]
+[2026-09-26T11:44:47Z] prompt cache qwen38 took=[1806, 1814, 1815] capture_ms=154 held=[1806, 1814, 1815] kv=1853
+[2026-09-26T11:44:49Z] prompt cache qwen38 live(1853) agreed=1853 prompt=2790 held=1853 take=[2789] checkpoints=[1806, 1814, 1815]
+[2026-09-26T11:45:11Z] prompt cache qwen38 took=[2789, 2790, 2837] capture_ms=190 held=[2789, 2790, 2837] kv=2876
+[2026-09-26T11:45:12Z] prompt cache qwen38 restore(2789) agreed=2789 prompt=5489 held=2876 take=[5488] checkpoints=[2789] restore_ms=34
+[2026-09-26T11:45:12Z] prompt cache qwen38 diverged at=2789 live=2876 held=[248045, 74455, 198, 248068, 271, 248069, 271, 248058, 198, 27, 1628, 28] "<|im_start|>assistant\n<think>\n\n</think>\n\n<tool_call>\n<function=" prompt=[248045, 74455, 198, 248068, 271, 248069, 1358, 248058, 198, 27, 1628, 28] "<|im_start|>assistant\n<think>\n\n</think>\n\n\n<tool_call>\n<function="
+[2026-09-26T11:45:39Z] prompt cache qwen38 took=[5488, 5489] capture_ms=51 held=[2789, 5488, 5489] kv=5541
+[2026-09-26T11:45:39Z] prompt cache qwen38 live(5541) agreed=5541 prompt=6231 held=5541 take=[6230] checkpoints=[2789, 5488, 5489]
+[2026-09-26T11:46:59Z] prompt cache qwen38 took=[6230] capture_ms=25 held=[6230] kv=6764
+[2026-09-26T11:48:04Z] prompt cache qwen38 miss agreed=1797 prompt=1816 held=0 take=[1807, 1815] checkpoints=[]
+[2026-09-26T11:48:22Z] prompt cache qwen38 took=[1807, 1815, 1816] capture_ms=112 held=[1807, 1815, 1816] kv=1851
+[2026-09-26T11:48:24Z] prompt cache qwen38 resplit spans=1 rendered=2821 prompt=2821
+[2026-09-26T11:48:24Z] prompt cache qwen38 live(1851) agreed=1851 prompt=2821 held=1851 take=[2820] checkpoints=[1807, 1815, 1816]
+[2026-09-26T11:48:40Z] prompt cache qwen38 took=[2820, 2821] capture_ms=78 held=[2820, 2821] kv=2866
+[2026-09-26T11:48:41Z] prompt cache qwen38 resplit spans=1 rendered=4668 prompt=4668
+[2026-09-26T11:48:41Z] prompt cache qwen38 live(2866) agreed=2866 prompt=4668 held=2866 take=[4667] checkpoints=[2820, 2821]
+[2026-09-26T11:49:01Z] prompt cache qwen38 took=[4667, 4668] capture_ms=112 held=[4667, 4668] kv=4720
+[2026-09-26T11:49:01Z] prompt cache qwen38 resplit spans=2 rendered=5992 prompt=5993
+[2026-09-26T11:49:01Z] prompt cache qwen38 live(4720) agreed=4720 prompt=5993 held=4720 take=[5992] checkpoints=[4667, 4668]
+[2026-09-26T11:49:23Z] prompt cache qwen38 took=[5992, 5993] capture_ms=141 held=[5992, 5993] kv=6083
+[2026-09-26T11:49:24Z] prompt cache qwen38 resplit spans=3 rendered=10606 prompt=10608
+[2026-09-26T11:49:24Z] prompt cache qwen38 live(6083) agreed=6083 prompt=10608 held=6083 take=[10607] checkpoints=[5992, 5993]
+[2026-09-26T11:51:46Z] prompt cache qwen38 took=[10607] capture_ms=32 held=[10607] kv=11532

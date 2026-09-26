@@ -77,6 +77,7 @@ Gate で残るのは Q8 の合格判定・Q7 の decode の判別・Q3 で、判
 | [19-AFTER-Q1-PLAN.md](19-AFTER-Q1-PLAN.md) | **Q1 の後の手順**: 待ちとチャンク幅の答え、Q4 の腕 b (MBP の SSD から TB4 で送る)、TB ポートの対称性、Q6 の k の規則 |
 | [20-Q4B-EXPERT-FEED.md](20-Q4B-EXPERT-FEED.md) | Q4 の腕 b: TB ポートの確認と、MBP の内蔵 SSD から TB4 で送る模擬 (比 0.5 / 0.59) |
 | [33-OPERATING-FORM-PLAN.md](33-OPERATING-FORM-PLAN.md) | **運用の形の確定 (2026-09-26) と残り作業**: MBP が UI、M6 が居れば 2 機・居なければ単体、ボタンで明示切り替え。ボタンのために作るもの 6 件と、この判断で変わらない Gate (Q8・Q7・Q3) |
+| [34-GUI-BUTTON-FIRST-TRIAL.md](34-GUI-BUTTON-FIRST-TRIAL.md) | **M6 ボタンを GUI で使った 1 回目 (n = 1、数字だけ)**: 3 ターン 12 ラウンド。最後のターンはプリフィル 70.4 s・decode 148.6 s。M6 の 1 チャンクは T によらず読み 4.0〜4.3 s。最初の接続は `No route to host` で単体に落ちた |
 | [31-Q8-C1-PAIR-SCRATCH-SHRINK.md](31-Q8-C1-PAIR-SCRATCH-SHRINK.md) | **Q8 C1 の 2 機**: M6 が溢れた原因の 1 つ (バッチのスクラッチ) と、serve がラウンドの終わりで縮める変更。測定は 32 |
 | [32-Q8-C1-CUT-COPY-LEAK.md](32-Q8-C1-CUT-COPY-LEAK.md) | **Q8 C1**: 31 §3 の測定、C1 の既定化、M6 で切れ目の写しが解放されなかったバグ (autorelease) の修正と回帰検査 `--qwen38-cut-leak`。台帳 ledger-c1b |
 | [30-Q8-C1-CUT-IN-CHUNK.md](30-Q8-C1-CUT-IN-CHUNK.md) | **Q8 C1**: チャンクを切らずにチェックポイント (`Q38_CUT_INCHUNK=1`)。単体・2 機の秒と正しさ、2 機の M6 のスワップ |
