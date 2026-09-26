@@ -1,0 +1,6 @@
+{"conversation":"N5-passport","delta":-37,"file":"prompts/N5-passport-r1.tokens","last":false,"recorded":1262,"recorded_calls":["wikipedia_search {\"query\":\"日本国パスポート 5年用 種類\"}"],"rendered":1225,"round":1}
+{"conversation":"N5-passport","delta":-37,"file":"prompts/N5-passport-r2.tokens","last":false,"recorded":1981,"recorded_calls":["wikipedia_page {\"title\":\"日本国旅券\"}"],"rendered":1944,"round":2}
+{"conversation":"N5-passport","delta":-37,"file":"prompts/N5-passport-r3.tokens","last":false,"recorded":3564,"recorded_calls":["wikipedia_page {\"title\":\"日本国旅券\",\"sections\":\"8,11\"}"],"rendered":3527,"round":3}
+{"conversation":"N5-passport","delta":-38,"file":"prompts/N5-passport-r4.tokens","last":false,"recorded":5586,"recorded_calls":["wikipedia_page {\"title\":\"日本国旅券\",\"sections\":\"10,12\"}"],"rendered":5548,"round":4}
+{"conversation":"N5-passport","delta":-39,"file":"prompts/N5-passport-r5.tokens","last":false,"recorded":7717,"recorded_calls":["wikipedia_page {\"title\":\"日本国旅券\",\"sections\":\"6,7\"}"],"rendered":7678,"round":5}
+{"conversation":"N5-passport","delta":-40,"file":"prompts/N5-passport-r6.tokens","last":false,"recorded":9680,"recorded_calls":["wikipedia_page {\"title\":\"日本国旅券\",\"sections\":\"4,5\"}"],"rendered":9640,"round":6}

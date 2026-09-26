@@ -1,0 +1,34 @@
+[2026-09-26T02:31:54Z] check model qwen38-flash-next-iq2 context=32768 mtp=true thinking=false network=offline rounds=6 page=6000
+[2026-09-26T02:31:56Z] check N5-passport#1 turn 1 ask: パスポートの5年のやつ、まだ作れる？
+[2026-09-26T02:31:56Z] check round 1 start: history=0 continuation=0 tools=2 choice=auto
+[2026-09-26T02:31:56Z] prompt cache qwen38 miss agreed=0 prompt=1225 held=0 take=[1216, 1224] checkpoints=[]
+[2026-09-26T02:32:06Z] prompt cache qwen38 took=[1216, 1224] capture_ms=98 held=[1216, 1224] kv=1225
+[2026-09-26T02:32:06Z] check round 2 start: history=0 continuation=2 tools=2 choice=auto
+[2026-09-26T02:32:06Z] prompt cache qwen38 live(1225) agreed=1225 prompt=1944 held=1225 take=[1943] checkpoints=[1216, 1224]
+[2026-09-26T02:32:14Z] prompt cache qwen38 took=[1943] capture_ms=47 held=[1943] kv=1944
+[2026-09-26T02:32:14Z] check round 3 start: history=0 continuation=4 tools=2 choice=auto
+[2026-09-26T02:32:14Z] prompt cache qwen38 live(1944) agreed=1944 prompt=3527 held=1944 take=[3526] checkpoints=[1943]
+[2026-09-26T02:32:24Z] prompt cache qwen38 took=[3526] capture_ms=44 held=[3526] kv=3527
+[2026-09-26T02:32:24Z] check round 4 start: history=0 continuation=6 tools=2 choice=auto
+[2026-09-26T02:32:24Z] prompt cache qwen38 live(3527) agreed=3527 prompt=5548 held=3527 take=[5547] checkpoints=[3526]
+[2026-09-26T02:32:37Z] prompt cache qwen38 took=[5547] capture_ms=37 held=[5547] kv=5548
+[2026-09-26T02:32:37Z] check round 5 start: history=0 continuation=8 tools=2 choice=auto
+[2026-09-26T02:32:37Z] prompt cache qwen38 live(5548) agreed=5548 prompt=7678 held=5548 take=[7677] checkpoints=[5547]
+[2026-09-26T02:32:53Z] prompt cache qwen38 took=[7677] capture_ms=36 held=[7677] kv=7678
+[2026-09-26T02:32:53Z] check round 6 start: history=0 continuation=10 tools=2 choice=auto
+[2026-09-26T02:32:53Z] prompt cache qwen38 live(7678) agreed=7678 prompt=9640 held=7678 take=[9639] checkpoints=[7677]
+[2026-09-26T02:33:06Z] prompt cache qwen38 took=[9639] capture_ms=40 held=[9639] kv=9640
+[2026-09-26T02:33:06Z] check round 7 start: history=0 continuation=12 tools=2 choice=none
+[2026-09-26T02:33:06Z] prompt cache qwen38 live(9640) agreed=9640 prompt=11588 held=9640 take=[11587] checkpoints=[9639]
+[2026-09-26T02:33:09Z] check N5-passport#1 turn 1 round 1: finished prompt=1225 cached=0 generated=1 shortfall=- calls=["wikipedia_search {\"query\":\"日本国パスポート 5年用 種類\"}"]
+[2026-09-26T02:33:09Z] check N5-passport#1 turn 1 round 2: finished prompt=1944 cached=1225 generated=1 shortfall=0 calls=["wikipedia_page {\"title\":\"日本国旅券\"}"]
+[2026-09-26T02:33:09Z] check N5-passport#1 turn 1 round 3: finished prompt=3527 cached=1944 generated=1 shortfall=0 calls=["wikipedia_page {\"title\":\"日本国旅券\",\"sections\":\"8,11\"}"]
+[2026-09-26T02:33:09Z] check N5-passport#1 turn 1 round 4: finished prompt=5548 cached=3527 generated=1 shortfall=0 calls=["wikipedia_page {\"title\":\"日本国旅券\",\"sections\":\"10,12\"}"]
+[2026-09-26T02:33:09Z] check N5-passport#1 turn 1 round 5: finished prompt=7678 cached=5548 generated=1 shortfall=0 calls=["wikipedia_page {\"title\":\"日本国旅券\",\"sections\":\"6,7\"}"]
+[2026-09-26T02:33:09Z] check N5-passport#1 turn 1 round 6: finished prompt=9640 cached=7678 generated=1 shortfall=0 calls=["wikipedia_page {\"title\":\"日本国旅券\",\"sections\":\"4,5\"}"]
+[2026-09-26T02:33:09Z] check N5-passport#1 turn 1 round 7: failed prompt=0 cached=0 generated=0 shortfall=9640 calls=[]
+[2026-09-26T02:33:09Z] check N5-passport#1 turn 1: 7 rounds, 73 s, FAIL answer,error
+N5-passport#1 turn 1: 7 rounds, 73 s, FAIL answer,error
+FAILURES:
+N5-passport#1 turn 1: answer, error [round 7 cached 0 of live 9640] [round 1 prefill 9.6 s: 4 events, first 0/1225 at 0.1 s, max gap 7.2 s; round 2 prefill 7.8 s: 4 events, first 1225/1944 at 0.0 s, max gap 6.2 s; round 3 prefill 10.5 s: 4 events, first 1944/3527 at 0.0 s, max gap 8.0 s; round 4 prefill 12.6 s: 4 events, first 3527/5548 at 0.1 s, max gap 9.5 s; round 5 prefill 15.5 s: 7 events, first 5548/7678 at 0.1 s, max gap 9.8 s; round 6 prefill 13.4 s: 4 events, first 7678/9640 at 0.1 s, max gap 10.3 s] error: pair link: recv: closed
+GUARD: exit 1, Swapouts delta peak 8 pages, window peak 8 pages, Swapins +8 pages
