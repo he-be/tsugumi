@@ -2280,6 +2280,12 @@ package final class Qwen38Runner {
         }
     }
 
+    /// Drops the batch scratch to the decode size (`shrinkBatch`), as the first decode step's forward does on the MBP.
+    /// The M6's pair serve calls it after each round: no decode runs there, and without the tail chunk of 1-8 tokens
+    /// (`Q38_CUT_INCHUNK`, docs/qfn-prefill/31) nothing else drops the prefill scratch (about 1.5 GB fixed plus the
+    /// attention and gemm scratch grown with the context) between rounds, and its idle pages were swapped.
+    package func shrinkBatchAfterRound() { resizeBatch(T: 1) }
+
     /// Token embeddings (BF16, host) of `tokens`, `copies` times each, into `out` (rows of e).
     private func embed(_ tokens: [Int], copies: Int, into out: MTLBuffer) throws {
         let emb = try file.tensor("token_embd.weight")

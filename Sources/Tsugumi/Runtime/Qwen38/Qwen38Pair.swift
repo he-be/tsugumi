@@ -453,6 +453,9 @@ package enum Qwen38Pair {
             pos += T
             done += T
         }
+        // The round's scratch goes back to the decode size here (the MBP's first decode step does the same); a round
+        // whose last chunk was 1-8 tokens (a checkpoint cut ending the chunk) had already shrunk it.
+        runner.shrinkBatchAfterRound()
         let mem = runner.memoryReport().filter { $0.1 > 0 }.map { String(format: "%@ %.2f", $0.0, Double($0.1) / 1e9) }
         log("memory GB after the round: " + mem.joined(separator: ", "))
     }
