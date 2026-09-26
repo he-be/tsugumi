@@ -94,6 +94,8 @@ struct Options {
     var maxRounds: Int?
     var thinking: Bool?
     var mtp: Bool?
+    /// `--pair on`: the app's M6 button (docs/qfn-prefill/33), pressed once the M6's serve is advertised.
+    var pair = false
     var endpoint: URL?
     var remoteModel: String?
     /// `--remote-direct`: `--endpoint` is a bare llama-server, not llama-swap (`RemoteInferenceClient.Routing`).
@@ -168,6 +170,7 @@ struct Options {
             case "--max-rounds": maxRounds = Int(value)
             case "--thinking": thinking = value == "on"
             case "--mtp": mtp = value == "on"
+            case "--pair": pair = value == "on"
             case "--endpoint": endpoint = URL(string: value)
             case "--remote-model": remoteModel = value
             case "--replay": replay = value
@@ -517,6 +520,15 @@ func runCheck() async -> Int32 {
     if let thinking = options.thinking { model.thinkingEnabled = thinking }
     if let mtp = options.mtp { model.runtimeOptions.mtpEnabled = mtp }
     model.networkMode = options.network
+    if options.pair {
+        model.startPairBrowsing()
+        guard await waitUntil(timeout: 10, { model.pairPeer != nil }) else {
+            logLine("--pair on: no M6 pair serve advertised within 10 s")
+            return 2
+        }
+        model.pairEnabled = true
+        logLine("pair: \(model.pairPeer!.name) at \(model.pairPeer!.address), enabled \(model.pairEnabled)")
+    }
     if let probe = options.gatherProbe, let gather = options.gather {
         return runGatherProbe(file: probe, gatherDirectory: gather, model: model, out: options.gatherProbeOut,
                               searchSpec: options.gatherSearch)
@@ -643,6 +655,13 @@ func runCheck() async -> Int32 {
                         row["decode_s"] = d.decodeSeconds
                         row["tok_s"] = d.tokensPerSecond
                         if let spec = d.speculative { row["draft"] = "\(spec.accepted)/\(spec.proposed)" }
+                        switch d.pairRound {
+                        case .pair(let k)?: row["pair"] = "k \(k)"
+                        case .fellBack(let why)?: row["pair"] = "fell back: \(why)"
+                        case .alone?: row["pair"] = "alone"
+                        case nil: break
+                        }
+                        if options.pair { row["pair_enabled_after"] = model.pairEnabled }
                     }
                     if let error = record.error { row["error"] = error }
                     let times = record.prefill.map(\.seconds)

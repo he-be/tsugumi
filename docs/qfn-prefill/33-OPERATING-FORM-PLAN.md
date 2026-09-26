@@ -49,3 +49,19 @@ M6 側は `TsugumiKernelCheck --qwen38-pair-serve <bridge0 IP> 5310` を `bench/
 - README: 判断待ち 1・2 を閉じ、運用の形を前提の段落に書いた。索引に 33 を足した。
 - [01 §1・§3](01-ROLES.md): 記録値の読み替えと常設の問いを「決まった」に書き換えた。
 - [05 §10](05-RISKS.md): 常設の問いを閉じ、「居なければ単体」を既定の形にした。
+
+## 5. ボタンの実装 (2026-09-26、commit 7272c63)
+
+§1 の #1・#2・#3・#5 を作った。#4 (M6 の serve の常駐) と #6 (M6 のビルドと配備の手順) は未着手で、serve は今も `bench/qfn/pair_serve.sh start <out>` で手で起こす。
+
+| # | 作ったもの |
+| --- | --- |
+| 1 | 相手のアドレスは生成リクエストごと (`DecodeGenerationRequest.qwen38PairAddress` → `AppGenerationRequest` → `Qwen38ServerSession.setPair`)。ロードキー (`runtimeOptions`) に入れないので切り替えで再読み込みしない。k は `Q38_PAIR_K` (既定 46) |
+| 2 | `Qwen38Engine.setPair` は設定が変わったときだけ接続を閉じる。次のラウンドは新しい接続として層 0〜k−1 の状態を最初から送る (今の再接続と同じ形)。connect に 3 秒の上限を付けた |
+| 3 | serve が bind したアドレスを持つインタフェース (bridge0) の上だけに Bonjour `_tsugumi-pair._tcp` を広告し、TXT に `ip` と `port` を載せる。アプリは NWBrowser で見る。serve は接続を 1 本ずつしか受けないので、繋いで確かめる方式にしなかった |
+| 5 | 入力欄の「M6」ボタン (Qwen3.8 のときだけ)。M6 の広告が見えるときだけ押せる。起動時は毎回オフ、広告が消えるか接続失敗で単体に落ちたらオフに戻る。直前のプリフィルが 2 機か単体か (失敗理由つき) をボタンのヘルプと Inspector の Last run に出す |
+
+確認 (ToolLoopCheck `--pair on`、2 ターン、ツールなし、`scratch/qfn-button-20260926-2034/`): 2 ターンとも `pair k 46`、2 ターン目は cached 380 で M6 に decode の 323 行を送った。
+1 回目の run は 1 ターン目の decode 中に見張りが止めた (60 秒で Swapouts +33,124 ページ、閾値 32,768)。2 回目は窓の最大 17,288 ページで完走。
+
+残る穴: ラウンドの途中で link が切れると、その生成は失敗する (M6 の serve も `exit(1)`)。単体に落ちるのはラウンドの前に繋がらなかったときだけ。
