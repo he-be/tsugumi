@@ -1,0 +1,1 @@
+/Users/mh/LLM/ref/bonsai-venv/bin/python /Users/mh/dev/tsugumi/bench/m6/results/2026-09-27-Mac18-5-bonsai-mlxpack-en-readme/prefill.py /Users/mh/LLM/ref/Ternary-Bonsai-2-27B-mlx-2bit /Users/mh/dev/tsugumi/bench/m6/results/2026-09-27-Mac18-5-bonsai-mlxpack-en-readme/prompt.txt

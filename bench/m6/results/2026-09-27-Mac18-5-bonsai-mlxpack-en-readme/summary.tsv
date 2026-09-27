@@ -1,0 +1,4 @@
+run	prompt_tok	prefill_s	pp_tok_s	load_s	peak_gb	cached_tok	exit
+1	2408	17.7643	135.6	1.601	14.438	0	0
+2	2408	14.8306	162.4	3.02	14.438	0	0
+3	2408	19.3678	124.3	3.007	14.438	0	0

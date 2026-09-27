@@ -66,7 +66,7 @@ set -- "$py" "$out/prefill.py" "$pack" "$out/prompt.txt"
 echo "$*" > "$out/command.txt"
 # mlx_vlm's prefill chunk is its generate_step default; record it from the installed source.
 dispatch=$($py -c 'import inspect, mlx_vlm; print(inspect.getsourcefile(mlx_vlm.generate))')
-step=$(grep -m1 'prefill_step_size: int = ' "$dispatch" | sed 's/.*= *//; s/,.*//')
+step=$(grep -m1 '^DEFAULT_PREFILL_STEP_SIZE *= *' "$dispatch" | sed 's/.*= *//; s/[^0-9].*//')
 { env | grep '^MLX_' || true; echo "MLX_PACK=$pack"; echo "PROMPT=${prompt#$repo/}"; echo "prefill_step_size=$step (mlx_vlm generate default, $dispatch)"; sysctl iogpu.wired_limit_mb 2>/dev/null || true; } > "$out/env.txt"
 printf 'run\tprompt_tok\tprefill_s\tpp_tok_s\tload_s\tpeak_gb\tcached_tok\texit\n' > "$out/summary.tsv"
 i=1
