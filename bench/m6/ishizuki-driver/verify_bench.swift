@@ -44,6 +44,42 @@ func time(_ body: () -> [MLXArray]) -> Double {
 }
 
 MLXRandom.seed(7)
+// FewRowQMV.applyMagic (mtp.patch): codes decoded two at a time through half2 (16 §15).
+print("magic qmv (us, max|diff| against MLX): shape / M=1 mlx, M=1 magic, M=2 few-row, M=2 magic, M=3 magic, M=1 few-row")
+var magicPerToken = (mlx1: 0.0, magic1: 0.0, few2: 0.0, magic2: 0.0)
+for (label, n, k, count) in shapes {
+  let packed = quantized(
+    (MLXRandom.normal([n, k]) * 0.02).asType(.float16), groupSize: 128, bits: 2)
+  let (w, scales, biases) = (packed.wq, packed.scales, packed.biases!)
+  eval(w, scales, biases)
+  var cells: [String] = []
+  var got: [Double] = []
+  for (m, which) in [(1, 0), (1, 1), (2, 2), (2, 1), (3, 1), (1, 2)] {
+    let xs = (0..<chain).map { _ in MLXRandom.normal([m, k]).asType(.float16) }
+    eval(xs)
+    let ref = quantizedMM(xs[0], w, scales: scales, biases: biases, transpose: true, groupSize: 128, bits: 2, mode: .affine)
+    func run(_ x: MLXArray) -> MLXArray {
+      switch which {
+      case 0: return quantizedMM(x, w, scales: scales, biases: biases, transpose: true, groupSize: 128, bits: 2, mode: .affine)
+      case 1: return FewRowQMV.applyMagic(x, w, scales: scales, biases: biases, groupSize: 128, bits: 2)!
+      default: return FewRowQMV.apply(x, w, scales: scales, biases: biases, groupSize: 128, bits: 2)!
+      }
+    }
+    let diff = abs(run(xs[0]).asType(.float32) - ref.asType(.float32)).max().item(Float.self)
+    let t = time { xs.map(run) }
+    got.append(t)
+    cells.append(String(format: "%.0f (%.3g)", t, diff))
+  }
+  magicPerToken.mlx1 += got[0] * Double(count)
+  magicPerToken.magic1 += got[1] * Double(count)
+  magicPerToken.few2 += got[2] * Double(count)
+  magicPerToken.magic2 += got[3] * Double(count)
+  print("\(label)  \(cells.joined(separator: "  "))")
+}
+print(String(format: "one backbone pass of matmuls: M=1 mlx %.1f ms, M=1 magic %.1f ms, M=2 few-row %.1f ms, M=2 magic %.1f ms",
+  magicPerToken.mlx1 / 1e3, magicPerToken.magic1 / 1e3, magicPerToken.few2 / 1e3, magicPerToken.magic2 / 1e3))
+if ProcessInfo.processInfo.environment["VB_ONLY_MAGIC"] == "1" { exit(0) }
+
 var perToken: [Int: (mlx: Double, kernel: Double, few: Double)] = [:]
 print("shape                         M   mlx us   verify us   max|diff|   few-row us   max|diff|")
 for (label, n, k, count) in shapes {

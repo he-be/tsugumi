@@ -9,8 +9,8 @@
 //      MTP head (whole-block restore and partial keep of a rejected block), the server's official
 //      thinking-off sampling (0.7 / 20 / 0.8 / 0.0 / presence 1.5), and reports tok/s and the
 //      acceptance.
-// Steps 1 and 2 run twice: with FewRowQMV (mtp.patch) off and on, after a check that the two
-// give the same verify logits.
+// Step 1 runs with MLX, FewRowQMV and its half2 variant (mtp.patch) for the two-row products,
+// after a check of their verify logits against MLX. Step 2 (split) is defined but not run.
 //
 //   ishizuki-decode-probe <pack> <prompt.txt> [reps 10] [gen 300]
 //
@@ -100,51 +100,51 @@ func split(_ m: Int) -> [String: Double] {
   return parts.mapValues { median(Array($0.dropFirst(2))) }
 }
 
-// FewRowQMV against MLX's own path on the real forward: the same 2-token verify, both ways.
+// The two-row kernels against MLX's own path on the real forward: the same 2-token verify.
 do {
   let ids = MLXArray(probe.prefix(2).map { Int32($0) }).reshaped([1, 2])
   var outs: [MLXArray] = []
-  for few in [false, true] {
+  for (few, magic) in [(false, false), (true, false), (true, true)] {
     FewRowQMV.enabled = few
+    FewRowQMV.magicEnabled = magic
     let snapshot = cache.snapshot()
     let logits = text.lmHead(text.normed(text.trunk(inputs: ids, cache: cache))).asType(.float32)
     eval(logits)
     outs.append(logits)
     cache.restore(snapshot)
   }
-  let diff = abs(outs[0] - outs[1]).max().item(Float.self)
-  let same = (outs[0].argMax(axis: -1) .== outs[1].argMax(axis: -1)).all().item(Bool.self)
-  say(String(format: "FewRowQMV vs MLX, 2-token verify logits: max |diff| %.4f, argmax equal %@", diff, same ? "yes" : "no"))
-}
-
-for few in [false, true] {
-  FewRowQMV.enabled = few
-  say("FewRowQMV \(few ? "on" : "off")")
-  for m in 1...3 {
-    let whole = forward(m)
-    let p = split(m)
-    say(
-      String(
-        format: "  M=%d forward %.1f ms | per-layer eval: embed %.1f deltanet(48) %.1f attention(16) %.1f head %.1f",
-        m, whole, p["embed"]!, p["deltanet"]!, p["attention"]!, p["head"]!))
+  for (i, name) in [(1, "FewRowQMV"), (2, "magic")] {
+    let diff = abs(outs[0] - outs[i]).max().item(Float.self)
+    let same = (outs[0].argMax(axis: -1) .== outs[i].argMax(axis: -1)).all().item(Bool.self)
+    say(String(format: "%@ vs MLX, 2-token verify logits: max |diff| %.4f, argmax equal %@", name, diff, same ? "yes" : "no"))
   }
 }
 
-// End to end, as the server samples: thinking off, official values, three seeds per setting.
-// `keep` is mtp.patch's partial keep of a rejected block (ISHIZUKI_SPEC_KEEP), `restore` the
-// original whole-block restore.
-BonsaiRuntime.lookupMinMatch = Int(Int32.max)
-let settings: [(String, Bool, Bool, String)] = [
-  ("draft off           ", false, false, "1"),
-  ("mtp restore         ", false, true, "0"),
-  ("mtp keep            ", false, true, "1"),
-  ("mtp keep + FewRowQMV", true, true, "1"),
-  ("draft off + FewRowQMV", true, false, "1"),
-]
-for (label, few, drafting, keep) in settings {
+for (few, magic, name) in [(false, false, "MLX"), (true, false, "FewRowQMV"), (true, true, "magic")] {
   FewRowQMV.enabled = few
+  FewRowQMV.magicEnabled = magic
+  var cells: [String] = []
+  for m in 1...2 { cells.append(String(format: "M=%d %.1f ms", m, forward(m))) }
+  say("forward (\(name)): \(cells.joined(separator: ", "))")
+}
+
+// End to end, as the server samples: thinking off, official values, three seeds per setting.
+// All with the partial keep (ISHIZUKI_SPEC_KEEP=1). magic: FewRowQMV.applyMagic for the two-row
+// verify; penalty: the MTP head's argmax under the target's penalties (ISHIZUKI_MTP_DRAFT_PENALTY).
+BonsaiRuntime.lookupMinMatch = Int(Int32.max)
+setenv("ISHIZUKI_SPEC_KEEP", "1", 1)
+let settings: [(String, Bool, Bool, String)] = [
+  ("draft off                 ", false, false, "0"),
+  ("mtp FewRowQMV             ", true, false, "0"),
+  ("mtp magic                 ", true, true, "0"),
+  ("mtp magic + draft penalty ", true, true, "1"),
+  ("mtp FewRowQMV + penalty   ", true, false, "1"),
+]
+FewRowQMV.enabled = true
+for (label, drafting, magic, penalty) in settings {
+  FewRowQMV.magicEnabled = magic
   BonsaiRuntime.speculativeDecode = drafting
-  setenv("ISHIZUKI_SPEC_KEEP", keep, 1)
+  setenv("ISHIZUKI_MTP_DRAFT_PENALTY", penalty, 1)
   var rates: [String] = []
   var accepted = 0
   var proposed = 0

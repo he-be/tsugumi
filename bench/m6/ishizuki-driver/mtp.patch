@@ -1,394 +1,6 @@
---- a/Sources/IshizukiKit/Core/Hadamard.swift
-+++ b/Sources/IshizukiKit/Core/Hadamard.swift
-@@ -208,6 +208,13 @@
-       let shape = h.shape
-       let width = shape[shape.count - 1]
-       let rows = h.size / width
-+      if FewRowQMV.supportedRows.contains(rows),
-+        let y = FewRowQMV.apply(
-+          h.reshaped([rows, width]), weight, scales: scales, biases: biases,
-+          groupSize: groupSize, bits: bits)
-+      {
-+        return y.reshaped(Array(shape.dropLast()) + [outputDim])
-+      }
-       if VerifyMatmul.supportedRows.contains(rows),
-         let y = VerifyMatmul.apply(
-           h.reshaped([rows, width]), weight, scales: scales, biases: biases,
---- a/Sources/IshizukiKit/Core/VerifyMatmul.swift
-+++ b/Sources/IshizukiKit/Core/VerifyMatmul.swift
-@@ -17,13 +17,19 @@
-   /// MLP and projections of 10 MB or more from 3, the 6144-wide ones from 4, attention k and v
-   /// from 6.
-   static func minimumRows(bytes: Int) -> Int {
--    switch bytes {
-+    if let floor = rowFloor { return floor }
-+    return switch bytes {
-     case 100_000_000...: 2
-     case 10_000_000...: 3
-     case 5_000_000...: 4
-     default: 6
-     }
-   }
-+
-+  /// Replaces the table above with one row count for every weight: the table was measured on
-+  /// an M1 Max, and another GPU can cross over elsewhere. `ISHIZUKI_VERIFY_MIN_ROWS` sets it.
-+  nonisolated(unsafe) public static var rowFloor: Int? =
-+    ProcessInfo.processInfo.environment["ISHIZUKI_VERIFY_MIN_ROWS"].flatMap { Int($0) }
- 
-   nonisolated(unsafe) static var rowBlocks = 4
-   nonisolated(unsafe) static var simdgroups = 2
---- a/Sources/IshizukiKit/Generate/Generator.swift
-+++ b/Sources/IshizukiKit/Generate/Generator.swift
-@@ -9,6 +9,9 @@
-   public var generatedTokens: Int
-   public var promptSeconds: Double
-   public var generationSeconds: Double
-+  /// Drafted tokens proposed and accepted, for llama-server's `draft_n` / `draft_n_accepted`.
-+  public var draftProposed = 0
-+  public var draftAccepted = 0
- 
-   public var promptTokensPerSecond: Double {
-     promptSeconds > 0 ? Double(promptTokens) / promptSeconds : 0
---- a/Sources/IshizukiKit/Generate/Sampler.swift
-+++ b/Sources/IshizukiKit/Generate/Sampler.swift
-@@ -113,6 +113,27 @@
-     return scores
-   }
- 
-+  /// `truncatedScores` for a block of rows checked together, each with its own window: row `i`
-+  /// follows `windows[i]`, so a drafted token already counts as seen for the rows after it.
-+  /// This is what lets a drafted turn run with a repetition or presence penalty and still draw
-+  /// exactly what the plain loop would.
-+  public func truncatedScores(rows: MLXArray, windows: [[Int]]) -> MLXArray {
-+    precondition(rows.dim(0) == windows.count, "one window per row")
-+    guard options.repetitionPenalty != 1.0 || options.presencePenalty != 0 else {
-+      return truncatedScores(rows)
-+    }
-+    var penalized: [MLXArray] = []
-+    for (index, tokens) in windows.enumerated() {
-+      var row = rows[index ..< (index + 1)].asType(.float32)
-+      if let window = window(tokens, pending: nil) {
-+        if options.repetitionPenalty != 1.0 { row = applyRepetitionPenalty(row, window: window) }
-+        if options.presencePenalty != 0 { row = applyPresencePenalty(row, window: window) }
-+      }
-+      penalized.append(row)
-+    }
-+    return truncatedScores(concatenated(penalized, axis: 0))
-+  }
-+
-   private func window(_ tokens: [Int], pending: MLXArray?) -> MLXArray? {
-     let context = options.repetitionContext
-     guard context > 0 else { return nil }
---- a/Sources/IshizukiKit/Generate/SpeculativeGeneration.swift
-+++ b/Sources/IshizukiKit/Generate/SpeculativeGeneration.swift
-@@ -31,13 +31,15 @@
-     options: SamplingOptions, constraint: OutputConstraint?, promptEmbeddings: MLXArray?,
-     positions: MLXArray?
-   ) -> Drafts? {
-+    // Sampled turns and penalized ones draft with the MTP head too: `speculate` accepts each
-+    // drafted token with the target's own probability of it and otherwise draws from the rest,
-+    // with each row's penalty taken over the tokens before it. The pipelined loop's lookup
-+    // check has no such windows, so a penalized turn without a head still drafts nothing.
-+    let penalized = options.repetitionPenalty != 1 || options.presencePenalty != 0
-     guard speculativeDecode ?? BonsaiRuntime.speculativeDecode, constraint == nil,
--      promptEmbeddings == nil, positions == nil, options.repetitionPenalty == 1,
--      options.presencePenalty == 0
-+      promptEmbeddings == nil, positions == nil, !penalized || model.mtp != nil
-     else { return nil }
--    let mtp =
--      model.mtp == nil || options.temperature > 0
--      ? nil : try? MTPDrafter(model: model, kvConfig: kvConfig)
-+    let mtp = model.mtp == nil ? nil : try? MTPDrafter(model: model, kvConfig: kvConfig)
-     let dflash =
-       model.deepseek == nil ? model.dflash.map { DFlashDrafter(draft: $0, backbone: model.text) } : nil
-     return Drafts(
-@@ -95,18 +97,45 @@
-       return true
-     }
- 
--    func scores(_ row: MLXArray) -> MLXArray {
--      sampler.truncatedScores(row.reshaped([1, -1]))
-+    var carry: [Int] = []
-+    // A rejected draft keeps what was accepted in place: the attention layers move their offset
-+    // back and the delta-net layers rerun the rule over the kept positions from the state the
-+    // verify started at (`ModelCache.keep`). Restoring the whole block instead carries the kept
-+    // tokens into the next verify, which on the M6 made one round in two or three a 3-token
-+    // forward (110 ms against 79 ms for two; 16 §14). DSpark commits its own window, so it keeps
-+    // the restore.
-+    let keepsPart =
-+      drafts.dspark == nil && ProcessInfo.processInfo.environment["ISHIZUKI_SPEC_KEEP"] != "0"
-+    if keepsPart { cache.recordsSteps = true }
-+    defer { if keepsPart { cache.recordsSteps = false } }
-+    // ISHIZUKI_SPEC_TRACE=1: where a drafted round's time goes (ms, summed over the turn).
-+    let tracing = ProcessInfo.processInfo.environment["ISHIZUKI_SPEC_TRACE"] == "1"
-+    var spent = (draft: 0.0, forward: 0.0, check: 0.0, rest: 0.0)
-+    var mark = DispatchTime.now().uptimeNanoseconds
-+    func lap() -> Double {
-+      let now = DispatchTime.now().uptimeNanoseconds
-+      defer { mark = now }
-+      return Double(now - mark) / 1e6
-     }
-+    defer {
-+      if tracing {
-+        print(
-+          String(
-+            format: "spec-trace: rounds %d proposed %d accepted %d | ms draft %.0f forward %.0f check %.0f rest %.0f",
-+            out.stats.rounds, out.stats.proposed, out.stats.accepted, spent.draft, spent.forward,
-+            spent.check, spent.rest))
-+        fflush(stdout)
-+      }
-+    }
- 
--    var carry: [Int] = []
--
-     while out.generated.count < maxTokens {
-+      if tracing { spent.rest += lap() }
-       if isCancelled?() == true {
-         out.cancelled = true
-         break
-       }
--      let confirmed = forced ?? sampler.token(logits[0..., -1, 0...]).item(Int.self)
-+      let confirmed =
-+        forced ?? sampler.token(logits[0..., -1, 0...], recentTokens: context).item(Int.self)
-       forced = nil
-       if let mtp = drafts.mtp, let observed {
-         mtp.observe(hidden: observed.0, nextTokens: observed.1 + [confirmed])
-@@ -128,6 +157,7 @@
-         draft = dspark.propose(after: confirmed, at: cache.offset + carry.count, limit: room)
-       }
-       if carry.count + 1 + draft.count > 16 { draft = [] }
-+      if tracing { spent.draft += lap() }
-       out.stats.rounds += 1
- 
-       let offset = carry.count
-@@ -148,11 +178,15 @@
-       let snapshot = cache.snapshot()
-       let (h, blockLogits) = forward(block, allPositions: true)
-       eval(blockLogits)
-+      if tracing { spent.forward += lap() }
- 
-       var accepted = 0
-+      // Row i predicts what follows block[offset + i], after the draft tokens before it.
-+      let recent = Array(context.suffix(sampler.options.repetitionContext)) + [confirmed]
-+      let windows = (0...draft.count).map { recent + draft.prefix($0) }
-+      let rows = sampler.truncatedScores(rows: blockLogits[0, offset..., 0...], windows: windows)
-       if temperature > 0 {
--        let rows = blockLogits[0, offset..., 0...]
--        let scaled = sampler.truncatedScores(rows) / temperature
-+        let scaled = rows / temperature
-         let ids = MLXArray(draft.map { Int32($0) })
-         let chance = takeAlong(
-           softmax(scaled[..<draft.count], axis: -1), ids.reshaped([-1, 1]), axis: -1
-@@ -170,13 +204,14 @@
-           accepted < draft.count
-           ? Int(replacements.asArray(Int32.self)[accepted]) : bonus.item(Int.self)
-       } else {
--        let predictions = blockLogits[0, offset...].argMax(axis: -1).asArray(Int32.self)
-+        let predictions = rows.argMax(axis: -1).asArray(Int32.self)
-         while accepted < draft.count, Int(predictions[accepted]) == draft[accepted] {
-           accepted += 1
-         }
-         forced = Int(predictions[accepted])
-       }
-       out.stats.accepted += accepted
-+      if tracing { spent.check += lap() }
-       if fromNgram, accepted == 0 { ngramIdle = 4 }
- 
-       let kept = [confirmed] + draft.prefix(accepted)
-@@ -188,8 +223,12 @@
-         observed = (offset == 0 ? h : h[0..., offset..., 0...], Array(block[(offset + 1)...]))
-       } else {
-         out.stats.rollbacks += 1
--        cache.restore(snapshot)
--        carry = Array(block[..<offset]) + kept
-+        if keepsPart {
-+          cache.keep(offset + kept.count, since: snapshot)
-+        } else {
-+          cache.restore(snapshot)
-+          carry = Array(block[..<offset]) + kept
-+        }
-         if let mtp = drafts.mtp, let forced = forced {
-           mtp.observe(
-             hidden: h[0..., offset..<(offset + kept.count), 0...],
---- a/Sources/IshizukiKit/Serve/APIServer.swift
-+++ b/Sources/IshizukiKit/Serve/APIServer.swift
-@@ -314,6 +314,8 @@
-     var minP: Float? = nil
-     var presencePenalty: Float? = nil
-     var seed: UInt64? = nil
-+    /// llama-server's per-request `speculative.n_max`: 0 turns drafting off for this request.
-+    var draft: Bool? = nil
-     /// Token ids never drawn (`logit_bias` of -100 or `false`).
-     var bannedTokens: [Int] = []
-     /// An already rendered prompt, continued as it is (`/v1/completions`): no template, no
-@@ -432,6 +434,7 @@
- 
-     let generator = Generator(
-       model: model, kvConfig: kvConfig, politeness: politeness)
-+    generator.speculativeDecode = request.draft
- 
-     let opened =
-       !raw && request.thinking
-@@ -535,9 +538,17 @@
-       : ToolCallParser.parse(
-         opened ? "<think>" + result.text : result.text,
-         types: ToolCallParser.parameterTypes(request.tools))
-+    var generation = result.stats
-+    if let drafted = result.speculative {
-+      generation.draftProposed = drafted.proposed
-+      generation.draftAccepted = drafted.accepted
-+      log?(
-+        "drafts: \(drafted.accepted)/\(drafted.proposed) accepted over \(drafted.rounds) rounds, "
-+          + String(format: "%.1f tok/s", result.stats.generationTokensPerSecond))
-+    }
-     return (
-       parsed, promptTokens.count, result.tokens.count, result.cancelled, promptTokens, reused,
--      finish, result.stats, options
-+      finish, generation, options
-     )
-   }
- 
-@@ -641,6 +652,8 @@
-       "predicted_n": stats.generatedTokens,
-       "predicted_ms": stats.generationSeconds * 1000,
-       "predicted_per_second": stats.generationTokensPerSecond,
-+      "draft_n": stats.draftProposed,
-+      "draft_n_accepted": stats.draftAccepted,
-     ]
-   }
- 
-@@ -907,6 +920,7 @@
-     request.topP = (body["top_p"] as? NSNumber)?.floatValue
-     request.minP = (body["min_p"] as? NSNumber)?.floatValue
-     request.presencePenalty = (body["presence_penalty"] as? NSNumber)?.floatValue
-+    if let n = (body["speculative.n_max"] as? NSNumber)?.intValue { request.draft = n > 0 }
-     if let seed = (body["seed"] as? NSNumber)?.int64Value, seed >= 0 {
-       request.seed = UInt64(seed)
-     }
---- /dev/null
-+++ b/Sources/IshizukiKit/Core/FewRowQMV.swift
-@@ -0,0 +1,121 @@
-+// SPDX-FileCopyrightText: 2026 Sarah Truffle <me@heni.lol>
-+// SPDX-License-Identifier: AGPL-3.0-or-later
-+//
-+// A 2-bit matrix-vector product for two to four rows at once: MLX's own qmv_fast, with every
-+// thread holding each row's slice of the activation, so a weight byte is read and decoded once
-+// and used for all of them. MLX runs a few-row product as that many separate passes over the
-+// weights, and VerifyMatmul spends a simdgroup matrix of eight columns on two; at the one-draft
-+// verify of an MTP head, both cost 1.4 to 2 times a single row on an M6 (docs/qwen38-27b/16 §14).
-+
-+import Foundation
-+import MLX
-+import MLXFast
-+
-+public enum FewRowQMV {
-+  public static let supportedRows = 2...4
-+
-+  /// Off with `ISHIZUKI_FEW_ROW_QMV=0`, for comparing against the paths it replaces.
-+  nonisolated(unsafe) public static var enabled =
-+    ProcessInfo.processInfo.environment["ISHIZUKI_FEW_ROW_QMV"] != "0"
-+
-+  /// Nil when the shape is not one this kernel covers: 2-bit affine, a group of 32 to 512 that
-+  /// divides the 512-wide block, whole blocks of input and whole blocks of eight outputs.
-+  public static func apply(
-+    _ x: MLXArray, _ w: MLXArray, scales: MLXArray, biases: MLXArray, groupSize: Int, bits: Int
-+  ) -> MLXArray? {
-+    #if canImport(Metal)
-+      guard enabled, bits == 2, x.ndim == 2, supportedRows.contains(x.dim(0)) else { return nil }
-+      let m = x.dim(0)
-+      let k = x.dim(1)
-+      let n = w.dim(0)
-+      guard k % 512 == 0, n % 8 == 0, [32, 64, 128, 256, 512].contains(groupSize),
-+        w.dim(1) * 16 == k, scales.dim(1) * groupSize == k
-+      else { return nil }
-+      return kernel(
-+        [x, w, scales, biases],
-+        template: [("XT", x.dtype), ("R", m), ("K", k), ("N", n), ("GS", groupSize)],
-+        grid: (64 * (n / 8), 1, 1),
-+        threadGroup: (64, 1, 1),
-+        outputShapes: [[m, n]],
-+        outputDTypes: [x.dtype])[0]
-+    #else
-+      return nil
-+    #endif
-+  }
-+
-+  #if canImport(Metal)
-+    private static let kernel: MLXFast.MLXFastKernel = MLXFast.metalKernel(
-+      name: "ishizuki_few_row_qmv2",
-+      inputNames: ["x", "w", "scales", "biases"],
-+      outputNames: ["y"],
-+      source: """
-+            // qmv_fast for bits 2: 16 values (4 bytes) per thread, 512 per simdgroup pass,
-+            // 4 output rows per simdgroup, 2 simdgroups per threadgroup.
-+            constexpr int VPT = 16;
-+            constexpr int BLOCK = VPT * 32;
-+            constexpr int RPS = 4;
-+            constexpr int KW = K / 4;            // bytes per weight row
-+            constexpr int KG = K / GS;           // groups per weight row
-+            constexpr int STEP = GS / VPT;       // threads sharing a scale
-+
-+            uint lane = thread_index_in_simdgroup;
-+            uint sg = simdgroup_index_in_threadgroup;
-+            int out_row = int(threadgroup_position_in_grid.x) * (2 * RPS) + int(sg) * RPS;
-+
-+            device const uint8_t *ws = (device const uint8_t *)w + out_row * KW + lane * 4;
-+            device const XT *sc = scales + out_row * KG + lane / STEP;
-+            device const XT *bi = biases + out_row * KG + lane / STEP;
-+            device const XT *xp = x + lane * VPT;
-+
-+            float xt[R][VPT];
-+            float result[R][RPS];
-+            for (int r = 0; r < R; ++r)
-+                for (int j = 0; j < RPS; ++j) result[r][j] = 0.0f;
-+
-+            for (int k = 0; k < K; k += BLOCK) {
-+                float sum[R];
-+                for (int r = 0; r < R; ++r) {
-+                    device const XT *xr = xp + r * K + k;
-+                    float s = 0.0f;
-+                    for (int i = 0; i < VPT; i += 4) {
-+                        float a = float(xr[i]), b = float(xr[i + 1]);
-+                        float c = float(xr[i + 2]), d = float(xr[i + 3]);
-+                        s += a + b + c + d;
-+                        xt[r][i] = a;
-+                        xt[r][i + 1] = b / 4.0f;
-+                        xt[r][i + 2] = c / 16.0f;
-+                        xt[r][i + 3] = d / 64.0f;
-+                    }
-+                    sum[r] = s;
-+                }
-+                for (int row = 0; row < RPS; ++row) {
-+                    device const uint8_t *wl = ws + row * KW;
-+                    float s = float(sc[row * KG]);
-+                    float b = float(bi[row * KG]);
-+                    float acc[R];
-+                    for (int r = 0; r < R; ++r) acc[r] = 0.0f;
-+                    for (int i = 0; i < VPT / 4; ++i) {
-+                        uint8_t q = wl[i];
-+                        float q0 = float(q & 0x03), q1 = float(q & 0x0c);
-+                        float q2 = float(q & 0x30), q3 = float(q & 0xc0);
-+                        for (int r = 0; r < R; ++r) {
-+                            acc[r] += xt[r][4 * i] * q0 + xt[r][4 * i + 1] * q1
-+                                + xt[r][4 * i + 2] * q2 + xt[r][4 * i + 3] * q3;
-+                        }
-+                    }
-+                    for (int r = 0; r < R; ++r) result[r][row] += s * acc[r] + sum[r] * b;
-+                }
-+                ws += BLOCK / 4;
-+                sc += BLOCK / GS;
-+                bi += BLOCK / GS;
-+            }
-+
-+            for (int r = 0; r < R; ++r) {
-+                for (int row = 0; row < RPS; ++row) {
-+                    float v = simd_sum(result[r][row]);
-+                    if (lane == 0) y[r * N + out_row + row] = XT(v);
-+                }
-+            }
-+        """)
-+  #endif
-+}
+diff --git a/Sources/IshizukiKit/Core/FewRowNAX.swift b/Sources/IshizukiKit/Core/FewRowNAX.swift
+new file mode 100644
+index 0000000..94d81af
 --- /dev/null
 +++ b/Sources/IshizukiKit/Core/FewRowNAX.swift
 @@ -0,0 +1,151 @@
@@ -543,3 +155,636 @@
 +        """)
 +  #endif
 +}
+diff --git a/Sources/IshizukiKit/Core/FewRowQMV.swift b/Sources/IshizukiKit/Core/FewRowQMV.swift
+new file mode 100644
+index 0000000..35f334a
+--- /dev/null
++++ b/Sources/IshizukiKit/Core/FewRowQMV.swift
+@@ -0,0 +1,254 @@
++// SPDX-FileCopyrightText: 2026 Sarah Truffle <me@heni.lol>
++// SPDX-License-Identifier: AGPL-3.0-or-later
++//
++// A 2-bit matrix-vector product for two to four rows at once: MLX's own qmv_fast, with every
++// thread holding each row's slice of the activation, so a weight byte is read and decoded once
++// and used for all of them. MLX runs a few-row product as that many separate passes over the
++// weights, and VerifyMatmul spends a simdgroup matrix of eight columns on two; at the one-draft
++// verify of an MTP head, both cost 1.4 to 2 times a single row on an M6 (docs/qwen38-27b/16 §14).
++
++import Foundation
++import MLX
++import MLXFast
++
++public enum FewRowQMV {
++  public static let supportedRows = 2...4
++
++  /// Off with `ISHIZUKI_FEW_ROW_QMV=0`, for comparing against the paths it replaces.
++  nonisolated(unsafe) public static var enabled =
++    ProcessInfo.processInfo.environment["ISHIZUKI_FEW_ROW_QMV"] != "0"
++
++  /// Nil when the shape is not one this kernel covers: 2-bit affine, a group of 32 to 512 that
++  /// divides the 512-wide block, whole blocks of input and whole blocks of eight outputs.
++  public static func apply(
++    _ x: MLXArray, _ w: MLXArray, scales: MLXArray, biases: MLXArray, groupSize: Int, bits: Int
++  ) -> MLXArray? {
++    #if canImport(Metal)
++      guard enabled, bits == 2, x.ndim == 2, (1...4).contains(x.dim(0)) else { return nil }
++      let m = x.dim(0)
++      let k = x.dim(1)
++      let n = w.dim(0)
++      guard k % 512 == 0, n % 8 == 0, [32, 64, 128, 256, 512].contains(groupSize),
++        w.dim(1) * 16 == k, scales.dim(1) * groupSize == k
++      else { return nil }
++      return kernel(
++        [x, w, scales, biases],
++        template: [("XT", x.dtype), ("R", m), ("K", k), ("N", n), ("GS", groupSize)],
++        grid: (64 * (n / 8), 1, 1),
++        threadGroup: (64, 1, 1),
++        outputShapes: [[m, n]],
++        outputDTypes: [x.dtype])[0]
++    #else
++      return nil
++    #endif
++  }
++
++  /// The same product with the 2-bit codes turned into numbers two at a time: one AND and one OR
++  /// on a 32-bit word give a half2 of 1024 + code (times a power of four), which the multiply
++  /// reads as a float, so a weight costs one integer op and one FMA per row instead of MLX's
++  /// mask, convert and FMA. The 1024 comes back out once per block through the activation's sum.
++  /// Rows 1 to 4. Off with `ISHIZUKI_QMV_MAGIC=0`.
++  nonisolated(unsafe) public static var magicEnabled =
++    ProcessInfo.processInfo.environment["ISHIZUKI_QMV_MAGIC"] != "0"
++  public static let magicRows = 1...4
++  /// Output rows per simdgroup: the activation's per-block preparation is shared by this many.
++  nonisolated(unsafe) public static var magicRowsPerSimdgroup =
++    ProcessInfo.processInfo.environment["ISHIZUKI_QMV_RPS"].flatMap { Int($0) } ?? 4
++
++  public static func applyMagic(
++    _ x: MLXArray, _ w: MLXArray, scales: MLXArray, biases: MLXArray, groupSize: Int, bits: Int
++  ) -> MLXArray? {
++    #if canImport(Metal)
++      guard magicEnabled, bits == 2, x.ndim == 2, magicRows.contains(x.dim(0)) else { return nil }
++      let m = x.dim(0)
++      let k = x.dim(1)
++      let n = w.dim(0)
++      guard k % 512 == 0, n % 8 == 0, [32, 64, 128, 256, 512].contains(groupSize),
++        w.dim(1) * 16 == k, scales.dim(1) * groupSize == k
++      else { return nil }
++      let rps = magicRowsPerSimdgroup
++      guard n % (2 * rps) == 0 else { return nil }
++      return magicKernel(
++        [x, w, scales, biases],
++        template: [("XT", x.dtype), ("R", m), ("K", k), ("N", n), ("GS", groupSize), ("RPS", rps)],
++        grid: (64 * (n / (2 * rps)), 1, 1),
++        threadGroup: (64, 1, 1),
++        outputShapes: [[m, n]],
++        outputDTypes: [x.dtype])[0]
++    #else
++      return nil
++    #endif
++  }
++
++  #if canImport(Metal)
++    private static let magicKernel: MLXFast.MLXFastKernel = MLXFast.metalKernel(
++      name: "ishizuki_few_row_qmv2_magic",
++      inputNames: ["x", "w", "scales", "biases"],
++      outputNames: ["y"],
++      source: """
++            // 16 codes per thread (one 32-bit word), 512 per simdgroup pass, 4 output rows per
++            // simdgroup, 2 simdgroups per threadgroup, as qmv_fast. Word bits 2i..2i+1 hold
++            // code i. The half2 lanes are bits 0-15 (codes 0-7) and 16-31 (codes 8-15); a code at
++            // lane bits 2j (j <= 4) ORed with 0x6400 is the half 1024 + 4^j * code, exact.
++            // Codes 5-7 and 13-15 are read from the word shifted right by 10.
++            constexpr int VPT = 16;
++            constexpr int BLOCK = VPT * 32;
++            constexpr int KW = K / 16;           // words per weight row
++            constexpr int KG = K / GS;
++            constexpr int STEP = GS / VPT;
++            constexpr uint MAGIC = 0x64006400u;
++
++            uint lane = thread_index_in_simdgroup;
++            uint sg = simdgroup_index_in_threadgroup;
++            int out_row = int(threadgroup_position_in_grid.x) * (2 * RPS) + int(sg) * RPS;
++
++            device const uint *ws = (device const uint *)w + out_row * KW + lane;
++            device const XT *sc = scales + out_row * KG + lane / STEP;
++            device const XT *bi = biases + out_row * KG + lane / STEP;
++            device const XT *xp = x + lane * VPT;
++
++            // Position i of the 16 sits at 4^shift[i] in its half.
++            const float inv[16] = {1.0f, 0.25f, 0.0625f, 0.015625f, 0.00390625f, 1.0f, 0.25f, 0.0625f,
++                                   1.0f, 0.25f, 0.0625f, 0.015625f, 0.00390625f, 1.0f, 0.25f, 0.0625f};
++
++            float xt[R][VPT];
++            float result[R][RPS];
++            for (int r = 0; r < R; ++r)
++                for (int j = 0; j < RPS; ++j) result[r][j] = 0.0f;
++
++            for (int k = 0; k < K; k += BLOCK) {
++                // Every load of the block first, so the reads of all rows are in flight at once.
++                uint words[RPS];
++                float sc_[RPS], bi_[RPS];
++                for (int row = 0; row < RPS; ++row) {
++                    words[row] = ws[row * KW];
++                    sc_[row] = float(sc[row * KG]);
++                    bi_[row] = float(bi[row * KG]);
++                }
++                float sum[R];
++                float corr[R];
++                for (int r = 0; r < R; ++r) {
++                    device const XT *xr = xp + r * K + k;
++                    float s = 0.0f, c = 0.0f;
++                    for (int i = 0; i < VPT; ++i) {
++                        float a = float(xr[i]);
++                        s += a;
++                        xt[r][i] = a * inv[i];
++                        c += xt[r][i];
++                    }
++                    sum[r] = s;
++                    corr[r] = 1024.0f * c;
++                }
++                for (int row = 0; row < RPS; ++row) {
++                    uint u = words[row];
++                    uint v = u >> 10;
++                    half2 h0 = as_type<half2>((u & 0x00030003u) | MAGIC);
++                    half2 h1 = as_type<half2>((u & 0x000c000cu) | MAGIC);
++                    half2 h2 = as_type<half2>((u & 0x00300030u) | MAGIC);
++                    half2 h3 = as_type<half2>((u & 0x00c000c0u) | MAGIC);
++                    half2 h4 = as_type<half2>((u & 0x03000300u) | MAGIC);
++                    half2 h5 = as_type<half2>((v & 0x00030003u) | MAGIC);
++                    half2 h6 = as_type<half2>((v & 0x000c000cu) | MAGIC);
++                    half2 h7 = as_type<half2>((v & 0x00300030u) | MAGIC);
++                    for (int r = 0; r < R; ++r) {
++                        float acc = xt[r][0] * float(h0.x) + xt[r][8] * float(h0.y)
++                            + xt[r][1] * float(h1.x) + xt[r][9] * float(h1.y)
++                            + xt[r][2] * float(h2.x) + xt[r][10] * float(h2.y)
++                            + xt[r][3] * float(h3.x) + xt[r][11] * float(h3.y)
++                            + xt[r][4] * float(h4.x) + xt[r][12] * float(h4.y)
++                            + xt[r][5] * float(h5.x) + xt[r][13] * float(h5.y)
++                            + xt[r][6] * float(h6.x) + xt[r][14] * float(h6.y)
++                            + xt[r][7] * float(h7.x) + xt[r][15] * float(h7.y);
++                        result[r][row] += sc_[row] * (acc - corr[r]) + sum[r] * bi_[row];
++                    }
++                }
++                ws += BLOCK / 16;
++                sc += BLOCK / GS;
++                bi += BLOCK / GS;
++            }
++
++            for (int r = 0; r < R; ++r) {
++                for (int row = 0; row < RPS; ++row) {
++                    float v = simd_sum(result[r][row]);
++                    if (lane == 0) y[r * N + out_row + row] = XT(v);
++                }
++            }
++        """)
++  #endif
++
++  #if canImport(Metal)
++    private static let kernel: MLXFast.MLXFastKernel = MLXFast.metalKernel(
++      name: "ishizuki_few_row_qmv2",
++      inputNames: ["x", "w", "scales", "biases"],
++      outputNames: ["y"],
++      source: """
++            // qmv_fast for bits 2: 16 values (4 bytes) per thread, 512 per simdgroup pass,
++            // 4 output rows per simdgroup, 2 simdgroups per threadgroup.
++            constexpr int VPT = 16;
++            constexpr int BLOCK = VPT * 32;
++            constexpr int RPS = 4;
++            constexpr int KW = K / 4;            // bytes per weight row
++            constexpr int KG = K / GS;           // groups per weight row
++            constexpr int STEP = GS / VPT;       // threads sharing a scale
++
++            uint lane = thread_index_in_simdgroup;
++            uint sg = simdgroup_index_in_threadgroup;
++            int out_row = int(threadgroup_position_in_grid.x) * (2 * RPS) + int(sg) * RPS;
++
++            device const uint8_t *ws = (device const uint8_t *)w + out_row * KW + lane * 4;
++            device const XT *sc = scales + out_row * KG + lane / STEP;
++            device const XT *bi = biases + out_row * KG + lane / STEP;
++            device const XT *xp = x + lane * VPT;
++
++            float xt[R][VPT];
++            float result[R][RPS];
++            for (int r = 0; r < R; ++r)
++                for (int j = 0; j < RPS; ++j) result[r][j] = 0.0f;
++
++            for (int k = 0; k < K; k += BLOCK) {
++                float sum[R];
++                for (int r = 0; r < R; ++r) {
++                    device const XT *xr = xp + r * K + k;
++                    float s = 0.0f;
++                    for (int i = 0; i < VPT; i += 4) {
++                        float a = float(xr[i]), b = float(xr[i + 1]);
++                        float c = float(xr[i + 2]), d = float(xr[i + 3]);
++                        s += a + b + c + d;
++                        xt[r][i] = a;
++                        xt[r][i + 1] = b / 4.0f;
++                        xt[r][i + 2] = c / 16.0f;
++                        xt[r][i + 3] = d / 64.0f;
++                    }
++                    sum[r] = s;
++                }
++                for (int row = 0; row < RPS; ++row) {
++                    device const uint8_t *wl = ws + row * KW;
++                    float s = float(sc[row * KG]);
++                    float b = float(bi[row * KG]);
++                    float acc[R];
++                    for (int r = 0; r < R; ++r) acc[r] = 0.0f;
++                    for (int i = 0; i < VPT / 4; ++i) {
++                        uint8_t q = wl[i];
++                        float q0 = float(q & 0x03), q1 = float(q & 0x0c);
++                        float q2 = float(q & 0x30), q3 = float(q & 0xc0);
++                        for (int r = 0; r < R; ++r) {
++                            acc[r] += xt[r][4 * i] * q0 + xt[r][4 * i + 1] * q1
++                                + xt[r][4 * i + 2] * q2 + xt[r][4 * i + 3] * q3;
++                        }
++                    }
++                    for (int r = 0; r < R; ++r) result[r][row] += s * acc[r] + sum[r] * b;
++                }
++                ws += BLOCK / 4;
++                sc += BLOCK / GS;
++                bi += BLOCK / GS;
++            }
++
++            for (int r = 0; r < R; ++r) {
++                for (int row = 0; row < RPS; ++row) {
++                    float v = simd_sum(result[r][row]);
++                    if (lane == 0) y[r * N + out_row + row] = XT(v);
++                }
++            }
++        """)
++  #endif
++}
+diff --git a/Sources/IshizukiKit/Core/Hadamard.swift b/Sources/IshizukiKit/Core/Hadamard.swift
+index 067be78..6961df2 100644
+--- a/Sources/IshizukiKit/Core/Hadamard.swift
++++ b/Sources/IshizukiKit/Core/Hadamard.swift
+@@ -208,6 +208,20 @@ public final class PackedLinear: @unchecked Sendable {
+       let shape = h.shape
+       let width = shape[shape.count - 1]
+       let rows = h.size / width
++      if rows == 2,
++        let y = FewRowQMV.applyMagic(
++          h.reshaped([rows, width]), weight, scales: scales, biases: biases,
++          groupSize: groupSize, bits: bits)
++      {
++        return y.reshaped(Array(shape.dropLast()) + [outputDim])
++      }
++      if FewRowQMV.supportedRows.contains(rows),
++        let y = FewRowQMV.apply(
++          h.reshaped([rows, width]), weight, scales: scales, biases: biases,
++          groupSize: groupSize, bits: bits)
++      {
++        return y.reshaped(Array(shape.dropLast()) + [outputDim])
++      }
+       if VerifyMatmul.supportedRows.contains(rows),
+         let y = VerifyMatmul.apply(
+           h.reshaped([rows, width]), weight, scales: scales, biases: biases,
+diff --git a/Sources/IshizukiKit/Core/VerifyMatmul.swift b/Sources/IshizukiKit/Core/VerifyMatmul.swift
+index fa1d290..05e8321 100644
+--- a/Sources/IshizukiKit/Core/VerifyMatmul.swift
++++ b/Sources/IshizukiKit/Core/VerifyMatmul.swift
+@@ -17,7 +17,8 @@ public enum VerifyMatmul {
+   /// MLP and projections of 10 MB or more from 3, the 6144-wide ones from 4, attention k and v
+   /// from 6.
+   static func minimumRows(bytes: Int) -> Int {
+-    switch bytes {
++    if let floor = rowFloor { return floor }
++    return switch bytes {
+     case 100_000_000...: 2
+     case 10_000_000...: 3
+     case 5_000_000...: 4
+@@ -25,6 +26,11 @@ public enum VerifyMatmul {
+     }
+   }
+ 
++  /// Replaces the table above with one row count for every weight: the table was measured on
++  /// an M1 Max, and another GPU can cross over elsewhere. `ISHIZUKI_VERIFY_MIN_ROWS` sets it.
++  nonisolated(unsafe) public static var rowFloor: Int? =
++    ProcessInfo.processInfo.environment["ISHIZUKI_VERIFY_MIN_ROWS"].flatMap { Int($0) }
++
+   nonisolated(unsafe) static var rowBlocks = 4
+   nonisolated(unsafe) static var simdgroups = 2
+   static let unroll = 2
+diff --git a/Sources/IshizukiKit/Generate/Generator.swift b/Sources/IshizukiKit/Generate/Generator.swift
+index c520807..5e89a8e 100644
+--- a/Sources/IshizukiKit/Generate/Generator.swift
++++ b/Sources/IshizukiKit/Generate/Generator.swift
+@@ -9,6 +9,9 @@ public struct GenerationStats: Sendable {
+   public var generatedTokens: Int
+   public var promptSeconds: Double
+   public var generationSeconds: Double
++  /// Drafted tokens proposed and accepted, for llama-server's `draft_n` / `draft_n_accepted`.
++  public var draftProposed = 0
++  public var draftAccepted = 0
+ 
+   public var promptTokensPerSecond: Double {
+     promptSeconds > 0 ? Double(promptTokens) / promptSeconds : 0
+diff --git a/Sources/IshizukiKit/Generate/Sampler.swift b/Sources/IshizukiKit/Generate/Sampler.swift
+index 0ef8467..d06fb91 100644
+--- a/Sources/IshizukiKit/Generate/Sampler.swift
++++ b/Sources/IshizukiKit/Generate/Sampler.swift
+@@ -113,6 +113,44 @@ public struct Sampler {
+     return scores
+   }
+ 
++  /// The bans and the repetition and presence penalties over `recentTokens`, without the
++  /// temperature's truncation: what a draft head's argmax is taken over, so that it proposes the
++  /// token the penalized target is most likely to keep.
++  public func penalizedScores(_ logits: MLXArray, recentTokens: [Int]) -> MLXArray {
++    var scores = logits.asType(.float32)
++    if !bannedTokens.isEmpty {
++      let mask = MLXArray.zeros([scores.dim(-1)], dtype: scores.dtype)
++      mask[MLXArray(bannedTokens.map { Int32($0) })] = MLXArray(-Float.infinity)
++      scores = scores + mask
++    }
++    if let window = window(recentTokens, pending: nil) {
++      if options.repetitionPenalty != 1.0 { scores = applyRepetitionPenalty(scores, window: window) }
++      if options.presencePenalty != 0 { scores = applyPresencePenalty(scores, window: window) }
++    }
++    return scores
++  }
++
++  /// `truncatedScores` for a block of rows checked together, each with its own window: row `i`
++  /// follows `windows[i]`, so a drafted token already counts as seen for the rows after it.
++  /// This is what lets a drafted turn run with a repetition or presence penalty and still draw
++  /// exactly what the plain loop would.
++  public func truncatedScores(rows: MLXArray, windows: [[Int]]) -> MLXArray {
++    precondition(rows.dim(0) == windows.count, "one window per row")
++    guard options.repetitionPenalty != 1.0 || options.presencePenalty != 0 else {
++      return truncatedScores(rows)
++    }
++    var penalized: [MLXArray] = []
++    for (index, tokens) in windows.enumerated() {
++      var row = rows[index ..< (index + 1)].asType(.float32)
++      if let window = window(tokens, pending: nil) {
++        if options.repetitionPenalty != 1.0 { row = applyRepetitionPenalty(row, window: window) }
++        if options.presencePenalty != 0 { row = applyPresencePenalty(row, window: window) }
++      }
++      penalized.append(row)
++    }
++    return truncatedScores(concatenated(penalized, axis: 0))
++  }
++
+   private func window(_ tokens: [Int], pending: MLXArray?) -> MLXArray? {
+     let context = options.repetitionContext
+     guard context > 0 else { return nil }
+diff --git a/Sources/IshizukiKit/Generate/SpeculativeGeneration.swift b/Sources/IshizukiKit/Generate/SpeculativeGeneration.swift
+index e4d6921..0072d01 100644
+--- a/Sources/IshizukiKit/Generate/SpeculativeGeneration.swift
++++ b/Sources/IshizukiKit/Generate/SpeculativeGeneration.swift
+@@ -31,13 +31,15 @@ extension Generator {
+     options: SamplingOptions, constraint: OutputConstraint?, promptEmbeddings: MLXArray?,
+     positions: MLXArray?
+   ) -> Drafts? {
++    // Sampled turns and penalized ones draft with the MTP head too: `speculate` accepts each
++    // drafted token with the target's own probability of it and otherwise draws from the rest,
++    // with each row's penalty taken over the tokens before it. The pipelined loop's lookup
++    // check has no such windows, so a penalized turn without a head still drafts nothing.
++    let penalized = options.repetitionPenalty != 1 || options.presencePenalty != 0
+     guard speculativeDecode ?? BonsaiRuntime.speculativeDecode, constraint == nil,
+-      promptEmbeddings == nil, positions == nil, options.repetitionPenalty == 1,
+-      options.presencePenalty == 0
++      promptEmbeddings == nil, positions == nil, !penalized || model.mtp != nil
+     else { return nil }
+-    let mtp =
+-      model.mtp == nil || options.temperature > 0
+-      ? nil : try? MTPDrafter(model: model, kvConfig: kvConfig)
++    let mtp = model.mtp == nil ? nil : try? MTPDrafter(model: model, kvConfig: kvConfig)
+     let dflash =
+       model.deepseek == nil ? model.dflash.map { DFlashDrafter(draft: $0, backbone: model.text) } : nil
+     return Drafts(
+@@ -95,18 +97,56 @@ extension Generator {
+       return true
+     }
+ 
+-    func scores(_ row: MLXArray) -> MLXArray {
+-      sampler.truncatedScores(row.reshaped([1, -1]))
++    // ISHIZUKI_MTP_DRAFT_PENALTY=1: the head drafts the argmax of its logits under the target's
++    // bans and penalties. Off by default: on the M6 it lowered the acceptance (320/581 against
++    // 339/562 for the raw argmax, 16 §15).
++    let penalizedTurn = sampler.options.repetitionPenalty != 1 || sampler.options.presencePenalty != 0
++    if let mtp = drafts.mtp, penalizedTurn,
++      ProcessInfo.processInfo.environment["ISHIZUKI_MTP_DRAFT_PENALTY"] == "1"
++    {
++      mtp.scoring = { logits, tokens in sampler.penalizedScores(logits, recentTokens: tokens) }
+     }
++    defer { drafts.mtp?.scoring = nil }
+ 
+     var carry: [Int] = []
++    // A rejected draft keeps what was accepted in place: the attention layers move their offset
++    // back and the delta-net layers rerun the rule over the kept positions from the state the
++    // verify started at (`ModelCache.keep`). Restoring the whole block instead carries the kept
++    // tokens into the next verify, which on the M6 made one round in two or three a 3-token
++    // forward (110 ms against 79 ms for two; 16 §14). DSpark commits its own window, so it keeps
++    // the restore.
++    let keepsPart =
++      drafts.dspark == nil && ProcessInfo.processInfo.environment["ISHIZUKI_SPEC_KEEP"] != "0"
++    if keepsPart { cache.recordsSteps = true }
++    defer { if keepsPart { cache.recordsSteps = false } }
++    // ISHIZUKI_SPEC_TRACE=1: where a drafted round's time goes (ms, summed over the turn).
++    let tracing = ProcessInfo.processInfo.environment["ISHIZUKI_SPEC_TRACE"] == "1"
++    var spent = (draft: 0.0, forward: 0.0, check: 0.0, rest: 0.0)
++    var mark = DispatchTime.now().uptimeNanoseconds
++    func lap() -> Double {
++      let now = DispatchTime.now().uptimeNanoseconds
++      defer { mark = now }
++      return Double(now - mark) / 1e6
++    }
++    defer {
++      if tracing {
++        print(
++          String(
++            format: "spec-trace: rounds %d proposed %d accepted %d | ms draft %.0f forward %.0f check %.0f rest %.0f",
++            out.stats.rounds, out.stats.proposed, out.stats.accepted, spent.draft, spent.forward,
++            spent.check, spent.rest))
++        fflush(stdout)
++      }
++    }
+ 
+     while out.generated.count < maxTokens {
++      if tracing { spent.rest += lap() }
+       if isCancelled?() == true {
+         out.cancelled = true
+         break
+       }
+-      let confirmed = forced ?? sampler.token(logits[0..., -1, 0...]).item(Int.self)
++      let confirmed =
++        forced ?? sampler.token(logits[0..., -1, 0...], recentTokens: context).item(Int.self)
+       forced = nil
+       if let mtp = drafts.mtp, let observed {
+         mtp.observe(hidden: observed.0, nextTokens: observed.1 + [confirmed])
+@@ -122,12 +162,13 @@ extension Generator {
+       }
+       let fromNgram = !draft.isEmpty
+       if draft.isEmpty, let mtp = drafts.mtp {
+-        draft = mtp.propose(context: context, count: 1)
++        draft = mtp.propose(context: context + [confirmed], count: 1)
+       }
+       if draft.isEmpty, let dspark = drafts.dspark {
+         draft = dspark.propose(after: confirmed, at: cache.offset + carry.count, limit: room)
+       }
+       if carry.count + 1 + draft.count > 16 { draft = [] }
++      if tracing { spent.draft += lap() }
+       out.stats.rounds += 1
+ 
+       let offset = carry.count
+@@ -148,11 +189,15 @@ extension Generator {
+       let snapshot = cache.snapshot()
+       let (h, blockLogits) = forward(block, allPositions: true)
+       eval(blockLogits)
++      if tracing { spent.forward += lap() }
+ 
+       var accepted = 0
++      // Row i predicts what follows block[offset + i], after the draft tokens before it.
++      let recent = Array(context.suffix(sampler.options.repetitionContext)) + [confirmed]
++      let windows = (0...draft.count).map { recent + draft.prefix($0) }
++      let rows = sampler.truncatedScores(rows: blockLogits[0, offset..., 0...], windows: windows)
+       if temperature > 0 {
+-        let rows = blockLogits[0, offset..., 0...]
+-        let scaled = sampler.truncatedScores(rows) / temperature
++        let scaled = rows / temperature
+         let ids = MLXArray(draft.map { Int32($0) })
+         let chance = takeAlong(
+           softmax(scaled[..<draft.count], axis: -1), ids.reshaped([-1, 1]), axis: -1
+@@ -170,13 +215,14 @@ extension Generator {
+           accepted < draft.count
+           ? Int(replacements.asArray(Int32.self)[accepted]) : bonus.item(Int.self)
+       } else {
+-        let predictions = blockLogits[0, offset...].argMax(axis: -1).asArray(Int32.self)
++        let predictions = rows.argMax(axis: -1).asArray(Int32.self)
+         while accepted < draft.count, Int(predictions[accepted]) == draft[accepted] {
+           accepted += 1
+         }
+         forced = Int(predictions[accepted])
+       }
+       out.stats.accepted += accepted
++      if tracing { spent.check += lap() }
+       if fromNgram, accepted == 0 { ngramIdle = 4 }
+ 
+       let kept = [confirmed] + draft.prefix(accepted)
+@@ -188,8 +234,12 @@ extension Generator {
+         observed = (offset == 0 ? h : h[0..., offset..., 0...], Array(block[(offset + 1)...]))
+       } else {
+         out.stats.rollbacks += 1
+-        cache.restore(snapshot)
+-        carry = Array(block[..<offset]) + kept
++        if keepsPart {
++          cache.keep(offset + kept.count, since: snapshot)
++        } else {
++          cache.restore(snapshot)
++          carry = Array(block[..<offset]) + kept
++        }
+         if let mtp = drafts.mtp, let forced = forced {
+           mtp.observe(
+             hidden: h[0..., offset..<(offset + kept.count), 0...],
+diff --git a/Sources/IshizukiKit/Serve/APIServer.swift b/Sources/IshizukiKit/Serve/APIServer.swift
+index 9fdaf07..6478368 100644
+--- a/Sources/IshizukiKit/Serve/APIServer.swift
++++ b/Sources/IshizukiKit/Serve/APIServer.swift
+@@ -314,6 +314,8 @@ public final class APIServer: @unchecked Sendable {
+     var minP: Float? = nil
+     var presencePenalty: Float? = nil
+     var seed: UInt64? = nil
++    /// llama-server's per-request `speculative.n_max`: 0 turns drafting off for this request.
++    var draft: Bool? = nil
+     /// Token ids never drawn (`logit_bias` of -100 or `false`).
+     var bannedTokens: [Int] = []
+     /// An already rendered prompt, continued as it is (`/v1/completions`): no template, no
+@@ -432,6 +434,7 @@ public final class APIServer: @unchecked Sendable {
+ 
+     let generator = Generator(
+       model: model, kvConfig: kvConfig, politeness: politeness)
++    generator.speculativeDecode = request.draft
+ 
+     let opened =
+       !raw && request.thinking
+@@ -535,9 +538,17 @@ public final class APIServer: @unchecked Sendable {
+       : ToolCallParser.parse(
+         opened ? "<think>" + result.text : result.text,
+         types: ToolCallParser.parameterTypes(request.tools))
++    var generation = result.stats
++    if let drafted = result.speculative {
++      generation.draftProposed = drafted.proposed
++      generation.draftAccepted = drafted.accepted
++      log?(
++        "drafts: \(drafted.accepted)/\(drafted.proposed) accepted over \(drafted.rounds) rounds, "
++          + String(format: "%.1f tok/s", result.stats.generationTokensPerSecond))
++    }
+     return (
+       parsed, promptTokens.count, result.tokens.count, result.cancelled, promptTokens, reused,
+-      finish, result.stats, options
++      finish, generation, options
+     )
+   }
+ 
+@@ -641,6 +652,8 @@ public final class APIServer: @unchecked Sendable {
+       "predicted_n": stats.generatedTokens,
+       "predicted_ms": stats.generationSeconds * 1000,
+       "predicted_per_second": stats.generationTokensPerSecond,
++      "draft_n": stats.draftProposed,
++      "draft_n_accepted": stats.draftAccepted,
+     ]
+   }
+ 
+@@ -907,6 +920,7 @@ public final class APIServer: @unchecked Sendable {
+     request.topP = (body["top_p"] as? NSNumber)?.floatValue
+     request.minP = (body["min_p"] as? NSNumber)?.floatValue
+     request.presencePenalty = (body["presence_penalty"] as? NSNumber)?.floatValue
++    if let n = (body["speculative.n_max"] as? NSNumber)?.intValue { request.draft = n > 0 }
+     if let seed = (body["seed"] as? NSNumber)?.int64Value, seed >= 0 {
+       request.seed = UInt64(seed)
+     }
+diff --git a/Sources/IshizukiKit/Speculative/Speculative.swift b/Sources/IshizukiKit/Speculative/Speculative.swift
+index c364f02..2a524cd 100644
+--- a/Sources/IshizukiKit/Speculative/Speculative.swift
++++ b/Sources/IshizukiKit/Speculative/Speculative.swift
+@@ -65,6 +65,10 @@ public final class MTPDrafter: HiddenStateDrafter {
+   private let head: MTPHead
+   private let cache: ModelCache
+   private var pending: [Int] = []
++  private var pendingLogits: MLXArray?
++  /// Applied to the head's logits before the argmax, with the tokens so far (the one the draft
++  /// follows last). The drafted loop sets the target's penalties here (16 §15).
++  public var scoring: ((MLXArray, [Int]) -> MLXArray)?
+ 
+   public var depth: Int { 1 }
+ 
+@@ -82,17 +86,28 @@ public final class MTPDrafter: HiddenStateDrafter {
+   public func observe(hidden: MLXArray, nextTokens: [Int]) {
+     guard hidden.dim(1) == nextTokens.count, !nextTokens.isEmpty else {
+       pending = []
++      pendingLogits = nil
+       return
+     }
+     let ids = MLXArray(nextTokens.map { Int32($0) }).reshaped([1, nextTokens.count])
+     let drafted = head(
+       hidden: hidden, embeddings: model.backbone.embed(ids), cache: cache)
+     let logits = model.backbone.lastLogits(drafted)
+-    pending = [logits[0, -1].argMax().item(Int.self)]
++    if scoring != nil {
++      pending = []
++      pendingLogits = logits[0..., -1, 0...]
++    } else {
++      pending = [logits[0, -1].argMax().item(Int.self)]
++      pendingLogits = nil
++    }
+   }
+ 
+   public func propose(context: [Int], count: Int) -> [Int] {
+     guard count > 0 else { return [] }
++    if let logits = pendingLogits, let scoring {
++      pendingLogits = nil
++      pending = [scoring(logits, context).argMax(axis: -1).item(Int.self)]
++    }
+     return Array(pending.prefix(count))
+   }
+ 
+@@ -101,6 +116,7 @@ public final class MTPDrafter: HiddenStateDrafter {
+   public func reset() {
+     cache.reset()
+     pending = []
++    pendingLogits = nil
+   }
+ }
+ 
