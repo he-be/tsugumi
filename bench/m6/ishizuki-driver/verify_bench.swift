@@ -93,6 +93,35 @@ for m in 1...3 {
   print(String(format: "M=%d  one backbone pass of matmuls: mlx %.1f ms, best of mlx/verify %.1f ms, few-row %.1f ms", m, t.mlx / 1e3, t.kernel / 1e3, t.few / 1e3))
 }
 
+// FewRowNAX (tensor ops, mtp.patch): the verify's rows on matmul2d, the lanes only decoding.
+print("\nFewRowNAX (us, max|diff| against MLX): shape / M=1 qmv, M=2 nax, M=4 nax, M=8 nax")
+for (label, n, k, _) in shapes {
+  let packed = quantized(
+    (MLXRandom.normal([n, k]) * 0.02).asType(.float16), groupSize: 128, bits: 2)
+  let (w, scales, biases) = (packed.wq, packed.scales, packed.biases!)
+  eval(w, scales, biases)
+  var cells: [String] = []
+  for m in [1, 2, 4, 8] {
+    let xs = (0..<chain).map { _ in MLXRandom.normal([m, k]).asType(.float16) }
+    eval(xs)
+    if m == 1 {
+      let t = time {
+        xs.map { quantizedMM($0, w, scales: scales, biases: biases, transpose: true, groupSize: 128, bits: 2, mode: .affine) }
+      }
+      cells.append(String(format: "%.0f", t))
+      continue
+    }
+    guard let got = FewRowNAX.apply(xs[0], w, scales: scales, biases: biases, groupSize: 128, bits: 2) else {
+      cells.append("declined"); continue
+    }
+    let ref = quantizedMM(xs[0], w, scales: scales, biases: biases, transpose: true, groupSize: 128, bits: 2, mode: .affine)
+    let diff = abs(got.asType(.float32) - ref.asType(.float32)).max().item(Float.self)
+    let t = time { xs.map { FewRowNAX.apply($0, w, scales: scales, biases: biases, groupSize: 128, bits: 2)! } }
+    cells.append(String(format: "%.0f (%.3g)", t, diff))
+  }
+  print("\(label)  \(cells.joined(separator: "  "))")
+}
+
 // MLX alone at larger row counts: from its qmv batch limit on, quantizedMM is qmm, which on a GPU
 // with neural accelerators is the NAX (tensor ops) kernel. A verify padded up to such a row count
 // pays that kernel's time, whatever the padding.

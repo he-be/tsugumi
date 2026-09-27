@@ -428,3 +428,31 @@ ishizuki で効かせるのに要るもの (どれも ishizuki に無い): (1) G
 - ishizuki の VerifyMatmul (M1 Max で決めた閾値で 2 行では使われない) は M6 では 2 行で 2 倍。
 - MLX は qmv の行数の上限を超えると tensor ops (NAX) の qmm に切り替えるが、この形では行数によらず 1 行の約 4 倍。2 行を水増しして NAX に乗せる手は遅くなる。
 - tensor ops で積和を持たせる few-row のカーネルは書いていない。
+
+### 14-4. tensor ops (MSL 4.0 `matmul2d`) で 2 行の検証を書いた — M6 では 1 行の qmv の 3.7〜4.5 倍で、採らない (2026-09-28、実測)
+
+ユーザー指示: 「tensor ops で MTP のボトルネックの大きいところから」。一番大きいのは 2 トークンの検証で増える行列積 (§14-3、特に MLP)。
+MLX の実行時カーネルは macOS 26 以降で MSL 4.0 で組まれる (mlx `device.cpp` の `get_metal_version`) ので、ishizuki の `MLXFast.metalKernel` から tensor ops が使える。
+`FewRowNAX` (mtp.patch、`Core/FewRowNAX.swift`) を書いた: [qwen38_nax.metal](../../Sources/Tsugumi/Metal/Qwen/qwen38_nax.metal) の `qfn_dense_nax` と同じ形で、
+threadgroup ごとに重み NR0 行 × 活性 8 行 (水増し)、K は 128 (1 グループ) ずつ、各スレッドが 2-bit を half に復元して threadgroup メモリに置き、`matmul2d` (4 simdgroup、float 累算) に渡す。**PackedLinear には結線していない。**
+
+`ishizuki-verify-bench` (乱数の重み、2-bit group 128、中央値、µs。出力は `scratch/bonsai27b/mtp/verify-bench-nax.txt`)。値は MLX と一致 (max |diff| 0.005〜0.012、MLX 同士の差と同じ桁):
+
+| 形 | 1 行 (MLX qmv) | 2 行 FewRowNAX | 4 行 | 8 行 | 参考: 2 行 FewRowQMV |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| mlp gate/up 17408×5120 | 146 | 675 | 686 | 712 | 212 |
+| mlp down 5120×17408 | 152 | 682 | 694 | 763 | 211 |
+| gdn in_proj_qkv 10240×5120 | 74 | 409 | 415 | 429 | 134 |
+| attn q 12288×5120 | 96 | 484 | 492 | 510 | 154 |
+
+振った変数 (gate/up、µs):
+- threadgroup の重みの行数: 64 → 675、32 → 537〜549、16 → 554。128 は動かなかった (threadgroup メモリ超え)。
+- 活性の行数 (水増しの幅): 8 → 549、16 → 641、32 → 1,295。2 と 4 は動かなかった (出力なし。`matmul2d_descriptor` の最小幅の制約とみているが、エラーは確かめていない)。
+- 左右のオペランドの入れ替え (`ISHIZUKI_NAX_SWAP`): 553 / 645 / 1,296 で同じ。
+- 復元を消して `matmul2d` だけ (`ISHIZUKI_NAX_MODE=2`、値は無意味): 行数 32 で 404〜412、64 で 449。**tensor op 単体で 1 行の qmv の約 3 倍かかる。**復元の分は残りの 130 µs ほど。
+  (`MODE=1` = `matmul2d` を外した版は、復元の結果が読まれないのでコンパイラが消し、30〜67 µs になった。比べる値にならない。)
+
+読み: 2 行の検証で必要な積和は 17408×5120×2 ≈ 0.18 G 回で、M6 の tensor ops (MPS の fp16 GEMM で 18.6 TFLOP/s、m6-prefill/03) なら 20 µs で済む量だが、`matmul2d` は水増しした 8 行ぶんを、8 行 × 32 行 × 128 の小さなタイルでは 2.6 TFLOP/s でしか回らない。
+活性の幅に比例して時間が増え、幅 8 が下限で、それでも帯域の時間 (1 行 qmv) の 3.7 倍。**M6 では、2 トークンの検証の行列積を tensor ops に移すと遅くなる。**MLX の NAX qmm (§14-3、12 行以上で 1 行の約 4 倍) と同じ結論。
+attention の本体や delta-net の規則は、2 トークンではこれより小さい演算なので、同じ理由で tensor ops の出番は無い。
+tensor ops が効くのは、1 回の検証で 32 トークン以上を並べる形 (下書きを長くする・木で並べる) だけで、MTP ヘッドは 1 トークンしか出さない。
