@@ -44,6 +44,147 @@ func time(_ body: () -> [MLXArray]) -> Double {
 }
 
 MLXRandom.seed(7)
+// The quantized-KV attention of one full-attention layer (16 §16), as Attention.quantizedAttention
+// runs it on the house cache (keys 3-bit, values 4-bit, group 64, a dense window of 128), for one
+// and two queries: 24 heads over 4 KV heads, head 256, VB_ATTN_T cached tokens. Chains 16 layers.
+if ProcessInfo.processInfo.environment["VB_ATTN"] == "1" {
+  let total = Int(ProcessInfo.processInfo.environment["VB_ATTN_T"] ?? "2316") ?? 2316
+  let win = 128
+  let t = total - win
+  let (kvH, rep, d) = (4, 6, 256)
+  let keysQ = quantized((MLXRandom.normal([1, kvH, t, d])).asType(.float16), groupSize: 64, bits: 3)
+  let valsQ = quantized((MLXRandom.normal([1, kvH, t, d])).asType(.float16), groupSize: 64, bits: 4)
+  let k3 = (keysQ.wq.expandedDimensions(axis: 2), keysQ.scales.expandedDimensions(axis: 2), keysQ.biases!.expandedDimensions(axis: 2))
+  let v4 = (valsQ.wq.expandedDimensions(axis: 2), valsQ.scales.expandedDimensions(axis: 2), valsQ.biases!.expandedDimensions(axis: 2))
+  let wk = MLXRandom.normal([1, kvH, 1, win, d]).asType(.float16)
+  let wv = MLXRandom.normal([1, kvH, 1, win, d]).asType(.float16)
+  eval(k3.0, k3.1, k3.2, v4.0, v4.1, v4.2, wk, wv)
+  print("quantized attention, \(total) tokens (us per layer): l / full / scores qmm / values qmm / softmax+mask")
+  for l in [1, 2] {
+    let qs = (0..<chain).map { _ in (MLXRandom.normal([1, kvH, rep, l, d]) * 0.06).asType(.float16) }
+    eval(qs)
+    let mask: MLXArray? = l == 1 ? nil : causalMask(length: l, offset: total - l, dtype: .float16)
+    func scores(_ q: MLXArray) -> MLXArray {
+      quantizedMM(q, k3.0, scales: k3.1, biases: k3.2, transpose: true, groupSize: 64, bits: 3, mode: .affine)
+    }
+    func attend(_ q: MLXArray) -> MLXArray {
+      var s = scores(q)
+      var w = matmul(q, wk.swappedAxes(-1, -2))
+      if let mask {
+        s = s + mask[.ellipsis, 0..<t]
+        w = w + mask[.ellipsis, t...]
+      }
+      let weights = softmax(concatenated([s, w], axis: -1), axis: -1, precise: true)
+      let out = quantizedMM(weights[.ellipsis, 0..<t], v4.0, scales: v4.1, biases: v4.2, transpose: false, groupSize: 64, bits: 4, mode: .affine)
+      return out + matmul(weights[.ellipsis, t...], wv)
+    }
+    let full = time { qs.map(attend) }
+    let sc = time { qs.map(scores) }
+    let ws = qs.map { softmax(concatenated([scores($0), matmul($0, wk.swappedAxes(-1, -2))], axis: -1), axis: -1, precise: true) }
+    eval(ws)
+    let vals = time { ws.map { quantizedMM($0[.ellipsis, 0..<t], v4.0, scales: v4.1, biases: v4.2, transpose: false, groupSize: 64, bits: 4, mode: .affine) } }
+    let sm = time { qs.map { q -> MLXArray in
+      let s0 = MLXRandom.normal([1, kvH, rep, l, total]).asType(.float16)
+      return softmax(mask.map { s0 + $0 } ?? s0, axis: -1, precise: true)
+    } }
+    // Folded: the 6 query heads of a KV head and the l queries as rows of one product, M = 6l.
+    let k3f = (keysQ.wq, keysQ.scales, keysQ.biases!)
+    let v4f = (valsQ.wq, valsQ.scales, valsQ.biases!)
+    let wkf = wk.squeezed(axis: 2)
+    let wvf = wv.squeezed(axis: 2)
+    let maskF: MLXArray? = mask.map { MLX.tiled($0, repetitions: [rep, 1]) }
+    func attendFolded(_ q5: MLXArray) -> MLXArray {
+      let q = q5.reshaped([1, kvH, rep * l, d])
+      var s = quantizedMM(q, k3f.0, scales: k3f.1, biases: k3f.2, transpose: true, groupSize: 64, bits: 3, mode: .affine)
+      var w = matmul(q, wkf.swappedAxes(-1, -2))
+      if let maskF {
+        s = s + maskF[.ellipsis, 0..<t]
+        w = w + maskF[.ellipsis, t...]
+      }
+      let weights = softmax(concatenated([s, w], axis: -1), axis: -1, precise: true)
+      let out = quantizedMM(weights[.ellipsis, 0..<t], v4f.0, scales: v4f.1, biases: v4f.2, transpose: false, groupSize: 64, bits: 4, mode: .affine)
+      return (out + matmul(weights[.ellipsis, t...], wvf)).reshaped([1, kvH, rep, l, d])
+    }
+    let folded = time { qs.map(attendFolded) }
+    let scF = time { qs.map { quantizedMM($0.reshaped([1, kvH, rep * l, d]), k3f.0, scales: k3f.1, biases: k3f.2, transpose: true, groupSize: 64, bits: 3, mode: .affine) } }
+    let diff = abs(attend(qs[0]).asType(.float32) - attendFolded(qs[0]).asType(.float32)).max().item(Float.self)
+    // Reference in float32 from the dequantized cache.
+    let kd = concatenated([dequantized(keysQ.wq, scales: keysQ.scales, biases: keysQ.biases!, groupSize: 64, bits: 3).asType(.float32), wk.squeezed(axis: 2).asType(.float32)], axis: 2)
+    let vd = concatenated([dequantized(valsQ.wq, scales: valsQ.scales, biases: valsQ.biases!, groupSize: 64, bits: 4).asType(.float32), wv.squeezed(axis: 2).asType(.float32)], axis: 2)
+    let q32 = qs[0].reshaped([1, kvH, rep * l, d]).asType(.float32)
+    var s32 = matmul(q32, kd.swappedAxes(-1, -2))
+    if let maskF { s32 = s32 + maskF.asType(.float32) }
+    let ref = matmul(softmax(s32, axis: -1, precise: true), vd).reshaped([1, kvH, rep, l, d])
+    let eA = abs(attend(qs[0]).asType(.float32) - ref).max().item(Float.self)
+    let eF = abs(attendFolded(qs[0]).asType(.float32) - ref).max().item(Float.self)
+    print(String(format: "l=%d  %.0f  %.0f  %.0f  %.0f | folded: full %.0f scores %.0f, max|diff| %.3g | against f32: now %.3g, folded %.3g", l, full, sc, vals, sm, folded, scF, diff, eA, eF))
+    // Which product: the scores of the 5-D (broadcast) form against f32, each query row alone.
+    let kq32 = dequantized(keysQ.wq, scales: keysQ.scales, biases: keysQ.biases!, groupSize: 64, bits: 3).asType(.float32)
+    let sNow = scores(qs[0]).asType(.float32)                                   // [1,4,6,l,t]
+    let sRef = matmul(qs[0].asType(.float32), kq32.expandedDimensions(axis: 2).swappedAxes(-1, -2))
+    for j in 0..<l {
+      let e = abs(sNow[.ellipsis, j, 0...] - sRef[.ellipsis, j, 0...]).max().item(Float.self)
+      let one = quantizedMM(qs[0][.ellipsis, j..<(j + 1), 0...], k3.0, scales: k3.1, biases: k3.2, transpose: true, groupSize: 64, bits: 3, mode: .affine).asType(.float32)
+      let e1 = abs(one - sRef[.ellipsis, j..<(j + 1), 0...]).max().item(Float.self)
+      print(String(format: "  scores row %d: in the l=%d product %.3g, alone %.3g", j, l, e, e1))
+    }
+    let wNow = softmax(sRef, axis: -1)
+    let vq32 = dequantized(valsQ.wq, scales: valsQ.scales, biases: valsQ.biases!, groupSize: 64, bits: 4).asType(.float32)
+    let oNow = quantizedMM(wNow.asType(.float16), v4.0, scales: v4.1, biases: v4.2, transpose: false, groupSize: 64, bits: 4, mode: .affine).asType(.float32)
+    let oRef = matmul(wNow, vq32.expandedDimensions(axis: 2))
+    for j in 0..<l {
+      print(String(format: "  values row %d: %.3g", j, abs(oNow[.ellipsis, j, 0...] - oRef[.ellipsis, j, 0...]).max().item(Float.self)))
+    }
+  }
+  if ProcessInfo.processInfo.environment["VB_ONLY_ATTN"] == "1" { exit(0) }
+}
+
+// Cold weights (16 §16): the chain above multiplies one weight 16 times, so part of it can stay
+// in the system cache between products. Here the chain walks `copies` different weights of the
+// shape (4 × 25 MB for gate/up, past the cache), as a forward does, which reads each weight once.
+// Columns: M=1 MLX, M=1 magic, M=2 FewRowQMV, M=2 magic, M=2 MLX, then per ISHIZUKI_QMV_MODE in VB_MODES.
+let copies = Int(ProcessInfo.processInfo.environment["VB_COPIES"] ?? "4") ?? 4
+let modes = (ProcessInfo.processInfo.environment["VB_MODES"] ?? "").split(separator: ",").compactMap { Int($0) }
+print("cold chain over \(copies) weights (us, max|diff| against MLX): M=1 mlx, M=1 magic, M=2 few-row, M=2 magic, M=2 mlx" + (modes.isEmpty ? "" : ", M=2 modes \(modes)"))
+var coldPerToken = [Double](repeating: 0, count: 5)
+for (label, n, k, count) in shapes {
+  var ws: [(MLXArray, MLXArray, MLXArray)] = []
+  for _ in 0..<copies {
+    let packed = quantized(
+      (MLXRandom.normal([n, k]) * 0.02).asType(.float16), groupSize: 128, bits: 2)
+    ws.append((packed.wq, packed.scales, packed.biases!))
+    eval(packed.wq, packed.scales, packed.biases!)
+  }
+  var cells: [String] = []
+  var column = 0
+  let cases: [(Int, Int, Int)] = [(1, 0, 0), (1, 1, 0), (2, 2, 0), (2, 1, 0), (2, 0, 0)] + modes.flatMap { [(1, 1, $0), (2, 1, $0)] }
+  for (m, which, mode) in cases {
+    FewRowQMV.magicMode = mode
+    let xs = (0..<chain).map { _ in MLXRandom.normal([m, k]).asType(.float16) }
+    eval(xs)
+    func run(_ x: MLXArray, _ c: Int) -> MLXArray {
+      let (w, scales, biases) = ws[c % copies]
+      switch which {
+      case 0: return quantizedMM(x, w, scales: scales, biases: biases, transpose: true, groupSize: 128, bits: 2, mode: .affine)
+      case 1: return FewRowQMV.applyMagic(x, w, scales: scales, biases: biases, groupSize: 128, bits: 2)!
+      default: return FewRowQMV.apply(x, w, scales: scales, biases: biases, groupSize: 128, bits: 2)!
+      }
+    }
+    let (w0, s0, b0) = ws[0]
+    let ref = quantizedMM(xs[0], w0, scales: s0, biases: b0, transpose: true, groupSize: 128, bits: 2, mode: .affine)
+    let diff = abs(run(xs[0], 0).asType(.float32) - ref.asType(.float32)).max().item(Float.self)
+    let t = time { xs.enumerated().map { run($0.element, $0.offset) } }
+    if column < 5 { coldPerToken[column] += t * Double(count) }
+    column += 1
+    cells.append(String(format: "%.0f (%.3g)", t, diff))
+  }
+  FewRowQMV.magicMode = 0
+  print("\(label)  \(cells.joined(separator: "  "))")
+}
+print(String(format: "cold, one backbone pass of matmuls: M=1 mlx %.1f ms, M=1 magic %.1f ms, M=2 few-row %.1f ms, M=2 magic %.1f ms, M=2 mlx %.1f ms",
+  coldPerToken[0] / 1e3, coldPerToken[1] / 1e3, coldPerToken[2] / 1e3, coldPerToken[3] / 1e3, coldPerToken[4] / 1e3))
+if ProcessInfo.processInfo.environment["VB_ONLY_COLD"] == "1" { exit(0) }
+
 // FewRowQMV.applyMagic (mtp.patch): codes decoded two at a time through half2 (16 §15).
 print("magic qmv (us, max|diff| against MLX): shape / M=1 mlx, M=1 magic, M=2 few-row, M=2 magic, M=3 magic, M=1 few-row")
 var magicPerToken = (mlx1: 0.0, magic1: 0.0, few2: 0.0, magic2: 0.0)
@@ -78,6 +219,29 @@ for (label, n, k, count) in shapes {
 }
 print(String(format: "one backbone pass of matmuls: M=1 mlx %.1f ms, M=1 magic %.1f ms, M=2 few-row %.1f ms, M=2 magic %.1f ms",
   magicPerToken.mlx1 / 1e3, magicPerToken.magic1 / 1e3, magicPerToken.few2 / 1e3, magicPerToken.magic2 / 1e3))
+// ISHIZUKI_QMV_MODE variants of the two-row magic kernel (16 §16): time and max|diff| against MLX.
+if let modes = ProcessInfo.processInfo.environment["VB_MODES"] {
+  print("magic M=2 by mode (us, max|diff|): shape / " + modes)
+  for (label, n, k, _) in shapes.prefix(3) {
+    let packed = quantized(
+      (MLXRandom.normal([n, k]) * 0.02).asType(.float16), groupSize: 128, bits: 2)
+    let (w, scales, biases) = (packed.wq, packed.scales, packed.biases!)
+    eval(w, scales, biases)
+    let xs = (0..<chain).map { _ in MLXRandom.normal([2, k]).asType(.float16) }
+    eval(xs)
+    let ref = quantizedMM(xs[0], w, scales: scales, biases: biases, transpose: true, groupSize: 128, bits: 2, mode: .affine)
+    var cells: [String] = []
+    for mode in modes.split(separator: ",").compactMap({ Int($0) }) {
+      FewRowQMV.magicMode = mode
+      let run = { (x: MLXArray) in FewRowQMV.applyMagic(x, w, scales: scales, biases: biases, groupSize: 128, bits: 2)! }
+      let diff = abs(run(xs[0]).asType(.float32) - ref.asType(.float32)).max().item(Float.self)
+      let t = time { xs.map(run) }
+      cells.append(String(format: "%d: %.0f (%.3g)", mode, t, diff))
+    }
+    FewRowQMV.magicMode = 0
+    print("\(label)  \(cells.joined(separator: "  "))")
+  }
+}
 if ProcessInfo.processInfo.environment["VB_ONLY_MAGIC"] == "1" { exit(0) }
 
 var perToken: [Int: (mlx: Double, kernel: Double, few: Double)] = [:]

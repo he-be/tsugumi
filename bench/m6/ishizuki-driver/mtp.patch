@@ -157,10 +157,10 @@ index 0000000..94d81af
 +}
 diff --git a/Sources/IshizukiKit/Core/FewRowQMV.swift b/Sources/IshizukiKit/Core/FewRowQMV.swift
 new file mode 100644
-index 0000000..35f334a
+index 0000000..3cc3faf
 --- /dev/null
 +++ b/Sources/IshizukiKit/Core/FewRowQMV.swift
-@@ -0,0 +1,254 @@
+@@ -0,0 +1,307 @@
 +// SPDX-FileCopyrightText: 2026 Sarah Truffle <me@heni.lol>
 +// SPDX-License-Identifier: AGPL-3.0-or-later
 +//
@@ -214,6 +214,22 @@ index 0000000..35f334a
 +  nonisolated(unsafe) public static var magicEnabled =
 +    ProcessInfo.processInfo.environment["ISHIZUKI_QMV_MAGIC"] != "0"
 +  public static let magicRows = 1...4
++  /// Variants for finding where the two-row time goes (16 §16), `ISHIZUKI_QMV_MODE`: 0 the kernel,
++  /// 1 the second row's FMAs left out, 2 the second row's activation preparation left out,
++  /// 4 only the loads (a floor), 5 both rows in one half2 multiply per code.
++  nonisolated(unsafe) public static var magicMode =
++    ProcessInfo.processInfo.environment["ISHIZUKI_QMV_MODE"].flatMap { Int($0) } ?? 0
++  nonisolated(unsafe) public static var magicRolled =
++    ProcessInfo.processInfo.environment["ISHIZUKI_QMV_ROLLED"] == "1"
++  /// One-row products through the magic kernel too (`ISHIZUKI_QMV_MAGIC1=1`), for comparing it
++  /// with MLX's qmv on the real forward. Off: one row stays on MLX.
++  nonisolated(unsafe) public static var magicSingleRow =
++    ProcessInfo.processInfo.environment["ISHIZUKI_QMV_MAGIC1"] == "1"
++  /// 32-bit words of codes each thread reads per pass: 1 or 2 (`ISHIZUKI_QMV_WPT`).
++  nonisolated(unsafe) public static var magicWordsPerThread =
++    ProcessInfo.processInfo.environment["ISHIZUKI_QMV_WPT"].flatMap { Int($0) } ?? 1
++  nonisolated(unsafe) public static var magicGridY =
++    ProcessInfo.processInfo.environment["ISHIZUKI_QMV_GRIDY"] == "1"
 +  /// Output rows per simdgroup: the activation's per-block preparation is shared by this many.
 +  nonisolated(unsafe) public static var magicRowsPerSimdgroup =
 +    ProcessInfo.processInfo.environment["ISHIZUKI_QMV_RPS"].flatMap { Int($0) } ?? 4
@@ -230,12 +246,18 @@ index 0000000..35f334a
 +        w.dim(1) * 16 == k, scales.dim(1) * groupSize == k
 +      else { return nil }
 +      let rps = magicRowsPerSimdgroup
++      let wpt = k % 1024 == 0 && groupSize >= 32 * magicWordsPerThread ? magicWordsPerThread : 1
 +      guard n % (2 * rps) == 0 else { return nil }
-+      return magicKernel(
++      let rolled = magicRolled
++      let gridY = magicGridY
++      return (rolled ? magicKernelRolled : magicKernel)(
 +        [x, w, scales, biases],
-+        template: [("XT", x.dtype), ("R", m), ("K", k), ("N", n), ("GS", groupSize), ("RPS", rps)],
-+        grid: (64 * (n / (2 * rps)), 1, 1),
-+        threadGroup: (64, 1, 1),
++        template: [
++          ("XT", x.dtype), ("R", m), ("K", k), ("N", n), ("GS", groupSize), ("RPS", rps),
++          ("MODE", magicMode), ("GY", gridY ? 1 : 0), ("WPT", wpt),
++        ],
++        grid: gridY ? (32 * m, 2 * (n / (2 * rps)), 1) : (64 * (n / (2 * rps)), 1, 1),
++        threadGroup: gridY ? (32, 2, 1) : (64, 1, 1),
 +        outputShapes: [[m, n]],
 +        outputDTypes: [x.dtype])[0]
 +    #else
@@ -244,17 +266,13 @@ index 0000000..35f334a
 +  }
 +
 +  #if canImport(Metal)
-+    private static let magicKernel: MLXFast.MLXFastKernel = MLXFast.metalKernel(
-+      name: "ishizuki_few_row_qmv2_magic",
-+      inputNames: ["x", "w", "scales", "biases"],
-+      outputNames: ["y"],
-+      source: """
-+            // 16 codes per thread (one 32-bit word), 512 per simdgroup pass, 4 output rows per
-+            // simdgroup, 2 simdgroups per threadgroup, as qmv_fast. Word bits 2i..2i+1 hold
-+            // code i. The half2 lanes are bits 0-15 (codes 0-7) and 16-31 (codes 8-15); a code at
-+            // lane bits 2j (j <= 4) ORed with 0x6400 is the half 1024 + 4^j * code, exact.
-+            // Codes 5-7 and 13-15 are read from the word shifted right by 10.
-+            constexpr int VPT = 16;
++    private static let magicSource: String = """
++            // WPT 32-bit words (16 codes each) per thread per pass, 32 * 16 * WPT codes per
++            // simdgroup pass, RPS output rows per simdgroup, 2 simdgroups per threadgroup, as
++            // qmv_fast. Word bits 2i..2i+1 hold code i. The half2 lanes are bits 0-15 (codes
++            // 0-7) and 16-31 (codes 8-15); a code at lane bits 2j (j <= 4) ORed with 0x6400 is
++            // the half 1024 + 4^j * code, exact. Codes 5-7 and 13-15 come from the word >> 10.
++            constexpr int VPT = 16 * WPT;
 +            constexpr int BLOCK = VPT * 32;
 +            constexpr int KW = K / 16;           // words per weight row
 +            constexpr int KG = K / GS;
@@ -263,14 +281,16 @@ index 0000000..35f334a
 +
 +            uint lane = thread_index_in_simdgroup;
 +            uint sg = simdgroup_index_in_threadgroup;
-+            int out_row = int(threadgroup_position_in_grid.x) * (2 * RPS) + int(sg) * RPS;
++            int out_row = int(GY ? threadgroup_position_in_grid.y : threadgroup_position_in_grid.x) * (2 * RPS) + int(sg) * RPS;
++            // GY: (32, 2, 1) threadgroups on a (rows of x, output blocks) grid, qmv_fast's own
++            // launch shape. Only for comparing; the rows of x then do not share a weight read.
 +
-+            device const uint *ws = (device const uint *)w + out_row * KW + lane;
++            device const uint *ws = (device const uint *)w + out_row * KW + lane * WPT;
 +            device const XT *sc = scales + out_row * KG + lane / STEP;
 +            device const XT *bi = biases + out_row * KG + lane / STEP;
 +            device const XT *xp = x + lane * VPT;
 +
-+            // Position i of the 16 sits at 4^shift[i] in its half.
++            // Position i of a word's 16 sits at 4^shift[i] in its half.
 +            const float inv[16] = {1.0f, 0.25f, 0.0625f, 0.015625f, 0.00390625f, 1.0f, 0.25f, 0.0625f,
 +                                   1.0f, 0.25f, 0.0625f, 0.015625f, 0.00390625f, 1.0f, 0.25f, 0.0625f};
 +
@@ -280,50 +300,68 @@ index 0000000..35f334a
 +                for (int j = 0; j < RPS; ++j) result[r][j] = 0.0f;
 +
 +            for (int k = 0; k < K; k += BLOCK) {
-+                // Every load of the block first, so the reads of all rows are in flight at once.
-+                uint words[RPS];
++                uint words[RPS][WPT];
 +                float sc_[RPS], bi_[RPS];
 +                for (int row = 0; row < RPS; ++row) {
-+                    words[row] = ws[row * KW];
++                    if (WPT == 2) {
++                        uint2 pair = *((device const uint2 *)(ws + row * KW));
++                        words[row][0] = pair.x;
++                        words[row][WPT - 1] = pair.y;
++                    } else {
++                        words[row][0] = ws[row * KW];
++                    }
 +                    sc_[row] = float(sc[row * KG]);
 +                    bi_[row] = float(bi[row * KG]);
 +                }
 +                float sum[R];
 +                float corr[R];
 +                for (int r = 0; r < R; ++r) {
-+                    device const XT *xr = xp + r * K + k;
++                    device const vec<XT, 4> *x4 = (device const vec<XT, 4> *)(xp + r * K + k);
 +                    float s = 0.0f, c = 0.0f;
-+                    for (int i = 0; i < VPT; ++i) {
-+                        float a = float(xr[i]);
-+                        s += a;
-+                        xt[r][i] = a * inv[i];
-+                        c += xt[r][i];
++                    for (int q = 0; q < VPT / 4; ++q) {
++                        float4 a = float4(x4[q]);
++                        s += a.x + a.y + a.z + a.w;
++                        for (int e = 0; e < 4; ++e) {
++                            xt[r][4 * q + e] = a[e] * inv[(4 * q + e) % 16];
++                            c += xt[r][4 * q + e];
++                        }
 +                    }
 +                    sum[r] = s;
 +                    corr[r] = 1024.0f * c;
 +                }
 +                for (int row = 0; row < RPS; ++row) {
-+                    uint u = words[row];
-+                    uint v = u >> 10;
-+                    half2 h0 = as_type<half2>((u & 0x00030003u) | MAGIC);
-+                    half2 h1 = as_type<half2>((u & 0x000c000cu) | MAGIC);
-+                    half2 h2 = as_type<half2>((u & 0x00300030u) | MAGIC);
-+                    half2 h3 = as_type<half2>((u & 0x00c000c0u) | MAGIC);
-+                    half2 h4 = as_type<half2>((u & 0x03000300u) | MAGIC);
-+                    half2 h5 = as_type<half2>((v & 0x00030003u) | MAGIC);
-+                    half2 h6 = as_type<half2>((v & 0x000c000cu) | MAGIC);
-+                    half2 h7 = as_type<half2>((v & 0x00300030u) | MAGIC);
-+                    for (int r = 0; r < R; ++r) {
-+                        float acc = xt[r][0] * float(h0.x) + xt[r][8] * float(h0.y)
-+                            + xt[r][1] * float(h1.x) + xt[r][9] * float(h1.y)
-+                            + xt[r][2] * float(h2.x) + xt[r][10] * float(h2.y)
-+                            + xt[r][3] * float(h3.x) + xt[r][11] * float(h3.y)
-+                            + xt[r][4] * float(h4.x) + xt[r][12] * float(h4.y)
-+                            + xt[r][5] * float(h5.x) + xt[r][13] * float(h5.y)
-+                            + xt[r][6] * float(h6.x) + xt[r][14] * float(h6.y)
-+                            + xt[r][7] * float(h7.x) + xt[r][15] * float(h7.y);
-+                        result[r][row] += sc_[row] * (acc - corr[r]) + sum[r] * bi_[row];
++                    if (MODE == 4) {
++                        for (int r = 0; r < R; ++r)
++                            result[r][row] += float(words[row][0] & 0xffu) * sc_[row] + bi_[row] + float(words[row][WPT - 1] >> 24);
++                        continue;
 +                    }
++                    float acc[R];
++                    for (int r = 0; r < R; ++r) acc[r] = 0.0f;
++                    for (int p = 0; p < WPT; ++p) {
++                        uint u = words[row][p];
++                        uint v = u >> 10;
++                        half2 h0 = as_type<half2>((u & 0x00030003u) | MAGIC);
++                        half2 h1 = as_type<half2>((u & 0x000c000cu) | MAGIC);
++                        half2 h2 = as_type<half2>((u & 0x00300030u) | MAGIC);
++                        half2 h3 = as_type<half2>((u & 0x00c000c0u) | MAGIC);
++                        half2 h4 = as_type<half2>((u & 0x03000300u) | MAGIC);
++                        half2 h5 = as_type<half2>((v & 0x00030003u) | MAGIC);
++                        half2 h6 = as_type<half2>((v & 0x000c000cu) | MAGIC);
++                        half2 h7 = as_type<half2>((v & 0x00300030u) | MAGIC);
++                        for (int r = 0; r < R; ++r) {
++                            thread const float *xq = xt[r] + 16 * p;
++                            acc[r] += xq[0] * float(h0.x) + xq[8] * float(h0.y)
++                                + xq[1] * float(h1.x) + xq[9] * float(h1.y)
++                                + xq[2] * float(h2.x) + xq[10] * float(h2.y)
++                                + xq[3] * float(h3.x) + xq[11] * float(h3.y)
++                                + xq[4] * float(h4.x) + xq[12] * float(h4.y)
++                                + xq[5] * float(h5.x) + xq[13] * float(h5.y)
++                                + xq[6] * float(h6.x) + xq[14] * float(h6.y)
++                                + xq[7] * float(h7.x) + xq[15] * float(h7.y);
++                        }
++                    }
++                    for (int r = 0; r < R; ++r)
++                        result[r][row] += sc_[row] * (acc[r] - corr[r]) + sum[r] * bi_[row];
 +                }
 +                ws += BLOCK / 16;
 +                sc += BLOCK / GS;
@@ -336,7 +374,22 @@ index 0000000..35f334a
 +                    if (lane == 0) y[r * N + out_row + row] = XT(v);
 +                }
 +            }
-+        """)
++        """
++
++    private static let magicKernel: MLXFast.MLXFastKernel = MLXFast.metalKernel(
++      name: "ishizuki_few_row_qmv2_magic",
++      inputNames: ["x", "w", "scales", "biases"],
++      outputNames: ["y"],
++      source: magicSource)
++
++    /// The k loop kept rolled (`ISHIZUKI_QMV_ROLLED=1`), for comparing against the unrolled one.
++    private static let magicKernelRolled: MLXFast.MLXFastKernel = MLXFast.metalKernel(
++      name: "ishizuki_few_row_qmv2_magic_rolled",
++      inputNames: ["x", "w", "scales", "biases"],
++      outputNames: ["y"],
++      source: magicSource.replacingOccurrences(
++        of: "for (int k = 0; k < K; k += BLOCK) {",
++        with: "_Pragma(\"clang loop unroll(disable)\")\nfor (int k = 0; k < K; k += BLOCK) {"))
 +  #endif
 +
 +  #if canImport(Metal)
@@ -416,14 +469,14 @@ index 0000000..35f334a
 +  #endif
 +}
 diff --git a/Sources/IshizukiKit/Core/Hadamard.swift b/Sources/IshizukiKit/Core/Hadamard.swift
-index 067be78..6961df2 100644
+index 067be78..9654af9 100644
 --- a/Sources/IshizukiKit/Core/Hadamard.swift
 +++ b/Sources/IshizukiKit/Core/Hadamard.swift
 @@ -208,6 +208,20 @@ public final class PackedLinear: @unchecked Sendable {
        let shape = h.shape
        let width = shape[shape.count - 1]
        let rows = h.size / width
-+      if rows == 2,
++      if rows == 2 || (rows == 1 && FewRowQMV.magicSingleRow),
 +        let y = FewRowQMV.applyMagic(
 +          h.reshaped([rows, width]), weight, scales: scales, biases: biases,
 +          groupSize: groupSize, bits: bits)
@@ -788,3 +841,56 @@ index c364f02..2a524cd 100644
    }
  }
  
+diff --git a/Sources/IshizukiKit/Text/Attention.swift b/Sources/IshizukiKit/Text/Attention.swift
+index fdf787f..2f16d88 100644
+--- a/Sources/IshizukiKit/Text/Attention.swift
++++ b/Sources/IshizukiKit/Text/Attention.swift
+@@ -64,6 +64,10 @@ public final class Attention: @unchecked Sendable {
+     }
+   }
+ 
++  /// Off with `ISHIZUKI_ATTN_FOLD=0`: a 2- to 8-query block takes the broadcast form too.
++  nonisolated(unsafe) public static var foldsVerify =
++    ProcessInfo.processInfo.environment["ISHIZUKI_ATTN_FOLD"] != "0"
++
+   public func callAsFunction(
+     _ x: MLXArray, mask: MLXArray?, cache: AttentionKVCache?, positions: MLXArray? = nil
+   ) -> MLXArray {
+@@ -149,6 +153,37 @@ public final class Attention: @unchecked Sendable {
+     let kvHeads = keys.0.dim(1)
+     let repeats = numHeads / kvHeads
+ 
++    // A verify block of a few queries: each KV head's query heads and queries are the rows of
++    // one product. The broadcast form below gives a wrong second row in the weights × values
++    // product (MLX's qvm at two rows over a broadcast batch: max error 0.13 against float32 on an
++    // M6, the first row and the scores exact; 16 §16), and is 2.5 times slower.
++    if repeats > 1, (2...8).contains(l), Attention.foldsVerify,
++      mask == nil || mask!.ndim == 2
++    {
++      let q = (queries * scale).reshaped([b, kvHeads, repeats * l, d])
++      let rowMask = mask.map { MLX.tiled($0, repetitions: [repeats, 1]) }
++      var scores = quantizedMM(
++        q, keys.0, scales: keys.1, biases: keys.2,
++        transpose: true, groupSize: groupSize, bits: keyBits, mode: .affine)
++      var windowScores = window.map { matmul(q, $0.keys.swappedAxes(-1, -2)) }
++      if let rowMask {
++        let quantizedLength = scores.dim(-1)
++        scores = scores + rowMask[.ellipsis, 0..<quantizedLength]
++        windowScores = windowScores.map { $0 + rowMask[.ellipsis, quantizedLength...] }
++      }
++      let combined = windowScores.map { concatenated([scores, $0], axis: -1) } ?? scores
++      let weights = softmax(combined, axis: -1, precise: true)
++      let quantizedLength = scores.dim(-1)
++      var output = quantizedMM(
++        weights[.ellipsis, 0..<quantizedLength], values.0,
++        scales: values.1, biases: values.2,
++        transpose: false, groupSize: groupSize, bits: valueBits, mode: .affine)
++      if let window {
++        output = output + matmul(weights[.ellipsis, quantizedLength...], window.values)
++      }
++      return output.reshaped([b, numHeads, l, d])
++    }
++
+     var q = queries * scale
+     var qKeys = keys
+     var qValues = values
