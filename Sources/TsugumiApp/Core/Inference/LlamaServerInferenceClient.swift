@@ -63,6 +63,41 @@ public struct LlamaServerModelDirectory: Equatable, Sendable {
     }
 }
 
+/// A model directory whose `manifest.json` names a server that is already running instead of one to start
+/// (`docs/qwen38-27b/16` S5): ishizuki on the M6, reached through an ssh forward at 127.0.0.1.
+///
+///     { "arch": { "family": "qwen3_8_dense_llamacpp" },
+///       "endpoint": "http://127.0.0.1:8128", "remote_model": "ternary-bonsai-2-27b" }
+///
+/// The app neither starts nor stops that server. Only a loopback address is accepted: the server has no
+/// authentication, so anything else has to come through a forward the user set up (`docs/OPENAI_SERVER.md`).
+public struct RemoteServerModelDirectory: Equatable, Sendable {
+    public let endpoint: URL
+    public let modelID: String
+
+    /// Nil when the manifest names no `endpoint` (a directory for a server the app starts).
+    public init?(modelDirectory: URL) throws {
+        struct Manifest: Decodable {
+            let endpoint: String?
+            let remote_model: String?
+        }
+        let manifestURL = modelDirectory.appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: manifestURL),
+              let manifest = try? JSONDecoder().decode(Manifest.self, from: data),
+              let text = manifest.endpoint else { return nil }
+        guard let url = URL(string: text), url.scheme == "http",
+              let host = url.host, ["127.0.0.1", "localhost", "::1"].contains(host) else {
+            throw AppInferenceError.modelLoadFailed(
+                "\(manifestURL.path): endpoint \(text) is not an http address on this Mac (127.0.0.1)")
+        }
+        guard let model = manifest.remote_model, !model.isEmpty else {
+            throw AppInferenceError.modelLoadFailed("\(manifestURL.path): endpoint needs remote_model")
+        }
+        endpoint = url
+        modelID = model
+    }
+}
+
 /// A model that runs in a `llama-server` this app starts and stops (`AppModelKind.runsOnLlamaServer`): the load is
 /// the server's start, `unload` is its end, and the rounds go through `RemoteInferenceClient` at 127.0.0.1.
 ///
@@ -72,7 +107,8 @@ public struct LlamaServerModelDirectory: Equatable, Sendable {
 public final class LlamaServerInferenceClient: AppModelLifecycleClient, AppInferenceRuntimeReporting,
                                                  @unchecked Sendable {
     private struct Running {
-        let process: Process
+        /// Nil for a server the manifest points at (`RemoteServerModelDirectory`), which is not this app's to stop.
+        let process: Process?
         let remote: RemoteInferenceClient
         let modelDirectory: URL
         let contextTokens: Int
@@ -108,7 +144,7 @@ public final class LlamaServerInferenceClient: AppModelLifecycleClient, AppInfer
 
     /// The running server's address and pid, for a check that reads `/slots` or asks whether the process is gone.
     public var endpoint: URL? { current()?.remote.endpoint }
-    public var serverProcessIdentifier: Int32? { current()?.process.processIdentifier }
+    public var serverProcessIdentifier: Int32? { current()?.process?.processIdentifier }
 
     // MARK: Lifecycle
 
@@ -116,7 +152,7 @@ public final class LlamaServerInferenceClient: AppModelLifecycleClient, AppInfer
                              forceLogitsHead: Bool,
                              onState: @escaping @Sendable (AppModelLoadState) -> Void) async throws {
         let directory = modelDirectory.standardizedFileURL
-        if let current = current(), current.process.isRunning,
+        if let current = current(), current.process?.isRunning ?? true,
            current.modelDirectory == directory, current.contextTokens == maxContextTokens {
             onState(.ready(modelDirectory: modelDirectory, loadSeconds: 0))
             return
@@ -124,6 +160,24 @@ public final class LlamaServerInferenceClient: AppModelLifecycleClient, AppInfer
         let start = Date()
         do {
             onState(.loading(.validatingDirectory))
+            if let remoteDirectory = try RemoteServerModelDirectory(modelDirectory: directory) {
+                stopServer()
+                onState(.loading(.preparingRunner))
+                let remote = RemoteInferenceClient(endpoint: remoteDirectory.endpoint,
+                                                   modelID: remoteDirectory.modelID,
+                                                   dialect: .init(kind: .bonsai27b), routing: .direct)
+                do {
+                    try await remote.prepare()
+                } catch {
+                    throw AppInferenceError.modelLoadFailed(
+                        "no server at \(remoteDirectory.endpoint.absoluteString) (\(error)); "
+                            + "is the ssh forward up?")
+                }
+                setRunning(Running(process: nil, remote: remote, modelDirectory: directory,
+                                   contextTokens: maxContextTokens))
+                onState(.ready(modelDirectory: modelDirectory, loadSeconds: Date().timeIntervalSince(start)))
+                return
+            }
             let model = try LlamaServerModelDirectory(modelDirectory: directory)
             stopServer()
             try FileManager.default.createDirectory(at: stateDirectory, withIntermediateDirectories: true)
@@ -178,14 +232,15 @@ public final class LlamaServerInferenceClient: AppModelLifecycleClient, AppInfer
         lock.unlock()
         guard let stopping else { return }
         stopping.remote.cancel()
-        Self.stop(stopping.process)
+        guard let process = stopping.process else { return }
+        Self.stop(process)
         try? FileManager.default.removeItem(at: pidURL)
     }
 
     public func cancel() { current()?.remote.cancel() }
 
     public func generate(_ request: AppGenerationRequest) -> AsyncThrowingStream<AppInferenceEvent, Error> {
-        guard let current = current(), current.process.isRunning else {
+        guard let current = current(), current.process?.isRunning ?? true else {
             return AsyncThrowingStream { continuation in
                 continuation.yield(.failed(.modelNotLoaded, partial: nil))
                 continuation.finish()

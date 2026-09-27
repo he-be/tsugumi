@@ -1,6 +1,6 @@
 # 16. MBP の Tsugumi GUI から、M6 単体の ishizuki を使う — 検索などのエージェント動作の計画 (2026-09-27)
 
-**状態: 計画。新しい実測は無い。**[15](15-M6-PREFILL-PLAN.md) §7-5 で ishizuki (MLX Swift) が M6 で Bonsai 2 27B の prefill を 3 経路中最速で回したのを受け、
+**状態: S1 は再起動後の常駐を除いて通過 (§9)。GUI から手で使える (§12)。MTP は未着手で、別セッションで扱う (§13)。S2 は 12 件中 10 件 (§9)。S3 は通過: アプリの形のラウンドが全部通り、Offline 5 問 × 2 セットが 10/10・Swapouts +0 (§10)。S4 の Online は、1 セット目を 8 ターン目で見張りが止めた (§11) が、M6 の再起動後に流し直した 1 セットは 14 ターン完走・Swapouts +0 (2026-09-27、§11-2)。**[15](15-M6-PREFILL-PLAN.md) §7-5 で ishizuki (MLX Swift) が M6 で Bonsai 2 27B の prefill を 3 経路中最速で回したのを受け、
 ユーザーが 2026-09-27 に「MBP で Tsugumi の GUI を出し、中身は M6 単体の ishizuki で検索等のエージェント動作をさせる」と決めた。この文書はその形と、作るもの・段・合否・決めてもらうことを書く。
 表記は [qwen38/01](../qwen38/01-Q2-FIRST-LIGHT.md) と同じ (実測 / 導出 / 未確認)。コードを読んだ結果は「読んだ」と書き、動かしていない。
 
@@ -31,9 +31,9 @@
 | もの | 場所 | 状態 |
 | --- | --- | --- |
 | ishizuki の prefill driver (MBP で組んだ) | `m6:~/LLM/ref/ishizuki-bin/` | 動く。同じ本文 2,427 トークンで 9.205 s、peak 9.43 GB、Swapouts 0 ([15 §7-5](15-M6-PREFILL-PLAN.md)) |
-| MLX 2-bit パック | `m6:~/LLM/ref/Ternary-Bonsai-2-27B-mlx-2bit/` (8.6 GB) | `config.json` schema 2、`components.vision = true`、MTP 無し |
+| MLX 2-bit パック | `m6:/Volumes/SSD256/LLM/ref/Ternary-Bonsai-2-27B-mlx-2bit/` (8.0 GB、外付け。`~/LLM/ref/` の同名はシンボリックリンク、2026-09-27 に移動) | `config.json` schema 2、`components.vision = true`、MTP 無し |
 | 組んで運ぶ道 | [`bench/m6/ishizuki_ship.sh`](../../bench/m6/ishizuki_ship.sh) | tools-version 6.4 → 6.3、FoundationModels の 1 ファイル除外、Swift Build `--arch arm64`、MBP の Metal Toolchain。実行ターゲットを足す形はこのスクリプトが持っている |
-| M6 の内蔵の空き | — | 37 GB (PQ2_0・prism フォーク・venv・ishizuki の checkout は 2026-09-27 に消した) |
+| M6 の内蔵の空き | — | 45 GB (PQ2_0・prism フォーク・venv・ishizuki の checkout を消し、パックを外付けへ移した後。外付け SSD256 の空きは 87 GB) |
 | アプリの子サーバ経路 | [11](11-GUI-WIRING.md) | 種別 `.bonsai27b` (`AppModelKind`) が `LlamaServerInferenceClient` (子プロセスの起動・停止) → `RemoteInferenceClient` (OpenAI 互換) で動く。14 ターン × 2 セット完走 |
 | 検査の口 | `TsugumiToolLoopCheck --endpoint URL --remote-model ID [--remote-direct]` | 既存。`--remote-direct` は llama-swap でなく素の llama-server を指す印 |
 
@@ -75,7 +75,7 @@ thinking on で 1.0 / 20 / 0.95 / 0.0 / 0.0)。パックの `generation_config.j
 | `ssh -N -L 8128:127.0.0.1:8128 m6` | MBP | 経路。アプリが張るか、ユーザーが張る | 未定 (§6-4) |
 | `ishizuki-serve` | M6 `~/LLM/ref/ishizuki-bin/` | `APIServer(directory:…)` を起動して `listen(port: 8128)`。パック・サンプリング・thinking の既定・KV・PrefixStore の置き場を引数で受ける | 未作成 (S1) |
 | launchd (M6) | M6 | `ishizuki-serve` の常駐 (KeepAlive)。再起動後も待ち受ける | 未作成 (S1) |
-| MLX パック | M6 | 重み。M6 に置いたまま (測定対象でなく常用なので [TWO_MACHINE_DEV §5](../TWO_MACHINE_DEV.md) の「置かない」の例外にする。決めてもらう、§6-5) | ある |
+| MLX パック | M6 の外付け (`/Volumes/SSD256/LLM/ref/`) | 重み。起動時に 1 回読むだけなので外付けに置く (ユーザー決定、§6-5)。内蔵には置かない | ある (移動済み) |
 
 ### 2-2. 経路の決まり
 
@@ -117,7 +117,7 @@ thinking on で 1.0 / 20 / 0.95 / 0.0 / 0.0)。パックの `generation_config.j
 - M6 の 8128 を LAN や Tailscale に直接出さない。
 - サンプリングの値を変えない。ishizuki の既定 (0.7、warper 全部 off) は使わず、種別の公式値を起動時と要求時に渡す。
 - M6 で 2 つ目のモデルプロセスを立てない。Gemma の参照ランタイム (`~/LLM/ref/llama.cpp`、`mlx-venv`) はディスクに残るだけで起動しない。
-- MTP・投機は無し (パックに MTP が無い。ishizuki の prompt lookup 投機は既定 on で、S2 で効いているかだけ見る。切らない)。
+- MTP・投機は無し (パックに MTP が無い)。**訂正 (§13)**: 「prompt lookup 投機は既定 on」は誤りで、公式値の presence 1.5 のもとでは prompt lookup も含めて投機は動いていない。この「無し」は測って決めたものではない。
 
 ## 6. 決めてもらうこと
 
@@ -125,11 +125,241 @@ thinking on で 1.0 / 20 / 0.95 / 0.0 / 0.0)。パックの `generation_config.j
 2. **thinking の既定**: 子サーバ経路は thinking off ([11](11-GUI-WIRING.md))。同じにするか。
 3. **画像**: この種別では無効 (§4)。
 4. **ssh 転送を誰が張るか**: アプリが起動時に張る (鍵・ホスト名の設定が要る) か、ユーザーがターミナルで張る (最初はこちら)。
-5. **パックを M6 に置いたままにすること** ([TWO_MACHINE_DEV §5](../TWO_MACHINE_DEV.md) の例外)。
+5. **パックを M6 に置いたままにすること** ([TWO_MACHINE_DEV §5](../TWO_MACHINE_DEV.md) の例外)。**決まった (2026-09-27)**: 置いたままにするが内蔵ではなく外付け SSD256 に置く。「初回ロードするだけ」なので内蔵の空きを使わない。移動済み (§8)。
 6. **文脈長の常用点**: 32K から始める (§4)。
+
+1・2・3・4・6 はユーザーから「何を決めるの？」と返ったので、推奨側 (ishizuki 側に足す・thinking off・画像なし・ssh 転送は最初は手で・32K) で進める。異論が出た段で戻す。
 
 ## 7. この計画で使わない・参照だけのもの
 
 - [10](10-GUI-PLAN.md)・[11](11-GUI-WIRING.md): 子サーバ経路の設計と結線。種別・client・検査の形はここから引き継ぐ。
 - [12](12-NATIVE-PORT-GAIN.md) §1: 1 ターンの 53〜56% が prefill で新規トークンが 98%。ishizuki の prefill が llama.cpp より短い (15 §7) のが、この計画の動機。decode は測っていない (S6 で出る)。
 - [15](15-M6-PREFILL-PLAN.md): prefill の 3 経路の実測と、組んで運ぶ道。
+
+## 8. 進捗 (2026-09-27、S1 着手)
+
+やったこと (実測 / 読んだ):
+
+- **パックを外付けへ**: `m6:~/LLM/ref/Ternary-Bonsai-2-27B-mlx-2bit` (8.0 GB) を `/Volumes/SSD256/LLM/ref/` に `mv` し、旧パスにシンボリックリンクを置いた。
+  [`ref_ishizuki_bonsai.sh`](../../bench/m6/ref_ishizuki_bonsai.sh) の既定 `MLX_PACK` はリンク越しにそのまま通る (未確認: 移動後にまだ 1 本も流していない)。内蔵の空き 37 → 45 GB、SSD256 の空き 95 → 87 GB。
+- **M6 の前提を確かめた** (ssh `m6-lan`、実測): macOS 27.0、RAM 16 GB、`iogpu.wired_limit_mb` = 14336 (再起動で 0 に戻る)、モデルのプロセス無し。
+  `~/Library/LaunchAgents` はあり (Google の 1 本)、`/Library/LaunchDaemons` は tailscaled だけ。**ログインユーザー `mh` は admin だが `sudo -n` はパスワード要求** → `pf` の規則と LaunchDaemon はこのセッションからは置けない。
+  S1 の「M6 の LAN の IP に直接叩くと繋がらない」は、`pf` を使うならユーザーが `sudo` で入れるか、`ishizuki-serve` 側で bind を 127.0.0.1 に限る (下の読んだ結果の通り `HTTPServer` はホストを渡せないので、`NWListener` の `requiredLocalEndpoint` を足すパッチが要る) かの二択。**推奨は後者** (ssh 転送だけを通し、`pf` に頼らない)。
+- **ishizuki の `APIServer` を読んだ** (`Sources/IshizukiKit/Serve/APIServer.swift`、459ee00)。`ishizuki-serve` の中身になる口:
+  - `APIServer(directory:modelName:thinking:samplingOptions:kvConfig:residency:politeness:ropeScaling:budget:prefixStore:catalog:catalogRoots:preload:hot:)` → `listen(port:)`。`preload: true` が既定で init の中で重みを読む。`stop()` が `sessions.persistAll()` を呼ぶので、launchd で止めるときは SIGTERM を受けて `stop()` を呼ぶ形にする。
+  - `log: (@Sendable (String) -> Void)?` にログが来る (cache の当たり `cache: reused N of M prompt tokens`、モデル読み込み秒、budget の段)。**cache の当たりは API の応答には無い** (`usage` は prompt_tokens / completion_tokens だけ、stream には `usage` が無い) → S4 で当たりを見るのはこのログか TTFT。
+  - `/health` は `{"status":"ok","model":名前}` だけ。メモリは無い (S5 の HUD の前提通り)。
+  - 要求ごとに読むサンプリングは `temperature` のみ (§1-2 の通り)。`Request` には `tag` (会話の札) があるが `parseOpenAI` は埋めない → S3(a) で `logit_bias` 等と一緒に読む候補。
+  - `SamplingOptions(temperature: 0.7, topP: 1.0, topK: 0, minP: 0.0, repetitionPenalty: 1.0, repetitionContext: 64, presencePenalty: 0.0, seed:)`。`.bonsai27b` の thinking off の公式値は 0.7 / 20 / 0.8 / 0.0 / presence 1.5 なので、起動時の `samplingOptions` にこれを渡す。
+  - `HTTPServer(port:psk:advertise:handler:)` は `NWParameters.tcp` で `NWListener(using:on:)`、ホスト指定無し (§0-5 の通り)。
+- **ishizuki の checkout は MBP の `scratch/ishizuki` にある** (459ee00、ship スクリプトが置いたもの)。S3(a) のパッチはここで作って `bench/m6/ishizuki-driver/*.patch` に出す。
+
+## 9. S1 と S2 の結果 (2026-09-27、実測)
+
+### 9-1. S1: `ishizuki-serve` を組んで運び、手で起動した
+
+- **作ったもの**: [`bench/m6/ishizuki-driver/serve.swift`](../../bench/m6/ishizuki-driver/serve.swift) (`APIServer` を立てて `listen` する実行ファイル)、
+  [`bind-host.patch`](../../bench/m6/ishizuki-driver/bind-host.patch) (`HTTPServer` に `host:` を足し、`requiredLocalEndpoint` でその番地だけで待ち受ける。`APIServer.listen(port:host:)`)。
+  [`ishizuki_ship.sh`](../../bench/m6/ishizuki_ship.sh) がパッチを当て、`ishizuki-prefill` と `ishizuki-serve` の 2 本を組んで運ぶ形にした。
+- **既定値**: ishizuki アプリの `ServerSettings.init` と同じ (KV 3.5 bit / 窓 128、idle 120 s、アンロードしない、politeness normal、PrefixStore 8 GB を `~/Library/Application Support/Ishizuki/cache/prefixes`、preload あり、vision の塔は遅延読み込み)。
+  サンプリングは `.bonsai27b` の公式値で、`--thinking off` (既定) なら 0.7 / 20 / 0.8 / 0.0 / presence 1.5、`on` なら 1.0 / 20 / 0.95 / 0.0 / 0.0。要求で上書きできるのは temperature だけ (§1-2)。
+  **§4 の KV fp16 の見積もりは当たらない**: ishizuki の既定は 3.5 bit なので、32K の KV は fp16 の 2.0 GB より小さい (導出。実測はまだ)。
+- **起動** (M6、手で `nohup`、ログは `m6:~/LLM/ref/ishizuki-logs/serve.log`): `ready ... in 0.5 s`、`listening on 127.0.0.1:8128`。起動直後の RSS は 6.2 GB、Swapouts は起動前から 113 MiB のまま。
+- **合否** (MBP から): `ssh -f -N -L 8128:127.0.0.1:8128 m6-lan` 越しに `/health` → `{"status":"ok","model":"ternary-bonsai-2-27b"}`、`/v1/models` も返る。
+  M6 の LAN の IP (192.168.0.64:8128) を直接叩くと接続拒否 (curl exit 7)。M6 の `lsof` は `TCP 127.0.0.1:8128 (LISTEN)` だけ。`pf` は使わない。
+- **再起動後の常駐は未了**: M6 には GUI セッションも自動ログインも無い (`launchctl print gui/501` が失敗、`autoLoginUser` なし) ので、LaunchAgent では再起動後に起動しない。
+  `UserName mh` の LaunchDaemon (`/Library/LaunchDaemons`、sudo が要る) が必要。このセッションからは plist も置けなかった (auto mode が常駐化として止めた)。ユーザーの判断待ち。
+- **32K の会話を 1 本流して Swapouts を見る**のはまだ。
+
+### 9-2. S2: API の照合 ([`bench/m6/ishizuki_api_check.sh`](../../bench/m6/ishizuki_api_check.sh))
+
+2 回流して同じ結果 (`scratch/bonsai27b/ishizuki-api/20260927-120937`・`-121020`)。12 件中 10 件通過。
+
+| 件 | 結果 | 中身 |
+| --- | --- | --- |
+| `/health`・`/v1/models` | 通る | |
+| chat (stream なし / あり) | 通る | 本文に `<think>` が混ざらない |
+| `max_tokens` 8 | **落ちる** | 8 トークンで止まるが、`finish_reason` が `length` にならず `stop` のまま (非 stream の応答は tool_calls の有無しか見ていない、`APIServer.swift` 637 行、読んだ)。アプリは `finish == "length"` を `.maxTokens` として扱う (`RemoteInferenceClient.swift` 219 行) ので、打ち切りを終端と読み違える |
+| `tools` の呼び出し・`tool` ロールの往復・stream の `delta.tool_calls` | 通る | |
+| `response_format` json_schema (制約なしの string) | **落ちる** | 400 `a string without an enum admits unboundedly many values; constrained decoding needs an enum, a bounded integer range, or a boolean` |
+| 同 (enum の string) | 通る | `{"capital":"パリ"}` |
+| `enable_thinking` false / true | 通る | off は `reasoning_content` なし。on は `reasoning_content` に分かれ、本文に 391 |
+
+- **S3(a) に足すもの** (§3 の 3 つに加えて): `finish_reason` の `length` (非 stream と stream の両方)。
+- **§1-3 の「拘束付き生成は json_schema に移せる」は、ishizuki では有限の値の集合 (enum・範囲付き整数・真偽) だけ**。自由な文字列を含む grammar は移せない。アプリは今 `response_format` を使っていない (grep で 0 件) ので、`constrained` のラウンドは S3 で `/v1/completions` + 何らかの拘束として扱う必要がある (未確認: `constrained` のラウンドがこの種別で出るか)。
+- thinking off で空の `<think>` ブロックは本文に出ない (§3 S2 の確認項目)。
+- cache: 同じ接頭辞の 2 回目で `cache: reused 303 of 340 prompt tokens` がログに出る (tools の往復)。応答には当たりの数は出ない (§8 の通り)。
+
+いま M6 の `ishizuki-serve` (pid 9744、手で起動) と MBP の ssh 転送は動いたまま。
+
+## 10. S3 の結果 (2026-09-27、実測)
+
+### 10-1. 埋め方: ishizuki に llama-server と同じ形の口を足した
+
+§3 S3 の (a) を広げ、アプリの `RemoteInferenceClient` が `.direct` で叩く口を ishizuki 側に全部そろえた。**アプリ側 (S3(b)) は変えていない**。
+`Routing.direct` と `Dialect.qwen` のまま、`/apply-template`・`/v1/completions`・`/tokenize`・`/props` がそのまま通る。§3 S3(b) の「アプリが持つ chat template で描く」は要らなくなった。
+種別の追加 (`.bonsaiIshizuki`) は GUI の段 (S5) でやる。
+
+[`bench/m6/ishizuki-driver/api.patch`](../../bench/m6/ishizuki-driver/api.patch) (ishizuki 459ee00 に当てる。`bind-host.patch` とはどちらの順でも当たる):
+
+| 足したもの | 中身 |
+| --- | --- |
+| `SamplingOptions.bannedTokens` | Sampler が logits を −inf にしてから warper に渡す。素の経路・パイプライン・prompt lookup の検証の全部に効く。enum 拘束の経路では許す集合から外す |
+| 要求ごとのサンプリング | `top_k`・`top_p`・`min_p`・`presence_penalty`・`seed` を chat と completions の両方で読む。無ければサーバの値 (起動時の公式値) |
+| `logit_bias` | `[[id, false]]`・`[[id, -100]]`・`{"id": -100}` を禁止として読む。禁止以外の値は 400 で断る (黙って無視しない) |
+| `finish_reason` の `length` | 生成が `max_tokens` (または文脈の上限) で尽きたときだけ。終端トークン・stop 文字列・拘束の完了は `stop` |
+| `timings` | llama-server の形 (`cache_n`・`prompt_n`・`prompt_ms`・`predicted_n`・`predicted_ms`・`predicted_per_second`)。非 stream の応答と stream の最後の chunk に付ける。アプリの診断 (cached・prefill 秒・tok/s) がこれで埋まる |
+| `generation_settings` | 実際に使ったサンプリングを返す (llama-server の `/completion` と同じ名前)。検査用 |
+| `POST /v1/completions` | `prompt` をテンプレートを通さずそのまま続ける。`stop` (文字列か配列) で切り、stop 以降は返さない。stream は断る |
+| `POST /apply-template` | chat の要求を描いた prompt を返す (`tools`・`enable_thinking` も効く) |
+| `POST /tokenize` | `parse_special` で追加トークンをそのまま読む (`<tool_call>` は 1 トークン) |
+| `GET /props` | `default_generation_settings.n_ctx` |
+| 文脈の上限 (`contextLimit`) | prompt が上限以上なら、stream を始める前に 400 `exceed_context_size_error` (`n_prompt_tokens`・`n_ctx` 付き、llama-server の形) を返す。返答は上限で `length` になる |
+
+`serve.swift` に足した引数: `--ctx` (既定 32768、§6-6)・`--ceiling-gb`・`--slots` (§10-3)。
+
+### 10-2. API の照合 ([`ishizuki_api_check.sh`](../../bench/m6/ishizuki_api_check.sh)、`scratch/bonsai27b/ishizuki-api/20260927-173152`)
+
+26 件中 25 件が通過。落ちたのは §9-2 の「制約なしの string の json_schema」1 件だけで、ishizuki の拘束の作りによるもの。アプリはこれを使っていない。
+S3 で足した件: `max_tokens` の `length`・`timings` (非 stream / stream)・`/props`・`/tokenize`・`/apply-template`・強制呼び出し
+(`/apply-template` の prompt に `<tool_call>\n<function=get_weather>\n` を足して `/v1/completions`、stop `</tool_call>` → `<parameter=city>\n大阪\n</parameter>\n</function>\n`、`stop`)・
+completions の `length`・`none` の禁止 (呼び出しなしで答える)・禁止以外の bias は 400・要求ごとのサンプリング 6 項目・無指定なら公式値・文脈超えは 400。
+
+- **同じ要求を 2 回送っても出力は一致しない。**`top_k 1`・temperature 1.0 の 2 回が 50 トークンほどで分かれた。
+  1 回目は `cache_n 0`、2 回目は prefix cache に当たって `cache_n 16` で、prefill の数値がずれる。なので出力の一致では要求ごとのサンプリングが効いているかを確かめられず、`generation_settings` を読む形にした。
+
+### 10-3. Offline 5 問 (`TsugumiToolLoopCheck --endpoint http://127.0.0.1:8128 --remote-model ternary-bonsai-2-27b --remote-direct`)
+
+引数は [05 §6](05-BONSAI-PQ2-0.md) と同じ (`--conversations docs/experiments/knowledge-sources/questions-v2-stage2.json --network offline --max-rounds 6 --thinking off --context 32768 --repeats 1`)。
+`--model` は種別を選ぶだけで `~/LLM/Ternary-Bonsai-2-27B-MTP` (`.bonsai27b`: 公式値 0.7 / 20 / 0.8 / 0.0 / 1.5)。MBP では何も読み込まない。
+M6 の Swapouts を 10 秒ごとに取り、60 秒で +512 MiB か合計 +1 GiB で止めた (`scratch/bonsai27b/runs/*/watch.log`)。
+
+| run | サーバの設定 | N1 / N2 / N3 / N4 / N5 (ラウンド・秒) | checks | M6 の Swapouts | サーバのメモリ (top の MEM) |
+| --- | --- | --- | --- | ---: | --- |
+| `ishizuki-offline-set1` | 予算の上限 = `iogpu.wired_limit_mb` 14336、スロットは 8 まで育つ | 3·24 / 4·31 / 4·55 / 4·40 / 6·59 | 5/5 | **+166,512 ページ (2.54 GiB)**、swap 使用 105 MB → 1.8 GB | 走行後 13 GB |
+| `ishizuki-offline-c12-set1` | 上限 12 GB、スロットは育つ | 3·38 / 4·32 / 3·40 / 7·66 / 7·59 | 5/5 | +0 | 8.8〜11 GB |
+| `ishizuki-offline-c12-set2` (同じサーバで続けて) | 同上 | N1 3·21 のあと N2 の 5 ラウンド目で見張りが止めた | — | **+41,208 ページ (644 MiB) を 20 秒で**。スロットが 4 → 8 になった直後 | 11〜12 GB |
+| `ishizuki-offline-c12s2-set1` | 上限 12 GB、**スロット 2 に固定** | 3·26 / 4·35 / 3·36 / 7·72 / 3·27 | 5/5 | +0 | 9.1〜11 GB |
+| `ishizuki-offline-c12s2-set2` (同じサーバで続けて) | 同上 | 3·22 / 4·34 / 4·42 / 4·44 / 6·50 | 5/5 | +0 | 10〜11 GB |
+
+- **ishizuki の予算は、M6 の `iogpu.wired_limit_mb` (14336、参照ランタイムの計測用に上げてある) を上限に使う。**16 GB 機で 13 GB まで育ってスワップした。
+  §4 は ishizuki の既定 (RAM の 75% = 12 GB) を前提にしていたので、`serve.swift` で 75% を明示して渡す形にした (`--ceiling-gb`、既定は RAM の 75%)。
+- **上限を 12 GB にしても、スロットが 8 まで育つとスワップした。**予算の見積もり (重み + 1 GB + KV の約束 + buffer pool) が、16 GB 機で OS に残す分と合っていない。
+  スロットを 2 に固定すると、同じサーバで 2 セット続けて Swapouts +0 だった。**`serve.swift` の既定を `--slots 2` にした** (0 で ishizuki の育て方に戻る)。
+  代わりに失うのは、3 つ以上の会話を行き来したときの prefix cache の当たり (PrefixStore のディスク保存は残る)。アプリで同時に使う会話は 1 つなので、目的に反する代償ではないと判断した。
+- 5 問の中で、アプリのラウンドは `auto` 86 と `none` 3 (4 run 合計)。**強制呼び出し (`function` / `required`) は Offline では 1 回も出ていない**ので、アプリのループの中で `/v1/completions` を通ったのは curl の照合 (§10-2) だけ。Online (S4) で出る。
+- checks は `answer` と `error` だけ見ている。答えの中身が正しいかは、05 §6 の「正解 note との一致」のように照らしていない (未確認)。
+- 秒は機械も実装も違うので、05 の llama.cpp の値とは比べない。
+
+いま M6 の `ishizuki-serve` (手で起動、`--slots 2` を明示) と MBP の ssh 転送は動いたまま。LaunchDaemon は §9-1 の通り未設置。
+
+## 11. S4 の途中結果: Online 1 セット目を見張りが止めた (2026-09-27、実測)
+
+流し方: [`bench/m6/ishizuki_toolloop_run.sh`](../../bench/m6/ishizuki_toolloop_run.sh) `online` (引数は [11 §6](11-GUI-WIRING.md) と同じ。
+`Scripts/qwen38/tool_loop_conversations.json` の 6 会話 14 ターン、`--web-store scratch/bonsai27b/web --pin-search --search-budget 0`、`--max-rounds 6 --thinking off --context 32768`)。
+サーバは §10 の最後の設定のまま (上限 12 GB・`--slots 2`・n_ctx 32768)。出力は `scratch/bonsai27b/runs/ishizuki-online-set1`。
+
+| 会話 | ターン | ラウンド | 秒 | うち prefill | decode | 最大 prompt | checks |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| ja-news | 1 | 5 | 88 | 25 s | 952 tok / 15.3 tok/s | 6,233 | ok |
+| ja-news | 2 | 7 | 105 | 27 s | 1,098 tok / 14.2 tok/s | 12,618 | ok |
+| ja-news | 3 | 4 | 57 | 19 s | 520 tok / 13.7 tok/s | 16,909 | ok |
+| en-swift | 1 | 7 | 91 | 31 s | 888 tok / 15.0 tok/s | 7,069 | ok |
+| en-swift | 2 | 3 | 31 | 7 s | 341 tok / 14.6 tok/s | 9,161 | `online` 不成立 |
+| en-swift | 3 | 7 | 66 | 25 s | 470 tok / 14.1 tok/s | 13,226 | ok |
+| ja-howto | 1 | 7 | 129 | 33 s | 1,418 tok / 14.9 tok/s | 7,368 | ok |
+| ja-howto | 2 | (5 ラウンド目の途中で停止) | — | — | — | 約 13K | — |
+
+- **ラウンドの形は全部通った。**40 ラウンドのうち `auto` 22・強制呼び出し (`function`) 14・`none` 4。強制呼び出しは `/v1/completions` を通り、アプリの `QwenToolCallParser` で読めた。
+  `structured_output_failure` もエラーも 0 回。アプリの記録に `cached` が出る (例: ja-news の 1 ターン目で 0 → 1,821 → 2,933 → 4,452 → 5,425)。
+- **スワップ**: M6 の Swapouts は t = 260 s まで +0。そこから段々に増えた: +8,187 (t = 270)、+21,563 (t = 350)、+49,567 (t = 550)、+57,399 ページ (t = 590、897 MiB)。
+  最後の 60 秒で +35,836 ページ (560 MiB) になり、見張り (60 秒で +512 MiB) が止めた。**この run は無効。**
+  サーバのメモリ (top の MEM) は 10〜12 GB。サーバのログの MLX の値は、走行後で active 9.29 GB・peak 11.24 GB (Offline の後は peak 10.60 GB)。
+  走行中に予算の段 (`budget:`) は動いていない (文脈の予約 32K・buffer pool 1 GB・スロット 2 は Offline の間に決まったまま)。
+- 増えたのは文脈が 12K〜17K に伸びたターン (ja-news 2・3、en-swift 3、ja-howto 2) の辺り。長い prompt の prefill で一時的に持つ分が peak を押し上げている見込みだが、どの部分かは切り分けていない (未確認)。
+- 秒は 11 §6 の llama.cpp の子サーバ (MBP、18 GB) と機械が違うので比べない。
+- **別件**: ishizuki は待機中に `idle: released buffer pool` を 5 秒ごとにログへ書き続ける (serve.log 2,952 行のうち 2,741 行)。害は無いが、LaunchDaemon で常駐させるとログが育つ。
+
+### 11-1. 判断してもらうこと
+
+M6 (16 GB) でこのサーバが 12K トークンを超える会話をスワップなしで回せていない。手当ての候補 (どれも未測定):
+
+1. **ishizuki の一時的な持ち分を下げる**: `Memory.cacheLimit` (buffer pool) を 0.5 GB に固定する、prefill の chunk を小さくする (`politeness`)。prefill の秒が延びるかもしれない。
+2. **予算の上限をさらに下げる** (`--ceiling-gb 10` など)。予算が抑えるのは KV と buffer pool の約束で、prefill の一時的な持ち分には効かない見込み。
+3. **文脈の常用点を 16K に下げる** (§6-6 を変える)。11 §6 の Online は最大 prompt が 25K まで行くので、ターンが途中で切れる。
+
+推奨は 1 (目的の往復・待ち時間を変えずにメモリだけ下げる見込みがある)。1 で Online 1 セットを見張り付きで流し、Swapouts と prefill 秒を並べてから決める。
+
+### 11-2. M6 の再起動後に流し直した (実測、n = 1)
+
+ユーザーが M6 を再起動した後 (2026-09-27 22:37 JST)、同じバイナリ・同じ引数 (上限 12 GB・`--slots 2`・n_ctx 32768) でサーバを立て、同じ Online セットを同じ見張り付きで流した。
+出力は `scratch/bonsai27b/runs/ishizuki-online-reboot-set1`。
+
+- 前提: `iogpu.wired_limit_mb` は再起動で 0 に戻っていた (前の run は 14336)。swap 0 MB・Swapouts 0 から始めた。SSD256 は再起動でマウントが外れていたので `diskutil mount SSD256` した。
+  mh のプロセスは ssh・cfprefsd・distnoted だけで、止めるべき不要なプロセスは無かった (メモリの上位はログイン画面の WindowServer 110 MB などシステムのもの)。
+  マウント直後に Spotlight (`mds_stores`) が CPU 80% を使ったので、load が 1.5 を下回るまで 3 分待ってから流した。
+- **14 ターン完走、Swapouts +0 (最初から最後まで)、swap 使用 0 MB のまま。**サーバのメモリ (top の MEM) は 8.3〜11 GB。最大 prompt は 17,839 トークン (ja-news 3)。
+- `answer`・`error` 14 / 14、`online` 11 / 14 (ja-news 3・en-url 1・ja-price 2 が不成立)。検査の exit 1 は `online` の不成立による。
+
+| 会話 | ターン | ラウンド | 秒 | うち prefill | decode | 最大 prompt | checks |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| ja-news | 1 | 7 | 89 | 37 s | 763 tok / 15.1 tok/s | 8,197 | ok |
+| ja-news | 2 | 7 | 100 | 30 s | 975 tok / 14.0 tok/s | 14,516 | ok |
+| ja-news | 3 | 3 | 39 | 19 s | 265 tok / 13.6 tok/s | 17,839 | `online` 不成立 |
+| en-swift | 1 | 7 | 74 | 25 s | 736 tok / 15.2 tok/s | 5,925 | ok |
+| en-swift | 2 | 4 | 41 | 11 s | 432 tok / 14.7 tok/s | 8,840 | ok |
+| en-swift | 3 | 7 | 82 | 23 s | 514 tok / 14.0 tok/s | 13,666 | ok |
+| ja-howto | 1 | 7 | 101 | 27 s | 1,111 tok / 15.1 tok/s | 6,577 | ok |
+| ja-howto | 2 | 7 | 98 | 29 s | 909 tok / 14.3 tok/s | 10,959 | ok |
+| en-url | 1 | 1 | 25 | 10 s | 229 tok / 15.7 tok/s | 2,298 | `online` 不成立 |
+| en-url | 2 | 7 | 43 | 13 s | 450 tok / 15.2 tok/s | 5,228 | ok |
+| ja-price | 1 | 7 | 91 | 40 s | 750 tok / 14.8 tok/s | 8,715 | ok |
+| ja-price | 2 | 7 | 81 | 27 s | 728 tok / 14.0 tok/s | 14,387 | `online` 不成立 |
+| en-facts | 1 | 7 | 69 | 29 s | 544 tok / 15.1 tok/s | 6,672 | ok |
+| en-facts | 2 | 5 | 63 | 26 s | 514 tok / 14.3 tok/s | 12,060 | ok |
+
+合計 994 秒 (1 ターン 25〜101 秒)、prefill 346 秒、decode 8,920 トークン / 14.6 tok/s。MTP は無い。
+
+- **§11 のスワップとの違いが何によるかは切り分けていない。**違いは少なくとも 2 つある: `iogpu.wired_limit_mb` (14336 → 0) と、前の run の前に M6 が長く動いていて swap に 700 MB 残っていたこと。
+  予算の上限はどちらも `--ceiling-gb` で 12 GB に固定してあるので、予算の見積もりは同じ。n = 1 なので、§11-1 の手当ての要否は 2 セット目で決める。
+- M6 を再起動すると wired limit は 0 に戻るので、参照ランタイム (llama.cpp・mlx_lm) を測るときは 14336 に上げ直す必要がある ([m6-prefill/29](../m6-prefill/29-REFERENCE-RUNTIMES-ON-M6.md))。ishizuki のサーバを動かしている間は、2 セット目で確かめるまで 0 のままにしておく (14336 のときにスワップした run が 1 本あるだけで、原因とは決まっていない)。
+
+## 12. S5 の準備: GUI から手で試す形 (2026-09-27)
+
+ユーザーが GUI で手で試したいと言ったので、§2-1 の「種別 `.bonsaiIshizuki` を足す」より小さい形にした。**新しい種別は足していない。**
+
+- **manifest に `endpoint` を書くと、子の llama-server を起動せずそのサーバを使う** (`RemoteServerModelDirectory`、`LlamaServerInferenceClient.swift`)。
+  `{"arch":{"family":"qwen3_8_dense_llamacpp"},"endpoint":"http://127.0.0.1:8128","remote_model":"ternary-bonsai-2-27b"}`。
+  種別は `arch.family` で `.bonsai27b` のまま (公式値・Qwen の呼び出し形・文脈 4K〜32K)。127.0.0.1 / localhost 以外の endpoint は読み込み時に断る。アプリはこのサーバを起動も停止もしない。
+  インストール判定 (`AppModelInstallationProbe`) は endpoint があれば完了とみなし、サーバに届くかは読み込み時 (`/props`・`/tokenize`) に確かめる。届かなければ「ssh 転送は張ってあるか」を添えて失敗する。
+  テスト 3 本を `LlamaServerModelDirectoryTests` に足した (`Scripts/test.sh --filter "LlamaServerModelDirectoryTests|AppModelInstallationProbeTests"` で 14 本通過)。
+- **切り替えはシンボリックリンク**: `~/LLM/Ternary-Bonsai-2-27B-ishizuki/manifest.json` (上の 1 ファイルだけ) を作り、アプリが読む `scratch/Ternary-Bonsai-2-27B-MTP` の向きを
+  `~/LLM/Ternary-Bonsai-2-27B-MTP` (llama.cpp の子サーバ) からこちらへ替えた。戻すのは `ln -sfn /Users/mh/LLM/Ternary-Bonsai-2-27B-MTP scratch/Ternary-Bonsai-2-27B-MTP`。
+  設定ファイル (`scratch/mac-app-settings-Ternary-Bonsai-2-27B-MTP.json`、文脈 32768・thinking off) はディレクトリ名で引くのでそのまま使われる。
+- HUD のメモリは、子サーバのときと同じく MBP 全体の値で、M6 のサーバの値ではない。MTP の表示は出ても投機はしない (ishizuki の側に MTP が無い)。
+
+## 13. ishizuki で MTP が効いていない理由 (2026-09-27、コードを読んだ。動かしていない)
+
+ユーザーの問い「ishizuki はそもそも MTP に対応しないのか、損だからやらないのか」への答え。**損得を測って決めたのではない。**ishizuki は MTP の投機を実装している (`Text/MTPHead.swift`・`MTPDrafter`) が、今の形では次の 3 つが全部当てはまって使われない。
+
+| 条件 | どこ (ishizuki 459ee00) | 今の形 |
+| --- | --- | --- |
+| パックに MTP ヘッドがある | `BonsaiModel`: `config.components?.mtp == true` のときだけ `mtp.fc` 以下を読む | M6 の MLX 2-bit パックは `components = {text: true, vision: true, mtp: false}`。llama.cpp で使った `Ternary-Bonsai-2-27B-PQ2_0-MTP-Q8_0.gguf` にはヘッドがある |
+| greedy (temperature 0) | `SpeculativeGeneration.drafts`: `model.mtp == nil \|\| options.temperature > 0 ? nil : MTPDrafter(…)`。README も「Pack MTP heads draft greedy turns」 | 公式値は thinking off で 0.7、on で 1.0 |
+| 罰則が無い | 同じ `drafts` の入口: `options.repetitionPenalty == 1, options.presencePenalty == 0` でなければ投機を丸ごと返さない (prompt lookup の n-gram も) | thinking off の公式値は presence 1.5。**§5 の「prompt lookup 投機は既定 on」は誤りで、今の要求では prompt lookup も動いていない** |
+
+取り代の手がかり (実測、別の土台):
+- llama.cpp の子サーバでは、公式値のまま MTP (n_max 1) の受理が 79.9〜81.5% ([11 §6](11-GUI-WIRING.md))、mul_mv_ext を外して decode 1.30 倍 ([07](07-PQ2-0-SMALL-BATCH-KERNEL.md))。
+- §11-2 の Online 1 セット (ishizuki) は、合計 994 s のうち decode が 8,920 トークン / 14.6 tok/s ≒ 610 s。1 ターンの半分以上が decode。
+- ishizuki で縮む秒は測っていない。見積もりは置かない。
+
+ishizuki で効かせるのに要るもの (どれも ishizuki に無い): (1) GGUF の MTP ヘッドを MLX パックへ移す、(2) temperature > 0 で分布を保つ検証 (llama.cpp が公式値で受理を出している経路)、(3) presence_penalty がある場合の扱い。
+最小の段は「ヘッドをパックに載せ、greedy で受理率と decode tok/s を 1 回測る」。**別セッションで扱う** (ユーザー、2026-09-27)。
+
+### 13-1. 次のセッションへの引き継ぎ (2026-09-27 時点の状態)
+
+- M6: `ishizuki-serve` を手で起動したまま (pid はログ `~/LLM/ref/ishizuki-logs/serve.log`、`--slots 2`・上限 12 GB・n_ctx 32768・thinking off)。`iogpu.wired_limit_mb` 0 (再起動後の既定)。SSD256 はマウント済み。LaunchDaemon は未設置 (§9-1、sudo が要る)。
+- MBP: `ssh -f -N -L 8128:127.0.0.1:8128 m6-lan` が張ってある。`scratch/Ternary-Bonsai-2-27B-MTP` は `~/LLM/Ternary-Bonsai-2-27B-ishizuki` (endpoint の manifest) を指している (§12。llama.cpp に戻すにはリンクを戻す)。
+- ishizuki の checkout は `scratch/ishizuki` (459ee00 + `api.patch` + `bind-host.patch` + 2 つの実行ターゲット)。組んで運ぶのは `bench/m6/ishizuki_ship.sh`。
+- 未了: S4 の Online 2 セット目 (§11-2 は n = 1)、§11 のスワップの原因の切り分け、S5 の GUI での確認 (ユーザーが手で試す)、S6 の記録値。
+

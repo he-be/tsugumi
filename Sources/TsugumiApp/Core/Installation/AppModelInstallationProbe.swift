@@ -20,7 +20,9 @@ public enum AppModelInstallationProbe {
 
         if descriptor.kind.runsOnLlamaServer {
             // The manifest names the GGUF and the llama-server that runs it; both have to be on this machine.
+            // Or it names a running server (`endpoint`), which is only reached at load.
             do {
+                if try RemoteServerModelDirectory(modelDirectory: directory) != nil { return .complete }
                 _ = try LlamaServerModelDirectory(modelDirectory: directory)
                 return .complete
             } catch {

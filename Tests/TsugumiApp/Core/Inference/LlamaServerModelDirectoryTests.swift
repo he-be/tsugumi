@@ -49,6 +49,41 @@ import Testing
         #expect(throws: AppInferenceError.self) { try LlamaServerModelDirectory(modelDirectory: noGGUF) }
     }
 
+    @Test func anEndpointManifestNamesARunningServerOnThisMac() throws {
+        let directory = try makeDirectory(manifest: """
+            { "arch": { "family": "qwen3_8_dense_llamacpp" },
+              "endpoint": "http://127.0.0.1:8128", "remote_model": "ternary-bonsai-2-27b" }
+            """, gguf: false)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let remote = try #require(try RemoteServerModelDirectory(modelDirectory: directory))
+        #expect(remote.endpoint.absoluteString == "http://127.0.0.1:8128")
+        #expect(remote.modelID == "ternary-bonsai-2-27b")
+        #expect(AppModelKind.probe(modelDirectory: directory) == .bonsai27b)
+        #expect(AppModelInstallationProbe.status(at: directory,
+                                                 descriptor: .descriptor(for: .bonsai27b)) == .complete)
+    }
+
+    @Test func anEndpointOffThisMacOrWithoutAModelIsRefused() throws {
+        let lan = try makeDirectory(manifest: """
+            { "arch": {}, "endpoint": "http://192.168.0.64:8128", "remote_model": "m" }
+            """, gguf: false)
+        defer { try? FileManager.default.removeItem(at: lan) }
+        #expect(throws: AppInferenceError.self) { try RemoteServerModelDirectory(modelDirectory: lan) }
+        let noModel = try makeDirectory(manifest: """
+            { "arch": {}, "endpoint": "http://127.0.0.1:8128" }
+            """, gguf: false)
+        defer { try? FileManager.default.removeItem(at: noModel) }
+        #expect(throws: AppInferenceError.self) { try RemoteServerModelDirectory(modelDirectory: noModel) }
+    }
+
+    @Test func aManifestWithoutAnEndpointIsAServerToStart() throws {
+        let directory = try makeDirectory(manifest: """
+            { "arch": {}, "llama_server": "/bin/ls", "gguf": "model.gguf" }
+            """)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        #expect(try RemoteServerModelDirectory(modelDirectory: directory) == nil)
+    }
+
     @Test func aFreePortIsOneTheServerCanTake() throws {
         let port = try LlamaServerInferenceClient.freePort()
         #expect((1_024...65_535).contains(port))
