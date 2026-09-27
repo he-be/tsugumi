@@ -1,0 +1,5 @@
+測定: 2026-09-28 / Mac15,6 Apple M3 Pro 18GB / macOS 15.7.5 (24G624) / Swift 6.3.3 / SDK 26.5 / Xcode 26.6 / APPLE SSD AP1024Z / commit dec0826 / minos 26.0
+ishizuki 459ee00 (tools-version 6.4 -> 6.3, + api.patch bind-host.patch mtp.patch + IshizukiPrefill / IshizukiServe targets) / bench/m6/ishizuki-driver/{main,serve}.swift @ dec0826
+bundles: mlx-swift_Cmlx.bundle 
+size 33104896 /Users/mh/LLM/turbo-fieldfare/scratch/ishizuki/.build/ship/ishizuki-prefill
+size 33126672 /Users/mh/LLM/turbo-fieldfare/scratch/ishizuki/.build/ship/ishizuki-serve

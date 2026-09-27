@@ -1,0 +1,1 @@
+/Users/mh/LLM/ref/ishizuki-bin-final/ishizuki-prefill /Users/mh/LLM/ref/Ternary-Bonsai-2-27B-mlx-2bit /Users/mh/dev/tsugumi-bench/bench/m6/results/2026-09-28-Macmini9-1-final-prefill-en-readme/prompt.txt

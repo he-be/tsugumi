@@ -1,0 +1,2 @@
+測定: 2026-09-28 / Macmini9,1 Apple M1 16GB / macOS 27.0 (26A428) / Swift 6.4 / SDK 27.0 / CLT / APPLE SSD AP0256Q / commit ?+dirty / minos 26.0
+Ternary-Bonsai-2-27B-mlx-2bit model.safetensors 8595477990 bytes

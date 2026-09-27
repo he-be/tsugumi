@@ -1,0 +1,1 @@
+hostinfo の commit '?+dirty' は、スクリプトを git でなく rsync した置き場 (~/dev/tsugumi-bench) から流したため。スクリプトとプロンプトは dec0826 の MBP の作業ツリーと同じ内容 (ref_ishizuki_decode.sh はこの測定で新規)。バイナリは dec0826 (clean) から組み、M6 と M1 mini で sha256 一致 (ishizuki-prefill bd19433f…、ishizuki-decode-probe 182beea8…、default.metallib 24d4cfcd…)。M6 は測定のため MTP セッションの ishizuki-serve を止め、測定後に ishizuki-bin-mtp5 で同じ引数で立て直した。

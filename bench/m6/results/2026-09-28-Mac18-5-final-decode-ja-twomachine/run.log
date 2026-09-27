@@ -1,0 +1,12 @@
+mtp head: true
+prefilled 2316 tokens, cache offset 2316
+fold off: row 0 vs 1-token max|diff| 0.0518 argmax = TV 0.0064 | row 1 vs 1-token max|diff| 3.8271 argmax != TV 0.4041
+fold on : row 0 vs 1-token max|diff| 0.0508 argmax = TV 0.0062 | row 1 vs 1-token max|diff| 0.0361 argmax = TV 0.0025
+forward pass 1 (magic, fold off): M=1 63.3 ms, M=2 73.3 ms
+forward pass 1 (magic, fold on): M=1 63.5 ms, M=2 71.0 ms
+forward pass 2 (magic, fold off): M=1 63.5 ms, M=2 73.3 ms
+forward pass 2 (magic, fold on): M=1 63.6 ms, M=2 71.4 ms
+generate draft off          : tok/s 15.70 / 15.96 / 15.96, accepted 0/0
+generate mtp, fold off      : tok/s 19.56 / 18.88 / 18.73, accepted 335/565
+generate mtp, fold on       : tok/s 20.82 / 21.73 / 22.54, accepted 381/520
+exit 0

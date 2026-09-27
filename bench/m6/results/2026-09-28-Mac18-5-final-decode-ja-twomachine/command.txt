@@ -1,0 +1,1 @@
+/Users/mh/LLM/ref/ishizuki-bin-final/ishizuki-decode-probe /Users/mh/LLM/ref/Ternary-Bonsai-2-27B-mlx-2bit-mtp /Users/mh/dev/tsugumi-bench/bench/m6/results/2026-09-28-Mac18-5-final-decode-ja-twomachine/prompt.txt 10 300
