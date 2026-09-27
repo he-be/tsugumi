@@ -8,7 +8,8 @@
 # What it does, each step idempotent:
 #   1. clone struffl/ishizuki into scratch/ishizuki (pinned commit below) and lower the
 #      manifest's tools-version 6.4 -> 6.3 (the MBP has Swift 6.3.3; nothing else changes)
-#   2. apply bench/m6/ishizuki-driver/*.patch (bind-host: listen on one address only; api:
+#   2. apply bench/m6/ishizuki-driver/*.patch (bind-host: listen on one address only; mtp:
+#      the MTP head drafts sampled and penalized turns too (16 §14); api:
 #      llama-server routes and fields the Tsugumi client uses, 16 S3)
 #   3. add executable targets IshizukiPrefill (bench/m6/ishizuki-driver/main.swift) and
 #      IshizukiServe (serve.swift), copied in; the repo copies stay the originals
@@ -29,8 +30,12 @@ if [ ! -d "$src/.git" ]; then
 fi
 git -C "$src" checkout -q "$pin" 2>/dev/null || { git -C "$src" fetch -q --depth 50 origin; git -C "$src" checkout -q "$pin"; }
 sed -i '' '1s/swift-tools-version: 6\.4/swift-tools-version: 6.3/' "$src/Package.swift"
+# The patches overlap (mtp.patch edits lines api.patch added), so an applied set cannot be told
+# apart patch by patch: Sources goes back to the pinned commit and every patch is applied in order.
+git -C "$src" checkout -q -- Sources
+git -C "$src" clean -fdq Sources
 for p in "$repo"/bench/m6/ishizuki-driver/*.patch; do
-    git -C "$src" apply --reverse --check "$p" 2>/dev/null || git -C "$src" apply "$p"
+    git -C "$src" apply "$p"
 done
 mkdir -p "$src/Sources/IshizukiPrefill" "$src/Sources/IshizukiServe"
 cp "$repo/bench/m6/ishizuki-driver/main.swift" "$src/Sources/IshizukiPrefill/main.swift"
@@ -60,6 +65,24 @@ open(p, "w").write(s)
 EOF
 fi
 grep -q 'name: "IshizukiServe"' "$src/Package.swift" || { echo "Package.swift serve patch did not apply"; exit 1; }
+# The MTP probes (16 §14): no model (verify_bench.swift) and one model process (decode_probe.swift).
+for pair in "IshizukiVerifyBench:ishizuki-verify-bench:verify_bench.swift" "IshizukiDecodeProbe:ishizuki-decode-probe:decode_probe.swift"; do
+    target=${pair%%:*}; rest=${pair#*:}; product=${rest%%:*}; file=${rest#*:}
+    mkdir -p "$src/Sources/$target"
+    cp "$repo/bench/m6/ishizuki-driver/$file" "$src/Sources/$target/main.swift"
+    if ! grep -q "name: \"$target\"" "$src/Package.swift"; then
+        python3 - "$src/Package.swift" "$target" "$product" <<'EOF2'
+import sys
+p, target, product = sys.argv[1:]; s = open(p).read()
+s = s.replace('.executable(name: "ishizuki-serve", targets: ["IshizukiServe"]),',
+              '.executable(name: "ishizuki-serve", targets: ["IshizukiServe"]),\n    .executable(name: "%s", targets: ["%s"]),' % (product, target), 1)
+s = s.replace('    .executableTarget(\n      name: "IshizukiServe",',
+              '    .executableTarget(\n      name: "%s",\n      dependencies: ["IshizukiKit", .product(name: "MLX", package: "mlx-swift")]\n    ),\n    .executableTarget(\n      name: "IshizukiServe",' % target, 1)
+open(p, "w").write(s)
+EOF2
+    fi
+    grep -q "name: \"$target\"" "$src/Package.swift" || { echo "Package.swift $target patch did not apply"; exit 1; }
+done
 # Agent/IshizukiLanguageModel.swift adopts Foundation Models' custom LanguageModel API,
 # which exists in SDK 27.0 (the M6's CLT) and not in the MBP's SDK 26.5. Nothing else in
 # the package references it (grep -rl IshizukiLanguageModel Sources App is empty), so it
@@ -82,7 +105,7 @@ grep -q 'Agent/IshizukiLanguageModel.swift' "$src/Package.swift" || { echo "Pack
 # Xcode's Metal Toolchain component (`xcodebuild -downloadComponent MetalToolchain`).
 # arm64 only: mlx-swift has no Float16 for x86_64, so a universal build fails.
 xcrun -find metal >/dev/null 2>&1 || { echo "no metal compiler: xcodebuild -downloadComponent MetalToolchain"; exit 1; }
-for product in ishizuki-prefill ishizuki-serve; do
+for product in ishizuki-prefill ishizuki-serve ishizuki-verify-bench ishizuki-decode-probe; do
     (cd "$src" && swift build --build-system swiftbuild --arch arm64 -c release --product "$product" 2>&1 | tail -3)
 done
 products="$src/.build/out/Products/Release"
@@ -91,7 +114,7 @@ for b in "$bin" "$products/ishizuki-serve"; do [ -x "$b" ] || { echo "no $b"; ex
 [ -f "$products/mlx-swift_Cmlx.bundle/Contents/Resources/default.metallib" ] || [ -f "$products/mlx-swift_Cmlx.bundle/default.metallib" ] || { echo "no default.metallib in $products/mlx-swift_Cmlx.bundle"; exit 1; }
 out="$src/.build/ship"
 rm -rf "$out"; mkdir -p "$out"
-cp "$bin" "$products/ishizuki-serve" "$out/"
+cp "$bin" "$products/ishizuki-serve" "$products/ishizuki-verify-bench" "$products/ishizuki-decode-probe" "$out/"
 for b in "$products"/*.bundle; do [ -d "$b" ] && cp -R "$b" "$out/"; done
 {
     sh "$repo/bench/hostinfo.sh" "$bin"
@@ -100,6 +123,8 @@ for b in "$products"/*.bundle; do [ -d "$b" ] && cp -R "$b" "$out/"; done
     ls -l "$out/ishizuki-prefill" "$out/ishizuki-serve" | awk '{print "size " $5 " " $NF}'
 } > "$out/build-info.txt"
 cat "$out/build-info.txt"
-ssh "$host" 'mkdir -p ~/LLM/ref/ishizuki-bin'
-rsync -a --delete -e "ssh -c aes128-gcm@openssh.com" "$out/" "$host:LLM/ref/ishizuki-bin/"
-echo "shipped to $host:~/LLM/ref/ishizuki-bin/"
+# ISHIZUKI_BIN_DIR ships beside a running server instead of over its files (16 §14).
+dest=${ISHIZUKI_BIN_DIR:-ishizuki-bin}
+ssh "$host" "mkdir -p ~/LLM/ref/$dest"
+rsync -a --delete -e "ssh -c aes128-gcm@openssh.com" "$out/" "$host:LLM/ref/$dest/"
+echo "shipped to $host:~/LLM/ref/$dest/"

@@ -5,6 +5,7 @@
 //
 //   ishizuki-serve --pack DIR [--port 8128] [--host 127.0.0.1] [--name ternary-bonsai-2-27b]
 //                  [--thinking on|off] [--ctx 32768] [--ceiling-gb N] [--slots 2] [--prefix-dir DIR] [--prefix-gb 8]
+//                  [--draft mtp|all|off]
 //
 // Binds to --host only (bind-host.patch), 127.0.0.1 by default: the API has no
 // authentication, so it is reached from the MBP over `ssh -N -L 8128:127.0.0.1:8128`.
@@ -21,6 +22,10 @@
 // and the first Offline set swapped 2.5 GiB (16 §10). --slots pins the number of cached
 // conversations, 2 by default; 0 keeps ishizuki's growth (doubling up to 8 as prefixes are
 // evicted), which under the 12 GB ceiling still grew to 8 and swapped 644 MiB in 20 s (16 §10).
+// --draft picks the drafted decode (mtp.patch): `mtp` (default) drafts one token with the pack's
+// MTP head, `all` puts ishizuki's prompt lookup in front of it, `off` is the plain pipelined
+// loop. A pack without a head drafts nothing under `mtp` and runs the drafted loop for nothing,
+// so `off` is the setting for one. Every setting samples with the official values above.
 // SIGTERM / SIGINT call stop(), which archives the prefix caches, then exit 0.
 
 import Foundation
@@ -39,7 +44,7 @@ while let key = rest.popFirst() {
 }
 let known: Set = [
   "pack", "port", "host", "name", "thinking", "ctx", "ceiling-gb", "slots", "prefix-dir",
-  "prefix-gb",
+  "prefix-gb", "draft",
 ]
 if let unknown = options.keys.first(where: { !known.contains($0) }) { fail("unknown --\(unknown)") }
 guard let packPath = options["pack"] else { fail("--pack is required") }
@@ -64,6 +69,13 @@ guard let ceilingGB = Double(options["ceiling-gb"] ?? "\(defaultCeilingGB)"), ce
 guard let slotCount = Int(options["slots"] ?? "2"), slotCount >= 0 else { fail("bad --slots") }
 let slots: Int? = slotCount > 0 ? slotCount : nil
 guard let prefixGB = Double(options["prefix-gb"] ?? "8") else { fail("bad --prefix-gb") }
+let draft = options["draft"] ?? "mtp"
+switch draft {
+case "mtp": BonsaiRuntime.lookupMinMatch = Int(Int32.max)
+case "all": break
+case "off": BonsaiRuntime.speculativeDecode = false
+default: fail("--draft is mtp, all or off")
+}
 
 // Tsugumi AppModelKind.bonsai27b: thinking off 0.7 / 20 / 0.8 / 0.0 / presence 1.5,
 // thinking on 1.0 / 20 / 0.95 / 0.0 / 0.0. Not to be tuned.
@@ -104,7 +116,7 @@ do {
       + String(format: "budget ceiling %.1f GB, ", ceilingGB)
       + "slots \(slots.map(String.init) ?? "grow to \(MemoryBudget.slotCeiling)"), thinking \(thinking ? "on" : "off"), "
       + "sampling t \(sampling.temperature) top_k \(sampling.topK) top_p \(sampling.topP) "
-      + "min_p \(sampling.minP) presence \(sampling.presencePenalty), KV \(kvConfig.bits ?? 16) bits, "
+      + "min_p \(sampling.minP) presence \(sampling.presencePenalty), draft \(draft), KV \(kvConfig.bits ?? 16) bits, "
       + "prefix store \(prefixGB > 0 ? "\(prefixGB) GB at \(prefixDir.path)" : "off")")
 } catch {
   fail("\(error)")

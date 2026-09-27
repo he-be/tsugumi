@@ -363,3 +363,68 @@ ishizuki で効かせるのに要るもの (どれも ishizuki に無い): (1) G
 - ishizuki の checkout は `scratch/ishizuki` (459ee00 + `api.patch` + `bind-host.patch` + 2 つの実行ターゲット)。組んで運ぶのは `bench/m6/ishizuki_ship.sh`。
 - 未了: S4 の Online 2 セット目 (§11-2 は n = 1)、§11 のスワップの原因の切り分け、S5 の GUI での確認 (ユーザーが手で試す)、S6 の記録値。
 
+
+## 14. MTP を公式サンプリングのまま有効にした (2026-09-27〜28、実測)
+
+ユーザー指示 (2026-09-27): 「今の実装に無いから使えない」で止めず、decode を速くするために MTP を有効にする。サンプリングは公式値 (thinking off: 0.7 / 20 / 0.8 / 0.0 / presence 1.5) のまま。
+§13 の 3 条件を全部外した。
+
+### 14-1. 変えたもの
+
+| 何 | どこ |
+| --- | --- |
+| MTP ヘッドをパックに足す: MTP 同梱 GGUF の blk.64 (15 本、Q8_0 と F32) を 8-bit / group 32 の affine に量子化し、元のパックをリンクで指す `m6:~/LLM/ref/Ternary-Bonsai-2-27B-mlx-2bit-mtp` を作った (足したのは `mtp.safetensors` 478 MB と config・index だけ)。行列は Hadamard 回転なし (block 0)。norm は GGUF とパックで同じ形 (本体の層どうしで値が一致) なのでそのまま | [`bonsai_mtp_pack.py`](../../bench/m6/bonsai_mtp_pack.py) |
+| 温度 > 0 と presence_penalty でも MTP で下書きする。検証は元からある「下書き 1 トークンを目標の確率で受理、外れたら残りから引く」(分布を変えない) をそのまま使い、罰則を行ごとに、その行より前の下書きトークンまで含めた窓で当てる (`Sampler.truncatedScores(rows:windows:)`)。最初のトークンにも窓を渡す。ヘッドの無いパックで罰則がある要求は、今まで通り下書きしない | `mtp.patch` (SpeculativeGeneration / Sampler) |
+| 外れた下書きの扱い: 元はキャッシュをブロックごと巻き戻して、確定した分を次の検証に持ち越していた (外れの次の回が 3 トークンの forward)。既にある `ModelCache.keep` (attention は offset を戻し、delta-net は受理した位置まで規則だけ回し直す) を使うようにした。`ISHIZUKI_SPEC_KEEP=0` で元に戻る | `mtp.patch` (SpeculativeGeneration) |
+| 2〜4 行の 2-bit 行列積 `FewRowQMV`: MLX の qmv_fast と同じ並びで、重みを 1 回読んで各行に掛ける。`ISHIZUKI_FEW_ROW_QMV=0` で切れる | `mtp.patch` (Core/FewRowQMV.swift、PackedLinear) |
+| `timings` に `draft_n` / `draft_n_accepted`、要求ごとの `speculative.n_max` (0 で下書きなし、llama-server と同じ名前)、`ISHIZUKI_SPEC_TRACE=1` で 1 ターンの時間の内訳をログに出す | `mtp.patch` (APIServer / SpeculativeGeneration) |
+| `ishizuki-serve --draft mtp\|all\|off` (既定 mtp: prompt lookup は使わない) | [`serve.swift`](../../bench/m6/ishizuki-driver/serve.swift) |
+| 計測器 2 本: `ishizuki-verify-bench` (モデルなし、乱数の重みで行数ごとの行列積)、`ishizuki-decode-probe` (モデル 1 回読み込み、forward の内訳と seed 固定の生成比較。モデルのプロセスなのでサーバと同時に動かさない) | [`verify_bench.swift`](../../bench/m6/ishizuki-driver/verify_bench.swift)・[`decode_probe.swift`](../../bench/m6/ishizuki-driver/decode_probe.swift) |
+
+組み方は `ISHIZUKI_BIN_DIR=ishizuki-bin-mtp3 bench/m6/ishizuki_ship.sh` (動いているサーバの `ishizuki-bin` に上書きしない置き場)。ship は Sources を固定コミットに戻してから 3 本のパッチを順に当てる形に変えた (mtp.patch が api.patch の足した行に触るため、1 本ずつの当たり判定ができない)。
+
+### 14-2. 結果
+
+**有効にしただけ** (巻き戻し・MLX の行列積のまま) では速くならなかった。サーバで同じ質問 400 トークンを交互に 3 回: MTP なし 16.2〜16.5 tok/s、MTP 15.1〜16.5 tok/s、受理 53〜61%。
+`ISHIZUKI_SPEC_TRACE` の内訳は 1 ラウンド (257 回の平均) で検証の forward 92.6 ms・下書き 4.8 ms・判定 2.5 ms。
+
+`ishizuki-decode-probe` (本文 `bench/m6/prompts/ja-twomachine.rendered.txt` 2,316 トークンの後、10 回の中央値。出力は `scratch/bonsai27b/mtp/probe-2.txt`):
+
+| forward (logits は全位置) | 全体 ms | delta-net 48 層 | attention 16 層 | 出力ヘッド |
+| --- | ---: | ---: | ---: | ---: |
+| 1 トークン | 63.2 | 55.2 | 19.2 | 2.7 |
+| 2 トークン | 79.3 | 64.2 | 25.2 | 4.5 |
+| 2 トークン + FewRowQMV | 76.9 | 63.5 | 25.3 | 3.0 |
+| 3 トークン | 110.1 | 86.7 | 34.4 | 4.5 |
+
+(層ごとの列は層ごとに eval を挟んだ値で、合計は全体の値と合わない。)
+92.6 ms と 79.3 ms の差は、外れの次のラウンドが 3 トークンの forward になっていたことで説明がつく (外れは 4 割)。
+
+生成 (公式値、300 トークン、seed 1 / 2 / 3、同じプロセス):
+
+| 設定 | tok/s | 受理 |
+| --- | --- | --- |
+| MTP なし | 15.99 / 15.94 / 15.96 | — |
+| MTP、ブロックごと巻き戻し (元の作り) | 15.15 / 15.92 / 14.49 | 330 / 572 |
+| MTP、`keep` | 18.22 / 17.95 / 17.52 | 339 / 562 |
+| MTP、`keep` + FewRowQMV | 18.90 / 18.47 / 17.98 | 339 / 562 |
+| MTP なし + FewRowQMV | 15.94 / 15.96 / 15.97 | — |
+
+- `keep` + FewRowQMV の行は `keep` だけの行と同じ seed で受理数まで一致した。2 トークンの検証の logits は FewRowQMV のオンとオフで最大 2.93 違うが、argmax は一致した (1 回)。
+- **サーバ** (`keep` + FewRowQMV、`ishizuki-bin-mtp3`、同じ質問 400 トークン、交互に 3 回): MTP 19.64 / 18.11 / 20.39 tok/s (受理 149/251・134/266・164/237)、MTP なし (`speculative.n_max` 0) 16.47 / 16.50 / 16.50 tok/s。検証の forward は 1 ラウンド 70〜74 ms。Swapouts +0。
+- 受理率 53〜69% は llama.cpp の子サーバ (エージェント課題で 80% 前後、11 §6) より低い。課題も文脈も違うので並べて比べていない。キャッシュ済みの前半を再利用したターンでは、MTP ヘッドが見る文脈は新しく読んだ分だけ (ishizuki の作り、未変更)。
+
+### 14-3. 2 トークンの検証がなぜ無料にならないか (実測)
+
+`ishizuki-verify-bench` (乱数の重み、2-bit group 128、16 回を 1 回の eval にまとめた中央値、µs):
+
+| 形 | 1 行 (MLX qmv) | 2 行 (MLX) | 2 行 (VerifyMatmul) | 2 行 (FewRowQMV) | 12〜64 行 (MLX、NAX の qmm) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| mlp gate/up 17408×5120 | 142〜164 | 226 | 325 | 212 | 611〜668 |
+| mlp down 5120×17408 | 150〜155 | 223 | 323 | 211 | 618〜663 |
+| attn q 12288×5120 | 95 | 163 | 238 | 154 | 436〜475 |
+
+- 1 行は M6 の帯域 (144.4 GB/s、m6-prefill/03) 近くで読んでいる。2 行にすると重みを 1 回しか読まない FewRowQMV でも 1.3 倍で、復元と積和の演算の側が詰まる。
+- ishizuki の VerifyMatmul (M1 Max で決めた閾値で 2 行では使われない) は M6 では 2 行で 2 倍。
+- MLX は qmv の行数の上限を超えると tensor ops (NAX) の qmm に切り替えるが、この形では行数によらず 1 行の約 4 倍。2 行を水増しして NAX に乗せる手は遅くなる。
+- tensor ops で積和を持たせる few-row のカーネルは書いていない。
