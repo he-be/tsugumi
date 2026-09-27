@@ -1,0 +1,2 @@
+測定: 2026-09-27 / Mac18,5 Apple M6 16GB / macOS 27.0 (26A428) / Swift 6.4 / SDK 27.0 / CLT / APPLE SSD AP0256Z / commit 5027e5d9
+version: 0.2.0-dev (build 10743, commit adfffbe41) / Ternary-Bonsai-2-27B-PQ2_0.gguf 7206168928 bytes

@@ -1,0 +1,1 @@
+/Users/mh/LLM/ref/prism-b10743/llama-bench -m /Users/mh/LLM/ref/Ternary-Bonsai-2-27B-PQ2_0.gguf -p 512,2048 -n 0 -b 2048 -ub 2048 -fa 1 -r 5 -o md
