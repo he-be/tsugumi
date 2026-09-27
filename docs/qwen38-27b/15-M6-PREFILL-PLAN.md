@@ -12,15 +12,16 @@
 
 ## 0. 結論
 
-1. **M6 で今すぐ測れる経路は llama.cpp の prism フォークだけで、最初の行を取った (§7)。**
+1. **同じ本文 (`en-readme`、約 2,400 トークン) の同じ日の 3 経路: ishizuki 9.205 s (263.6 tok/s、§7-5) < llama.cpp prism フォーク 13.50 s (178.4 tok/s、§7-1) < パック同梱 mlx-vlm 17.76 s (135.6 tok/s、スワップ込み、§7-4)。**
+   llama.cpp の行から書く。
    自然文 2,408 トークン (`bench/m6/prompts/en-readme.json`) の prompt eval が **13.50 s (13.32〜13.83)、178.4 tok/s** (実測、n = 6、§7-1)。
    `llama-bench` の pp512 / pp2048 は 231.2 / 173.2 tok/s (§7-2)。tensor API を切ると 30.20 s、79.7 tok/s で、PQ2_0 の行列積が M6 の tensor 経路に乗っていることが A/B で分かった (§7-3)。
    同じ本文を MBP (M3 Pro) の同じ経路で流した記録は無い。MBP の 92.6 tok/s ([07 §3](07-PQ2-0-SMALL-BATCH-KERNEL.md)) は `llama-batched-bench -npp 64` の別の形なので並べない。
 2. **Tsugumi 自身に Bonsai を走らせる経路は無い。**[05 §10](05-BONSAI-PQ2-0.md) の通りランナーの結線が無く、[14](14-PQ2-0-OWN-GEMV.md) で書いたのは GEMV 1 本だけ。
    アプリは子サーバの `llama-server` を立てる形 ([11](11-GUI-WIRING.md)) で、prefill はその llama.cpp の数字である。したがって「Tsugumi の Bonsai の prefill」は当面 **llama.cpp の prism フォークの prefill** を指す。
-3. **ishizuki は M6 では組めない** (§3)。mlx-swift が Metal シェーダをビルド時に `metal` でコンパイルし、CLT にはそれが無い (実測、エラー行を §3 に写した)。
-   組む道は 2 つ: MBP の Xcode.app を M6 に置いて `DEVELOPER_DIR` で組む、または MBP で組んで (SDK 26.5、`.macOS(.v26)`) 実行ファイルと metallib を M6 へ運ぶ。
-   どちらも ishizuki には CLI が無いので、ベンチを呼ぶ小さな実行ファイルを 1 本書く必要がある (§3-2)。
+3. **ishizuki は M6 では組めないが、MBP で組んで運べば動く** (§3-2・§3-3)。mlx-swift が Metal シェーダをビルド時に `metal` でコンパイルし、M6 の CLT にはそれが無い。
+   MBP で tools-version を下げ、SDK 26.5 に無い 1 ファイルを除外し、Swift Build で metallib ごと組んで運んだ (`bench/m6/ishizuki_ship.sh`)。ベンチを呼ぶ実行ファイルは 50 行の driver を足した。
+   同じ本文の prefill は §7-5。vision の塔を読まないので peak は 8 GB 台で、R2 と違ってスワップが出ない。
 4. **パック同梱の MLX ランタイム (mlx-vlm 0.6.3) も測れた (§7-4)。**同じ本文で **17.76 s (14.83〜19.37)、135.6 tok/s** (n = 3)。
    ただし peak memory 14.44 GB で、run ごとに Swapouts が 337〜964 MiB 出た。16 GB の M6 ではこの構成は収まっておらず、幅 (4.5 s) はスワップの run の幅である。
    パックの text-only ローダ (`runtime/artifact.py`) は schema 1 しか受けず、HF の `config.json` は schema 2 なので、vision の塔ごと読む `vision_artifact.load_vl_model` しか使えない (§5-2)。
@@ -92,16 +93,26 @@ error: CompileMetalFile .../mlx-swift/Source/Cmlx/mlx-generated/metal/conv.metal
 `xcrun -find metal` も M6 では見つからない。[TWO_MACHINE_DEV §6](../TWO_MACHINE_DEV.md) の「CLT に `metal` が無い」がそのまま当たった。
 Tsugumi は実行時にシェーダをコンパイルするので困らないが、mlx-swift はビルド時にコンパイルする。
 
-組む道 (どちらも未実施):
+### 3-3. MBP で組んで M6 へ運んだ (道 B、2026-09-27、ユーザー指定)
 
-| 道 | やること | 代償 |
-| --- | --- | --- |
-| A. M6 に Xcode | MBP の `/Applications/Xcode.app` (Xcode 26.6、SDK 26.5) を外付け `SSD256` へ写し、`DEVELOPER_DIR=/Volumes/SSD256/Xcode.app swift build`。`xcode-select` は CLT のまま | 転送と初回起動の同意。SDK が CLT の 27.0 より古いが、ishizuki の要件は macOS 26 なので足りる (未確認: 実際に通るか) |
-| B. MBP で組んで運ぶ | MBP (Xcode 26.6) で `.macOS(.v26)` のまま組み、実行ファイルと `mlx-swift_Cmlx.bundle` (metallib) を M6 へ scp | MBP は macOS 15 なので手元で動かせず、失敗の切り分けが M6 でしかできない |
+[`bench/m6/ishizuki_ship.sh`](../../bench/m6/ishizuki_ship.sh) が全部やる。`scratch/ishizuki` に 459ee00 を clone し、次の 4 点を当てて組み、
+実行ファイルと `mlx-swift_Cmlx.bundle` (metallib) と `build-info.txt` (MBP のホスト札・ishizuki の commit・minos) を `m6:~/LLM/ref/ishizuki-bin/` へ rsync する。
+運んだ binary は minos 26.0 なので MBP (macOS 15) では動かず、M6 でしか試せない。
 
-どちらでも **ベンチを呼ぶ実行ファイルが要る** (`ISHIZUKI_BENCH_PACK` のテストは `swift test` のランナーが Xcode 由来なので A の道でだけ使える)。
-`EngineBenchProbe.swift` の pp の部分 (`Generator(model:)` → `generate(promptTokens:options:.greedy,maxTokens:1)` → `stats.promptSeconds`) を写して、
-自然文の messages json を読む 60 行ほどの `main.swift` を、ishizuki を依存に持つ別パッケージとして置く。**書くのは判断待ち** (§8)。
+| 当てたもの | 理由 |
+| --- | --- |
+| `Package.swift` の tools-version 6.4 → 6.3 | MBP の Swift は 6.3.3。他に 6.4 でしか通らない記述は無かった (組めた) |
+| `Sources/IshizukiKit/Agent/IshizukiLanguageModel.swift` をターゲットから除外 | Foundation Models の `LanguageModel` (SDK 27.0 の API) を使い、SDK 26.5 には無い。他から参照されていない |
+| 実行ターゲット `IshizukiPrefill` を追加 ([`bench/m6/ishizuki-driver/main.swift`](../../bench/m6/ishizuki-driver/main.swift)) | CLI が無いため。`EngineBenchProbe` の pp の部分を prompt ファイル入力にした 50 行。`Generator.speculativeDecode` は internal なので `BonsaiRuntime.speculativeDecode = false` で切る |
+| `swift build --build-system swiftbuild --arch arm64` | 旧ビルドシステムは `.metal` を metallib に組まず、binary は link まで通って M6 で `Failed to load the default metallib` で落ちた (実測)。Swift Build は組む。x86_64 は mlx-swift に Float16 が無く落ちるので arm64 だけ |
+
+Swift Build の `metal` は Xcode 26.6 の **Metal Toolchain (別ダウンロード 688 MB)** で、MBP には入っていなかった (Tsugumi は実行時にシェーダを組むので要らなかった)。
+`xcodebuild -downloadComponent MetalToolchain` は最初 `xcodebuild failed to load a required plug-in` で落ち、`xcodebuild -runFirstLaunch` の後に通った。
+
+M6 での試走 (36 トークンの短い prompt、1 回): load 5.7 s、prefill 0.41 s、**peak 8.06 GB**。vision の塔を読まないので、R2 (14.44 GB) より 6.4 GB 軽い (導出)。
+`first_token` が −1 (`result.tokens` が空) で、1 トークン目の中身は取れていない (未確認: `maxTokens: 1` のときの `tokens` の仕様)。prefill の秒には関係しない。
+
+道 A (Xcode を M6 に置く) は使わなかった。
 
 ## 4. M6 に置いたもの (2026-09-27、実測)
 
@@ -112,6 +123,7 @@ Tsugumi は実行時にシェーダをコンパイルするので困らないが
 | MLX 2-bit パック | `~/LLM/ref/Ternary-Bonsai-2-27B-mlx-2bit/` | `model.safetensors` 8,595,477,990 B (HF と同じ大きさ、`curl -C -` で 1 本) と `config.json` / `hadamard.json` / `tokenizer*` / `preprocessor_config.json` / `runtime/*.py` (`vision_artifact.py` 込み) |
 | パック用の venv | `~/LLM/ref/bonsai-venv` | `runtime/requirements.txt` の固定版を `uv` で入れた: Python 3.12、mlx 0.32.0、mlx-vlm 0.6.3、mlx_lm 0.31.3、transformers 5.5.0。Gemma 用の `~/LLM/ref/mlx-venv` (mlx 0.32.2、mlx-vlm 無し) は使わない |
 | ishizuki の checkout | `~/LLM/ref/ishizuki` (459ee00) | 組めない (§3-2)。`.build` は残してある |
+| ishizuki の driver (MBP で組んだ) | `~/LLM/ref/ishizuki-bin/` | `ishizuki-prefill` (minos 26.0) + `mlx-swift_Cmlx.bundle` + `build-info.txt`。`bench/m6/ishizuki_ship.sh` が置く (§3-3) |
 | `iogpu.wired_limit_mb` | — | 14336 (前回の sudo が効いたまま。再起動で 0 に戻る) |
 | 内蔵の空き | — | 約 30 GB (GGUF 7.2 + パック 8.6 + venv を置いた後、導出) |
 
@@ -123,7 +135,7 @@ Tsugumi は実行時にシェーダをコンパイルするので困らないが
 | --- | --- | --- | --- |
 | R1. llama.cpp prism フォーク (PQ2_0) | **測れる** | [`bench/m6/ref_llamacpp_bonsai.sh`](../../bench/m6/ref_llamacpp_bonsai.sh) (自然文、新プロセス × n、`prompt eval time`)、[`bench/m6/ref_llamabench_bonsai.sh`](../../bench/m6/ref_llamabench_bonsai.sh) (`llama-bench -p 512,2048 -n 0`、外の表と同じ形) | prefill 秒と pp。tensor API の A/B は `GGML_METAL_TENSOR_DISABLE=1` |
 | R2. パック同梱の MLX ランタイム (mlx-vlm 0.6.3) | **測れる** (16 GB ではスワップ付き) | [`bench/m6/ref_mlxpack_bonsai.sh`](../../bench/m6/ref_mlxpack_bonsai.sh) (自然文、新プロセス × n、`mlx_vlm.generate` の `prompt_tps` と `peak_memory`) | 同じ重みの MLX 側の pp。ishizuki の表の「mlx-lm」列に当たる |
-| R3. ishizuki | 組めない (§3-2) | 未作成: 道 A か B + driver | MLX Swift の pp |
+| R3. ishizuki (MLX Swift) | **測れる** (§3-3) | [`bench/m6/ref_ishizuki_bonsai.sh`](../../bench/m6/ref_ishizuki_bonsai.sh) (自然文、新プロセス × n、`Generator.promptSeconds`) | MLX Swift の pp。text だけ読むので 16 GB に収まる |
 | R4. Tsugumi | 経路が無い ([05 §10](05-BONSAI-PQ2-0.md)) | — | — |
 
 ### 5-1. R1 の固定形
@@ -160,7 +172,7 @@ chat turn で包むと 2,408 (en-readme) のように十数トークン増える
 1. **R1 の最初の行** (済み、§7-1〜7-3): en-readme × 6、tensor off × 3、llama-bench pp512 / pp2048。
 2. **R2 の最初の行** (済み、§7-4): en-readme × 3。スワップの出る run なので、繰り返して n を増やす前に、載せ方を変えられるか (§8) を決める。
 3. R1 の残りの本文 5 本 × 3 以上。`PROMPT=` で替える。
-4. R3 は判断待ち (§8)。
+4. **R3 の最初の行** (済み、§7-5): en-readme × 6。
 5. 1〜3 が揃ったら、同じ本文の秒を経路ごとに並べた表を 1 つ書く (M6 だけ、同じ commit、同じ本文)。
 
 ## 7. 最初の行 (実測、M6、2026-09-27、R1)
@@ -228,9 +240,35 @@ python prefill.py Ternary-Bonsai-2-27B-mlx-2bit prompt.txt    # load_vl_model �
   8.6 GB のうち vision の塔の分 (未確認: 大きさ) は text の prefill に要らないが、schema 2 を読めるローダが塔ごと読む形しか無い (§5-2)。
 - 同じ本文・同じ日の R1 (13.50 s、178.4 tok/s) より 4.3 s 長い (導出)。ただし R2 はスワップ込みなので、この差を実装の差と読まない。
 
+### 7-5. R3: ishizuki (MBP で組んだ driver)、同じ本文 `en-readme`
+
+証拠: [`bonsai-ishizuki-en-readme`](../../bench/m6/results/2026-09-27-Mac18-5-bonsai-ishizuki-en-readme/) (n = 6、7-4 の後に取った)。`build-info.txt` に MBP のホスト札と ishizuki の commit がある。
+
+```
+測定: 2026-09-27 / Mac18,5 Apple M6 16GB / macOS 27.0 (26A428) / Swift 6.4 / SDK 27.0 / CLT / APPLE SSD AP0256Z / commit 5f8d24da / minos 26.0
+(binary) 測定: 2026-09-27 / Mac15,6 Apple M3 Pro 18GB / macOS 15.7.5 (24G624) / Swift 6.3.3 / SDK 26.5 / Xcode 26.6 / commit 00845b9 / minos 26.0 — ishizuki 459ee00
+ishizuki-prefill Ternary-Bonsai-2-27B-mlx-2bit prompt.txt
+```
+
+| run | prefill s (`Generator.promptSeconds`) | pp tok/s | load s | peak GB | Swapouts |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | 9.716 | 249.8 | 2.10 | 9.43 | +0 |
+| 2 | 9.203 | 263.7 | 2.80 | 9.43 | +0 |
+| 3 | 9.199 | 263.8 | 2.80 | 9.43 | +0 |
+| 4 | 9.200 | 263.8 | 2.80 | 9.43 | +0 |
+| 5 | 9.220 | 263.2 | 2.81 | 9.43 | +0 |
+| 6 | 9.208 | 263.6 | 2.80 | 9.43 | +0 |
+
+中央値 **9.205 s (9.199〜9.716)、263.6 tok/s**。prefill チャンク 512 (ishizuki の既定)。Swapouts は 6 run とも +0、peak 9.43 GB。
+
+- **同じ本文・同じ日の 3 経路で最も短い。**R1 (llama.cpp、13.50 s) より 4.3 s 短く、R2 (mlx-vlm、17.76 s、スワップ込み) より 8.6 s 短い (導出)。
+  R2 との差は同じ MLX でも「塔を読まず 16 GB に収まる」ことが大きいはずだが、切り分けていない (R2 をスワップなしで取れていない)。
+- トークン数は 2,427 で、R1 / R2 の 2,408 と 19 違う。ishizuki の `tokenizer.encode(addSpecialTokens: false)` が `<|im_start|>` などをどう扱うかの差とみられる (未確認)。pp の分母はそれぞれ自分の数で、秒は同じ文字列に対するもの。
+- 1 run 目は 0.5 s 長い (ページキャッシュ)。2 run 目以降は 9.199〜9.220 s に収まり、幅は 0.02 s。
+- §0-5 の演算だけの床 345 tok/s (導出) に対し 263.6 tok/s。
+
 ## 8. 判断待ち / 未確認
 
-- ishizuki を組む道 (A: Xcode を M6 に置く、B: MBP で組んで運ぶ) とベンチ用の driver を書くか。書くならどこに置くか (この repo の `bench/m6/` か、外)。
 - R2 を 16 GB に収める手があるか: `wired_limit_mb` を上げる (Gemma では 14336 で足りた)、vision の塔を読まないローダを `vision_artifact.py` から切り出す (パックの外の改変になる)、KV を量子化する (`--kv-bits`、prefill の峰には効かない見込み)。どれも未実施。収まらないなら R2 の数字は「スワップ込み」の札のまま置く。
 - MLX パックの 2-bit affine と PQ2_0 の三値が同じ重みか (未確認。`reload-validation.json` は直列化の検査で、ランタイム間の一致は検査していないと `PACK-RUNTIME.md` にある)。
   prefill の秒を比べるだけなら影響しないが、出力を比べるなら要る。

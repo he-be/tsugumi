@@ -1,0 +1,4 @@
+測定: 2026-09-27 / Mac15,6 Apple M3 Pro 18GB / macOS 15.7.5 (24G624) / Swift 6.3.3 / SDK 26.5 / Xcode 26.6 / APPLE SSD AP1024Z / commit 00845b9 / minos 26.0
+ishizuki 459ee00 (tools-version 6.4 -> 6.3, + IshizukiPrefill target) / driver bench/m6/ishizuki-driver/main.swift @ 00845b9
+bundles: mlx-swift_Cmlx.bundle 
+size 32982000
