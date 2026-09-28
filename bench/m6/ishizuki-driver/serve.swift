@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Headless OpenAI-compatible server for ishizuki (struffl/ishizuki), built on the MBP and
-// run on the M6 (docs/qwen38-27b/16-M6-ISHIZUKI-AGENT-PLAN.md S1). The menu bar app does
+// Headless OpenAI-compatible server for ishizuki (struffl/ishizuki), built on the M6 from the
+// he-be/ishizuki fork (bench/m6/ishizuki_build_m6.sh) and run there
+// (docs/qwen38-27b/16-M6-ISHIZUKI-AGENT-PLAN.md S1). The menu bar app does
 // not run on a headless Mac; this is its ServerController.start without the UI.
 //
 //   ishizuki-serve --pack DIR [--port 8128] [--host 127.0.0.1] [--name ternary-bonsai-2-27b]

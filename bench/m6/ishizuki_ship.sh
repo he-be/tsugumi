@@ -1,5 +1,7 @@
 #!/bin/sh
 # Build the ishizuki prefill driver and headless server on the MBP and ship them to the M6
+# Superseded on 2026-09-28: the M6 has Xcode 27.0 and builds from the he-be/ishizuki fork with
+# bench/m6/ishizuki_build_m6.sh (docs/qwen38-27b/16 §17). This script stays for the MBP route.
 # (docs/qwen38-27b/15-M6-PREFILL-PLAN.md §3-2, route B; 16-M6-ISHIZUKI-AGENT-PLAN.md S1).
 # ishizuki cannot be built on the M6: mlx-swift compiles its Metal kernels at build time with `metal`, which the CLT lacks.
 # The MBP has Xcode 26.6 (SDK 26.5); ishizuki's platforms are .macOS(.v26), so the binary

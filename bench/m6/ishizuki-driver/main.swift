@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Prefill driver for ishizuki (struffl/ishizuki), built on the MBP and run on the M6
+// Prefill driver for ishizuki (struffl/ishizuki), built on the M6 from the he-be/ishizuki fork
+// (bench/m6/ishizuki_build_m6.sh) and run there
 // (docs/qwen38-27b/15-M6-PREFILL-PLAN.md §3-2, route B). ishizuki has no CLI: its
 // benches live in the menu bar app and in `swift test`, neither of which runs on a
 // headless Mac without Xcode. This is the pp part of Tests/IshizukiKitTests/

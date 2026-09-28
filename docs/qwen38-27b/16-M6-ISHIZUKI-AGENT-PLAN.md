@@ -604,3 +604,17 @@ Swapouts +0。
 
 - 2 行の行列積は自前カーネルの読みで頭打ち (16-1)。MLX 組み込みの 1 行の読みに届かせるには、MLX の metallib に入れる (mlx-swift の checkout に当てる) 形を試すことになる。
 - 長い文脈ほど attention の 1 クエリ側も重い (1 クエリの経路は変えていない)。8,000 トークンでは 2 クエリのまとめた形 (286 µs) が今の 1 クエリの形より速い可能性がある。1 クエリを測っていない。
+
+## 17. M6 で直接組む — Xcode 27.0 とフォーク he-be/ishizuki (2026-09-28、実測)
+
+ユーザー: 「M6 に Xcode 入れた」「フォークしたので、こちらにプッシュ」。
+
+- **フォーク** [he-be/ishizuki](https://github.com/he-be/ishizuki) の main は 459ee00 の上に 4 コミット: `api.patch` (9a041ad)・`bind-host.patch` (8852176)・`mtp.patch` (3d87e05、§14〜§16 の全部)・実行ターゲット 4 本 (98e22a4: ishizuki-serve・ishizuki-prefill・ishizuki-verify-bench・ishizuki-decode-probe。中身は `bench/m6/ishizuki-driver` の写し)。ライブラリの中身は MBP で組んで運んでいた `ishizuki-bin-mtp5` と同じ (diff で確認)。MBP 向けの手当て (tools-version 6.3、FoundationModels の 1 ファイル除外) は入れていない。
+- **M6 の道具**: Xcode 27.0 (27A266a)、Swift 6.4、SDK 27.0。`xcode-select` は CLT を指したまま (切り替えは sudo が要る) なので `DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer` で使う。Metal Toolchain は未導入だったので `xcodebuild -downloadComponent MetalToolchain` で入れた (839 MB、1 分 23 秒)。
+- **組み方**: [`bench/m6/ishizuki_build_m6.sh`](../../bench/m6/ishizuki_build_m6.sh) (MBP から ssh で流す)。`m6:~/LLM/ref/ishizuki-src` にフォークを clone して固定コミット (既定 98e22a4) を出し、4 本を Swift Build で組み、`~/LLM/ref/<ISHIZUKI_BIN_DIR>` (既定 `ishizuki-bin-m6`) に置く。最初の ishizuki-serve は 1 分 31 秒。依存は MBP と同じ版 (mlx-swift 0.31.6)。SwiftPM が書き換える Package.resolved (アプリ用の固定が外れる) は次の実行で捨てる。
+  `bench/m6/ishizuki_ship.sh` (MBP で組んで運ぶ) は残してある。
+- **動作確認**:
+  - `ishizuki-verify-bench` (M6 で組んだもの): まとめた形の attention の誤差 1.3e-4、今までの形 0.153、冷えた行列積の 1 バックボーン分 M=1 MLX 51.1 ms・M=2 magic 57.0 ms。MBP で組んだものと同じ値。
+  - サーバ (`scratch/bonsai27b/mtp/server-ab-4.txt`、長い本文 2,316 トークン、300 トークン、交互に 3 回): MTP なし 15.64 / 15.97 / 15.92、MTP 20.10 / 20.03 / 20.59 tok/s、受理 116/184・111/189・116/184、Swapouts 0。§16-5 (MBP で組んだ版、20.48 / 21.59 / 20.44) と同じ水準。
+- **M6 の再起動で落ちたもの**: 測る前に M6 が再起動していて (稼働 2 時間 12 分)、サーバと MBP からのトンネルが無く、外付け SSD256 (disk5s1) がマウントされていなかった。パックの実体は SSD256 にあり、マウントしないと ishizuki-serve は「chat_template.jinja が無い」で起動しない。`diskutil mount disk5s1` で戻した。
+- M6 のサーバは `~/LLM/ref/ishizuki-bin-m6-98e22a4` で起動中 (引数は §15-4 と同じ)。MBP で組んだ `ishizuki-bin`・`ishizuki-bin-mtp`〜`mtp5` は M6 に残っている。
