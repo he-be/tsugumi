@@ -101,7 +101,7 @@ import UniformTypeIdentifiers
             enableThinking: true)
 
         let validated = try RealInferenceSession.validatedChatRequest(
-            for: request, kind: .ornith)
+            for: request, kind: .qwen38)
         #expect(validated.enableThinking)
     }
 
@@ -118,7 +118,7 @@ import UniformTypeIdentifiers
             prompt: "q2")
 
         let validated = try RealInferenceSession.validatedChatRequest(
-            for: request, kind: .ornith)
+            for: request, kind: .qwen38)
         #expect(validated.messages.count == 3)
         #expect(validated.messages[0].role == .user)
         #expect(validated.messages[0].content == "q1")
@@ -158,7 +158,7 @@ import UniformTypeIdentifiers
 
         #expect(throws: AppInferenceError.self) {
             _ = try RealInferenceSession.validatedChatRequest(
-                for: request, kind: .ornith)
+                for: request, kind: .qwen38)
         }
     }
 
@@ -197,7 +197,7 @@ import UniformTypeIdentifiers
 
         #expect(throws: AppInferenceError.self) {
             _ = try RealInferenceSession.validatedChatRequest(
-                for: request, kind: .ornith)
+                for: request, kind: .qwen38)
         }
     }
 

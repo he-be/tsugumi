@@ -4,31 +4,23 @@ import Testing
 
 @Suite struct AppModelKindTests {
     @Test func capabilitiesMatchTheShippedCheckpoints() {
+        // Ornith-1.5 left the app on 2026-09-29.
+        #expect(AppModelKind.allCases == [.gemmaQATSym, .qwen38, .bonsai27b])
+        #expect(AppModelKind(rawValue: "ornith-oq4e-g64") == nil)
         #expect(AppModelKind.gemmaQATSym.supportsVision)
-        #expect(!AppModelKind.ornith.supportsVision)
-        // MTP exists on both; the block width is each family's own.
+        #expect(AppModelKind.gemmaQATSym.supportsTools)
         #expect(AppModelKind.gemmaQATSym.draftBlockSize == 4)
-        #expect(AppModelKind.ornith.draftBlockSize == 2)
-        // Thinking defaults: Gemma off, Ornith on.
         #expect(!AppModelKind.gemmaQATSym.thinkingDefault)
-        #expect(AppModelKind.ornith.thinkingDefault)
-        // S1 pins Ornith's sampler to the official values.
         #expect(!AppModelKind.gemmaQATSym.samplingIsLocked)
-        #expect(AppModelKind.ornith.samplingIsLocked)
-        #expect(AppModelKind.ornith.officialTemperature == 0.6)
-        #expect(AppModelKind.ornith.officialTopK == 20)
-        #expect(AppModelKind.ornith.officialTopP == 0.95)
         #expect(AppModelKind.gemmaQATSym.officialTemperature == 1.0)
         #expect(AppModelKind.gemmaQATSym.officialTopK == 64)
-        // Gemma and Ornith reach 128K; 12K is Qwen3.8's alone.
-        for kind in [AppModelKind.gemmaQATSym, .ornith] {
-            #expect(kind.contextOptions.contains(.oneTwentyEightK))
-            #expect(!kind.contextOptions.contains(.twelveK))
-        }
+        // Gemma reaches 128K; 12K is Qwen3.8's alone.
+        #expect(AppModelKind.gemmaQATSym.contextOptions.contains(.oneTwentyEightK))
+        #expect(!AppModelKind.gemmaQATSym.contextOptions.contains(.twelveK))
         // Qwen3.8: MTP n_max 1, thinking off, the non-thinking sampler pinned, 32K at most.
         #expect(!AppModelKind.qwen38.supportsVision)
         #expect(AppModelKind.qwen38.draftBlockSize == 2)
-        // The two values a llama-server has other defaults for; Gemma and Ornith never run on one from the app.
+        // The two values a llama-server has other defaults for; Gemma never runs on one from the app.
         #expect(AppModelKind.qwen38.officialSampling(thinking: false).minP == 0.0)
         #expect(AppModelKind.qwen38.officialSampling(thinking: false).presencePenalty == 1.5)
         #expect(AppModelKind.gemmaQATSym.officialSampling(thinking: false).presencePenalty == nil)
@@ -63,13 +55,6 @@ import Testing
         #expect(gemma.mtpEnabled)
         #expect(gemma.contextTokens == 32_768)
 
-        let ornith = MacAppSettings.defaults(for: .ornith)
-        #expect(ornith.temperature == 0.6)
-        #expect(ornith.topK == 20)
-        #expect(ornith.thinkingEnabled)
-        #expect(ornith.mtpEnabled)
-        #expect(ornith.contextTokens == 32_768)
-
         let qwen38 = MacAppSettings.defaults(for: .qwen38)
         #expect(qwen38.temperature == 0.7)
         #expect(qwen38.topP == 0.8)
@@ -97,7 +82,8 @@ import Testing
         let ornith = try makeDirectory(
             manifest: "{\"arch\": {\"family\": \"qwen3_5_moe\"}}")
         defer { try? FileManager.default.removeItem(at: ornith) }
-        #expect(AppModelKind.probe(modelDirectory: ornith) == .ornith)
+        // Ornith's family is no longer a kind the app ships.
+        #expect(AppModelKind.probe(modelDirectory: ornith) == nil)
 
         let qwen38 = try makeDirectory(
             manifest: "{\"arch\": {\"family\": \"qwen4exp\"}}")
@@ -121,18 +107,16 @@ import Testing
 
     @Test func perKindLocationsAndSources() {
         #expect(AppModelKind.gemmaQATSym.directoryName == "gemma4-qat-sym.moepack")
-        #expect(AppModelKind.ornith.directoryName == "ornith-oq4e-g64.moepack")
         let root = URL(fileURLWithPath: "/repo")
         let files: Set<String> = ["/repo/Package.swift", "/repo/Sources/TsugumiApp/Mac"]
         let resolved = AppModelLocation.resolve(
-            kind: .ornith,
+            kind: .gemmaQATSym,
             explicitURL: nil,
             executableURL: nil,
             currentDirectoryURL: root,
             applicationSupportURL: URL(fileURLWithPath: "/support"),
             fileExists: files.contains)
-        #expect(resolved.path == "/repo/scratch/ornith-oq4e-g64.moepack")
-        #expect(PrebuiltModelSource.source(for: .ornith).kind == .ornith)
+        #expect(resolved.path == "/repo/scratch/gemma4-qat-sym.moepack")
         #expect(PrebuiltModelSource.source(for: .gemmaQATSym).kind == .gemmaQATSym)
     }
 }

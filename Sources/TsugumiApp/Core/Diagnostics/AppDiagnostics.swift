@@ -78,7 +78,7 @@ public struct AppDiagnostics: Equatable, Sendable {
     public var stopReason: AppStopReason
     public var promptTokenCount: Int?
     /// Prompt tokens the session served from its cache instead of
-    /// recomputing (exact-extension for Ornith, LCP for Gemma).
+    /// recomputing (LCP for Gemma).
     public var cachedPromptTokens: Int?
     /// Present only when the MTP loop actually ran.
     public var speculative: AppSpeculativeDiagnostics?

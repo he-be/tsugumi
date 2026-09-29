@@ -23,7 +23,7 @@ public final class RemoteInferenceClient: AppModelLifecycleClient, AppInferenceR
         public init(kind: AppModelKind) {
             switch kind {
             case .qwen38, .bonsai27b: self = .qwen
-            case .gemmaQATSym, .ornith: self = .gemma
+            case .gemmaQATSym: self = .gemma
             }
         }
 

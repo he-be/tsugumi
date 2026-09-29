@@ -432,12 +432,5 @@ if __name__ == "__main__":
         ]
         session(f"{MODEL_DIR}/Qwen3.8-Flash-Next-DS4-IQ2", 12288, runs)
     else:
-        runs = [
-            dict(label="ornith-think", prompt="1+1は?ひとことで。",
-                 temperature=0.6, top_k=20, top_p=0.95, thinking=True,
-                 max_new=256),
-            dict(label="ornith-plain", prompt="7×8は?ひとことで。",
-                 temperature=0.6, top_k=20, top_p=0.95, thinking=False,
-                 max_new=64),
-        ]
-        session(installed_model("ornith-oq4e-g64"), 8192, runs)
+        # Ornith はアプリから外した (2026-09-29)。decode service も読まない。
+        sys.exit(f"unknown mode {which!r}: wiki / tools / think-tools / gemma / qwen38")

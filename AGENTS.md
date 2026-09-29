@@ -59,13 +59,13 @@ Report the commit, hardware and RAM, macOS, Swift version, exact command, exit c
 
 ## App controls
 
-The Mac app runs two checkpoints through the same family sessions the server
-uses, so the chat template, the thinking channel, speculative decoding and the
+The Mac app runs Gemma 4 and Qwen3.8 through the same family sessions the
+server uses (Bonsai 2 runs in a `llama-server`; Ornith was removed from the app
+on 2026-09-29), so the chat template, the thinking channel, speculative decoding and the
 prompt cache are one implementation, not two. It exposes context length,
 temperature, Top-K, Top-P, expert-cache slots, prefill, and RDADVISE. Sampling
 defaults are each checkpoint's official values — Gemma temperature `1.0` /
-Top-K `64` / Top-P `0.95`, editable; Ornith `0.6` / `20` / `0.95`, pinned
-rather than editable. Responses can use the context space left after formatting
+Top-K `64` / Top-P `0.95`, editable; the others pinned rather than editable. Responses can use the context space left after formatting
 the prompt, and FP16 is the runtime KV format. The HUD shows generation rate, token count, and
 decode-service memory; Last run also shows time to first token and I/O. Build
 the app with its sibling `TsugumiDecodeService`; it never loads a second

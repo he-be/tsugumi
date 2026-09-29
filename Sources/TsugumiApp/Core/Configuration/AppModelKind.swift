@@ -6,13 +6,13 @@ import Tsugumi
 /// case and the compiler lists every decision it has to make.
 ///
 /// The defaults encode the adopted operating points, not neutral values:
-/// MTP is on for both (`docs/SERVER_RUNBOOK.md` — block 4 for Gemma, the
-/// fixed width 2 for Ornith), thinking follows each family's recommended use
-/// (Ornith reasons by default, Gemma answers directly), and Ornith's sampler
-/// is pinned to the official values (S1, `docs/qwen35moe/42-SAMPLING.md`).
+/// MTP is on (`docs/SERVER_RUNBOOK.md` — block 4 for Gemma), thinking starts
+/// off, and every model but Gemma runs its official sampler pinned.
+///
+/// Ornith-1.5 (`qwen3_5_moe`) is not a kind: the app dropped it on 2026-09-29.
+/// The server and the CLI still run that family.
 public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable {
     case gemmaQATSym = "gemma4-qat-sym"
-    case ornith = "ornith-oq4e-g64"
     /// Qwen3.8-Flash-Next off the DS4-IQ2 GGUF (`docs/qwen38`). Not a `.moepack` and not downloadable: a local
     /// directory whose manifest names the GGUF (`Qwen38ModelDirectory`). Operating point 12K, thinking off, MTP n_max 1
     /// (memory of `docs/qwen38/15`).
@@ -27,7 +27,6 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
     public var displayName: String {
         switch self {
         case .gemmaQATSym: "Gemma 4 26B-A4B QAT (Vision + MTP)"
-        case .ornith: "Ornith-1.5 35B-A3B (MTP)"
         case .qwen38: "Qwen3.8-Flash-Next IQ2 (MTP)"
         case .bonsai27b: "Bonsai 2 27B PQ2_0 (MTP)"
         }
@@ -36,7 +35,6 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
     public var shortName: String {
         switch self {
         case .gemmaQATSym: "Gemma 4"
-        case .ornith: "Ornith-1.5"
         case .qwen38: "Qwen3.8"
         case .bonsai27b: "Bonsai 2"
         }
@@ -46,39 +44,37 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
     /// this project's engines behind the decode service.
     public var runsOnLlamaServer: Bool { self == .bonsai27b }
 
-    /// Only Gemma carries the vision tower; Ornith's Phase 9 never happened. Bonsai has an mmproj, which the app does
+    /// Only Gemma carries the vision tower. Bonsai has an mmproj, which the app does
     /// not load: one image swapped 297 MB (`docs/qwen38-27b/05` §7).
     public var supportsVision: Bool { self == .gemmaQATSym }
 
     /// Whether the app declares its tools (web search, the local Wikipedia) to this model. Gemma's and Qwen3.8's
-    /// tool loops are the ones the app runs (`docs/WEB_SEARCH.md`, `docs/qwen38/20`); Ornith declares none.
-    public var supportsTools: Bool { self != .ornith }
+    /// tool loops are the ones the app runs (`docs/WEB_SEARCH.md`, `docs/qwen38/20`).
+    public var supportsTools: Bool { true }
 
-    /// Both templates can render the thought channel; what differs is the
-    /// default the toggle starts at.
-    public var thinkingDefault: Bool { self == .ornith }
+    /// The templates can render the thought channel; every kind's toggle
+    /// starts off.
+    public var thinkingDefault: Bool { false }
 
     /// The speculative block each family runs when MTP is on. Gemma's drafter
-    /// proposes a block of 4; Ornith's MTP head drafts exactly one token a
-    /// pass, so 2 is the only width its kernels have.
+    /// proposes a block of 4; the others draft one token a pass (width 2).
     public var draftBlockSize: Int {
         switch self {
         case .gemmaQATSym: 4
         // Bonsai: `--spec-draft-n-max 1`, the server's own; the width only reads the same way here.
-        case .ornith, .qwen38, .bonsai27b: 2
+        case .qwen38, .bonsai27b: 2
         }
     }
 
-    /// S1: Ornith may only run the official recommended sampler, whatever the
-    /// UI asked for, so its controls are shown pinned rather than editable.
+    /// Every model but Gemma may only run the official recommended sampler,
+    /// whatever the UI asked for, so its controls are shown pinned rather than editable.
     public var samplingIsLocked: Bool { self != .gemmaQATSym }
 
     /// The official recommended sampler for each checkpoint. Gemma's are the
-    /// editable defaults; Ornith's are the pinned values the session enforces.
+    /// editable defaults; the others' are the pinned values the session enforces.
     public var officialTemperature: Double {
         switch self {
         case .gemmaQATSym: 1.0
-        case .ornith: 0.6
         case .qwen38, .bonsai27b: 0.7
         }
     }
@@ -86,13 +82,13 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
     public var officialTopK: Int {
         switch self {
         case .gemmaQATSym: 64
-        case .ornith, .qwen38, .bonsai27b: 20
+        case .qwen38, .bonsai27b: 20
         }
     }
 
     public var officialTopP: Double {
         switch self {
-        case .gemmaQATSym, .ornith: 0.95
+        case .gemmaQATSym: 0.95
         case .qwen38, .bonsai27b: 0.8
         }
     }
@@ -102,7 +98,7 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
     /// model runs only on this Mac's engines, which carry their own.
     public func officialSampling(thinking: Bool) -> AppOfficialSampling {
         switch self {
-        case .gemmaQATSym, .ornith:
+        case .gemmaQATSym:
             AppOfficialSampling(temperature: officialTemperature, topK: officialTopK, topP: officialTopP,
                                 minP: nil, presencePenalty: nil)
         // Thinking off is the only operating point; these are `Qwen38Sampler`'s values.
@@ -123,7 +119,6 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
     public var directoryName: String {
         switch self {
         case .gemmaQATSym: "gemma4-qat-sym.moepack"
-        case .ornith: "ornith-oq4e-g64.moepack"
         case .qwen38: "Qwen3.8-Flash-Next-DS4-IQ2"
         case .bonsai27b: "Ternary-Bonsai-2-27B-MTP"
         }
@@ -136,34 +131,24 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
     public var legacyDirectoryName: String {
         switch self {
         case .gemmaQATSym: "gemma4-qat-sym.gturbo"
-        case .ornith: "ornith-oq4e-g64.gturbo"
         case .qwen38: "Qwen3.8-Flash-Next-DS4-IQ2"
         case .bonsai27b: "Ternary-Bonsai-2-27B-MTP"
         }
     }
-
-    /// The name of the MTP-head sidecar directory *inside* the model
-    /// directory. Ornith's head is a 503 MB sidecar, not a `.moepack` section
-    /// (`docs/qwen35moe/30-MTP-HEAD-GRAFT.md` §6). The engine falls back to
-    /// `QwenMTPSidecar.defaultDirectory` when this is absent, which is where
-    /// the development machine keeps it.
-    public static let mtpSidecarDirectoryName = "mtp-head"
 
     /// The architecture the manifest must validate against for this kind; nil for Qwen3.8 and Bonsai, which have no
     /// `.moepack` manifest to validate.
     public var archConfig: ArchConfig? {
         switch self {
         case .gemmaQATSym: .gemma4_26B_A4B
-        case .ornith: .ornith1_5_35B_A3B
         case .qwen38, .bonsai27b: nil
         }
     }
 
-    /// Contexts this kind may be loaded at. Both reach 128K; the note about
-    /// Ornith's decode cliff at 128K lives in the UI, not here.
+    /// Contexts this kind may be loaded at. Gemma reaches 128K.
     public var contextOptions: [AppContextLengthOption] {
         switch self {
-        case .gemmaQATSym, .ornith: AppContextLengthOption.allCases.filter { $0 != .twelveK }
+        case .gemmaQATSym: AppContextLengthOption.allCases.filter { $0 != .twelveK }
         // 32K is the operating point: with the KV cache in Q8_0 and the indexer keys in F16 it holds 0.59 GB, less than
         // the float32 cache at 12K that `docs/qwen38/09` measured (0.75 GB, `docs/qwen38/22`, `23`).
         case .qwen38: [.fourK, .eightK, .twelveK, .sixteenK, .thirtyTwoK]
@@ -180,9 +165,9 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
     public static let defaultKind = AppModelKind.gemmaQATSym
 
     /// Which kind an installed directory holds, read from the manifest's
-    /// `arch.family` key: absent means Gemma 4, `qwen3_5_moe` means Ornith
-    /// (`ManifestArch.family`'s rule). `nil` when there is no readable
-    /// manifest or the family is one this app does not ship.
+    /// `arch.family` key: absent means Gemma 4 (`ManifestArch.family`'s
+    /// rule). `nil` when there is no readable manifest or the family is one
+    /// this app does not ship — `qwen3_5_moe` (Ornith) among them.
     public static func probe(modelDirectory: URL) -> AppModelKind? {
         struct ArchPeek: Decodable {
             struct Arch: Decodable { let family: String? }
@@ -195,7 +180,6 @@ public enum AppModelKind: String, CaseIterable, Codable, Sendable, Identifiable 
         }
         switch peek.arch.family {
         case nil: return .gemmaQATSym
-        case "qwen3_5_moe": return .ornith
         case "qwen4exp": return .qwen38
         case "qwen3_8_dense_llamacpp": return .bonsai27b
         default: return nil

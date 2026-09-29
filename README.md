@@ -91,7 +91,8 @@ Tsugumi が置いた石はここで、**QAT ウェイトを、生成結果を変
 揃っていて、26B-A4B には MTP ドラフタが同梱される。だからこの話は Gemma 4 でしか
 語れない。
 
-別モデル **Ornith-1.5 35B-A3B** も動くが、こちらはエージェントコーディング用。
+別モデル **Ornith-1.5 35B-A3B** はサーバと CLI では動くが、Mac アプリからは
+外した (2026-09-29)。
 
 | | [Gemma 4 26B-A4B QAT](https://ai.google.dev/gemma/docs/core/model_card_4) | [Ornith-1.5 35B-A3B](https://huggingface.co/ornith-ai) |
 | --- | --- | --- |
@@ -135,7 +136,7 @@ Scripts/app/verify_app.sh         # 構造・署名・リソース解決・launc
 - Apple Silicon の Mac。狙いは普通の 16GB 機で、開発機は 18GB の M3 Pro
 - macOS 15 (Sequoia) 以降
 - Xcode 26 / Swift 6.2 以降
-- モデルのディスク: Gemma 4 が 15.7 GB、Ornith が 21.0 GB
+- モデルのディスク: Gemma 4 が 15.7 GB
 - 初回インストールのためのネットワーク
 
 macOS 26 では Metal 4 / MSL 4.0 のテンソルカーネル (MPP の prefill matmul と
@@ -155,11 +156,10 @@ prefill カーネルに退く。decode は変わらず、prefill だけが macOS
 戻ってくる。
 
 サンプラの既定は各チェックポイントの公式値である (Gemma は temp 1.0 /
-top-k 64 / top-p 0.95 で編集可、Ornith は 0.6 / 20 / 0.95 で固定)。
+top-k 64 / top-p 0.95 で編集可、他のモデルは公式値で固定)。
 コンテキスト長・エキスパートキャッシュ・prefill などは右ペイン。
 
-画像は Gemma だけが受ける (1 メッセージ 4 枚まで)。Ornith はテキスト専用で、
-音声と動画はどちらも対象外。ツールの実行はアプリも CLI もしない。
+画像は Gemma だけが受ける (1 メッセージ 4 枚まで)。音声と動画は対象外。ツールの実行はアプリも CLI もしない。
 
 ## CLI とローカルサーバ
 

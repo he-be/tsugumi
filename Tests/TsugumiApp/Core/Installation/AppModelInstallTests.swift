@@ -90,19 +90,6 @@ import TsugumiRepackCore
   }
 
   @MainActor
-  @Test func ornithInstallDescriptorMatchesPinnedAudit() {
-    let descriptor = AppModelInstallDescriptor.descriptor(for: .ornith)
-    #expect(descriptor.kind == .ornith)
-    #expect(descriptor.repoID == "mh73772/turbofieldfare-ornith-oq4e-g64")
-    #expect(descriptor.sourceIndexSHA256 == "4280eb9999b17eeb94f45f8ac6ba60510afbf4e1ea5adf32aa83754e68d33bf3")
-    // 19.6 GB pack + 503 MB MTP-head sidecar, from the pinned table.
-    #expect(descriptor.installedBytes == 20_998_071_775)
-    #expect(PrebuiltModelSource.ornith.files.contains {
-      $0.path.hasPrefix("mtp-head/")
-    })
-  }
-
-  @MainActor
   @Test func insufficientSpaceDisablesInstallAndExposesShortfall() {
     let requirement = AppModelInstallRequirement(
       probePath: "/volume",

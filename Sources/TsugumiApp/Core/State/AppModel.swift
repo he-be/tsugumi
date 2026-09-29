@@ -32,9 +32,8 @@ public final class AppModel {
     public var topPEnabled: Bool = true
     public var topP: Double = 0.95
     public var thinkingEnabled: Bool = false
-    /// Whether a turn may leave this Mac (`AppNetworkMode`). Gemma and
-    /// Qwen3.8 declare tools (`toolsAvailable`); for Ornith the switch is
-    /// kept but ignored.
+    /// Whether a turn may leave this Mac (`AppNetworkMode`). Ignored for a
+    /// kind that declares no tools (`toolsAvailable`).
     public var networkMode: AppNetworkMode = .offline
     /// Qwen3.8's M6 switch (docs/qfn-prefill/33): the next prefill's first layers run on the M6. Off at every launch
     /// and never turned on by the app; it turns itself off when the M6 stops advertising or a round falls back.
@@ -1514,15 +1513,14 @@ public final class AppModel {
         client.cancel()
     }
 
-    /// S1: Ornith runs the official sampler whatever the controls held; the
-    /// session would pin the values anyway, so the request carries them
-    /// directly and the UI shows them locked.
+    /// Every kind but Gemma runs the official sampler whatever the controls
+    /// held, so the request carries those values directly and the UI shows
+    /// them locked.
     public var isSamplingLocked: Bool { selectedModelKind.samplingIsLocked }
 
     public var supportsVision: Bool { selectedModelKind.supportsVision }
 
-    /// Gemma and Qwen3.8 get the tools (`AppModelKind.supportsTools`); Ornith
-    /// declares none whatever the switch.
+    /// Whether the selected kind gets the tools (`AppModelKind.supportsTools`).
     public var toolsAvailable: Bool { selectedModelKind.supportsTools }
 
     public var effectiveNetworkMode: AppNetworkMode {

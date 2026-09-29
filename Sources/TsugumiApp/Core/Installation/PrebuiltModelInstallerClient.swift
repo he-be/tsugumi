@@ -257,14 +257,12 @@ public final class PrebuiltModelInstallerClient: AppModelInstallerClient, Sendab
 
     /// The trusted-install receipt, written from the pinned table rather than
     /// by re-hashing: every file below was verified against these hashes on
-    /// its way in. The set is the manifest's own files plus `manifest.json` —
-    /// the sidecar's files are not in the manifest and must not be in the
-    /// receipt (`VerifiedInstallReceiptReader.validate` checks set equality).
+    /// its way in. The set is the manifest's own files plus `manifest.json`
+    /// (`VerifiedInstallReceiptReader.validate` checks set equality).
     private static func writeReceipt(source: PrebuiltModelSource,
                                      outputDirectory: URL) throws {
         var files: [String: VerifiedInstallReceipt.FileEntry] = [:]
-        for entry in source.files
-        where !entry.path.hasPrefix("\(AppModelKind.mtpSidecarDirectoryName)/") {
+        for entry in source.files {
             files[entry.path] = VerifiedInstallReceipt.FileEntry(
                 size: entry.bytes, sha256: entry.sha256)
         }

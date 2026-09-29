@@ -308,18 +308,6 @@ import Testing
         #expect(!model.isRunning)
     }
 
-    @MainActor
-    @Test func ornithIgnoresTheMode() throws {
-        let model = readyModel(client: ScriptedToolClient([]), executor: ScriptedToolExecutor(results: [:]))
-        model.selectModel(.ornith)
-        model.modelPathText = FileManager.default.temporaryDirectory.path
-        model.networkMode = .online
-        model.promptText = "q"
-        #expect(!model.toolsAvailable)
-        #expect(model.effectiveNetworkMode == .modelOnly)
-        #expect(try model.makeRequest().tools.isEmpty)
-    }
-
     /// Qwen3.8's tool loop is the app's (`docs/qwen38/20`): Online declares the tools and forces the search, and
     /// with thinking off the first round has no pre-search budget.
     @MainActor

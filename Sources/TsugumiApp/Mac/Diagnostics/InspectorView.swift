@@ -167,7 +167,7 @@ struct InspectorView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
-                Text(L("Web search is not available with Ornith."))
+                Text(L("Web search is not available with this model."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

@@ -55,8 +55,7 @@ final class GenerationTaskRegistry: Sendable {
 /// Real-model inference client for the Mac app. Since the two-model rework it
 /// wraps the same family sessions the HTTP server serves from —
 /// `ServerModelSession` for Gemma (vision, MTP block 4, LCP prompt cache) and
-/// `QwenServerSession` for Ornith (MTP width 2, exact-extension prompt cache,
-/// the official sampler pinned by S1) — behind the `AppInferenceClient` event
+/// `Qwen38ServerSession` for Qwen3.8 — behind the `AppInferenceClient` event
 /// stream, with an explicit load lifecycle so the resident weights stay warm
 /// across generations. The prompt goes through each checkpoint's own chat
 /// template, with the thought channel opened or closed by the request.
@@ -174,7 +173,6 @@ extension RealInferenceClient {
 actor RealInferenceSession {
     enum Backend {
         case gemma(ServerModelSession)
-        case ornith(QwenServerSession)
         case qwen38(Qwen38ServerSession)
     }
 
@@ -182,11 +180,10 @@ actor RealInferenceSession {
     private var loadedKind: AppModelKind?
     private var backend: Backend?
     /// What load actually enabled, after degrading gracefully: MTP falls back
-    /// to off when the checkpoint has no drafter section (Gemma) or no head
-    /// sidecar (Ornith).
+    /// to off when the checkpoint has no drafter section (Gemma).
     private(set) var loadedMTPEnabled = false
     /// The Gemma session's budget (`ServerModelSession.runtimeOwnBytes`);
-    /// nil for Ornith, whose runner does not budget.
+    /// nil for Qwen3.8, whose runner does not budget.
     private(set) var loadedRuntimeOwnBytes: UInt64?
 
     func ensureLoaded(key: SessionLoadKey,
@@ -229,17 +226,6 @@ actor RealInferenceSession {
                     draftBlockSize: draftBlockSize)
                 backend = .gemma(session)
                 loadedRuntimeOwnBytes = await session.runtimeOwnBytes
-            case .ornith:
-                let session = try await QwenServerSession.load(
-                    modelDirectory: key.directory,
-                    maxContext: key.maxContext,
-                    runtimeConfiguration: runtimeConfiguration,
-                    integrityPolicy: integrity,
-                    draftBlockSize: draftBlockSize,
-                    mtpHeadDirectory: Self.mtpSidecarDirectory(
-                        forModelDirectory: key.directory))
-                backend = .ornith(session)
-                loadedRuntimeOwnBytes = nil
             case .qwen38:
                 // No runtime configuration: slots, prefill and the expert I/O are the runner's own
                 // (`Qwen38Runner`); the context is the load key's.
@@ -275,8 +261,8 @@ actor RealInferenceSession {
     }
 
     /// MTP degrades to off rather than failing the load: a checkpoint without
-    /// the drafter section (Gemma) or without a head sidecar (Ornith) still
-    /// answers, just without the speculative loop.
+    /// the drafter section (Gemma) still answers, just without the
+    /// speculative loop.
     static func resolvedDraftBlockSize(kind: AppModelKind,
                                        modelDirectory: URL,
                                        requested: Bool) -> Int {
@@ -291,28 +277,10 @@ actor RealInferenceSession {
                 return 0
             }
             return kind.draftBlockSize
-        case .ornith:
-            let sidecar = mtpSidecarDirectory(forModelDirectory: modelDirectory)
-            let index = URL(fileURLWithPath: sidecar).appendingPathComponent("mtp_head.json")
-            guard FileManager.default.fileExists(atPath: index.path) else { return 0 }
-            return kind.draftBlockSize
         case .qwen38, .bonsai27b:
             // The MTP block is part of the GGUF.
             return kind.draftBlockSize
         }
-    }
-
-    /// The sidecar inside the model directory wins (that is where the
-    /// installer puts it); the development machine's shared location is the
-    /// fallback.
-    static func mtpSidecarDirectory(forModelDirectory modelDirectory: URL) -> String {
-        let installed = modelDirectory
-            .appendingPathComponent(AppModelKind.mtpSidecarDirectoryName)
-        if FileManager.default.fileExists(
-            atPath: installed.appendingPathComponent("mtp_head.json").path) {
-            return installed.path
-        }
-        return QwenMTPSidecar.defaultDirectory
     }
 
     func unload() {
@@ -428,11 +396,6 @@ actor RealInferenceSession {
                 progress.promptTokenCount = prepared.promptTokenCount
                 completion = try await session.generate(
                     prepared, monitor: monitor, onPrefill: onPrefill, onEvent: onEvent)
-            case .ornith(let session):
-                let prepared = try await session.prepare(validated)
-                progress.promptTokenCount = prepared.promptTokenCount
-                completion = try await session.generate(
-                    prepared, monitor: monitor, onPrefill: onPrefill, onEvent: onEvent)
             case .qwen38(let session):
                 await session.setPair(address: request.qwen38PairAddress)
                 let prepared = try await session.prepare(validated)
@@ -484,8 +447,8 @@ actor RealInferenceSession {
     /// The GUI request as the sessions take it: the completed turns plus the
     /// current user turn through the checkpoint's own chat template, the
     /// thought channel as the toggle set it, the sampler as the UI shows it
-    /// (Ornith's session pins S1's official values whatever arrives here —
-    /// the UI shows them pinned). Assistant turns are redrawn with their
+    /// (a pinned kind's official values arrive here already — the UI shows
+    /// them pinned). Assistant turns are redrawn with their
     /// `reasoningContent` (SPEC MSG-5) so the redraw extends the generated
     /// token sequence and the prompt cache stays warm across turns.
     ///

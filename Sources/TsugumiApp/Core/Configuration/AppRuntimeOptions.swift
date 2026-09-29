@@ -189,8 +189,8 @@ public struct AppLoadedRuntimeKey: Equatable, Sendable {
     public var rdadvisePolicy: AppRDAdvicePolicy
     public var modelVerification: AppModelVerification
     public var forceLogitsHead: Bool
-    /// MTP changes what load allocates (Gemma's speculative scratch, Ornith's
-    /// head sidecar), so flipping it means a reload.
+    /// MTP changes what load allocates (Gemma's speculative scratch), so
+    /// flipping it means a reload.
     public var mtpEnabled: Bool
     /// Since the two-model rework the family sessions bind their prefill
     /// configuration at load, so these became load-time choices too.

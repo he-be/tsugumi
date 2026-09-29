@@ -4,6 +4,12 @@
 `TsugumiDecodeService`。**このリポジトリで積んだ改善を規定値として GUI から
 使えるようにした**改造の記録と、ウェイト供給の手順。
 
+**2026-09-29: Ornith はアプリから外した。** `AppModelKind.ornith`・直DL
+(`turbofieldfare-ornith-oq4e-g64`)・MTP サイドカーの解決・`smoke_decode.py ornith`
+を削除し、`arch.family = qwen3_5_moe` のディレクトリは「アプリが扱わない family」
+としてロードを断る。サーバ・CLI・ランタイムの Ornith 経路はそのまま。以下の
+Ornith の記述は当時の記録として残す。
+
 ## 1. なにが入ったか
 
 | 項目 | Gemma 4 26B-A4B QAT | Ornith-1.5 35B-A3B oQ4e-g64 |
@@ -316,7 +322,6 @@ GUI を開かずにアプリの経路 (DecodeService の unix socket) を叩け�
 ```sh
 swift build -c release
 python3 Scripts/app/smoke_decode.py gemma [画像パス]
-python3 Scripts/app/smoke_decode.py ornith
 ```
 
 見るもの: `ready` のロード時間、`finished` の tok/s、`draft=accepted/proposed`
