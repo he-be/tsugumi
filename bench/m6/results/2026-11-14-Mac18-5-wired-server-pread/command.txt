@@ -1,0 +1,1 @@
+.build/release/TsugumiServer --model scratch/gemma4-qat-sym.gturbo --port 8081 --model-id gemma4-26b-a4b-lattice --reasoning-budget 0 --draft-block-size 4 & python3 -I bench/m6/wired_client.py <IMAGE> 3

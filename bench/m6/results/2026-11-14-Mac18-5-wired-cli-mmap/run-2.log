@@ -1,0 +1,10 @@
+[expert mirror] /Volumes/SSD256/tsugumi-mirror/packed_experts is not there (volume not mounted?); reading experts from the model directory only
+[prefill shared qmm kernel=mpp-nax]
+[prefill moe tiled kernel=mpp]
+3この写真には、明るい色使いの可愛らしいキャラクターが写っています。背景には、パステルカラーの星や雲が散りばめられています。全体的に、とても優しくて楽しげな雰囲気の写真です。
+[stop=endOfTurn prefill=17tok new=49tok decode=1.24s tok/s=39.412]
+[load=0.507s layerVerify=10.566s/30layers prefill=3.627s ttft=3.628s peak=1.54GB rss=0.34GB]
+[expert prefill hit=0.0% 0/1124 io=0.036s | decode hit=82.8% 7786/9400 io=0.307s]
+[expert mmap layers=30 mapped=12.90GB sync=1154(+2738/-1778) noop=788 residency=0.298s /tok=6.07ms]
+[decode/tok io=0.00ms cb1=0.00ms cb2=0.00ms head=0.00ms]
+[mtp bs=4 rounds=21 accept=1.333/3 tok/round=2.333 draft=0.152s verify=0.954s accepted=6,6,5,4]

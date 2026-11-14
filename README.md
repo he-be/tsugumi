@@ -182,7 +182,10 @@ swift build -c release --product TsugumiServer
 `MTLResidencySet` に入れ、GPU はそのバッファを直接読む。**層のファイルは
 `MAP_SHARED` で張りっぱなし**なので、常駐になるのはコマンドバッファが名指した
 ぶん (1 層あたり 26.9 MB) だけで、残りは OS のページキャッシュの側にいる —
-これが「借りて、返せる」の実装である。私有スロットに `pread` していた旧経路は
+これが「借りて、返せる」の実装である。ただし要求を処理している間は wired が大きく増える
+(M6 16 GB の既定で 10.4〜10.7 GiB。どのページかの内訳は未確認)。要求が終われば
+数秒で戻る
+([docs/m6-prefill/46](docs/m6-prefill/46-WIRED-DURING-RUN.md))。私有スロットに `pread` していた旧経路は
 `TF_EXPERT_MMAP=0` で戻せる (A/B の測定用)。
 
 ## テストと貢献

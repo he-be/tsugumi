@@ -48,6 +48,7 @@ G0 からの比、段の秒、tensor ops に載せたか、「下限の何倍か
 | [05-RISKS.md](05-RISKS.md) | 罠。16 GB のページキャッシュ、単体ベンチの符号反転、Xcode 無し、ほか |
 | [06-LEDGER.md](06-LEDGER.md) | **台帳。進捗の数字はここの既定行だけ。**`bench/m6/ledger.sh` の出力を貼る |
 | 10 番台〜 | 結果文書。Gate ごとに 1 本、[00-TEMPLATE-RESULT.md](00-TEMPLATE-RESULT.md) の形。[18](18-RESET-ABSOLUTE-FLOOR.md) と [43](43-LEDGER-PROMPT-REPEATED-SENTENCE.md) は方向の取り直し |
+| [46](46-WIRED-DURING-RUN.md) | prefill の外。要求を処理している間の wired (10.4〜10.7 GiB、終われば戻る)。48 §7 の見込みの訂正 |
 | `bench/m6/prompts/` | 台帳用の自然文の本文 5 本 (43 §3)。`bench/l.json` は繰り返し文で、進捗の判定には使わない |
 | `bench/m6/` | プローブと計測スクリプト。[results/README.md](../../bench/m6/results/README.md) が証拠の置き方 |
 

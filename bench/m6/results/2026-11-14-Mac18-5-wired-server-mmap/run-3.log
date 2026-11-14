@@ -1,0 +1,53 @@
+TsugumiServer listening at http://127.0.0.1:8081 loading model=gemma4-26b-a4b-lattice
+[expert mirror] /Volumes/SSD256/tsugumi-mirror/packed_experts is not there (volume not mounted?); reading experts from the model directory only
+[prefill shared qmm kernel=mpp-nax]
+[prefill moe tiled kernel=mpp]
+TsugumiServer ready at http://127.0.0.1:8081 model=gemma4-26b-a4b-lattice family=gemma4 context=16384 slots=32 expert_io=mmap mtp=4 reasoning_budget=0 reasoning_format=auto
+[2026-11-14T07:40:15Z] request chatcmpl-93a15fd634564b47a68573ff21a7361a accepted streaming=true thinking=off
+[2026-11-14T07:40:15Z] request chatcmpl-93a15fd634564b47a68573ff21a7361a prepared prompt=287
+[2026-11-14T07:40:15Z] request chatcmpl-93a15fd634564b47a68573ff21a7361a generating
+[2026-11-14T07:40:21Z] request chatcmpl-93a15fd634564b47a68573ff21a7361a completed in 6.079s prompt=287 cached=0 completion=50 finish=stop prompt_n=287 prompt_ms=4360.2 mtp=4 rounds=22 accept=1.273
+[2026-11-14T07:40:21Z] request chatcmpl-6b75b5e251d14eadb1b32165b8f8a1b8 accepted streaming=false thinking=off
+[2026-11-14T07:40:21Z] request chatcmpl-6b75b5e251d14eadb1b32165b8f8a1b8 prepared prompt=312
+[2026-11-14T07:40:21Z] request chatcmpl-6b75b5e251d14eadb1b32165b8f8a1b8 generating
+[2026-11-14T07:40:21Z] request chatcmpl-6b75b5e251d14eadb1b32165b8f8a1b8 completed in 0.523s prompt=312 cached=287 completion=12 finish=stop prompt_n=25 prompt_ms=255.8 mtp=4 rounds=5 accept=1.400
+[2026-11-14T07:40:21Z] request chatcmpl-98a581ca115b49119b31d124881c693b accepted streaming=false thinking=off
+[2026-11-14T07:40:21Z] request chatcmpl-98a581ca115b49119b31d124881c693b prepared prompt=313
+[2026-11-14T07:40:21Z] request chatcmpl-98a581ca115b49119b31d124881c693b generating
+[2026-11-14T07:40:22Z] request chatcmpl-98a581ca115b49119b31d124881c693b completed in 0.668s prompt=313 cached=295 completion=32 finish=length prompt_n=18 prompt_ms=171.3 mtp=4 rounds=10 accept=2.100
+[2026-11-14T07:40:22Z] request chatcmpl-eb0cba282c2d474bbbb386fb16c3f26e accepted streaming=false thinking=off
+[2026-11-14T07:40:22Z] request chatcmpl-eb0cba282c2d474bbbb386fb16c3f26e prepared prompt=312
+[2026-11-14T07:40:22Z] request chatcmpl-eb0cba282c2d474bbbb386fb16c3f26e generating
+[2026-11-14T07:40:23Z] request chatcmpl-eb0cba282c2d474bbbb386fb16c3f26e completed in 0.607s prompt=312 cached=295 completion=26 finish=stop prompt_n=17 prompt_ms=153.5 mtp=4 rounds=9 accept=1.778
+[2026-11-14T07:40:23Z] request chatcmpl-5ef091d76b8b4c179ee24756b19800b6 accepted streaming=true thinking=off
+[2026-11-14T07:40:23Z] request chatcmpl-5ef091d76b8b4c179ee24756b19800b6 prepared prompt=287
+[2026-11-14T07:40:23Z] request chatcmpl-5ef091d76b8b4c179ee24756b19800b6 generating
+[2026-11-14T07:40:24Z] request chatcmpl-5ef091d76b8b4c179ee24756b19800b6 completed in 1.193s prompt=287 cached=286 completion=68 finish=stop prompt_n=1 prompt_ms=45.6 mtp=4 rounds=24 accept=1.833
+[2026-11-14T07:40:24Z] request chatcmpl-9a7fe35e99fc42d9be4e31e2a0468de7 accepted streaming=false thinking=off
+[2026-11-14T07:40:24Z] request chatcmpl-9a7fe35e99fc42d9be4e31e2a0468de7 prepared prompt=312
+[2026-11-14T07:40:24Z] request chatcmpl-9a7fe35e99fc42d9be4e31e2a0468de7 generating
+[2026-11-14T07:40:24Z] request chatcmpl-9a7fe35e99fc42d9be4e31e2a0468de7 completed in 0.399s prompt=312 cached=287 completion=12 finish=stop prompt_n=25 prompt_ms=167.2 mtp=4 rounds=5 accept=1.400
+[2026-11-14T07:40:24Z] request chatcmpl-0a1b53237b39458a82d665460471b130 accepted streaming=false thinking=off
+[2026-11-14T07:40:24Z] request chatcmpl-0a1b53237b39458a82d665460471b130 prepared prompt=313
+[2026-11-14T07:40:24Z] request chatcmpl-0a1b53237b39458a82d665460471b130 generating
+[2026-11-14T07:40:25Z] request chatcmpl-0a1b53237b39458a82d665460471b130 completed in 0.738s prompt=313 cached=295 completion=32 finish=length prompt_n=18 prompt_ms=141.2 mtp=4 rounds=13 accept=1.385
+[2026-11-14T07:40:25Z] request chatcmpl-d5b36921d1a041738552100c81683b7f accepted streaming=false thinking=off
+[2026-11-14T07:40:25Z] request chatcmpl-d5b36921d1a041738552100c81683b7f prepared prompt=312
+[2026-11-14T07:40:25Z] request chatcmpl-d5b36921d1a041738552100c81683b7f generating
+[2026-11-14T07:40:26Z] request chatcmpl-d5b36921d1a041738552100c81683b7f completed in 0.551s prompt=312 cached=295 completion=25 finish=stop prompt_n=17 prompt_ms=133.5 mtp=4 rounds=9 accept=1.667
+[2026-11-14T07:40:26Z] request chatcmpl-c164b685ae7a446aaadf3ff98f53d493 accepted streaming=true thinking=off
+[2026-11-14T07:40:26Z] request chatcmpl-c164b685ae7a446aaadf3ff98f53d493 prepared prompt=287
+[2026-11-14T07:40:26Z] request chatcmpl-c164b685ae7a446aaadf3ff98f53d493 generating
+[2026-11-14T07:40:27Z] request chatcmpl-c164b685ae7a446aaadf3ff98f53d493 completed in 1.075s prompt=287 cached=286 completion=58 finish=stop prompt_n=1 prompt_ms=43.2 mtp=4 rounds=22 accept=1.636
+[2026-11-14T07:40:27Z] request chatcmpl-864cceec1b734f87858431f85e57f82d accepted streaming=false thinking=off
+[2026-11-14T07:40:27Z] request chatcmpl-864cceec1b734f87858431f85e57f82d prepared prompt=312
+[2026-11-14T07:40:27Z] request chatcmpl-864cceec1b734f87858431f85e57f82d generating
+[2026-11-14T07:40:27Z] request chatcmpl-864cceec1b734f87858431f85e57f82d completed in 0.397s prompt=312 cached=287 completion=12 finish=stop prompt_n=25 prompt_ms=165.4 mtp=4 rounds=5 accept=1.400
+[2026-11-14T07:40:27Z] request chatcmpl-f47635f02a0e4dd896bfaa6e6e8cf262 accepted streaming=false thinking=off
+[2026-11-14T07:40:27Z] request chatcmpl-f47635f02a0e4dd896bfaa6e6e8cf262 prepared prompt=313
+[2026-11-14T07:40:27Z] request chatcmpl-f47635f02a0e4dd896bfaa6e6e8cf262 generating
+[2026-11-14T07:40:27Z] request chatcmpl-f47635f02a0e4dd896bfaa6e6e8cf262 completed in 0.374s prompt=313 cached=295 completion=13 finish=stop prompt_n=18 prompt_ms=137.8 mtp=4 rounds=5 accept=1.600
+[2026-11-14T07:40:27Z] request chatcmpl-0d788132723543dc98b21daca286ed95 accepted streaming=false thinking=off
+[2026-11-14T07:40:27Z] request chatcmpl-0d788132723543dc98b21daca286ed95 prepared prompt=312
+[2026-11-14T07:40:27Z] request chatcmpl-0d788132723543dc98b21daca286ed95 generating
+[2026-11-14T07:40:28Z] request chatcmpl-0d788132723543dc98b21daca286ed95 completed in 0.501s prompt=312 cached=295 completion=16 finish=stop prompt_n=17 prompt_ms=132.6 mtp=4 rounds=8 accept=1.125

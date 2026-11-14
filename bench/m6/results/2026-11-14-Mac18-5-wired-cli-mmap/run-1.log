@@ -1,0 +1,12 @@
+[expert mirror] /Volumes/SSD256/tsugumi-mirror/packed_experts is not there (volume not mounted?); reading experts from the model directory only
+[prefill shared qmm kernel=mpp-nax]
+[prefill moe tiled kernel=mpp]
+申し訳ありませんが、説明するための写真が添付されていないようです。
+
+写真をアップロードしていただければ、その内容を日本語の3文で説明いたします。お待ちしております。
+[stop=endOfTurn prefill=17tok new=37tok decode=1.00s tok/s=36.902]
+[load=0.514s layerVerify=7.760s/30layers prefill=2.700s ttft=2.701s peak=1.54GB rss=0.34GB]
+[expert prefill hit=0.0% 0/1124 io=0.037s | decode hit=83.0% 6319/7617 io=0.242s]
+[expert mmap layers=30 mapped=12.90GB sync=991(+2422/-1462) noop=620 residency=0.238s /tok=6.42ms]
+[decode/tok io=0.00ms cb1=0.00ms cb2=0.00ms head=0.00ms]
+[mtp bs=4 rounds=17 accept=1.176/3 tok/round=2.176 draft=0.125s verify=0.752s accepted=8,2,3,4]

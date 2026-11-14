@@ -1,0 +1,1 @@
+.build/release/TsugumiCLI --model scratch/gemma4-qat-sym.gturbo --prompt この写真に写っているものを、日本語で 3 文で説明してください。 --max-new 128 --expert-cache-slots 32 --draft-block-size 4 --max-context 16384

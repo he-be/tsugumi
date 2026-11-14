@@ -1,0 +1,15 @@
+idle 1794641960.393881000
+round 0 long 6.13s
+round 0 short 0.51s
+round 0 short 0.73s
+round 0 short 0.62s
+round 1 long 1.08s
+round 1 short 0.51s
+round 1 short 0.29s
+round 1 short 0.69s
+round 2 long 1.01s
+round 2 short 0.32s
+round 2 short 0.70s
+round 2 short 0.69s
+done 1794641973.811626000
+after5 1794641978.833464000

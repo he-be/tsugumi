@@ -1,0 +1,4 @@
+run	wired_idle_gib	wired_max_gib	file_min_gib	wired_plus_file_min_gib	wired_plus_file_max_gib	wired_after_5s_gib	disk0_read_gb	wall_s	swapouts	exit
+1	1.25	7.20	6.11	11.30	14.38	1.25	15.29	15.21	0	0
+2	1.24	7.16	6.06	8.82	14.33	1.25	15.95	15.31	0	0
+3	1.24	7.16	6.01	8.78	14.36	1.30	16.55	15.01	0	0
