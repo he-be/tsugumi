@@ -1,0 +1,38 @@
+17:13:22
+The system has 17179869184 (1048576 pages with a page size of 16384).
+System-wide memory free percentage: 91%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                   680539.
+Pages active:                                 129456.
+Pages inactive:                                96266.
+Pages speculative:                             37095.
+Pages throttled:                                   0.
+Pages wired down:                              67712.
+Pages purgeable:                                4400.
+"Translation faults":                         566665.
+Pages copy-on-write:                           54649.
+Pages zero filled:                            231914.
+Pages reactivated:                               100.
+Pages purged:                                    408.
+File-backed pages:                            169066.
+Anonymous pages:                               93751.
+Pages stored in compressor:                        0.
+Pages occupied by compressor:                      0.
+Decompressions:                                    0.
+Compressions:                                      0.
+Pageins:                                      122582.
+Pageouts:                                          0.
+Swapins:                                           0.
+Swapouts:                                          0.
+Pages tagged:                                  32676.
+Pages tagged resident:                         32676.
+Pages tagged compressed:                           0.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1032.
+Pages tag-storage free:                        17713.
+Pages tag-storage non-tag pageable:            10371.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                          0.
+Tagged compressions:                               0.
+Tagged decompressions:                             0.
+vm.swapusage: total = 0.00M  used = 0.00M  free = 0.00M  (encrypted)

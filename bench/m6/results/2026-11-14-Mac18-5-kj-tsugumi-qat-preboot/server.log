@@ -1,0 +1,389 @@
+TsugumiServer listening at http://127.0.0.1:8081 loading model=gemma4-26b-a4b-lattice
+[expert mirror] /Volumes/SSD256/tsugumi-mirror/packed_experts is not there (volume not mounted?); reading experts from the model directory only
+[prefill shared qmm kernel=mpp-nax]
+[prefill moe tiled kernel=mpp]
+TsugumiServer ready at http://127.0.0.1:8081 model=gemma4-26b-a4b-lattice family=gemma4 context=16384 slots=32 expert_io=mmap mtp=4 reasoning_budget=0 reasoning_format=auto
+[2026-11-14T08:05:36Z] request chatcmpl-da08a66b5e2a48258af63695c927251c accepted streaming=true thinking=off
+[2026-11-14T08:05:36Z] request chatcmpl-da08a66b5e2a48258af63695c927251c prepared prompt=1103
+[2026-11-14T08:05:36Z] request chatcmpl-da08a66b5e2a48258af63695c927251c generating
+[2026-11-14T08:05:44Z] request chatcmpl-da08a66b5e2a48258af63695c927251c completed in 8.285s prompt=1103 cached=0 completion=123 finish=stop prompt_n=1103 prompt_ms=5090.3 mtp=4 rounds=38 accept=2.211
+[2026-11-14T08:05:44Z] request chatcmpl-ea3c627cb9244427a4f4726334190e76 accepted streaming=false thinking=off
+[2026-11-14T08:05:44Z] request chatcmpl-ea3c627cb9244427a4f4726334190e76 prepared prompt=1249
+[2026-11-14T08:05:44Z] request chatcmpl-ea3c627cb9244427a4f4726334190e76 generating
+[2026-11-14T08:05:45Z] request chatcmpl-ea3c627cb9244427a4f4726334190e76 completed in 1.630s prompt=1249 cached=1097 completion=26 finish=stop prompt_n=152 prompt_ms=881.8 mtp=4 rounds=11 accept=1.364
+[2026-11-14T08:05:45Z] request chatcmpl-7e682a950f4d4f7cb1db191c0e20589c accepted streaming=false thinking=off
+[2026-11-14T08:05:45Z] request chatcmpl-7e682a950f4d4f7cb1db191c0e20589c prepared prompt=1677
+[2026-11-14T08:05:45Z] request chatcmpl-7e682a950f4d4f7cb1db191c0e20589c generating
+[2026-11-14T08:05:48Z] request chatcmpl-7e682a950f4d4f7cb1db191c0e20589c completed in 2.795s prompt=1677 cached=1099 completion=57 finish=stop prompt_n=578 prompt_ms=1520.2 mtp=4 rounds=20 accept=1.800
+[2026-11-14T08:05:48Z] request chatcmpl-6463ecb804314408817c7747b90085c5 accepted streaming=false thinking=off
+[2026-11-14T08:05:48Z] request chatcmpl-6463ecb804314408817c7747b90085c5 prepared prompt=1462
+[2026-11-14T08:05:48Z] request chatcmpl-6463ecb804314408817c7747b90085c5 generating
+[2026-11-14T08:05:50Z] request chatcmpl-6463ecb804314408817c7747b90085c5 completed in 1.747s prompt=1462 cached=1099 completion=28 finish=stop prompt_n=363 prompt_ms=1134.2 mtp=4 rounds=8 accept=2.500
+[2026-11-14T08:05:50Z] request chatcmpl-c2919ef4e70849d0989cd7f42a47a0b8 accepted streaming=true thinking=off
+[2026-11-14T08:05:50Z] request chatcmpl-c2919ef4e70849d0989cd7f42a47a0b8 prepared prompt=1107
+[2026-11-14T08:05:50Z] request chatcmpl-c2919ef4e70849d0989cd7f42a47a0b8 generating
+[2026-11-14T08:05:55Z] request chatcmpl-c2919ef4e70849d0989cd7f42a47a0b8 completed in 4.992s prompt=1107 cached=827 completion=120 finish=stop prompt_n=280 prompt_ms=2667.0 mtp=4 rounds=39 accept=2.051
+[2026-11-14T08:05:55Z] request chatcmpl-d82d94eaa63f420d996b24932d8bdad9 accepted streaming=false thinking=off
+[2026-11-14T08:05:55Z] request chatcmpl-d82d94eaa63f420d996b24932d8bdad9 prepared prompt=1251
+[2026-11-14T08:05:55Z] request chatcmpl-d82d94eaa63f420d996b24932d8bdad9 generating
+[2026-11-14T08:05:56Z] request chatcmpl-d82d94eaa63f420d996b24932d8bdad9 completed in 1.259s prompt=1251 cached=1101 completion=22 finish=stop prompt_n=150 prompt_ms=742.9 mtp=4 rounds=8 accept=1.625
+[2026-11-14T08:05:56Z] request chatcmpl-7ad64a3c43e247e39250ef44a96f8dce accepted streaming=false thinking=off
+[2026-11-14T08:05:56Z] request chatcmpl-7ad64a3c43e247e39250ef44a96f8dce prepared prompt=1657
+[2026-11-14T08:05:56Z] request chatcmpl-7ad64a3c43e247e39250ef44a96f8dce generating
+[2026-11-14T08:05:59Z] request chatcmpl-7ad64a3c43e247e39250ef44a96f8dce completed in 2.448s prompt=1657 cached=1103 completion=53 finish=stop prompt_n=554 prompt_ms=1368.3 mtp=4 rounds=17 accept=2.059
+[2026-11-14T08:05:59Z] request chatcmpl-bd4bd9c4d11442bc955a51a1d6d9f0d0 accepted streaming=false thinking=off
+[2026-11-14T08:05:59Z] request chatcmpl-bd4bd9c4d11442bc955a51a1d6d9f0d0 prepared prompt=1461
+[2026-11-14T08:05:59Z] request chatcmpl-bd4bd9c4d11442bc955a51a1d6d9f0d0 generating
+[2026-11-14T08:06:01Z] request chatcmpl-bd4bd9c4d11442bc955a51a1d6d9f0d0 completed in 1.833s prompt=1461 cached=1103 completion=29 finish=stop prompt_n=358 prompt_ms=1112.0 mtp=4 rounds=9 accept=2.222
+[2026-11-14T08:06:01Z] request chatcmpl-8c8e85dc1ba84f65836b9b4d7473f3e5 accepted streaming=true thinking=off
+[2026-11-14T08:06:01Z] request chatcmpl-8c8e85dc1ba84f65836b9b4d7473f3e5 prepared prompt=1101
+[2026-11-14T08:06:01Z] request chatcmpl-8c8e85dc1ba84f65836b9b4d7473f3e5 generating
+[2026-11-14T08:06:05Z] request chatcmpl-8c8e85dc1ba84f65836b9b4d7473f3e5 completed in 4.806s prompt=1101 cached=827 completion=123 finish=stop prompt_n=274 prompt_ms=2481.4 mtp=4 rounds=37 accept=2.297
+[2026-11-14T08:06:05Z] request chatcmpl-144f46c1f89e4f74add33be9a6f21d22 accepted streaming=false thinking=off
+[2026-11-14T08:06:05Z] request chatcmpl-144f46c1f89e4f74add33be9a6f21d22 prepared prompt=1245
+[2026-11-14T08:06:05Z] request chatcmpl-144f46c1f89e4f74add33be9a6f21d22 generating
+[2026-11-14T08:06:07Z] request chatcmpl-144f46c1f89e4f74add33be9a6f21d22 completed in 1.258s prompt=1245 cached=1095 completion=22 finish=stop prompt_n=150 prompt_ms=707.5 mtp=4 rounds=8 accept=1.750
+[2026-11-14T08:06:07Z] request chatcmpl-51e99479f0804c899030898ad6d824a6 accepted streaming=false thinking=off
+[2026-11-14T08:06:07Z] request chatcmpl-51e99479f0804c899030898ad6d824a6 prepared prompt=1676
+[2026-11-14T08:06:07Z] request chatcmpl-51e99479f0804c899030898ad6d824a6 generating
+[2026-11-14T08:06:10Z] request chatcmpl-51e99479f0804c899030898ad6d824a6 completed in 2.910s prompt=1676 cached=1097 completion=58 finish=stop prompt_n=579 prompt_ms=1512.7 mtp=4 rounds=22 accept=1.591
+[2026-11-14T08:06:10Z] request chatcmpl-efe2d56ba8424261b9d1d3b95dfd9ba9 accepted streaming=false thinking=off
+[2026-11-14T08:06:10Z] request chatcmpl-efe2d56ba8424261b9d1d3b95dfd9ba9 prepared prompt=1451
+[2026-11-14T08:06:10Z] request chatcmpl-efe2d56ba8424261b9d1d3b95dfd9ba9 generating
+[2026-11-14T08:06:11Z] request chatcmpl-efe2d56ba8424261b9d1d3b95dfd9ba9 completed in 1.921s prompt=1451 cached=1097 completion=18 finish=stop prompt_n=354 prompt_ms=1096.5 mtp=4 rounds=10 accept=0.800
+[2026-11-14T08:06:11Z] request chatcmpl-b52a6ac06ce34203b79e0fe68826908e accepted streaming=true thinking=off
+[2026-11-14T08:06:11Z] request chatcmpl-b52a6ac06ce34203b79e0fe68826908e prepared prompt=1101
+[2026-11-14T08:06:11Z] request chatcmpl-b52a6ac06ce34203b79e0fe68826908e generating
+[2026-11-14T08:06:16Z] request chatcmpl-b52a6ac06ce34203b79e0fe68826908e completed in 4.810s prompt=1101 cached=827 completion=119 finish=stop prompt_n=274 prompt_ms=2453.2 mtp=4 rounds=40 accept=1.950
+[2026-11-14T08:06:16Z] request chatcmpl-04cc9c71fdf84d61b1c38797c8132593 accepted streaming=false thinking=off
+[2026-11-14T08:06:16Z] request chatcmpl-04cc9c71fdf84d61b1c38797c8132593 prepared prompt=1251
+[2026-11-14T08:06:16Z] request chatcmpl-04cc9c71fdf84d61b1c38797c8132593 generating
+[2026-11-14T08:06:18Z] request chatcmpl-04cc9c71fdf84d61b1c38797c8132593 completed in 1.275s prompt=1251 cached=1095 completion=24 finish=stop prompt_n=156 prompt_ms=666.8 mtp=4 rounds=9 accept=1.667
+[2026-11-14T08:06:18Z] request chatcmpl-1e56c8f12fc045d4a541d4d2cf253be9 accepted streaming=false thinking=off
+[2026-11-14T08:06:18Z] request chatcmpl-1e56c8f12fc045d4a541d4d2cf253be9 prepared prompt=1681
+[2026-11-14T08:06:18Z] request chatcmpl-1e56c8f12fc045d4a541d4d2cf253be9 generating
+[2026-11-14T08:06:20Z] request chatcmpl-1e56c8f12fc045d4a541d4d2cf253be9 completed in 2.589s prompt=1681 cached=1097 completion=56 finish=stop prompt_n=584 prompt_ms=1410.2 mtp=4 rounds=19 accept=1.895
+[2026-11-14T08:06:20Z] request chatcmpl-cd4c8b630474406ca78efd7234022460 accepted streaming=false thinking=off
+[2026-11-14T08:06:20Z] request chatcmpl-cd4c8b630474406ca78efd7234022460 prepared prompt=1463
+[2026-11-14T08:06:20Z] request chatcmpl-cd4c8b630474406ca78efd7234022460 generating
+[2026-11-14T08:06:22Z] request chatcmpl-cd4c8b630474406ca78efd7234022460 completed in 2.103s prompt=1463 cached=1097 completion=40 finish=stop prompt_n=366 prompt_ms=1124.6 mtp=4 rounds=13 accept=2.000
+[2026-11-14T08:06:22Z] request chatcmpl-d9930ad88d304dd6866a63887d33623c accepted streaming=true thinking=off
+[2026-11-14T08:06:22Z] request chatcmpl-d9930ad88d304dd6866a63887d33623c prepared prompt=1101
+[2026-11-14T08:06:22Z] request chatcmpl-d9930ad88d304dd6866a63887d33623c generating
+[2026-11-14T08:06:27Z] request chatcmpl-d9930ad88d304dd6866a63887d33623c completed in 4.768s prompt=1101 cached=827 completion=112 finish=stop prompt_n=274 prompt_ms=2499.3 mtp=4 rounds=37 accept=2.054
+[2026-11-14T08:06:27Z] request chatcmpl-3663120374fd424b8b567a90a79102e9 accepted streaming=false thinking=off
+[2026-11-14T08:06:27Z] request chatcmpl-3663120374fd424b8b567a90a79102e9 prepared prompt=1245
+[2026-11-14T08:06:27Z] request chatcmpl-3663120374fd424b8b567a90a79102e9 generating
+[2026-11-14T08:06:28Z] request chatcmpl-3663120374fd424b8b567a90a79102e9 completed in 1.286s prompt=1245 cached=1095 completion=22 finish=stop prompt_n=150 prompt_ms=706.3 mtp=4 rounds=8 accept=1.750
+[2026-11-14T08:06:28Z] request chatcmpl-25f1cc85d3154d50a1a896f3e3885646 accepted streaming=false thinking=off
+[2026-11-14T08:06:28Z] request chatcmpl-25f1cc85d3154d50a1a896f3e3885646 prepared prompt=1686
+[2026-11-14T08:06:28Z] request chatcmpl-25f1cc85d3154d50a1a896f3e3885646 generating
+[2026-11-14T08:06:31Z] request chatcmpl-25f1cc85d3154d50a1a896f3e3885646 completed in 2.703s prompt=1686 cached=1097 completion=52 finish=stop prompt_n=589 prompt_ms=1454.3 mtp=4 rounds=19 accept=1.842
+[2026-11-14T08:06:31Z] request chatcmpl-e6151ddc2f23418da218c423b5ae6af9 accepted streaming=false thinking=off
+[2026-11-14T08:06:31Z] request chatcmpl-e6151ddc2f23418da218c423b5ae6af9 prepared prompt=1450
+[2026-11-14T08:06:31Z] request chatcmpl-e6151ddc2f23418da218c423b5ae6af9 generating
+[2026-11-14T08:06:33Z] request chatcmpl-e6151ddc2f23418da218c423b5ae6af9 completed in 2.047s prompt=1450 cached=1097 completion=34 finish=stop prompt_n=353 prompt_ms=1106.3 mtp=4 rounds=12 accept=2.000
+[2026-11-14T08:06:33Z] request chatcmpl-99d0534411c04f268853504d5039bf0c accepted streaming=true thinking=off
+[2026-11-14T08:06:33Z] request chatcmpl-99d0534411c04f268853504d5039bf0c prepared prompt=1101
+[2026-11-14T08:06:33Z] request chatcmpl-99d0534411c04f268853504d5039bf0c generating
+[2026-11-14T08:06:38Z] request chatcmpl-99d0534411c04f268853504d5039bf0c completed in 4.901s prompt=1101 cached=827 completion=118 finish=stop prompt_n=274 prompt_ms=2534.7 mtp=4 rounds=38 accept=2.105
+[2026-11-14T08:06:38Z] request chatcmpl-df4fde1a76e14c589d346aea445b791e accepted streaming=false thinking=off
+[2026-11-14T08:06:38Z] request chatcmpl-df4fde1a76e14c589d346aea445b791e prepared prompt=1249
+[2026-11-14T08:06:38Z] request chatcmpl-df4fde1a76e14c589d346aea445b791e generating
+[2026-11-14T08:06:39Z] request chatcmpl-df4fde1a76e14c589d346aea445b791e completed in 1.284s prompt=1249 cached=1095 completion=21 finish=stop prompt_n=154 prompt_ms=741.8 mtp=4 rounds=7 accept=1.857
+[2026-11-14T08:06:39Z] request chatcmpl-424b9fb2abf349b590c4fbe9c351997f accepted streaming=false thinking=off
+[2026-11-14T08:06:39Z] request chatcmpl-424b9fb2abf349b590c4fbe9c351997f prepared prompt=1663
+[2026-11-14T08:06:39Z] request chatcmpl-424b9fb2abf349b590c4fbe9c351997f generating
+[2026-11-14T08:06:42Z] request chatcmpl-424b9fb2abf349b590c4fbe9c351997f completed in 2.897s prompt=1663 cached=1097 completion=55 finish=stop prompt_n=566 prompt_ms=1634.0 mtp=4 rounds=19 accept=1.895
+[2026-11-14T08:06:42Z] request chatcmpl-d6a61daec7d2409388701a57a7151634 accepted streaming=false thinking=off
+[2026-11-14T08:06:42Z] request chatcmpl-d6a61daec7d2409388701a57a7151634 prepared prompt=1457
+[2026-11-14T08:06:42Z] request chatcmpl-d6a61daec7d2409388701a57a7151634 generating
+[2026-11-14T08:06:44Z] request chatcmpl-d6a61daec7d2409388701a57a7151634 completed in 2.124s prompt=1457 cached=1097 completion=29 finish=stop prompt_n=360 prompt_ms=1282.6 mtp=4 rounds=10 accept=2.000
+[2026-11-14T08:06:44Z] request chatcmpl-5360e6a954ef43389916a540566bd628 accepted streaming=true thinking=off
+[2026-11-14T08:06:44Z] request chatcmpl-5360e6a954ef43389916a540566bd628 prepared prompt=1101
+[2026-11-14T08:06:44Z] request chatcmpl-5360e6a954ef43389916a540566bd628 generating
+[2026-11-14T08:06:49Z] request chatcmpl-5360e6a954ef43389916a540566bd628 completed in 5.073s prompt=1101 cached=827 completion=125 finish=stop prompt_n=274 prompt_ms=2532.7 mtp=4 rounds=43 accept=1.907
+[2026-11-14T08:06:49Z] request chatcmpl-86beae1ca63f4956aa56798cda572f69 accepted streaming=false thinking=off
+[2026-11-14T08:06:50Z] request chatcmpl-86beae1ca63f4956aa56798cda572f69 prepared prompt=1243
+[2026-11-14T08:06:50Z] request chatcmpl-86beae1ca63f4956aa56798cda572f69 generating
+[2026-11-14T08:06:51Z] request chatcmpl-86beae1ca63f4956aa56798cda572f69 completed in 1.317s prompt=1243 cached=1095 completion=23 finish=stop prompt_n=148 prompt_ms=675.6 mtp=4 rounds=10 accept=1.300
+[2026-11-14T08:06:51Z] request chatcmpl-bbff819f6d974e7c8404f6a2a405288a accepted streaming=false thinking=off
+[2026-11-14T08:06:51Z] request chatcmpl-bbff819f6d974e7c8404f6a2a405288a prepared prompt=1662
+[2026-11-14T08:06:51Z] request chatcmpl-bbff819f6d974e7c8404f6a2a405288a generating
+[2026-11-14T08:06:54Z] request chatcmpl-bbff819f6d974e7c8404f6a2a405288a completed in 2.688s prompt=1662 cached=1097 completion=62 finish=stop prompt_n=565 prompt_ms=1352.1 mtp=4 rounds=23 accept=1.696
+[2026-11-14T08:06:54Z] request chatcmpl-3ee98e432c3440adb976aeb68c818089 accepted streaming=false thinking=off
+[2026-11-14T08:06:54Z] request chatcmpl-3ee98e432c3440adb976aeb68c818089 prepared prompt=1449
+[2026-11-14T08:06:54Z] request chatcmpl-3ee98e432c3440adb976aeb68c818089 generating
+[2026-11-14T08:06:55Z] request chatcmpl-3ee98e432c3440adb976aeb68c818089 completed in 1.886s prompt=1449 cached=1097 completion=30 finish=stop prompt_n=352 prompt_ms=1112.9 mtp=4 rounds=10 accept=1.900
+[2026-11-14T08:06:55Z] request chatcmpl-87b135c0704f40e7b47f5d7190172b36 accepted streaming=true thinking=off
+[2026-11-14T08:06:55Z] request chatcmpl-87b135c0704f40e7b47f5d7190172b36 prepared prompt=1101
+[2026-11-14T08:06:55Z] request chatcmpl-87b135c0704f40e7b47f5d7190172b36 generating
+[2026-11-14T08:07:00Z] request chatcmpl-87b135c0704f40e7b47f5d7190172b36 completed in 4.476s prompt=1101 cached=827 completion=122 finish=stop prompt_n=274 prompt_ms=2386.0 mtp=4 rounds=35 accept=2.486
+[2026-11-14T08:07:00Z] request chatcmpl-b5bdd9573cc44a23931fd3892d129dcc accepted streaming=false thinking=off
+[2026-11-14T08:07:00Z] request chatcmpl-b5bdd9573cc44a23931fd3892d129dcc prepared prompt=1247
+[2026-11-14T08:07:00Z] request chatcmpl-b5bdd9573cc44a23931fd3892d129dcc generating
+[2026-11-14T08:07:01Z] request chatcmpl-b5bdd9573cc44a23931fd3892d129dcc completed in 1.491s prompt=1247 cached=1095 completion=28 finish=stop prompt_n=152 prompt_ms=724.0 mtp=4 rounds=11 accept=1.545
+[2026-11-14T08:07:01Z] request chatcmpl-21ef5232ccf348aa9415e87bf28d4b3a accepted streaming=false thinking=off
+[2026-11-14T08:07:01Z] request chatcmpl-21ef5232ccf348aa9415e87bf28d4b3a prepared prompt=1653
+[2026-11-14T08:07:01Z] request chatcmpl-21ef5232ccf348aa9415e87bf28d4b3a generating
+[2026-11-14T08:07:04Z] request chatcmpl-21ef5232ccf348aa9415e87bf28d4b3a completed in 2.898s prompt=1653 cached=1097 completion=62 finish=stop prompt_n=556 prompt_ms=1437.3 mtp=4 rounds=24 accept=1.542
+[2026-11-14T08:07:04Z] request chatcmpl-321e2bade1e548f09d145c22861bad1e accepted streaming=false thinking=off
+[2026-11-14T08:07:04Z] request chatcmpl-321e2bade1e548f09d145c22861bad1e prepared prompt=1458
+[2026-11-14T08:07:04Z] request chatcmpl-321e2bade1e548f09d145c22861bad1e generating
+[2026-11-14T08:07:06Z] request chatcmpl-321e2bade1e548f09d145c22861bad1e completed in 1.872s prompt=1458 cached=1097 completion=27 finish=stop prompt_n=361 prompt_ms=1205.0 mtp=4 rounds=8 accept=2.625
+[2026-11-14T08:07:06Z] request chatcmpl-b279d4d98b104f0d9a9de22fbf6d2342 accepted streaming=true thinking=off
+[2026-11-14T08:07:06Z] request chatcmpl-b279d4d98b104f0d9a9de22fbf6d2342 prepared prompt=1101
+[2026-11-14T08:07:06Z] request chatcmpl-b279d4d98b104f0d9a9de22fbf6d2342 generating
+[2026-11-14T08:07:11Z] request chatcmpl-b279d4d98b104f0d9a9de22fbf6d2342 completed in 4.825s prompt=1101 cached=827 completion=120 finish=stop prompt_n=274 prompt_ms=2469.8 mtp=4 rounds=38 accept=2.132
+[2026-11-14T08:07:11Z] request chatcmpl-fe88a23605a047a4a08193b3afaa2e9f accepted streaming=false thinking=off
+[2026-11-14T08:07:11Z] request chatcmpl-fe88a23605a047a4a08193b3afaa2e9f prepared prompt=1244
+[2026-11-14T08:07:11Z] request chatcmpl-fe88a23605a047a4a08193b3afaa2e9f generating
+[2026-11-14T08:07:12Z] request chatcmpl-fe88a23605a047a4a08193b3afaa2e9f completed in 1.179s prompt=1244 cached=1095 completion=20 finish=stop prompt_n=149 prompt_ms=690.3 mtp=4 rounds=7 accept=1.857
+[2026-11-14T08:07:12Z] request chatcmpl-3b994ae74ed54770b460da87500c655d accepted streaming=false thinking=off
+[2026-11-14T08:07:12Z] request chatcmpl-3b994ae74ed54770b460da87500c655d prepared prompt=1663
+[2026-11-14T08:07:12Z] request chatcmpl-3b994ae74ed54770b460da87500c655d generating
+[2026-11-14T08:07:15Z] request chatcmpl-3b994ae74ed54770b460da87500c655d completed in 2.809s prompt=1663 cached=1097 completion=57 finish=stop prompt_n=566 prompt_ms=1386.2 mtp=4 rounds=22 accept=1.636
+[2026-11-14T08:07:15Z] request chatcmpl-5112a0c0cb0b42f1907cea76f27c3ae9 accepted streaming=false thinking=off
+[2026-11-14T08:07:15Z] request chatcmpl-5112a0c0cb0b42f1907cea76f27c3ae9 prepared prompt=1456
+[2026-11-14T08:07:15Z] request chatcmpl-5112a0c0cb0b42f1907cea76f27c3ae9 generating
+[2026-11-14T08:07:17Z] request chatcmpl-5112a0c0cb0b42f1907cea76f27c3ae9 completed in 1.914s prompt=1456 cached=1097 completion=27 finish=stop prompt_n=359 prompt_ms=1214.8 mtp=4 rounds=9 accept=2.000
+[2026-11-14T08:07:17Z] request chatcmpl-69872c48a7c745e4a1ee72fe53f99889 accepted streaming=true thinking=off
+[2026-11-14T08:07:17Z] request chatcmpl-69872c48a7c745e4a1ee72fe53f99889 prepared prompt=1101
+[2026-11-14T08:07:17Z] request chatcmpl-69872c48a7c745e4a1ee72fe53f99889 generating
+[2026-11-14T08:07:21Z] request chatcmpl-69872c48a7c745e4a1ee72fe53f99889 completed in 4.452s prompt=1101 cached=827 completion=115 finish=stop prompt_n=274 prompt_ms=2419.3 mtp=4 rounds=34 accept=2.353
+[2026-11-14T08:07:21Z] request chatcmpl-214dd639b06b492ea3e113416fb47bbf accepted streaming=false thinking=off
+[2026-11-14T08:07:21Z] request chatcmpl-214dd639b06b492ea3e113416fb47bbf prepared prompt=1244
+[2026-11-14T08:07:21Z] request chatcmpl-214dd639b06b492ea3e113416fb47bbf generating
+[2026-11-14T08:07:23Z] request chatcmpl-214dd639b06b492ea3e113416fb47bbf completed in 1.331s prompt=1244 cached=1095 completion=25 finish=stop prompt_n=149 prompt_ms=687.7 mtp=4 rounds=9 accept=1.778
+[2026-11-14T08:07:23Z] request chatcmpl-23096634e57b45b5bc4f104ec55d89b3 accepted streaming=false thinking=off
+[2026-11-14T08:07:23Z] request chatcmpl-23096634e57b45b5bc4f104ec55d89b3 prepared prompt=1665
+[2026-11-14T08:07:23Z] request chatcmpl-23096634e57b45b5bc4f104ec55d89b3 generating
+[2026-11-14T08:07:26Z] request chatcmpl-23096634e57b45b5bc4f104ec55d89b3 completed in 3.289s prompt=1665 cached=1097 completion=67 finish=stop prompt_n=568 prompt_ms=1481.8 mtp=4 rounds=31 accept=1.161
+[2026-11-14T08:07:26Z] request chatcmpl-42fd9c3a8d0543d589e23ecb6d5da558 accepted streaming=false thinking=off
+[2026-11-14T08:07:26Z] request chatcmpl-42fd9c3a8d0543d589e23ecb6d5da558 prepared prompt=1455
+[2026-11-14T08:07:26Z] request chatcmpl-42fd9c3a8d0543d589e23ecb6d5da558 generating
+[2026-11-14T08:07:28Z] request chatcmpl-42fd9c3a8d0543d589e23ecb6d5da558 completed in 2.046s prompt=1455 cached=1097 completion=32 finish=stop prompt_n=358 prompt_ms=1145.2 mtp=4 rounds=12 accept=1.667
+[2026-11-14T08:07:28Z] request chatcmpl-c24537e119ed403090ac36845e5e024e accepted streaming=true thinking=off
+[2026-11-14T08:07:28Z] request chatcmpl-c24537e119ed403090ac36845e5e024e prepared prompt=1101
+[2026-11-14T08:07:28Z] request chatcmpl-c24537e119ed403090ac36845e5e024e generating
+[2026-11-14T08:07:33Z] request chatcmpl-c24537e119ed403090ac36845e5e024e completed in 4.735s prompt=1101 cached=827 completion=120 finish=stop prompt_n=274 prompt_ms=2493.1 mtp=4 rounds=37 accept=2.270
+[2026-11-14T08:07:33Z] request chatcmpl-8fd36c19cc5845c09f68b5b98dc1d7c8 accepted streaming=false thinking=off
+[2026-11-14T08:07:33Z] request chatcmpl-8fd36c19cc5845c09f68b5b98dc1d7c8 prepared prompt=1243
+[2026-11-14T08:07:33Z] request chatcmpl-8fd36c19cc5845c09f68b5b98dc1d7c8 generating
+[2026-11-14T08:07:34Z] request chatcmpl-8fd36c19cc5845c09f68b5b98dc1d7c8 completed in 1.198s prompt=1243 cached=1095 completion=22 finish=stop prompt_n=148 prompt_ms=718.8 mtp=4 rounds=7 accept=2.143
+[2026-11-14T08:07:34Z] request chatcmpl-3023a24e0f804684a08b8c923595f4d9 accepted streaming=false thinking=off
+[2026-11-14T08:07:34Z] request chatcmpl-3023a24e0f804684a08b8c923595f4d9 prepared prompt=1677
+[2026-11-14T08:07:34Z] request chatcmpl-3023a24e0f804684a08b8c923595f4d9 generating
+[2026-11-14T08:07:36Z] request chatcmpl-3023a24e0f804684a08b8c923595f4d9 completed in 2.470s prompt=1677 cached=1097 completion=52 finish=stop prompt_n=580 prompt_ms=1242.5 mtp=4 rounds=21 accept=1.571
+[2026-11-14T08:07:37Z] request chatcmpl-543d67dd43a940c98d4291b7080a6731 accepted streaming=false thinking=off
+[2026-11-14T08:07:37Z] request chatcmpl-543d67dd43a940c98d4291b7080a6731 prepared prompt=1450
+[2026-11-14T08:07:37Z] request chatcmpl-543d67dd43a940c98d4291b7080a6731 generating
+[2026-11-14T08:07:38Z] request chatcmpl-543d67dd43a940c98d4291b7080a6731 completed in 1.622s prompt=1450 cached=1097 completion=24 finish=stop prompt_n=353 prompt_ms=970.7 mtp=4 rounds=8 accept=2.000
+[2026-11-14T08:07:38Z] request chatcmpl-b683f413c04743218d1a336605e93008 accepted streaming=true thinking=off
+[2026-11-14T08:07:38Z] request chatcmpl-b683f413c04743218d1a336605e93008 prepared prompt=1101
+[2026-11-14T08:07:38Z] request chatcmpl-b683f413c04743218d1a336605e93008 generating
+[2026-11-14T08:07:43Z] request chatcmpl-b683f413c04743218d1a336605e93008 completed in 4.938s prompt=1101 cached=827 completion=124 finish=stop prompt_n=274 prompt_ms=2683.0 mtp=4 rounds=38 accept=2.289
+[2026-11-14T08:07:43Z] request chatcmpl-e74b106dce1e468fbf6d0133f076a091 accepted streaming=false thinking=off
+[2026-11-14T08:07:43Z] request chatcmpl-e74b106dce1e468fbf6d0133f076a091 prepared prompt=1244
+[2026-11-14T08:07:43Z] request chatcmpl-e74b106dce1e468fbf6d0133f076a091 generating
+[2026-11-14T08:07:44Z] request chatcmpl-e74b106dce1e468fbf6d0133f076a091 completed in 1.198s prompt=1244 cached=1095 completion=23 finish=stop prompt_n=149 prompt_ms=636.1 mtp=4 rounds=9 accept=1.556
+[2026-11-14T08:07:44Z] request chatcmpl-9793e19b38d34ceeabdaf248c061099a accepted streaming=false thinking=off
+[2026-11-14T08:07:44Z] request chatcmpl-9793e19b38d34ceeabdaf248c061099a prepared prompt=1671
+[2026-11-14T08:07:44Z] request chatcmpl-9793e19b38d34ceeabdaf248c061099a generating
+[2026-11-14T08:07:47Z] request chatcmpl-9793e19b38d34ceeabdaf248c061099a completed in 2.314s prompt=1671 cached=1097 completion=52 finish=stop prompt_n=574 prompt_ms=1163.8 mtp=4 rounds=19 accept=1.684
+[2026-11-14T08:07:47Z] request chatcmpl-8bb68fd5889044ba90cced2e02b318fe accepted streaming=false thinking=off
+[2026-11-14T08:07:47Z] request chatcmpl-8bb68fd5889044ba90cced2e02b318fe prepared prompt=1452
+[2026-11-14T08:07:47Z] request chatcmpl-8bb68fd5889044ba90cced2e02b318fe generating
+[2026-11-14T08:07:48Z] request chatcmpl-8bb68fd5889044ba90cced2e02b318fe completed in 1.738s prompt=1452 cached=1097 completion=29 finish=stop prompt_n=355 prompt_ms=1035.9 mtp=4 rounds=9 accept=2.222
+[2026-11-14T08:07:48Z] request chatcmpl-9b079086287c4447b339a4bfc26711d5 accepted streaming=true thinking=off
+[2026-11-14T08:07:48Z] request chatcmpl-9b079086287c4447b339a4bfc26711d5 prepared prompt=1103
+[2026-11-14T08:07:48Z] request chatcmpl-9b079086287c4447b339a4bfc26711d5 generating
+[2026-11-14T08:07:53Z] request chatcmpl-9b079086287c4447b339a4bfc26711d5 completed in 4.428s prompt=1103 cached=827 completion=118 finish=stop prompt_n=276 prompt_ms=2343.9 mtp=4 rounds=35 accept=2.343
+[2026-11-14T08:07:53Z] request chatcmpl-80586b189cd44fb9a318412cd546ccfc accepted streaming=false thinking=off
+[2026-11-14T08:07:53Z] request chatcmpl-80586b189cd44fb9a318412cd546ccfc prepared prompt=1249
+[2026-11-14T08:07:53Z] request chatcmpl-80586b189cd44fb9a318412cd546ccfc generating
+[2026-11-14T08:07:54Z] request chatcmpl-80586b189cd44fb9a318412cd546ccfc completed in 1.149s prompt=1249 cached=1097 completion=22 finish=stop prompt_n=152 prompt_ms=688.7 mtp=4 rounds=7 accept=2.143
+[2026-11-14T08:07:54Z] request chatcmpl-c30d85dc11fe4f0481d16f8ad4a16899 accepted streaming=false thinking=off
+[2026-11-14T08:07:54Z] request chatcmpl-c30d85dc11fe4f0481d16f8ad4a16899 prepared prompt=1677
+[2026-11-14T08:07:54Z] request chatcmpl-c30d85dc11fe4f0481d16f8ad4a16899 generating
+[2026-11-14T08:07:56Z] request chatcmpl-c30d85dc11fe4f0481d16f8ad4a16899 completed in 2.289s prompt=1677 cached=1099 completion=48 finish=stop prompt_n=578 prompt_ms=1157.4 mtp=4 rounds=19 accept=1.474
+[2026-11-14T08:07:56Z] request chatcmpl-5d85e8807acc43c7bf8c47e9be69bc9a accepted streaming=false thinking=off
+[2026-11-14T08:07:56Z] request chatcmpl-5d85e8807acc43c7bf8c47e9be69bc9a prepared prompt=1462
+[2026-11-14T08:07:56Z] request chatcmpl-5d85e8807acc43c7bf8c47e9be69bc9a generating
+[2026-11-14T08:07:58Z] request chatcmpl-5d85e8807acc43c7bf8c47e9be69bc9a completed in 1.939s prompt=1462 cached=1099 completion=32 finish=stop prompt_n=363 prompt_ms=1030.7 mtp=4 rounds=13 accept=1.462
+[2026-11-14T08:07:58Z] request chatcmpl-39d2a09dded5481aa29522312f1787f6 accepted streaming=true thinking=off
+[2026-11-14T08:07:58Z] request chatcmpl-39d2a09dded5481aa29522312f1787f6 prepared prompt=1107
+[2026-11-14T08:07:58Z] request chatcmpl-39d2a09dded5481aa29522312f1787f6 generating
+[2026-11-14T08:08:03Z] request chatcmpl-39d2a09dded5481aa29522312f1787f6 completed in 4.678s prompt=1107 cached=827 completion=123 finish=stop prompt_n=280 prompt_ms=2338.6 mtp=4 rounds=40 accept=2.075
+[2026-11-14T08:08:03Z] request chatcmpl-2efff8f65c5f42cc968e376359cd219d accepted streaming=false thinking=off
+[2026-11-14T08:08:03Z] request chatcmpl-2efff8f65c5f42cc968e376359cd219d prepared prompt=1251
+[2026-11-14T08:08:03Z] request chatcmpl-2efff8f65c5f42cc968e376359cd219d generating
+[2026-11-14T08:08:04Z] request chatcmpl-2efff8f65c5f42cc968e376359cd219d completed in 1.158s prompt=1251 cached=1101 completion=24 finish=stop prompt_n=150 prompt_ms=676.8 mtp=4 rounds=7 accept=2.429
+[2026-11-14T08:08:04Z] request chatcmpl-27b4358096d74e2a908c64d4170de672 accepted streaming=false thinking=off
+[2026-11-14T08:08:04Z] request chatcmpl-27b4358096d74e2a908c64d4170de672 prepared prompt=1657
+[2026-11-14T08:08:04Z] request chatcmpl-27b4358096d74e2a908c64d4170de672 generating
+[2026-11-14T08:08:06Z] request chatcmpl-27b4358096d74e2a908c64d4170de672 completed in 2.414s prompt=1657 cached=1103 completion=59 finish=stop prompt_n=554 prompt_ms=1167.4 mtp=4 rounds=21 accept=1.762
+[2026-11-14T08:08:06Z] request chatcmpl-7312407c20d548c2a12c887502fe0b1a accepted streaming=false thinking=off
+[2026-11-14T08:08:07Z] request chatcmpl-7312407c20d548c2a12c887502fe0b1a prepared prompt=1461
+[2026-11-14T08:08:07Z] request chatcmpl-7312407c20d548c2a12c887502fe0b1a generating
+[2026-11-14T08:08:08Z] request chatcmpl-7312407c20d548c2a12c887502fe0b1a completed in 1.706s prompt=1461 cached=1103 completion=27 finish=stop prompt_n=358 prompt_ms=1044.9 mtp=4 rounds=9 accept=2.000
+[2026-11-14T08:08:08Z] request chatcmpl-874118be4a964336a57cbc3f7abb68ff accepted streaming=true thinking=off
+[2026-11-14T08:08:08Z] request chatcmpl-874118be4a964336a57cbc3f7abb68ff prepared prompt=1101
+[2026-11-14T08:08:08Z] request chatcmpl-874118be4a964336a57cbc3f7abb68ff generating
+[2026-11-14T08:08:13Z] request chatcmpl-874118be4a964336a57cbc3f7abb68ff completed in 4.707s prompt=1101 cached=827 completion=120 finish=stop prompt_n=274 prompt_ms=2459.3 mtp=4 rounds=36 accept=2.306
+[2026-11-14T08:08:13Z] request chatcmpl-c793f996964f40bca182fc14f68743db accepted streaming=false thinking=off
+[2026-11-14T08:08:13Z] request chatcmpl-c793f996964f40bca182fc14f68743db prepared prompt=1245
+[2026-11-14T08:08:13Z] request chatcmpl-c793f996964f40bca182fc14f68743db generating
+[2026-11-14T08:08:14Z] request chatcmpl-c793f996964f40bca182fc14f68743db completed in 1.303s prompt=1245 cached=1095 completion=21 finish=stop prompt_n=150 prompt_ms=733.0 mtp=4 rounds=8 accept=1.625
+[2026-11-14T08:08:14Z] request chatcmpl-248d20e3fcdb48d68a1718709a4f3ca5 accepted streaming=false thinking=off
+[2026-11-14T08:08:14Z] request chatcmpl-248d20e3fcdb48d68a1718709a4f3ca5 prepared prompt=1676
+[2026-11-14T08:08:14Z] request chatcmpl-248d20e3fcdb48d68a1718709a4f3ca5 generating
+[2026-11-14T08:08:17Z] request chatcmpl-248d20e3fcdb48d68a1718709a4f3ca5 completed in 2.951s prompt=1676 cached=1097 completion=60 finish=stop prompt_n=579 prompt_ms=1518.0 mtp=4 rounds=23 accept=1.565
+[2026-11-14T08:08:17Z] request chatcmpl-923c41ef1e8f4a4e9d644a62f45c7c2e accepted streaming=false thinking=off
+[2026-11-14T08:08:17Z] request chatcmpl-923c41ef1e8f4a4e9d644a62f45c7c2e prepared prompt=1451
+[2026-11-14T08:08:17Z] request chatcmpl-923c41ef1e8f4a4e9d644a62f45c7c2e generating
+[2026-11-14T08:08:19Z] request chatcmpl-923c41ef1e8f4a4e9d644a62f45c7c2e completed in 1.949s prompt=1451 cached=1097 completion=32 finish=stop prompt_n=354 prompt_ms=1155.2 mtp=4 rounds=11 accept=1.909
+[2026-11-14T08:08:19Z] request chatcmpl-79e72c1ce2f54b2eb1087e3455b165b7 accepted streaming=true thinking=off
+[2026-11-14T08:08:19Z] request chatcmpl-79e72c1ce2f54b2eb1087e3455b165b7 prepared prompt=1101
+[2026-11-14T08:08:19Z] request chatcmpl-79e72c1ce2f54b2eb1087e3455b165b7 generating
+[2026-11-14T08:08:24Z] request chatcmpl-79e72c1ce2f54b2eb1087e3455b165b7 completed in 5.223s prompt=1101 cached=827 completion=131 finish=stop prompt_n=274 prompt_ms=2446.9 mtp=4 rounds=49 accept=1.714
+[2026-11-14T08:08:24Z] request chatcmpl-56c6bc4f7fab41ff8cd3ceab1abad42d accepted streaming=false thinking=off
+[2026-11-14T08:08:24Z] request chatcmpl-56c6bc4f7fab41ff8cd3ceab1abad42d prepared prompt=1251
+[2026-11-14T08:08:24Z] request chatcmpl-56c6bc4f7fab41ff8cd3ceab1abad42d generating
+[2026-11-14T08:08:26Z] request chatcmpl-56c6bc4f7fab41ff8cd3ceab1abad42d completed in 1.298s prompt=1251 cached=1095 completion=27 finish=stop prompt_n=156 prompt_ms=667.9 mtp=4 rounds=9 accept=2.000
+[2026-11-14T08:08:26Z] request chatcmpl-e7921f58502a48d0ba74dcfafa7ef2de accepted streaming=false thinking=off
+[2026-11-14T08:08:26Z] request chatcmpl-e7921f58502a48d0ba74dcfafa7ef2de prepared prompt=1681
+[2026-11-14T08:08:26Z] request chatcmpl-e7921f58502a48d0ba74dcfafa7ef2de generating
+[2026-11-14T08:08:28Z] request chatcmpl-e7921f58502a48d0ba74dcfafa7ef2de completed in 2.437s prompt=1681 cached=1097 completion=48 finish=stop prompt_n=584 prompt_ms=1316.8 mtp=4 rounds=19 accept=1.474
+[2026-11-14T08:08:28Z] request chatcmpl-938f6d4b0105448dbd7620715da001c8 accepted streaming=false thinking=off
+[2026-11-14T08:08:28Z] request chatcmpl-938f6d4b0105448dbd7620715da001c8 prepared prompt=1463
+[2026-11-14T08:08:28Z] request chatcmpl-938f6d4b0105448dbd7620715da001c8 generating
+[2026-11-14T08:08:30Z] request chatcmpl-938f6d4b0105448dbd7620715da001c8 completed in 2.081s prompt=1463 cached=1097 completion=32 finish=stop prompt_n=366 prompt_ms=1150.1 mtp=4 rounds=13 accept=1.462
+[2026-11-14T08:08:30Z] request chatcmpl-e89c666a036047c39114fff2499804a4 accepted streaming=true thinking=off
+[2026-11-14T08:08:30Z] request chatcmpl-e89c666a036047c39114fff2499804a4 prepared prompt=1101
+[2026-11-14T08:08:30Z] request chatcmpl-e89c666a036047c39114fff2499804a4 generating
+[2026-11-14T08:08:35Z] request chatcmpl-e89c666a036047c39114fff2499804a4 completed in 4.743s prompt=1101 cached=827 completion=122 finish=stop prompt_n=274 prompt_ms=2436.4 mtp=4 rounds=39 accept=2.128
+[2026-11-14T08:08:35Z] request chatcmpl-a88678d701404283aac92725bfecd9a4 accepted streaming=false thinking=off
+[2026-11-14T08:08:35Z] request chatcmpl-a88678d701404283aac92725bfecd9a4 prepared prompt=1245
+[2026-11-14T08:08:35Z] request chatcmpl-a88678d701404283aac92725bfecd9a4 generating
+[2026-11-14T08:08:36Z] request chatcmpl-a88678d701404283aac92725bfecd9a4 completed in 1.177s prompt=1245 cached=1095 completion=21 finish=stop prompt_n=150 prompt_ms=673.1 mtp=4 rounds=7 accept=2.000
+[2026-11-14T08:08:36Z] request chatcmpl-a6199dfbccff4952b53f1a6bdf786f8c accepted streaming=false thinking=off
+[2026-11-14T08:08:36Z] request chatcmpl-a6199dfbccff4952b53f1a6bdf786f8c prepared prompt=1686
+[2026-11-14T08:08:36Z] request chatcmpl-a6199dfbccff4952b53f1a6bdf786f8c generating
+[2026-11-14T08:08:39Z] request chatcmpl-a6199dfbccff4952b53f1a6bdf786f8c completed in 2.835s prompt=1686 cached=1097 completion=58 finish=stop prompt_n=589 prompt_ms=1395.8 mtp=4 rounds=24 accept=1.500
+[2026-11-14T08:08:39Z] request chatcmpl-e3739ca0da13499ab3445881d38765e8 accepted streaming=false thinking=off
+[2026-11-14T08:08:39Z] request chatcmpl-e3739ca0da13499ab3445881d38765e8 prepared prompt=1450
+[2026-11-14T08:08:39Z] request chatcmpl-e3739ca0da13499ab3445881d38765e8 generating
+[2026-11-14T08:08:41Z] request chatcmpl-e3739ca0da13499ab3445881d38765e8 completed in 1.773s prompt=1450 cached=1097 completion=29 finish=stop prompt_n=353 prompt_ms=1018.0 mtp=4 rounds=10 accept=2.100
+[2026-11-14T08:08:41Z] request chatcmpl-179c8ea4609a40229912c5058adaa3df accepted streaming=true thinking=off
+[2026-11-14T08:08:41Z] request chatcmpl-179c8ea4609a40229912c5058adaa3df prepared prompt=1101
+[2026-11-14T08:08:41Z] request chatcmpl-179c8ea4609a40229912c5058adaa3df generating
+[2026-11-14T08:08:46Z] request chatcmpl-179c8ea4609a40229912c5058adaa3df completed in 5.015s prompt=1101 cached=827 completion=120 finish=stop prompt_n=274 prompt_ms=2554.0 mtp=4 rounds=42 accept=1.857
+[2026-11-14T08:08:46Z] request chatcmpl-06918420008545c592ce788b520604ce accepted streaming=false thinking=off
+[2026-11-14T08:08:46Z] request chatcmpl-06918420008545c592ce788b520604ce prepared prompt=1249
+[2026-11-14T08:08:46Z] request chatcmpl-06918420008545c592ce788b520604ce generating
+[2026-11-14T08:08:47Z] request chatcmpl-06918420008545c592ce788b520604ce completed in 1.567s prompt=1249 cached=1095 completion=27 finish=stop prompt_n=154 prompt_ms=726.1 mtp=4 rounds=11 accept=1.455
+[2026-11-14T08:08:47Z] request chatcmpl-9b9554550a3747a183bb3cf478ac2167 accepted streaming=false thinking=off
+[2026-11-14T08:08:47Z] request chatcmpl-9b9554550a3747a183bb3cf478ac2167 prepared prompt=1663
+[2026-11-14T08:08:47Z] request chatcmpl-9b9554550a3747a183bb3cf478ac2167 generating
+[2026-11-14T08:08:50Z] request chatcmpl-9b9554550a3747a183bb3cf478ac2167 completed in 2.874s prompt=1663 cached=1097 completion=61 finish=stop prompt_n=566 prompt_ms=1399.9 mtp=4 rounds=24 accept=1.542
+[2026-11-14T08:08:50Z] request chatcmpl-55b4887a62954e03918a5eabf7bcc5a8 accepted streaming=false thinking=off
+[2026-11-14T08:08:50Z] request chatcmpl-55b4887a62954e03918a5eabf7bcc5a8 prepared prompt=1457
+[2026-11-14T08:08:50Z] request chatcmpl-55b4887a62954e03918a5eabf7bcc5a8 generating
+[2026-11-14T08:08:52Z] request chatcmpl-55b4887a62954e03918a5eabf7bcc5a8 completed in 2.055s prompt=1457 cached=1097 completion=32 finish=stop prompt_n=360 prompt_ms=1145.1 mtp=4 rounds=11 accept=2.000
+[2026-11-14T08:08:52Z] request chatcmpl-c83cc6e864e24b408954c7da225fb083 accepted streaming=true thinking=off
+[2026-11-14T08:08:52Z] request chatcmpl-c83cc6e864e24b408954c7da225fb083 prepared prompt=1101
+[2026-11-14T08:08:52Z] request chatcmpl-c83cc6e864e24b408954c7da225fb083 generating
+[2026-11-14T08:08:57Z] request chatcmpl-c83cc6e864e24b408954c7da225fb083 completed in 4.944s prompt=1101 cached=827 completion=119 finish=stop prompt_n=274 prompt_ms=2532.5 mtp=4 rounds=40 accept=1.975
+[2026-11-14T08:08:57Z] request chatcmpl-ac99ae8c4a8b401591a6afa2706d76ee accepted streaming=false thinking=off
+[2026-11-14T08:08:57Z] request chatcmpl-ac99ae8c4a8b401591a6afa2706d76ee prepared prompt=1243
+[2026-11-14T08:08:57Z] request chatcmpl-ac99ae8c4a8b401591a6afa2706d76ee generating
+[2026-11-14T08:08:59Z] request chatcmpl-ac99ae8c4a8b401591a6afa2706d76ee completed in 1.450s prompt=1243 cached=1095 completion=24 finish=stop prompt_n=148 prompt_ms=756.9 mtp=4 rounds=10 accept=1.400
+[2026-11-14T08:08:59Z] request chatcmpl-2c0259afd8db40ccae67f3201373297c accepted streaming=false thinking=off
+[2026-11-14T08:08:59Z] request chatcmpl-2c0259afd8db40ccae67f3201373297c prepared prompt=1662
+[2026-11-14T08:08:59Z] request chatcmpl-2c0259afd8db40ccae67f3201373297c generating
+[2026-11-14T08:09:02Z] request chatcmpl-2c0259afd8db40ccae67f3201373297c completed in 2.841s prompt=1662 cached=1097 completion=58 finish=stop prompt_n=565 prompt_ms=1464.0 mtp=4 rounds=21 accept=1.714
+[2026-11-14T08:09:02Z] request chatcmpl-a6f28e0a7e1f4a3c80654a99d3578647 accepted streaming=false thinking=off
+[2026-11-14T08:09:02Z] request chatcmpl-a6f28e0a7e1f4a3c80654a99d3578647 prepared prompt=1449
+[2026-11-14T08:09:02Z] request chatcmpl-a6f28e0a7e1f4a3c80654a99d3578647 generating
+[2026-11-14T08:09:04Z] request chatcmpl-a6f28e0a7e1f4a3c80654a99d3578647 completed in 1.926s prompt=1449 cached=1097 completion=24 finish=stop prompt_n=352 prompt_ms=1246.5 mtp=4 rounds=8 accept=2.000
+[2026-11-14T08:09:04Z] request chatcmpl-b329cc243182458197030401ab68bcf4 accepted streaming=true thinking=off
+[2026-11-14T08:09:04Z] request chatcmpl-b329cc243182458197030401ab68bcf4 prepared prompt=1101
+[2026-11-14T08:09:04Z] request chatcmpl-b329cc243182458197030401ab68bcf4 generating
+[2026-11-14T08:09:08Z] request chatcmpl-b329cc243182458197030401ab68bcf4 completed in 4.618s prompt=1101 cached=827 completion=118 finish=stop prompt_n=274 prompt_ms=2481.1 mtp=4 rounds=35 accept=2.371
+[2026-11-14T08:09:08Z] request chatcmpl-611cd95f16de471f91d70cc156f8433a accepted streaming=false thinking=off
+[2026-11-14T08:09:08Z] request chatcmpl-611cd95f16de471f91d70cc156f8433a prepared prompt=1247
+[2026-11-14T08:09:08Z] request chatcmpl-611cd95f16de471f91d70cc156f8433a generating
+[2026-11-14T08:09:10Z] request chatcmpl-611cd95f16de471f91d70cc156f8433a completed in 1.368s prompt=1247 cached=1095 completion=25 finish=stop prompt_n=152 prompt_ms=709.6 mtp=4 rounds=10 accept=1.500
+[2026-11-14T08:09:10Z] request chatcmpl-ec7f6ad1a0d1489ea1affc0d2e2747a0 accepted streaming=false thinking=off
+[2026-11-14T08:09:10Z] request chatcmpl-ec7f6ad1a0d1489ea1affc0d2e2747a0 prepared prompt=1653
+[2026-11-14T08:09:10Z] request chatcmpl-ec7f6ad1a0d1489ea1affc0d2e2747a0 generating
+[2026-11-14T08:09:12Z] request chatcmpl-ec7f6ad1a0d1489ea1affc0d2e2747a0 completed in 2.633s prompt=1653 cached=1097 completion=57 finish=stop prompt_n=556 prompt_ms=1379.3 mtp=4 rounds=20 accept=1.950
+[2026-11-14T08:09:12Z] request chatcmpl-ca62db3b8af9436e9eb992b5dba544ff accepted streaming=false thinking=off
+[2026-11-14T08:09:12Z] request chatcmpl-ca62db3b8af9436e9eb992b5dba544ff prepared prompt=1458
+[2026-11-14T08:09:12Z] request chatcmpl-ca62db3b8af9436e9eb992b5dba544ff generating
+[2026-11-14T08:09:14Z] request chatcmpl-ca62db3b8af9436e9eb992b5dba544ff completed in 1.853s prompt=1458 cached=1097 completion=27 finish=stop prompt_n=361 prompt_ms=1198.8 mtp=4 rounds=8 accept=2.625
+[2026-11-14T08:09:14Z] request chatcmpl-cd969ad43ae7470bb78a475b42f02362 accepted streaming=true thinking=off
+[2026-11-14T08:09:14Z] request chatcmpl-cd969ad43ae7470bb78a475b42f02362 prepared prompt=1101
+[2026-11-14T08:09:14Z] request chatcmpl-cd969ad43ae7470bb78a475b42f02362 generating
+[2026-11-14T08:09:19Z] request chatcmpl-cd969ad43ae7470bb78a475b42f02362 completed in 5.040s prompt=1101 cached=827 completion=118 finish=stop prompt_n=274 prompt_ms=2602.0 mtp=4 rounds=40 accept=1.975
+[2026-11-14T08:09:19Z] request chatcmpl-d0e64c3c7bc348a4a86f790e084bff0a accepted streaming=false thinking=off
+[2026-11-14T08:09:19Z] request chatcmpl-d0e64c3c7bc348a4a86f790e084bff0a prepared prompt=1244
+[2026-11-14T08:09:19Z] request chatcmpl-d0e64c3c7bc348a4a86f790e084bff0a generating
+[2026-11-14T08:09:20Z] request chatcmpl-d0e64c3c7bc348a4a86f790e084bff0a completed in 1.322s prompt=1244 cached=1095 completion=22 finish=stop prompt_n=149 prompt_ms=707.1 mtp=4 rounds=9 accept=1.444
+[2026-11-14T08:09:20Z] request chatcmpl-f653a88418b148ecb901cf188fad2e88 accepted streaming=false thinking=off
+[2026-11-14T08:09:20Z] request chatcmpl-f653a88418b148ecb901cf188fad2e88 prepared prompt=1663
+[2026-11-14T08:09:20Z] request chatcmpl-f653a88418b148ecb901cf188fad2e88 generating
+[2026-11-14T08:09:23Z] request chatcmpl-f653a88418b148ecb901cf188fad2e88 completed in 2.656s prompt=1663 cached=1097 completion=52 finish=stop prompt_n=566 prompt_ms=1481.2 mtp=4 rounds=18 accept=1.833
+[2026-11-14T08:09:23Z] request chatcmpl-04950b5610ff412d90203005d202587c accepted streaming=false thinking=off
+[2026-11-14T08:09:23Z] request chatcmpl-04950b5610ff412d90203005d202587c prepared prompt=1456
+[2026-11-14T08:09:23Z] request chatcmpl-04950b5610ff412d90203005d202587c generating
+[2026-11-14T08:09:25Z] request chatcmpl-04950b5610ff412d90203005d202587c completed in 1.925s prompt=1456 cached=1097 completion=27 finish=stop prompt_n=359 prompt_ms=1195.3 mtp=4 rounds=9 accept=2.000
+[2026-11-14T08:09:25Z] request chatcmpl-f4879cbeaee44688a5b3da8fe1b0331d accepted streaming=true thinking=off
+[2026-11-14T08:09:25Z] request chatcmpl-f4879cbeaee44688a5b3da8fe1b0331d prepared prompt=1101
+[2026-11-14T08:09:25Z] request chatcmpl-f4879cbeaee44688a5b3da8fe1b0331d generating
+[2026-11-14T08:09:30Z] request chatcmpl-f4879cbeaee44688a5b3da8fe1b0331d completed in 4.622s prompt=1101 cached=827 completion=118 finish=stop prompt_n=274 prompt_ms=2381.8 mtp=4 rounds=37 accept=2.189
+[2026-11-14T08:09:30Z] request chatcmpl-cb861318f65a4b5a969363e01a795612 accepted streaming=false thinking=off
+[2026-11-14T08:09:30Z] request chatcmpl-cb861318f65a4b5a969363e01a795612 prepared prompt=1244
+[2026-11-14T08:09:30Z] request chatcmpl-cb861318f65a4b5a969363e01a795612 generating
+[2026-11-14T08:09:31Z] request chatcmpl-cb861318f65a4b5a969363e01a795612 completed in 1.213s prompt=1244 cached=1095 completion=21 finish=stop prompt_n=149 prompt_ms=681.4 mtp=4 rounds=8 accept=1.625
+[2026-11-14T08:09:31Z] request chatcmpl-81b46fcaa0924571b1f42274ec17cbd4 accepted streaming=false thinking=off
+[2026-11-14T08:09:31Z] request chatcmpl-81b46fcaa0924571b1f42274ec17cbd4 prepared prompt=1665
+[2026-11-14T08:09:31Z] request chatcmpl-81b46fcaa0924571b1f42274ec17cbd4 generating
+[2026-11-14T08:09:34Z] request chatcmpl-81b46fcaa0924571b1f42274ec17cbd4 completed in 2.640s prompt=1665 cached=1097 completion=56 finish=stop prompt_n=568 prompt_ms=1318.8 mtp=4 rounds=22 accept=1.545
+[2026-11-14T08:09:34Z] request chatcmpl-169807e6eede4f3781eaff405ed8ebca accepted streaming=false thinking=off
+[2026-11-14T08:09:34Z] request chatcmpl-169807e6eede4f3781eaff405ed8ebca prepared prompt=1455
+[2026-11-14T08:09:34Z] request chatcmpl-169807e6eede4f3781eaff405ed8ebca generating
+[2026-11-14T08:09:36Z] request chatcmpl-169807e6eede4f3781eaff405ed8ebca completed in 1.935s prompt=1455 cached=1097 completion=34 finish=stop prompt_n=358 prompt_ms=1092.3 mtp=4 rounds=11 accept=2.091
+[2026-11-14T08:09:36Z] request chatcmpl-59b6a1bfc85c44cda6ee7519dda190bd accepted streaming=true thinking=off
+[2026-11-14T08:09:36Z] request chatcmpl-59b6a1bfc85c44cda6ee7519dda190bd prepared prompt=1101
+[2026-11-14T08:09:36Z] request chatcmpl-59b6a1bfc85c44cda6ee7519dda190bd generating
+[2026-11-14T08:09:40Z] request chatcmpl-59b6a1bfc85c44cda6ee7519dda190bd completed in 4.828s prompt=1101 cached=827 completion=120 finish=stop prompt_n=274 prompt_ms=2535.4 mtp=4 rounds=38 accept=2.184
+[2026-11-14T08:09:40Z] request chatcmpl-c3d89abc3a2240b488271e812089820d accepted streaming=false thinking=off
+[2026-11-14T08:09:40Z] request chatcmpl-c3d89abc3a2240b488271e812089820d prepared prompt=1243
+[2026-11-14T08:09:40Z] request chatcmpl-c3d89abc3a2240b488271e812089820d generating
+[2026-11-14T08:09:42Z] request chatcmpl-c3d89abc3a2240b488271e812089820d completed in 1.134s prompt=1243 cached=1095 completion=22 finish=stop prompt_n=148 prompt_ms=675.9 mtp=4 rounds=7 accept=2.143
+[2026-11-14T08:09:42Z] request chatcmpl-6d656b1a70424024bbda1eb391698924 accepted streaming=false thinking=off
+[2026-11-14T08:09:42Z] request chatcmpl-6d656b1a70424024bbda1eb391698924 prepared prompt=1677
+[2026-11-14T08:09:42Z] request chatcmpl-6d656b1a70424024bbda1eb391698924 generating
+[2026-11-14T08:09:44Z] request chatcmpl-6d656b1a70424024bbda1eb391698924 completed in 2.813s prompt=1677 cached=1097 completion=68 finish=stop prompt_n=580 prompt_ms=1315.3 mtp=4 rounds=25 accept=1.720
+[2026-11-14T08:09:44Z] request chatcmpl-a872c84232cb4cefbddd26bb9e57494e accepted streaming=false thinking=off
+[2026-11-14T08:09:44Z] request chatcmpl-a872c84232cb4cefbddd26bb9e57494e prepared prompt=1450
+[2026-11-14T08:09:44Z] request chatcmpl-a872c84232cb4cefbddd26bb9e57494e generating
+[2026-11-14T08:09:46Z] request chatcmpl-a872c84232cb4cefbddd26bb9e57494e completed in 1.604s prompt=1450 cached=1097 completion=24 finish=stop prompt_n=353 prompt_ms=976.8 mtp=4 rounds=8 accept=2.000
+[2026-11-14T08:09:46Z] request chatcmpl-670142eca5704dfda652efa79b94ccb6 accepted streaming=true thinking=off
+[2026-11-14T08:09:46Z] request chatcmpl-670142eca5704dfda652efa79b94ccb6 prepared prompt=1101
+[2026-11-14T08:09:46Z] request chatcmpl-670142eca5704dfda652efa79b94ccb6 generating
+[2026-11-14T08:09:51Z] request chatcmpl-670142eca5704dfda652efa79b94ccb6 completed in 4.703s prompt=1101 cached=827 completion=120 finish=stop prompt_n=274 prompt_ms=2424.8 mtp=4 rounds=38 accept=2.158
+[2026-11-14T08:09:51Z] request chatcmpl-b9eef7580b3a4139af977f88632c0b4c accepted streaming=false thinking=off
+[2026-11-14T08:09:51Z] request chatcmpl-b9eef7580b3a4139af977f88632c0b4c prepared prompt=1244
+[2026-11-14T08:09:51Z] request chatcmpl-b9eef7580b3a4139af977f88632c0b4c generating
+[2026-11-14T08:09:52Z] request chatcmpl-b9eef7580b3a4139af977f88632c0b4c completed in 1.225s prompt=1244 cached=1095 completion=23 finish=stop prompt_n=149 prompt_ms=700.6 mtp=4 rounds=8 accept=1.750
+[2026-11-14T08:09:52Z] request chatcmpl-df5a24c9b3ad436f9ca30a178130b0e5 accepted streaming=false thinking=off
+[2026-11-14T08:09:52Z] request chatcmpl-df5a24c9b3ad436f9ca30a178130b0e5 prepared prompt=1671
+[2026-11-14T08:09:52Z] request chatcmpl-df5a24c9b3ad436f9ca30a178130b0e5 generating
+[2026-11-14T08:09:55Z] request chatcmpl-df5a24c9b3ad436f9ca30a178130b0e5 completed in 2.636s prompt=1671 cached=1097 completion=69 finish=stop prompt_n=574 prompt_ms=1195.2 mtp=4 rounds=24 accept=1.833
+[2026-11-14T08:09:55Z] request chatcmpl-c575c8471ff649cf9ead5ba200771a82 accepted streaming=false thinking=off
+[2026-11-14T08:09:55Z] request chatcmpl-c575c8471ff649cf9ead5ba200771a82 prepared prompt=1452
+[2026-11-14T08:09:55Z] request chatcmpl-c575c8471ff649cf9ead5ba200771a82 generating
+[2026-11-14T08:09:56Z] request chatcmpl-c575c8471ff649cf9ead5ba200771a82 completed in 1.737s prompt=1452 cached=1097 completion=29 finish=stop prompt_n=355 prompt_ms=1039.9 mtp=4 rounds=9 accept=2.111

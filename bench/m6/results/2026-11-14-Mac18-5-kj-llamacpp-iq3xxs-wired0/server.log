@@ -1,0 +1,22 @@
+0.00.001.557 W Setting 'enable_thinking' via --chat-template-kwargs is deprecated. Use --reasoning on / --reasoning off instead.
+0.05.010.140 I srv  llama_server: initializing ...
+0.05.010.147 I cmn  common_param: common_params_print_info: verbosity = 3 (adjust with the `-lv N` CLI arg)
+0.05.012.938 W srv  server_setup: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.05.016.552 I srv    load_model: loading model '/Users/mh/LLM/ref/gemma-4-26B-A4B-it-UD-IQ3_XXS.gguf'
+0.05.149.062 W load: control-looking token:    212 '</s>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.05.149.079 W load: control-looking token:     50 '<|tool_response>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.05.149.084 W load: control-looking token:      1 '<eos>' was not control-type; this is probably a bug in the model. its type will be overridden
+0.05.150.200 W load: '</s>' is a normal token here, removing it from EOG list
+0.09.174.035 I cmn          init: llama threadpool init, n_threads = 2
+0.10.332.244 I srv    load_model: loaded multimodal model, '/Users/mh/LLM/ref/mmproj-BF16.gguf'
+0.10.443.326 E ggml_metal_synchronize: error: command buffer 1 failed with status 5
+0.10.443.332 E error: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)
+0.10.443.335 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 8192, kv_unified = 'false'
+0.10.445.392 W srv          init: --cache-idle-slots requires --cache-ram, disabling
+0.10.453.421 I srv  server_run_i: model loaded
+0.10.453.423 I srv  server_on_li: listening on http://127.0.0.1:8082
+2.14.864.684 I srv    operator(): operator(): cleaning up before exit...
+2.14.868.987 E ggml_metal_synchronize: error: command buffer 1 failed with status 5
+2.14.869.006 E error: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)
+2.14.869.077 E ggml_metal_synchronize: error: command buffer 1 failed with status 5
+2.14.869.081 E error: Insufficient Memory (00000008:kIOGPUCommandBufferCallbackErrorOutOfMemory)
