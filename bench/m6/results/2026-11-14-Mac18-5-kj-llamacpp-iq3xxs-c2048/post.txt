@@ -1,0 +1,38 @@
+23:29:21
+The system has 17179869184 (1048576 pages with a page size of 16384).
+System-wide memory free percentage: 8%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    27667.
+Pages active:                                  39570.
+Pages inactive:                                38878.
+Pages speculative:                                85.
+Pages throttled:                                   0.
+Pages wired down:                             875147.
+Pages purgeable:                                   4.
+"Translation faults":                        4497293.
+Pages copy-on-write:                          301143.
+Pages zero filled:                           1100654.
+Pages reactivated:                            575566.
+Pages purged:                                  26675.
+File-backed pages:                             21045.
+Anonymous pages:                               57488.
+Pages stored in compressor:                    43563.
+Pages occupied by compressor:                  29721.
+Decompressions:                              1708114.
+Compressions:                                2091225.
+Pageins:                                      962091.
+Pageouts:                                        110.
+Swapins:                                       20778.
+Swapouts:                                      70732.
+Pages tagged:                                  27101.
+Pages tagged resident:                         22002.
+Pages tagged compressed:                        5099.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                  836.
+Pages tag-storage free:                        18291.
+Pages tag-storage non-tag pageable:            12441.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                     903808.
+Tagged compressions:                           36411.
+Tagged decompressions:                         28845.
+vm.swapusage: total = 2048.00M  used = 785.12M  free = 1262.88M  (encrypted)

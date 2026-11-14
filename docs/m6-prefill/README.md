@@ -50,6 +50,7 @@ G0 からの比、段の秒、tensor ops に載せたか、「下限の何倍か
 | 10 番台〜 | 結果文書。Gate ごとに 1 本、[00-TEMPLATE-RESULT.md](00-TEMPLATE-RESULT.md) の形。[18](18-RESET-ABSOLUTE-FLOOR.md) と [43](43-LEDGER-PROMPT-REPEATED-SENTENCE.md) は方向の取り直し |
 | [46](46-WIRED-DURING-RUN.md) | prefill の外。要求を処理している間の wired (10.4〜10.7 GiB、終われば戻る)。48 §7 の見込みの訂正 |
 | [47](47-KAJIMACHINE-REPLAY-TSUGUMI-VS-LLAMACPP.md) | prefill の外。kajimachine の鑑定の要求を再生し、Tsugumi (QAT) と llama.cpp (IQ3_XXS) を並べた。読み直しの量、1 回の秒、IQ3_XXS の英名の崩れ |
+| [48](48-KAJIMACHINE-EXPERT-SLICE.md) | prefill の外。鑑定で使うエキスパートだけを残した Q4_0 (層ごと 80 個、8.77 GiB) を llama.cpp で M6 に載せた。1 回 7.54 s・Swapouts 0。文脈長は wired を動かさない。英名の崩れの率 |
 | `bench/m6/prompts/` | 台帳用の自然文の本文 5 本 (43 §3)。`bench/l.json` は繰り返し文で、進捗の判定には使わない |
 | `bench/m6/` | プローブと計測スクリプト。[results/README.md](../../bench/m6/results/README.md) が証拠の置き方 |
 

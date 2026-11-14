@@ -1,0 +1,2 @@
+測定: 2026-11-15 / Mac18,5 Apple M6 16GB / macOS 27.0 (26A428) / Swift 6.4.2 / SDK 27.2 / Xcode 27.2 / APPLE SSD AP0256Z / commit 8642573c
+llama.cpp 61dbf49 / lattice-keep_96.gguf 11026636064 bytes (Huihui lattice Q4_0 から層ごとに 96 個を切り出し) / mmproj-lattice-Q8_0.gguf 806408032 bytes / headless

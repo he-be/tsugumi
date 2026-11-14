@@ -1,0 +1,37 @@
+diff --git a/tools/server/server.cpp b/tools/server/server.cpp
+index ca3eb2dbb..cbb1e26fa 100644
+--- a/tools/server/server.cpp
++++ b/tools/server/server.cpp
+@@ -758,6 +758,24 @@ static int server_run_instance(common_params & params, server_role & role, commo
+ // entry points
+ //
+ 
++
++#include <cstring>
++static bool moe_trace_cb(struct ggml_tensor * t, bool ask, void *) {
++    static FILE * f = fopen(getenv("LLAMA_MOE_TRACE"), "ab");
++    if (strncmp(t->name, "ffn_moe_probs-", 14) != 0) { return !ask; }
++    if (ask) { return true; }
++    static std::vector<float> buf;
++    GGML_ASSERT(t->type == GGML_TYPE_F32);
++    const size_t n = ggml_nbytes(t);
++    buf.resize(n / sizeof(float));
++    ggml_backend_tensor_get(t, buf.data(), 0, n);
++    const int32_t hdr[3] = { atoi(t->name + 14), (int32_t) t->ne[0], (int32_t) t->ne[1] };
++    fwrite(hdr, sizeof(int32_t), 3, f);
++    fwrite(buf.data(), sizeof(float), buf.size(), f);
++    fflush(f);
++    return true;
++}
++
+ static int server_run(common_params & params, int argc, char ** argv, server_role & role, const server_run_opts & opts) {
+     common_models_handler models_handler;
+ 
+@@ -818,6 +836,7 @@ int llama_server(int argc, char ** argv) {
+         return 1;
+     }
+ 
++    if (getenv("LLAMA_MOE_TRACE")) { params.cb_eval = moe_trace_cb; params.cb_eval_user_data = nullptr; }
+     SRV_INF("%s", "initializing ...\n");
+ 
+     llama_backend_init();

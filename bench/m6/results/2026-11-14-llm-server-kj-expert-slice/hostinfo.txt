@@ -1,0 +1,12 @@
+llm-server (Proxmox CT, Ubuntu 24.04) / NVIDIA GeForce RTX 3090 だけを使用 / llama.cpp 3549c274d (CUDA) / 2026-11-14〜15
+14249045024 /root/models/gemma-4-26b-a4b-qat-2/Huihui-gemma-4-26B-A4B-it-qat-abliterated-lattice-Q4_0.gguf
+806408032 /root/models/gemma-4-26b-a4b-qat-2/mmproj-model-Q8_0.gguf
+11416548832 gemma-4-26B-A4B-it-UD-IQ3_XXS.gguf
+12637840544 lattice-keep_112.gguf
+7804227104 lattice-keep_64.gguf
+9415431584 lattice-keep_80.gguf
+11026636064 lattice-keep_96.gguf
+11026636064 lattice-keeprand_96.gguf
+71c139918d1f846aad2bae9469a59bc25167fbf8ddf88acd30f6924baa1ac3a5  lattice-keep_80.gguf
+573de1d120f80855290f371d97c1286eec05619af1da4c9ff3b3f70aeba01026  lattice-keep_96.gguf
+payloads ff8749273ba51e4c0a9a1e21568ddfc41849cb20c11e809f0cf370d7e78ec562 384 requests (96 plays; リポジトリには入れない)

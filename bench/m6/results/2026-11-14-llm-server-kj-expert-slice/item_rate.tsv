@@ -1,0 +1,7 @@
+arm	n	invalid	cut at 120	predicted_n median / p95 / max	>=60 tokens
+full	480	3	3	27 / 33 / 120	3	plays with a failure: 2
+k112	480	1	1	27 / 33 / 120	1	plays with a failure: 1
+k96	480	11	11	28 / 35 / 120	12	plays with a failure: 8
+k80	480	17	17	29 / 41 / 120	19	plays with a failure: 15
+k64	480	10	10	29 / 37 / 120	10	plays with a failure: 8
+iq3xxs	480	51	53	30 / 120 / 120	65	plays with a failure: 34
