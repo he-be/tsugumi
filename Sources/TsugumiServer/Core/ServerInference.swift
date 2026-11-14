@@ -759,7 +759,7 @@ public actor ServerModelSession: ServerInferenceBackend {
                 code: "context_length_exceeded")
         }
 
-        var config = request.generationConfig
+        var config = plan.sampling
         // REQ-max-tokens: -1 asks for everything the context has left, and any
         // other value is still bounded by it.
         let contextRemaining = maxContext - effectivePromptIDs.count

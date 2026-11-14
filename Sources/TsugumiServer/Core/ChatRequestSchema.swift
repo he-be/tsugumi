@@ -97,16 +97,20 @@ public enum ChatRequestSchema {
               kinds: [.number, .integer],
               rule: .clamp(lower: 0, upper: nil),
               defaultValue: .number(1.0)),
+        // REQ-temp / REQ-top-p / REQ-top-k: the defaults are Gemma 4's
+        // official sampling (1.0 / 0.95 / 64), which the server runs whatever
+        // a request sends; a sent value that differs is overridden and named
+        // on the completion line (`ServerGenerationPlan.officialSampling`).
         .init(id: "REQ-top-p", name: "top_p",
               kinds: [.number, .integer],
               rule: .clamp(lower: 0, upper: 1),
-              defaultValue: .number(1.0)),
+              defaultValue: .number(0.95)),
         // The upper end is the sampler's partial-sort limit, not OpenAI's or
         // the reference implementation's — a clamp, never a refusal (DEV-9).
         .init(id: "REQ-top-k", name: "top_k",
               kinds: [.integer],
               rule: .clamp(lower: 0, upper: Double(ChatRequestSchema.topKCeiling)),
-              defaultValue: .integer(0)),
+              defaultValue: .integer(64)),
         .init(id: "REQ-seed", name: "seed",
               kinds: [.integer], rule: .passthrough, defaultValue: .integer(-1)),
         .init(id: "REQ-stop", name: "stop",

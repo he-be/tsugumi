@@ -115,13 +115,13 @@ struct QwenGenerationPlanTests {
 
     @Test("the default request is overridden, and says so")
     func default_request_records_the_override() throws {
-        // REQ-temp: a client that never mentioned `temperature` still asks for
-        // 1.0, so the note fires on the everyday request. S1 says the run uses
-        // 0.6 anyway; what it must not do is use 1.0 **or** go quiet about it.
+        // REQ-temp / REQ-top-k: a client that never mentioned them still asks
+        // for the §4 defaults (Gemma 4's 1.0 / 64 / 0.95), so the note fires
+        // on the everyday request. S1 says the run uses 0.6 / 20 anyway; what
+        // it must not do is use the defaults **or** go quiet about it.
         let plan = try Self.plan()
         #expect(plan.approximations
-            == ["sampling/official-override: temperature=1.0→0.6 "
-                + "top_k=none→20 top_p=none→0.95"])
+            == ["sampling/official-override: temperature=1.0→0.6 top_k=64→20"])
     }
 
     @Test("a request that already asks for the official three overrides nothing")

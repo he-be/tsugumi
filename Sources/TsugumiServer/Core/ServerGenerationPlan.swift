@@ -34,6 +34,10 @@ struct ServerGenerationPlan: Equatable, Sendable {
     /// tagged `grammar/`) after, because the two degrade independently. Never
     /// an error — the server logs them.
     let approximations: [String]
+    /// The generation config the run samples with: the request's, with
+    /// `temperature` / `top_k` / `top_p` replaced by Gemma 4's official
+    /// values (`officialSampling`).
+    let sampling: GenerationConfig
     /// The request shape an error message may name, in the vocabulary of the
     /// request rather than of the conversation. **Never prompt text.**
     let shape: String
@@ -85,10 +89,52 @@ struct ServerGenerationPlan: Equatable, Sendable {
         self.forbiddenTokenIDs = constraint?.forbiddenTokenIDs ?? []
         self.isLazy = constraint?.grammar?.isLazy ?? false
         self.trigger = constraint?.grammar?.trigger
+        let sampling = Self.officialSampling(request.generationConfig)
+        self.sampling = sampling.config
         self.approximations =
             request.toolSchemaSimplifications.map { "tools/" + $0 }
             + (constraint?.approximations ?? []).map { "grammar/" + $0 }
+            + sampling.approximations.map { "sampling/" + $0 }
         self.shape = Self.shape(request)
+    }
+
+    /// Gemma 4's official sampling (`google/gemma-4-26B-A4B-it`
+    /// `generation_config.json`), the same values the Mac app and
+    /// ToolLoopCheck use.
+    static let officialTemperature: Float = 1.0
+    static let officialTopK = 64
+    static let officialTopP: Float = 0.95
+
+    /// The sampler the run will actually use, and the list of what it
+    /// overrode.
+    ///
+    /// `temperature`, `top_p` and `top_k` are set to the official three
+    /// whatever arrived, and the completion line names every field whose
+    /// requested value differed — the same override-and-record rule
+    /// `QwenGenerationPlan.officialSampling` applies to its families. A client
+    /// that sends nothing (the defaults in SPEC §4 are these values) gets no
+    /// note. `repeat_penalty` and `seed` are left as sent.
+    static func officialSampling(
+        _ requested: GenerationConfig
+    ) -> (config: GenerationConfig, approximations: [String]) {
+        var config = requested
+        var overridden: [String] = []
+        if requested.temperature != officialTemperature {
+            overridden.append("temperature=\(requested.temperature)→\(officialTemperature)")
+        }
+        if requested.topK != officialTopK {
+            let asked = requested.topK.map { "\($0)" } ?? "none"
+            overridden.append("top_k=\(asked)→\(officialTopK)")
+        }
+        if requested.topP != officialTopP {
+            let asked = requested.topP.map { "\($0)" } ?? "none"
+            overridden.append("top_p=\(asked)→\(officialTopP)")
+        }
+        config.temperature = officialTemperature
+        config.topK = officialTopK
+        config.topP = officialTopP
+        guard !overridden.isEmpty else { return (config, []) }
+        return (config, ["official-override: " + overridden.joined(separator: " ")])
     }
 
     /// The parser's `ChatResponseFormat` and the grammar stage's

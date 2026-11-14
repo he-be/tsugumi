@@ -113,8 +113,8 @@ struct ServerPropsTests {
         let settings = props["default_generation_settings"]?.objectValue ?? [:]
 
         #expect(Self.sameJSONNumberOrValue(settings["temperature"] ?? .null, .number(1.0)))
-        #expect(Self.sameJSONNumberOrValue(settings["top_p"] ?? .null, .number(1.0)))
-        #expect(settings["top_k"] == .integer(0))
+        #expect(Self.sameJSONNumberOrValue(settings["top_p"] ?? .null, .number(0.95)))
+        #expect(settings["top_k"] == .integer(64))
         #expect(settings["seed"] == .integer(-1))
         #expect(settings["max_tokens"] == .integer(-1))
         #expect(settings["n"] == .integer(1))

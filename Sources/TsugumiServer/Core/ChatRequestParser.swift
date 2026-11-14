@@ -222,27 +222,23 @@ public enum ChatRequestParser {
         }
     }
 
-    /// The clamped table values as the sampler takes them.
+    /// The clamped table values as the client asked for them.
     ///
-    /// Two of the mappings are approximations the engine forces, both
-    /// registered in SPEC §12 (DEV-10): this sampler cannot run nucleus
-    /// sampling over the full vocabulary, so a `top_p` below 1 borrows the
-    /// widest top-k it has, and a `top_p` of 0 — an empty nucleus — is served
-    /// as the greedy draw it describes. Neither is a refusal: R3 says a tuning
-    /// parameter is clamped into something this machine can run.
+    /// `temperature`, `top_p` and `top_k` are recorded here as sent (absent
+    /// ones take the §4 defaults, which are Gemma 4's official values) and
+    /// are **not** what the sampler runs: every family's plan replaces them
+    /// with its official three and names each one that differed on the
+    /// completion line (`ServerGenerationPlan.officialSampling`,
+    /// `QwenGenerationPlan.officialSampling`). They are kept as sent so that
+    /// line can say what was asked. `top_k` 0 and `top_p` 1 mean "no
+    /// truncation".
     private static func generationConfig(
         _ request: NormalizedChatRequest
     ) throws -> GenerationConfig {
         let temperature = Float(request.double("temperature") ?? 1.0)
         let topP = request.double("top_p") ?? 1.0
-        var topK = request.int("top_k") ?? 0
-        var nucleus: Float? = topP < 1 ? Float(topP) : nil
-        if topP <= 0 {
-            nucleus = nil
-            topK = 1
-        } else if nucleus != nil, topK == 0 {
-            topK = ChatRequestSchema.topKCeiling
-        }
+        let topK = request.int("top_k") ?? 0
+        let nucleus: Float? = topP < 1 ? Float(topP) : nil
         let seed = request.int64("seed") ?? -1
         return GenerationConfig(
             // The real ceiling is the context left after the prompt, which

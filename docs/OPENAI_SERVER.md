@@ -52,7 +52,6 @@ curl --silent --show-error http://127.0.0.1:8080/v1/chat/completions \
   -d '{
     "model": "gemma-4-26b-a4b-it",
     "messages": [{"role": "user", "content": "Reply with exactly READY."}],
-    "temperature": 0,
     "max_completion_tokens": 16
   }'
 ```
@@ -317,7 +316,6 @@ curl --silent --show-error http://127.0.0.1:8080/v1/chat/completions \
       {"type": "text", "text": "What is in this picture?"},
       {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,..."}}
     ]}],
-    "temperature": 0.2,
     "max_completion_tokens": 256
   }'
 ```
@@ -445,11 +443,13 @@ Chat Completions supports JSON and Server-Sent Events responses. Set
 
 Requests may contain system, developer, user, assistant, and tool messages.
 Message content may be a string or a list of `text` and `image_url` parts.
-Supported options include `temperature`, `top_p`, `top_k`,
-`repeat_penalty`, `seed`, `stop`, `max_tokens`,
+Supported options include `repeat_penalty`, `seed`, `stop`, `max_tokens`,
 `max_completion_tokens`, `n`, `cache_prompt`, `reasoning_effort`,
 `reasoning_budget_tokens`, `reasoning_format`,
 `chat_template_kwargs.enable_thinking`, and function-tool fields.
+`temperature`, `top_p` and `top_k` are accepted but not used: the server
+always samples with Gemma 4's official values (1.0 / 0.95 / 64) and names any
+differing sent value in its log line for that request.
 Responses carry `reasoning_content` when the request reasoned.
 
 The accepted values of every one of those fields are
@@ -503,7 +503,7 @@ silently dropped.
 
 | | Gemma 4 | Ornith |
 | --- | --- | --- |
-| sampling | `temperature` / `top_p` / `top_k` / `repeat_penalty` as sent | **greedy always.** The head this family runs never writes logits, so there is no distribution to shape. The request is accepted and the sampler ignored; what you asked for is named in the server's own log line for that request |
+| sampling | **fixed to the official values** (`temperature` 1.0, `top_p` 0.95, `top_k` 64). Sent values are ignored; one that differs is named in the server's log line for that request (`sampling/official-override: …`). `repeat_penalty` and `seed` are used as sent | **greedy always.** The head this family runs never writes logits, so there is no distribution to shape. The request is accepted and the sampler ignored; what you asked for is named in the server's own log line for that request |
 | images | supported | **400 `unsupported_image`.** `/props` reports `modalities.vision: false`, so a client can check before sending one |
 | speculative decoding | `--draft-block-size 2…8` | **refused at startup.** Run with `--draft-block-size 0` |
 | prompt reuse | see [Prompt reuse](#prompt-reuse) | **none.** Thirty of the forty layers keep a recurrent state that cannot be rewound, so every request recomputes the whole prompt and `cached_tokens` is always 0. A long conversation pays for its whole history each turn |

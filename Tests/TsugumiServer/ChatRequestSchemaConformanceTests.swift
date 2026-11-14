@@ -54,7 +54,7 @@ struct ChatRequestSchemaConformanceTests {
         let request = try Self.normalized(
             #""temperature":null,"top_p":null,"seed":null,"max_tokens":null,"stop":null"#)
         #expect(request.double("temperature") == 1.0)
-        #expect(request.double("top_p") == 1.0)
+        #expect(request.double("top_p") == 0.95)
         #expect(request.int("seed") == -1)
         #expect(request.int("max_tokens") == -1)
         #expect(request["stop"] == .array([]))
@@ -130,16 +130,16 @@ struct ChatRequestSchemaConformanceTests {
         #expect(try Self.normalized(#""temperature":3"#).double("temperature") == 3)
     }
 
-    @Test("REQ-top-p: the default is 1.0 and both ends clamp")
+    @Test("REQ-top-p: the default is Gemma 4's 0.95 and both ends clamp")
     func REQ_top_p_clamps() throws {
-        #expect(try Self.normalized().double("top_p") == 1.0)
+        #expect(try Self.normalized().double("top_p") == 0.95)
         #expect(try Self.normalized(#""top_p":1.5"#).double("top_p") == 1.0)
         #expect(try Self.normalized(#""top_p":-0.5"#).double("top_p") == 0)
     }
 
-    @Test("REQ-top-k: the default is 0 (disabled) and the ceiling is DEV-9's 256")
+    @Test("REQ-top-k: the default is Gemma 4's 64 and the ceiling is DEV-9's 256")
     func REQ_top_k_clamps() throws {
-        #expect(try Self.normalized().int("top_k") == 0)
+        #expect(try Self.normalized().int("top_k") == 64)
         #expect(try Self.normalized(#""top_k":0"#).int("top_k") == 0)
         #expect(try Self.normalized(#""top_k":-5"#).int("top_k") == 0)
         #expect(try Self.normalized(#""top_k":1000"#).int("top_k") == 256)
@@ -343,50 +343,74 @@ struct ChatRequestSchemaConformanceTests {
     }
 }
 
-/// C0, second half: the clamped table values as the sampler actually takes
-/// them. Two of the mappings are approximations this engine forces (DEV-10),
-/// and an approximation that silently produced an unrunnable config would be
-/// worse than the refusal R3 forbids — so every case here also asserts that
-/// the engine would accept what it built.
+/// C0, second half: what the sampler actually runs. `temperature`, `top_p`
+/// and `top_k` are Gemma 4's official values whatever the request sent; a
+/// sent value that differs is overridden and named on the completion line
+/// (`sampling/official-override: …`), and one that matches is not. Every case
+/// also asserts that the engine accepts the config the plan built.
 @Suite("C0 sampler mapping")
 struct ChatRequestSamplerMappingTests {
-    private static func config(_ extra: String = "") throws -> GenerationConfig {
+    private static let markers = ChatGrammarMarkers(
+        toolCallStart: "<|tool_call>",
+        toolCallEnd: "<tool_call|>",
+        toolCallStartTokenID: 7,
+        toolCallEndTokenID: 8)
+
+    private static func plan(_ extra: String = "") throws -> ServerGenerationPlan {
         let tail = extra.isEmpty ? "" : ",\(extra)"
         let body = #"{"model":"m","messages":[{"role":"user","content":"hi"}]"# + tail + "}"
-        let config = try ChatRequestParser.parse(Data(body.utf8)).generationConfig
-        try config.validate()
-        return config
+        let request = try ChatRequestParser.parse(Data(body.utf8))
+        let plan = ServerGenerationPlan(request: request, markers: markers)
+        try plan.sampling.validate()
+        return plan
     }
 
-    @Test("the defaults are a plain untruncated draw at temperature 1")
-    func defaults_are_runnable() throws {
-        let config = try Self.config()
-        #expect(config.temperature == 1.0)
-        #expect(config.topK == nil)
-        #expect(config.topP == nil)
-        #expect(config.seed == nil)
-        #expect(config.repetitionPenalty == 1.0)
+    private static func config(_ extra: String = "") throws -> GenerationConfig {
+        try plan(extra).sampling
     }
 
-    @Test("DEV-10: top_p below 1 borrows the widest top-k this sampler has")
-    func DEV_10_nucleus_needs_a_top_k() throws {
-        let config = try Self.config(#""top_p":0.9"#)
-        #expect(config.topP == 0.9)
-        #expect(config.topK == ChatRequestSchema.topKCeiling)
+    private static func overrideNote(_ extra: String) throws -> String? {
+        try plan(extra).approximations.first { $0.hasPrefix("sampling/") }
     }
 
-    @Test("DEV-10: an empty nucleus is the greedy draw it describes")
-    func DEV_10_top_p_zero_is_greedy() throws {
-        let config = try Self.config(#""top_p":0"#)
-        #expect(config.topP == nil)
-        #expect(config.topK == 1)
+    private static func isOfficial(_ config: GenerationConfig) -> Bool {
+        config.temperature == 1.0 && config.topK == 64 && config.topP == 0.95
     }
 
-    @Test("an explicit top_k is kept beside top_p")
-    func top_k_and_top_p_together() throws {
-        let config = try Self.config(#""top_k":40,"top_p":0.8"#)
-        #expect(config.topK == 40)
-        #expect(config.topP == 0.8)
+    @Test("the defaults are Gemma 4's official sampling, with no override note")
+    func defaults_are_official() throws {
+        let plan = try Self.plan()
+        #expect(Self.isOfficial(plan.sampling))
+        #expect(plan.sampling.seed == nil)
+        #expect(plan.sampling.repetitionPenalty == 1.0)
+        #expect(!plan.approximations.contains { $0.hasPrefix("sampling/") })
+    }
+
+    @Test("sending the official values leaves no override note")
+    func official_values_sent_are_not_noted() throws {
+        #expect(try Self.overrideNote(#""temperature":1,"top_p":0.95,"top_k":64"#) == nil)
+    }
+
+    @Test("sent sampling values are overridden and every differing one is named")
+    func sent_values_are_overridden_and_named() throws {
+        let extra = #""temperature":0.2,"top_p":0.9,"top_k":40"#
+        #expect(Self.isOfficial(try Self.config(extra)))
+        let note = try #require(try Self.overrideNote(extra))
+        #expect(note.hasPrefix("sampling/official-override: "))
+        #expect(note.contains("temperature=0.2→1.0"))
+        #expect(note.contains("top_k=40→64"))
+        #expect(note.contains("top_p=0.9→0.95"))
+    }
+
+    @Test("temperature 0 and top_p 0 are overridden, not served greedy")
+    func greedy_requests_are_overridden() throws {
+        for extra in [#""temperature":0"#, #""top_p":0"#, #""top_k":1"#] {
+            #expect(Self.isOfficial(try Self.config(extra)), "\(extra)")
+            #expect(try Self.overrideNote(extra) != nil, "\(extra)")
+        }
+        let note = try #require(try Self.overrideNote(#""top_k":0,"top_p":1"#))
+        #expect(note.contains("top_k=none→64"))
+        #expect(note.contains("top_p=none→0.95"))
     }
 
     @Test("REQ-seed: -1 is a random draw, and every other value is used as sent")
@@ -394,6 +418,11 @@ struct ChatRequestSamplerMappingTests {
         #expect(try Self.config(#""seed":-1"#).seed == nil)
         #expect(try Self.config(#""seed":42"#).seed == 42)
         #expect(try Self.config(#""seed":-2"#).seed == UInt64(bitPattern: -2))
+    }
+
+    @Test("repeat_penalty is still taken as sent")
+    func repeat_penalty_is_kept() throws {
+        #expect(try Self.config(#""repeat_penalty":1.1"#).repetitionPenalty == 1.1)
     }
 
     @Test("REQ-stop: both spellings reach the sampler")

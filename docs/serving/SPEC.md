@@ -82,9 +82,9 @@
 | REQ-stream | `stream` | bool | false | |
 | REQ-stream-usage | `stream_options.include_usage` | bool | false | |
 | REQ-max-tokens | `max_tokens`、別名 `max_completion_tokens` | int | -1 | hard [-1, ∞)。**-1 = 無制限** (コンテキスト残量まで)、**0 = prefill のみ** |
-| REQ-temp | `temperature` | num | 1.0 | clamp [0, ∞) |
-| REQ-top-p | `top_p` | num | 1.0 | clamp [0, 1] |
-| REQ-top-k | `top_k` | int | 0 | clamp [0, ∞)。**0 = 無効**。サンプラ実装の上限 256 への丸めは DEV-9 |
+| REQ-temp | `temperature` | num | 1.0 | **推奨値に固定、送られた値は無視 (ログに残す)**。Gemma 4 の公式値 1.0 で引く。送られた値が違えば、その要求の完了ログ行に `sampling/official-override: temperature=…→1.0` と名指す。型の検査と clamp [0, ∞) はそのまま |
+| REQ-top-p | `top_p` | num | 0.95 | **推奨値に固定、送られた値は無視 (ログに残す)**。公式値 0.95。違えば `top_p=…→0.95` (1 は `none`)。clamp [0, 1] はそのまま |
+| REQ-top-k | `top_k` | int | 64 | **推奨値に固定、送られた値は無視 (ログに残す)**。公式値 64。違えば `top_k=…→64` (0 は `none`)。clamp [0, 256] (DEV-9) はそのまま |
 | REQ-seed | `seed` | int64 | -1 | 透過。**-1 = ランダム**。符号付きでデコードする (`UInt64` デコードで 400 にしない) |
 | REQ-stop | `stop` | str \| arr | [] | 透過 (最大 4 は設けない — 参照実装に無い制限を足さない) |
 | REQ-repeat-penalty | `repeat_penalty` | num | 1.0 | 透過 (llama 拡張。engine の repetitionPenalty へ)。旧名 `repetition_penalty` は採らない — R1 により無視される |
@@ -219,7 +219,7 @@
 | DEV-7 | embeddings / rerank / infill / completions (非 chat) / responses / messages / control / lora / マルチモデル / MCP | あり | 採らない (EP-7 の 501) | このモデル・この用途 (pi / OpenCode / ブラウザデモ) に不要。面積を増やさない | 実クライアントの需要が出たら |
 | DEV-8 | 音声・動画入力 | あり (mtmd) | 501 | モデルが vision のみ | モデルが変わったら |
 | DEV-9 | `top_k` の上限 | INT32_MAX | 256 へ丸め | サンプラ実装の partial-sort 上限。クランプであり拒否ではない | サンプラを一般化したら |
-| DEV-10 | `top_p` のサンプラ写像 | 全語彙で nucleus を取る | `top_p < 1` かつ `top_k` 未指定なら `top_k = 256` を補う。`top_p = 0` は貪欲 (`top_k = 1`) として実行 | サンプラが全語彙 nucleus を実装していない (`GenerationConfig.validate`)。R3 の「範囲外は端に丸める」の延長で、拒否ではない | 全語彙 nucleus を実装したら |
+| DEV-10 | `temperature` / `top_p` / `top_k` | 送られた値で引く | 送られた値によらず Gemma 4 の公式値 (1.0 / 0.95 / 64) で引き、違う値は完了ログ行に名指す (REQ-temp / REQ-top-p / REQ-top-k)。旧来の「`top_p < 1` に `top_k = 256` を補う」「`top_p = 0` を貪欲にする」写像は 2026-11-14 に廃止 | 公式値以外で引かない (Qwen 系の `QwenGenerationPlan.officialSampling` と同じ上書きと記録) | — |
 | DEV-12 | チャットテンプレート | 同梱 `chat_template.jinja` をそのまま描く | **サーバーだけリポジトリ所有の変種**を描く (`Sources/Tsugumi/Templates/server_chat_template.jinja`、`GFTokenizer.ChatTemplateVariant.serverRedraw`)。同梱版との差分は 1 ハンク: 完了した model ターンに、生成時に KV へ入っていた thought channel (思考 OFF なら空、思考 ON なら思考ブロック) を描き直す | 同梱版は思考ブロックを「最後の user より後」かつ「`tool_calls` を持つ」ターンにしか描かないので、完了した回答を描き直すと必ず生成時とずれる = INV-1 が破れ、毎ターン LCP が 12〜20+ トークン短くなる。CLI・アプリ・KernelCheck は同梱版のまま (既定 `.modelBundled`) なので、それらのトークン列は 1 ビットも動かない | 同梱テンプレートが完了ターンを生成どおりに描くようになったら |
 | DEV-13 | 部分再利用の深さ | 共通接頭辞ならいくらでも遡って再開できる | **KV カーソルを戻せるのはリングの余裕まで** (`min(maxContext, slidingWindow + prefillChunkTokens) - slidingWindow`、既定 **2048 トークン**)。それより深い分岐は接頭辞を捨てて全 prefill | FP16 リングは SWA 層の物理スロットを `capacity` ごとに再利用するので、`[N, position)` を書いた時点で `[N-capacity, position-capacity)` は潰れている。カーネルが読む `[N-slidingWindow, N)` を守る条件がこの式 (`KVCacheManager.maximumSafeRewind`) | リング容量が変わったら自動で追随する。リングを切れば (`fp16RingEnabled = false`) 制限は消える |
 | DEV-21 | 思考の予算に `max_tokens` が効くときの分け方 | 予算は `reasoning_budget_tokens` だけ。`max_tokens` は分けない | `max_tokens` のうち **`max(1, max_tokens/4)` を答えのために取り置き**、残りを思考の締切にする | RSN-4 は「`max_tokens` の残りも予算のうち」と言うが、分け方までは決めていない。取り置きが無いと、思考が `max_tokens` を丸ごと使い切ってから終了タグを差し込むことになり、本文 0 字という直そうとしている欠陥がそのまま残る。1/4 に強い根拠は無く、**測って動かしてよい数字** | 実測で答えが切れる/思考が短すぎるとわかったら |
