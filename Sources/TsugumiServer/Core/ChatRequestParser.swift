@@ -72,7 +72,37 @@ public enum ChatRequestParser {
                 message: "the request body is not valid JSON",
                 param: nil, code: "invalid_json")
         }
-        return try parse(json, imagePolicy: imagePolicy, defaults: defaults)
+        var request = try parse(json, imagePolicy: imagePolicy, defaults: defaults)
+        request.responseFormatPropertyOrder = responseFormatPropertyOrder(body, request.responseFormat)
+        return request
+    }
+
+    /// SPEC §12 DEV-15: the order the `response_format` schema declares its keys in, which the parsed `JSONValue`
+    /// has already lost. Read only when there is a schema to order, and only when the text spells the same schema
+    /// the parser took (otherwise empty, which keeps ascending keys).
+    private static func responseFormatPropertyOrder(
+        _ body: Data, _ format: ChatResponseFormat
+    ) -> JSONSchemaPropertyOrder {
+        let schema: JSONValue
+        switch format {
+        case .jsonObject(let sent?), .jsonSchema(let sent?): schema = sent
+        default: return JSONSchemaPropertyOrder()
+        }
+        guard case .object(let members)? = OrderedJSON.parse(String(decoding: body, as: UTF8.self)),
+              case .object(let formatMembers)? = members.last(where: { $0.0 == "response_format" })?.1 else {
+            return JSONSchemaPropertyOrder()
+        }
+        func member(_ object: [(String, OrderedJSON)], _ key: String) -> OrderedJSON? {
+            object.last { $0.0 == key }?.1
+        }
+        let source: OrderedJSON?
+        if case .jsonSchema = format, case .object(let wrapper)? = member(formatMembers, "json_schema") {
+            source = member(wrapper, "schema")
+        } else {
+            source = member(formatMembers, "schema")
+        }
+        guard let source, source.jsonValue == schema else { return JSONSchemaPropertyOrder() }
+        return JSONSchemaPropertyOrder(source: source)
     }
 
     public static func parse(

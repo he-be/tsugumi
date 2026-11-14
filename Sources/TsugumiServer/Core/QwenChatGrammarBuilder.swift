@@ -27,10 +27,12 @@ public enum QwenChatGrammarBuilder {
         toolChoice: ChatToolChoice,
         parallelToolCalls: Bool,
         responseFormat: ChatGrammarBuilder.ResponseFormat,
+        responseFormatPropertyOrder: JSONSchemaPropertyOrder = JSONSchemaPropertyOrder(),
         markers: QwenToolCallMarkers
     ) -> ChatConstraint? {
         if let schema = responseFormat.schema {
             return .grammar(responseFormatConstraint(schema: schema,
+                                                     propertyOrder: responseFormatPropertyOrder,
                                                      tools: tools,
                                                      toolChoice: toolChoice,
                                                      markers: markers))
@@ -45,6 +47,7 @@ public enum QwenChatGrammarBuilder {
 
     private static func responseFormatConstraint(
         schema: JSONValue,
+        propertyOrder: JSONSchemaPropertyOrder,
         tools: [GFTokenizer.FunctionDefinition],
         toolChoice: ChatToolChoice,
         markers: QwenToolCallMarkers
@@ -61,7 +64,8 @@ public enum QwenChatGrammarBuilder {
             break
         }
         let result = QwenToolCallGrammar.responseFormatGrammar(schema: schema,
-                                                               markers: markers)
+                                                               markers: markers,
+                                                               propertyOrder: propertyOrder)
         return ChatGrammarConstraint(grammar: result.grammar,
                                      isLazy: false,
                                      trigger: nil,

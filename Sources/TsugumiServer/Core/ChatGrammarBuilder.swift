@@ -180,10 +180,12 @@ public enum ChatGrammarBuilder {
         toolChoice: ChatToolChoice,
         parallelToolCalls: Bool,
         responseFormat: ResponseFormat,
+        responseFormatPropertyOrder: JSONSchemaPropertyOrder = JSONSchemaPropertyOrder(),
         markers: ChatGrammarMarkers
     ) -> ChatConstraint? {
         if let schema = responseFormat.schema {
             return .grammar(responseFormatConstraint(schema: schema,
+                                                     propertyOrder: responseFormatPropertyOrder,
                                                      tools: tools,
                                                      toolChoice: toolChoice,
                                                      markers: markers))
@@ -234,6 +236,7 @@ public enum ChatGrammarBuilder {
 
     private static func responseFormatConstraint(
         schema: JSONValue,
+        propertyOrder: JSONSchemaPropertyOrder,
         tools: [GFTokenizer.FunctionDefinition],
         toolChoice: ChatToolChoice,
         markers: ChatGrammarMarkers
@@ -254,7 +257,10 @@ public enum ChatGrammarBuilder {
         }
         let result = JSONSchemaGrammar.build(dialect: .json) { builder in
             // The schema is a named rule, not `root`: GEN-13's `root` wraps it.
-            let body = builder.addSchema("response-format", schema)
+            // DEV-15: the answer is body text and is never redrawn, so its keys
+            // follow the schema's declared order (the reference's), not GEN-8's
+            // ascending order.
+            let body = builder.addSchema("response-format", schema, propertyOrder: propertyOrder)
             addRoot(&builder, body: body, isLazy: false, markers: markers)
         }
         return ChatGrammarConstraint(grammar: result.grammar,

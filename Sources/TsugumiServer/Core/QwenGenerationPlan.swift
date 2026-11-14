@@ -127,6 +127,7 @@ struct QwenGenerationPlan: Equatable, Sendable {
             toolChoice: request.toolChoice,
             parallelToolCalls: request.parallelToolCalls,
             responseFormat: Self.responseFormat(request.responseFormat),
+            responseFormatPropertyOrder: request.responseFormatPropertyOrder,
             markers: markers)
         if let grammar = request.grammar {
             precondition(request.tools.isEmpty, "an in-process grammar goes with no tools")

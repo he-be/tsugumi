@@ -298,6 +298,10 @@ public struct ValidatedChatRequest: Sendable {
     /// A GBNF grammar for the whole answer, set in process only (the gather mode's checks, `docs/qwen38/42`): no
     /// request body field reaches it. The Qwen sessions take it in place of the tools' and `response_format`'s.
     public var grammar: String?
+    /// SPEC §12 DEV-15: the declared order of `responseFormat`'s schema objects, read off the request text by
+    /// `ChatRequestParser.parse(_: Data, …)`. The grammar writes a `response_format` answer's keys in this order;
+    /// empty (a request parsed from a `JSONValue`, which has lost the order) keeps ascending keys.
+    public var responseFormatPropertyOrder = JSONSchemaPropertyOrder()
 
     public init(messages: [GFTokenizer.Message],
                 tools: [GFTokenizer.FunctionDefinition],

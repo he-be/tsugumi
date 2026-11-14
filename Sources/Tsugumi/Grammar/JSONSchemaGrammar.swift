@@ -102,9 +102,15 @@ public struct JSONSchemaGrammarBuilder {
         converter.addRule(name, rule)
     }
 
-    public mutating func addSchema(_ name: String, _ schema: JSONValue) -> String {
+    /// `propertyOrder`: the declared order of the schema's objects (SPEC §12 DEV-15). Empty (the default) keeps
+    /// ascending keys, which a Gemma tool call needs; a `response_format` schema passes the request's order.
+    public mutating func addSchema(_ name: String, _ schema: JSONValue,
+                                   propertyOrder: JSONSchemaPropertyOrder = JSONSchemaPropertyOrder()) -> String {
         var schema = schema
         converter.resolveRefs(&schema, url: "")
+        let saved = converter.propertyOrder
+        converter.propertyOrder = propertyOrder
+        defer { converter.propertyOrder = saved }
         return converter.visit(schema, name == "root" ? "" : name)
     }
 }
@@ -309,6 +315,8 @@ struct JSONSchemaGrammarConverter {
     let reserved: Set<String>
 
     private(set) var rules: [String: String]
+    /// DEV-15: the declared order of the objects being visited. Empty keeps ascending keys.
+    var propertyOrder = JSONSchemaPropertyOrder()
     private var refs: [String: JSONValue] = [:]
     private var refsBeingResolved: Set<String> = []
     /// GEN-2 の記録。`fatal` は「参照実装ならここで弾いていた」の印で、
@@ -703,10 +711,13 @@ struct JSONSchemaGrammarConverter {
         properties: [(String, JSONValue)],
         required: Set<String>,
         name: String,
-        additionalProperties: JSONValue?
+        additionalProperties: JSONValue?,
+        isDeclaredOrder: Bool = false
     ) -> String {
-        // 決定 (a): プロパティはキーの昇順。参照実装は宣言順 (SPEC §12)。
-        let properties = properties.sorted {
+        // 決定 (a): 宣言順が分からないプロパティはキーの昇順。宣言順が分かる
+        // (`propertyOrder`、response_format) ときは参照実装と同じく宣言順で、
+        // 必須を先・省略可を後に分ける (SPEC §12 DEV-15)。
+        let properties = isDeclaredOrder ? properties : properties.sorted {
             Array($0.0.utf8).lexicographicallyPrecedes(Array($1.0.utf8))
         }
         var kvRuleNames: [String: String] = [:]
@@ -856,14 +867,22 @@ struct JSONSchemaGrammarConverter {
                 }
             }
             var properties: [(String, JSONValue)] = []
-            if case .object(let members)? = Self.member(schema, "properties") {
+            var isDeclaredOrder = false
+            if let declared = Self.member(schema, "properties"),
+               case .object(let members) = declared {
                 properties = members.map { ($0.key, $0.value) }
+                if let keys = propertyOrder.keys(for: declared), keys.count == members.count,
+                   Set(keys) == Set(members.keys) {
+                    properties = keys.map { ($0, members[$0]!) }
+                    isDeclaredOrder = true
+                }
             }
             return addRule(ruleName, buildObjectRule(
                 properties: properties,
                 required: required,
                 name: name,
-                additionalProperties: additionalProperties))
+                additionalProperties: additionalProperties,
+                isDeclaredOrder: isDeclaredOrder))
         }
         if schemaType == nil || schemaType == .string("object") || schemaType == .string("string"),
            case .array(let components)? = Self.member(schema, "allOf") {

@@ -140,10 +140,11 @@ public enum QwenToolCallGrammar {
     /// open (GEN-3 / GEN-13).
     public static func responseFormatGrammar(
         schema: JSONValue,
-        markers: QwenToolCallMarkers
+        markers: QwenToolCallMarkers,
+        propertyOrder: JSONSchemaPropertyOrder = JSONSchemaPropertyOrder()
     ) -> JSONSchemaGrammarResult {
         JSONSchemaGrammar.build(dialect: .json) { builder in
-            let body = builder.addSchema("response-format", schema)
+            let body = builder.addSchema("response-format", schema, propertyOrder: propertyOrder)
             guard let thinkEnd = markers.thinkEndTokenID else {
                 _ = builder.addRule("root", body)
                 return

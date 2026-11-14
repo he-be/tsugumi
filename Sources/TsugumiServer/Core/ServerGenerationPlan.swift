@@ -84,6 +84,7 @@ struct ServerGenerationPlan: Equatable, Sendable {
             toolChoice: request.toolChoice,
             parallelToolCalls: request.parallelToolCalls,
             responseFormat: Self.responseFormat(request.responseFormat),
+            responseFormatPropertyOrder: request.responseFormatPropertyOrder,
             markers: markers)
         self.grammar = constraint?.grammar?.grammar
         self.forbiddenTokenIDs = constraint?.forbiddenTokenIDs ?? []
