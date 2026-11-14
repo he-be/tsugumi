@@ -85,6 +85,9 @@ struct ServerGenerationPlan: Equatable, Sendable {
             parallelToolCalls: request.parallelToolCalls,
             responseFormat: Self.responseFormat(request.responseFormat),
             responseFormatPropertyOrder: request.responseFormatPropertyOrder,
+            // GEN-13: the optional leading thought block only when the prompt
+            // leaves the channel for the model to open.
+            thinking: request.enableThinking,
             markers: markers)
         self.grammar = constraint?.grammar?.grammar
         self.forbiddenTokenIDs = constraint?.forbiddenTokenIDs ?? []

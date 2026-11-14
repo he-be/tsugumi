@@ -304,3 +304,42 @@ struct ServerGenerationPlanTests {
         #expect(!watch.observe(tokenID: 44, events: [.content("the answer")]))
     }
 }
+
+/// GEN-13 at the plan: the thought block is offered to the model only when
+/// the request leaves the channel open (2026-11-14, the M6 readings that came
+/// back as `thought\n…` under `--reasoning-budget 0`).
+@Suite("C0 server generation plan: thinking and the thought block")
+struct ServerGenerationPlanThinkingTests {
+    private static let markers = ChatGrammarMarkers(
+        toolCallStart: "<|tool_call>",
+        toolCallEnd: "<tool_call|>",
+        toolCallStartTokenID: 7,
+        toolCallEndTokenID: 8,
+        channelStartTokenID: 105,
+        channelEndTokenID: 106)
+
+    private static func grammar(_ extra: String,
+                                defaults: ChatRequestDefaults = ChatRequestDefaults()) throws -> String {
+        let body = #"{"model":"m","messages":[{"role":"user","content":"hi"}],"#
+            + #""response_format":{"type":"json_schema","json_schema":{"name":"r","#
+            + #""schema":{"type":"object","properties":{"a":{"type":"string"}}}}}"#
+            + extra + "}"
+        let request = try ChatRequestParser.parse(Data(body.utf8), defaults: defaults)
+        return try #require(ServerGenerationPlan(request: request, markers: markers).grammar)
+    }
+
+    @Test("thinking off (the server default, or budget 0) leaves the thought block out")
+    func thinking_off_has_no_block() throws {
+        #expect(!(try Self.grammar("")).contains("thought"))
+        #expect(!(try Self.grammar(#","reasoning_budget_tokens":0"#,
+                                   defaults: ChatRequestDefaults(thinking: .on))).contains("thought"))
+        #expect(!(try Self.grammar(#","chat_template_kwargs":{"enable_thinking":false}"#,
+                                   defaults: ChatRequestDefaults(thinking: .on))).contains("thought"))
+    }
+
+    @Test("thinking on keeps the optional thought block")
+    func thinking_on_keeps_the_block() throws {
+        #expect(try Self.grammar(#","chat_template_kwargs":{"enable_thinking":true}"#)
+            .contains("root ::= thought? response-format\n"))
+    }
+}

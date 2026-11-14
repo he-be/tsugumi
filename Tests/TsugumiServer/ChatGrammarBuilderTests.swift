@@ -70,12 +70,14 @@ struct ChatGrammarBuilderTests {
         toolChoice: ChatToolChoice = .auto,
         parallelToolCalls: Bool = true,
         responseFormat: ChatGrammarBuilder.ResponseFormat = .text,
+        thinking: Bool = true,
         markers: ChatGrammarMarkers = markers
     ) -> ChatGrammarConstraint? {
         chatConstraint(tools: tools,
                        toolChoice: toolChoice,
                        parallelToolCalls: parallelToolCalls,
                        responseFormat: responseFormat,
+                       thinking: thinking,
                        markers: markers)?.grammar
     }
 
@@ -85,6 +87,7 @@ struct ChatGrammarBuilderTests {
         toolChoice: ChatToolChoice = .auto,
         parallelToolCalls: Bool = true,
         responseFormat: ChatGrammarBuilder.ResponseFormat = .text,
+        thinking: Bool = true,
         markers: ChatGrammarMarkers = markers
     ) -> ChatConstraint? {
         ChatGrammarBuilder.constraint(
@@ -92,6 +95,7 @@ struct ChatGrammarBuilderTests {
             toolChoice: toolChoice,
             parallelToolCalls: parallelToolCalls,
             responseFormat: responseFormat,
+            thinking: thinking,
             markers: markers)
     }
 
@@ -538,6 +542,36 @@ struct ChatGrammarBuilderTests {
         #expect(try !Self.walk(constraint.grammar,
                                thought: Self.thoughtBlock,
                                then: [.text("Sure! Here you go.")]))
+    }
+
+    /// The M6 failure (2026-11-14): with `--reasoning-budget 0` the model
+    /// sometimes reopened the thought channel at the head of a
+    /// `response_format` answer, the optional block let everything up to
+    /// `<channel|>` through unconstrained, and no decoder split the channel on
+    /// a thinking-off request — so the answer came back as `thought\n…` with a
+    /// fenced JSON and an explanation. With thinking off the opener is not a
+    /// token the grammar allows.
+    @Test("GEN-13: with thinking off the grammar offers no thought block")
+    func GEN_13_thinking_off_has_no_thought_block() throws {
+        let format = try #require(Self.constraint(
+            responseFormat: .jsonSchema(schema: Self.citySchema), thinking: false))
+        #expect(format.grammar.contains("root ::= response-format\n"))
+        #expect(!format.grammar.contains("thought"))
+        #expect(try Self.walk(format.grammar, thought: nil,
+                              then: [.text(#"{"city": "Kyoto"}"#)]))
+        #expect(try !Self.walk(format.grammar, thought: Self.thoughtBlock,
+                               then: [.text(#"{"city": "Kyoto"}"#)]))
+        let matcher = try GrammarMatcher(try GBNFGrammar(format.grammar))
+        #expect(!matcher.allows(piece: Array("<|channel>".utf8), tokenID: Self.channelStartID))
+
+        let tools = try #require(Self.constraint(
+            tools: [Self.weather], toolChoice: .required, parallelToolCalls: false,
+            thinking: false))
+        #expect(tools.grammar.contains("root ::= tool-call\n"))
+        #expect(!tools.grammar.contains("thought"))
+        #expect(try Self.walk(tools.grammar, thought: nil, then: Self.canonicalCall))
+        #expect(try !Self.walk(tools.grammar, thought: Self.thoughtBlock,
+                               then: Self.canonicalCall))
     }
 
     @Test("GEN-13: a lazy grammar keeps the trigger rule as its root")

@@ -181,6 +181,7 @@ public enum ChatGrammarBuilder {
         parallelToolCalls: Bool,
         responseFormat: ResponseFormat,
         responseFormatPropertyOrder: JSONSchemaPropertyOrder = JSONSchemaPropertyOrder(),
+        thinking: Bool = true,
         markers: ChatGrammarMarkers
     ) -> ChatConstraint? {
         if let schema = responseFormat.schema {
@@ -188,11 +189,13 @@ public enum ChatGrammarBuilder {
                                                      propertyOrder: responseFormatPropertyOrder,
                                                      tools: tools,
                                                      toolChoice: toolChoice,
+                                                     thinking: thinking,
                                                      markers: markers))
         }
         return toolConstraint(tools: tools,
                               toolChoice: toolChoice,
                               parallelToolCalls: parallelToolCalls,
+                              thinking: thinking,
                               markers: markers)
     }
 
@@ -207,18 +210,26 @@ public enum ChatGrammarBuilder {
     /// all — which GEN-7 turns into a 500. The reference reaches the same shape
     /// by prefixing `ctx.reasoning_parser` to every generated parser.
     ///
-    /// **Optional, never required.** With thinking off the template writes a
-    /// closed, empty `<|channel>thought\n<channel|>` into the generation prompt
-    /// itself, so the first generated token is already the body. The same
-    /// grammar has to serve both.
+    /// **Optional, never required, and only with thinking on.** With thinking
+    /// off the template writes a closed, empty `<|channel>thought\n<channel|>`
+    /// into the generation prompt itself, so the first generated token is
+    /// already the body, and the block is left out of `root`: the opener is
+    /// then not a token the grammar allows. Until 2026-11-14 the block was
+    /// offered either way, and a model that reopened the channel on a
+    /// thinking-off request wrote the thought text unconstrained into the
+    /// answer (no decoder splits the channel there), so a `response_format`
+    /// answer came back as `thought\n…` with a fenced JSON and an
+    /// explanation after it — 7 of 38 readings on M6. llama.cpp with the
+    /// reasoning budget at 0 does not offer the block either.
     ///
     /// A lazy grammar keeps `root` as the trigger rule: it is not applied until
     /// the trigger fires, so it never sees the thought block (GEN-6 owns that).
     private static func addRoot(_ builder: inout JSONSchemaGrammarBuilder,
                                 body: String,
                                 isLazy: Bool,
+                                thinking: Bool,
                                 markers: ChatGrammarMarkers) {
-        guard !isLazy,
+        guard !isLazy, thinking,
               let start = markers.channelStartTokenID,
               let end = markers.channelEndTokenID else {
             _ = builder.addRule("root", body)
@@ -239,6 +250,7 @@ public enum ChatGrammarBuilder {
         propertyOrder: JSONSchemaPropertyOrder,
         tools: [GFTokenizer.FunctionDefinition],
         toolChoice: ChatToolChoice,
+        thinking: Bool,
         markers: ChatGrammarMarkers
     ) -> ChatGrammarConstraint {
         var approximations: [String] = []
@@ -261,7 +273,7 @@ public enum ChatGrammarBuilder {
             // follow the schema's declared order (the reference's), not GEN-8's
             // ascending order.
             let body = builder.addSchema("response-format", schema, propertyOrder: propertyOrder)
-            addRoot(&builder, body: body, isLazy: false, markers: markers)
+            addRoot(&builder, body: body, isLazy: false, thinking: thinking, markers: markers)
         }
         return ChatGrammarConstraint(grammar: result.grammar,
                                      isLazy: false,
@@ -275,6 +287,7 @@ public enum ChatGrammarBuilder {
         tools: [GFTokenizer.FunctionDefinition],
         toolChoice: ChatToolChoice,
         parallelToolCalls: Bool,
+        thinking: Bool,
         markers: ChatGrammarMarkers
     ) -> ChatConstraint? {
         let selected: [GFTokenizer.FunctionDefinition]
@@ -324,7 +337,7 @@ public enum ChatGrammarBuilder {
             // writes parallel calls back to back with no separator.
             let section = builder.addRule("tool-call",
                                           parallelToolCalls ? body + "+" : body)
-            addRoot(&builder, body: section, isLazy: isLazy, markers: markers)
+            addRoot(&builder, body: section, isLazy: isLazy, thinking: thinking, markers: markers)
         }
         return .grammar(ChatGrammarConstraint(
             grammar: result.grammar,
