@@ -1,0 +1,25 @@
+524560 /System/Library/ExtensionKit/Extensions/TGOnDeviceInferenceProviderService.appex/Contents/MacOS/TGOnDeviceInferenceProviderService
+500224 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/corespotlightd
+343808 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome
+228032 /Applications/IriunWebcam.app/Contents/MacOS/IriunWebcam
+165120 /System/Applications/Siri AI.app/Contents/MacOS/Siri AI
+139616 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/157.0.8103.51/Helpers/Google Chrome Helper (Aperitif Renderer).app/Contents/MacOS/Google Chrome Helper (Aperitif Renderer)
+138304 /System/Library/PrivateFrameworks/MediaAnalysis.framework/Versions/A/mediaanalysisd
+138192 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer
+134016 /usr/libexec/mobileassetd
+123456 /System/Applications/Utilities/Activity Monitor.app/Contents/MacOS/Activity Monitor
+120960 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/157.0.8103.51/Helpers/Google Chrome Helper (Aperitif Renderer).app/Contents/MacOS/Google Chrome Helper (Aperitif Renderer)
+120336 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder
+104672 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/157.0.8103.51/Helpers/Google Chrome Helper (Aperitif).app/Contents/MacOS/Google Chrome Helper (Aperitif)
+ 96288 /usr/libexec/sharingd
+ 92576 /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+ 85184 /System/Library/CoreServices/Software Update.app/Contents/Resources/softwareupdated
+ 84080 /System/Library/Services/AppleSpell.service/Contents/MacOS/AppleSpell
+ 70944 /System/Library/Frameworks/Metal.framework/Versions/A/XPCServices/MTLCompilerService.xpc/Contents/MacOS/MTLCompilerService
+ 70016 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/157.0.8103.51/Helpers/Google Chrome Helper (Aperitif).app/Contents/MacOS/Google Chrome Helper (Aperitif)
+ 65424 /Applications/Google Chrome.app/Contents/Frameworks/Google Chrome Framework.framework/Versions/157.0.8103.51/Helpers/Google Chrome Helper (Aperitif Renderer).app/Contents/MacOS/Google Chrome Helper (Aperitif Renderer)
+ 64960 /System/Library/PrivateFrameworks/VoiceShortcuts.framework/Versions/A/Support/siriactionsd
+ 64576 /System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter
+ 59792 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow
+ 59280 /usr/libexec/syspolicyd
+ 58352 /System/Applications/Stocks.app/Contents/PlugIns/StocksWidget.appex/Contents/MacOS/StocksWidget

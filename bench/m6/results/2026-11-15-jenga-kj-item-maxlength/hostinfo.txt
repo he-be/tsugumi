@@ -1,0 +1,2 @@
+jenga / NVIDIA GeForce RTX 5060 Ti / llama.cpp 3549c274d (CUDA) / lattice-keep_80.gguf 71c139918d1f846a… / mmproj-model-Q8_0.gguf / -c 4096 / 2026-11-15
+payloads A (48 と同じ 96 枚) の英名だけ × 5 回。maxlen100 は英名のスキーマに maxLength 100 を足した要求

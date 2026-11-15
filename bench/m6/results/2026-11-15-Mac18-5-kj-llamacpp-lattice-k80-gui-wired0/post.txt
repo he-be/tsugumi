@@ -1,0 +1,38 @@
+10:05:24
+The system has 17179869184 (1048576 pages with a page size of 16384).
+System-wide memory free percentage: 14%
+Mach Virtual Memory Statistics: (page size of 16384 bytes)
+Pages free:                                    10513.
+Pages active:                                  69577.
+Pages inactive:                                69247.
+Pages speculative:                               112.
+Pages throttled:                                   0.
+Pages wired down:                             766822.
+Pages purgeable:                                4578.
+"Translation faults":                       17601979.
+Pages copy-on-write:                          974083.
+Pages zero filled:                          12247715.
+Pages reactivated:                            996193.
+Pages purged:                                 270719.
+File-backed pages:                             43083.
+Anonymous pages:                               95853.
+Pages stored in compressor:                   171036.
+Pages occupied by compressor:                  94797.
+Decompressions:                              1008387.
+Compressions:                                1520156.
+Pageins:                                     1859139.
+Pageouts:                                       1239.
+Swapins:                                       18422.
+Swapouts:                                      78256.
+Pages tagged:                                  63489.
+Pages tagged resident:                         35767.
+Pages tagged compressed:                       27722.
+Pages tag-storage:                             32768.
+Pages tag-storage holding tags:                 1464.
+Pages tag-storage free:                         1085.
+Pages tag-storage non-tag pageable:            29947.
+Pages tag-storage non-tag wired:                   0.
+Bytes of compressed tags:                    4781824.
+Tagged compressions:                           87584.
+Tagged decompressions:                         56849.
+vm.swapusage: total = 2048.00M  used = 942.75M  free = 1105.25M  (encrypted)

@@ -1,5 +1,5 @@
 """記録した鑑定の要求を 1 件ずつ流し、答えと (あれば) ルーター記録ファイルの区切りを残す。
-    python run_arm.py <base-url> <payloads.jsonl> <out.jsonl> [--greedy] [--trace <file>] [--plays every2:0|every2:1|all]
+    python run_arm.py <base-url> <payloads.jsonl> <out.jsonl> [--greedy] [--trace <file>] [--plays every2:0|every2:1|all] [--plays-file <names>] [--only <kind>] [--rounds N] [--extra <json>]
 --greedy は temperature 0 を要求に足す (モデル間の一致を見る用)。"""
 import json, os, sys, time, urllib.request
 a = sys.argv
@@ -9,15 +9,20 @@ trace = a[a.index("--trace") + 1] if "--trace" in a else None
 sel = a[a.index("--plays") + 1] if "--plays" in a else "all"
 only = a[a.index("--only") + 1] if "--only" in a else None
 rounds = int(a[a.index("--rounds") + 1]) if "--rounds" in a else 1
+extra = json.loads(a[a.index("--extra") + 1]) if "--extra" in a else {}
+playsfile = a[a.index("--plays-file") + 1] if "--plays-file" in a else None
 plays = {}
 for line in open(payloads, encoding="utf-8"):
     r = json.loads(line); plays.setdefault(r["play"], []).append(r)
 names = list(plays)
 if sel.startswith("every2:"):
     names = names[int(sel[-1])::2]
+if playsfile:
+    want = set(open(playsfile).read().split()); names = [n for n in names if n in want]
 def ask(p):
     body = dict(p); body["stream"] = False
     if greedy: body["temperature"] = 0; body["top_k"] = 1
+    body.update(extra)
     req = urllib.request.Request(base + "/v1/chat/completions", json.dumps(body).encode(), {"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=900) as resp:
         got = json.loads(resp.read())

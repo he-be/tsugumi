@@ -1,0 +1,5 @@
+llm-server / フルモデルのルーター記録: A (48 の 96 枚) は RTX 3090、B・C は Tesla V100、D は RTX 3090 / llama.cpp 3549c274d + bench/kj_slice/moe_trace.diff / 2026-11-15
+payloads B 22331b9bf1f04ce9692c1aa858c8f608502068cc1624be784afc3fcde4329bd9 384 requests
+payloads C 564ae0ad584aee7b8022c3bf8411b6cee15a2fb9979edeb5c0a784bdc4d98c93 384 requests
+payloads D 01bbc97d898810d56977ed493c8c333918295a604b558f66918265e42c621b14 687 requests
+stats_B/C/D.npz (各 8.4 MB) は llm-server の /root/diet/ に置いたまま
