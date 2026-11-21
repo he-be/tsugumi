@@ -1,0 +1,2 @@
+測定: 2026-11-21 / Mac18,5 Apple M6 16GB / macOS 27.2.1 (26B131) / Swift 6.4.2 / SDK 27.2 / Xcode 27.2 / APPLE SSD AP0256Z / commit 8642573c
+unsloth llama.cpp b12588-mix-c0c3de8 / Inkling-2-Mini-UD-IQ3_XXS.gguf / mmproj-F16 / assistant prefill {

@@ -1,0 +1,15 @@
+## unsloth / Inkling-2-Mini-UD-IQ3_XXS.gguf
+| inkling2 ?B IQ3_XXS - 3.0625 bpw |  10.85 GiB |    26.07 B | MTL,BLAS   |       2 |           pp512 |        306.72 ± 0.15 |
+| inkling2 ?B IQ3_XXS - 3.0625 bpw |  10.85 GiB |    26.07 B | MTL,BLAS   |       2 |           tg128 |         29.30 ± 0.04 |
+## unsloth / lattice-keep_80.gguf
+| gemma4 26B.A4B Q4_0            |   8.75 GiB |    16.66 B | MTL,BLAS   |       2 |           pp512 |       1446.27 ± 1.31 |
+| gemma4 26B.A4B Q4_0            |   8.75 GiB |    16.66 B | MTL,BLAS   |       2 |           tg128 |         54.90 ± 0.07 |
+## mainline / lattice-keep_80.gguf
+| gemma4 26B.A4B Q4_0            |   8.75 GiB |    16.66 B | MTL,BLAS   |       2 |           pp512 |       1444.11 ± 1.61 |
+| gemma4 26B.A4B Q4_0            |   8.75 GiB |    16.66 B | MTL,BLAS   |       2 |           tg128 |         54.76 ± 0.08 |
+## unsloth / gemma-4-26B-A4B-it-UD-IQ3_XXS.gguf
+| gemma4 26B.A4B IQ3_XXS - 3.0625 bpw |  10.62 GiB |    25.23 B | MTL,BLAS   |       2 |           pp512 |       1221.79 ± 3.13 |
+| gemma4 26B.A4B IQ3_XXS - 3.0625 bpw |  10.62 GiB |    25.23 B | MTL,BLAS   |       2 |           tg128 |         46.81 ± 0.14 |
+## mainline / gemma-4-26B-A4B-it-UD-IQ3_XXS.gguf
+| gemma4 26B.A4B IQ3_XXS - 3.0625 bpw |  10.62 GiB |    25.23 B | MTL,BLAS   |       2 |           pp512 |       1222.35 ± 2.23 |
+| gemma4 26B.A4B IQ3_XXS - 3.0625 bpw |  10.62 GiB |    25.23 B | MTL,BLAS   |       2 |           tg128 |         46.91 ± 0.14 |

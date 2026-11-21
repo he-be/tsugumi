@@ -52,6 +52,7 @@ G0 からの比、段の秒、tensor ops に載せたか、「下限の何倍か
 | [47](47-KAJIMACHINE-REPLAY-TSUGUMI-VS-LLAMACPP.md) | prefill の外。kajimachine の鑑定の要求を再生し、Tsugumi (QAT) と llama.cpp (IQ3_XXS) を並べた。読み直しの量、1 回の秒、IQ3_XXS の英名の崩れ |
 | [48](48-KAJIMACHINE-EXPERT-SLICE.md) | prefill の外。鑑定で使うエキスパートだけを残した Q4_0 (層ごと 80 個、8.77 GiB) を llama.cpp で M6 に載せた。1 回 7.54 s・Swapouts 0。文脈長は wired を動かさない。英名の崩れの率 |
 | [49](49-KAJIMACHINE-SLICE-CHECKS.md) | prefill の外。48 の 80 個版の確かめ。ログイン + Chrome + Web カメラでも 1 回 8.09 s (wired 上限は既定)。残すリストは 460 枚で選んでも変わらない。英名の崩れはスキーマの `maxLength` で 0 |
+| [50](50-KAJIMACHINE-INKLING2-MINI.md) | prefill の外。Inkling 2 Mini (UD-IQ3_XXS、unsloth prebuilt) を鑑定機に当てた。1 回 19.9 s 対 80 個版 7.9 s、Swapouts あり、思考は書き出しの `{` で飛ばす。**乗り換えない** |
 | `bench/m6/prompts/` | 台帳用の自然文の本文 5 本 (43 §3)。`bench/l.json` は繰り返し文で、進捗の判定には使わない |
 | `bench/m6/` | プローブと計測スクリプト。[results/README.md](../../bench/m6/results/README.md) が証拠の置き方 |
 

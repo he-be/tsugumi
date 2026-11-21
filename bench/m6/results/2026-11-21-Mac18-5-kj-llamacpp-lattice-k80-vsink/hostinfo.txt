@@ -1,0 +1,2 @@
+測定: 2026-11-21 / Mac18,5 Apple M6 16GB / macOS 27.2.1 (26B131) / Swift 6.4.2 / SDK 27.2 / Xcode 27.2 / APPLE SSD AP0256Z / commit 8642573c
+llama.cpp 61dbf49 mainline / lattice-keep_80.gguf / mmproj-lattice-Q8_0 / same args as 2026-11-15 k80

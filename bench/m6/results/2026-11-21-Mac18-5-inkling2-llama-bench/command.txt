@@ -1,0 +1,2 @@
+<bin>/llama-bench -m <gguf> -ngl 99 -p 512 -n 128 -r 3
+bin = unsloth (b12588-mix) と mainline (61dbf49)。Inkling は unsloth だけ (mainline の Metal は NVFP4 の mul_mat が無く、Inkling の ffn_down_exps 20 層 3.82 GB が NVFP4)。
